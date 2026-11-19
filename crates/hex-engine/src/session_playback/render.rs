@@ -1202,7 +1202,13 @@ impl SessionPlayback {
             let (captured_release, applied_route) = if self.current_sampler_console
                 || next_route.is_some_and(|next| next <= performance_frame)
             {
-                let result = self.apply_due_routes(performance_frame, arrangement_frame)?;
+                let result = self.apply_due_routes(
+                    performance_frame,
+                    arrangement_frame,
+                    (arrangement_loop_pass == 0)
+                        .then_some(self.interactive_onset_floor)
+                        .flatten(),
+                )?;
                 next_route = next_pending_frame(&self.route_scratch);
                 result
             } else {
@@ -1270,6 +1276,9 @@ impl SessionPlayback {
                         arrangement_frame,
                         frames: count,
                         mutable_loop_pass,
+                        interactive_onset_floor: (arrangement_loop_pass == 0)
+                            .then_some(self.interactive_onset_floor)
+                            .flatten(),
                         chase_at_start: self.interactive_start_frame == Some(performance_frame),
                     },
                     &mut resident_source_eligible,
@@ -1634,6 +1643,7 @@ impl SessionPlayback {
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(bool, bool), SessionPlaybackError> {
         let mut captured_release = false;
         let mut applied_route = false;
@@ -1739,6 +1749,7 @@ impl SessionPlayback {
                         owner,
                         arrangement_frame,
                         performance_frame,
+                        interactive_onset_floor,
                     )?;
                     captured_release = true;
                 }
@@ -1925,6 +1936,9 @@ impl SessionPlayback {
                             ),
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
+                            interactive_onset_floor: (arrangement_loop_pass == 0)
+                                .then_some(self.interactive_onset_floor)
+                                .flatten(),
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
@@ -2009,6 +2023,9 @@ impl SessionPlayback {
                             ),
                             route: midi_route,
                             historical_floor: self.historical_floor_for(index),
+                            interactive_onset_floor: (arrangement_loop_pass == 0)
+                                .then_some(self.interactive_onset_floor)
+                                .flatten(),
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
@@ -2071,6 +2088,9 @@ impl SessionPlayback {
                             arrangement_loop_pass,
                             transient: None,
                             chase_at_start: self.interactive_start_frame == Some(performance_frame),
+                            interactive_onset_floor: (arrangement_loop_pass == 0)
+                                .then_some(self.interactive_onset_floor)
+                                .flatten(),
                             pending_shared_chase: self.pending_shared_chase,
                             loop_region: if self.linear_arrangement_export {
                                 None
@@ -2197,6 +2217,9 @@ impl SessionPlayback {
                                 ),
                                 route: self.route_scratch[index],
                                 historical_floor: self.historical_floor_for(index),
+                                interactive_onset_floor: (arrangement_loop_pass == 0)
+                                    .then_some(self.interactive_onset_floor)
+                                    .flatten(),
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
@@ -2227,6 +2250,9 @@ impl SessionPlayback {
                             ),
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
+                            interactive_onset_floor: (arrangement_loop_pass == 0)
+                                .then_some(self.interactive_onset_floor)
+                                .flatten(),
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
@@ -2369,6 +2395,9 @@ impl SessionPlayback {
                             &self.analytic_continuations,
                             Some(self.revision.session().timing()),
                             loop_fade,
+                            (arrangement_loop_pass == 0)
+                                .then_some(self.interactive_onset_floor)
+                                .flatten(),
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(capture) = capture.as_mut() {
@@ -2401,6 +2430,9 @@ impl SessionPlayback {
                         ),
                         route: self.route_scratch[index],
                         historical_floor: self.historical_floor_for(index),
+                        interactive_onset_floor: (arrangement_loop_pass == 0)
+                            .then_some(self.interactive_onset_floor)
+                            .flatten(),
                         suppressions: &self.suppression_scratch,
                         continuations: &self.analytic_continuations,
                         index,
@@ -3097,6 +3129,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     arrangement_loop_pass: u64,
     transient: Option<hex_lattice::NativeTransientInput>,
     chase_at_start: bool,
+    interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     pending_shared_chase: Option<super::PendingSharedChase>,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
@@ -3211,6 +3244,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         arrangement_loop_pass,
         transient,
         chase_at_start,
+        interactive_onset_floor,
         pending_shared_chase: _,
         loop_region,
         timing,
@@ -3246,6 +3280,9 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                         )
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
                     |span| {
+                        if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                            return;
+                        }
                         let is_wrap_chase = arrangement_loop_pass > 0
                             && loop_region.is_some_and(|region| {
                                 arrangement_frame == region.start()
@@ -3543,6 +3580,7 @@ struct RouteSourceContext<'a, T> {
     midi: crate::session_inventory::EffectiveSessionMidi<'a>,
     route: super::TrackRoute,
     historical_floor: Option<BeatTime>,
+    interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     suppressions: &'a [MidiOccurrenceSuppression],
     continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,
@@ -3707,6 +3745,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
         midi,
         route,
         historical_floor,
+        interactive_onset_floor,
         suppressions,
         continuations,
         index,
@@ -3782,6 +3821,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                             suppressions,
                             continuations,
                             Some(revision.session().timing()),
+                            interactive_onset_floor,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 }
@@ -3798,12 +3838,12 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
             if raw && matches!(stage, SourceStage::Instrument) {
                 return track
                     .render_raw_instrument(
-                        arrangement_frame,
-                        performance_frame,
+                        (arrangement_frame, performance_frame),
                         output,
                         suppressions,
                         continuations,
                         Some(revision.session().timing()),
+                        interactive_onset_floor,
                     )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0));
             }
@@ -3812,7 +3852,10 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                 .any(|entry| entry.track == route.id && entry.until_frame > performance_frame);
             match stage {
                 SourceStage::Whole => {
-                    if has_active_suppression || continuations.iter().any(Option::is_some) {
+                    if has_active_suppression
+                        || interactive_onset_floor.is_some()
+                        || continuations.iter().any(Option::is_some)
+                    {
                         track.render_additive_with_suppressions_and_pages(
                             arrangement_frame,
                             performance_frame,
@@ -3821,6 +3864,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                             pages.as_deref_mut(),
                             continuations,
                             Some(revision.session().timing()),
+                            interactive_onset_floor,
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
                         track.render_additive_with_pages(
@@ -3859,6 +3903,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                     suppressions,
                     continuations,
                     Some(revision.session().timing()),
+                    interactive_onset_floor,
                 ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;

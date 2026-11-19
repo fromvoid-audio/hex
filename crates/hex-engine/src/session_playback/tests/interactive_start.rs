@@ -714,3 +714,487 @@ fn shared_chase_and_handoff(limiter: Option<bool>, handoff_frames: &[usize]) {
         );
     }
 }
+
+mod note_chase {
+    use super::*;
+
+    // The oracle deletes only the rejected historical note; the exact-boundary
+    // note remains audible and must keep all ordinary release/continuation laws.
+    fn analytic_pair(keep_historical: bool, looping: bool) -> Project {
+        let mut snapshot = project(1.0, 1 << 26, 1 << 30).snapshot();
+        let id = snapshot.next_id;
+        snapshot.next_id += 1;
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips)
+            | TrackContentSnapshot::Hybrid {
+                midi_clips: clips, ..
+            } => clips,
+            TrackContentSnapshot::Audio(_) => panic!("midi fixture"),
+        };
+        clips[0].notes.push(MidiNoteSnapshot {
+            active: true,
+            id,
+            start_raw: 1 << 27,
+            duration_raw: 1 << 29,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        });
+        if !keep_historical {
+            clips[0].notes.remove(0);
+        }
+        if looping {
+            snapshot.loop_region = Some(LoopRegion::new(0, 2_000, true).unwrap());
+        }
+        Project::from_snapshot(snapshot).unwrap()
+    }
+
+    fn analytic_started(project: &Project) -> SessionPlayback {
+        let mut runtime =
+            SessionPlayback::new(revision(project, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        runtime
+            .play_from_with_note_chase(750, crate::NoteChase::Off)
+            .unwrap();
+        runtime
+    }
+
+    #[test]
+    fn analytic_pause_and_route_cuts_match_deleted_note_oracle() {
+        for quantization in [
+            LaunchQuantization::Immediate,
+            LaunchQuantization::ThirtySecond,
+        ] {
+            for pause in [false, true] {
+                let mut actual = analytic_started(&analytic_pair(true, false));
+                let mut oracle = analytic_started(&analytic_pair(false, false));
+                for runtime in [&mut actual, &mut oracle] {
+                    let prefix = render_checkpoint_partitioned(runtime, &[17], 17);
+                    assert!(prefix.iter().flatten().any(|sample| *sample != 0.0));
+                    if pause {
+                        runtime.apply(SessionPlaybackCommand::Pause).unwrap();
+                    } else {
+                        runtime
+                            .apply(SessionPlaybackCommand::StopTrack {
+                                track: runtime.routes[0].id,
+                                quantization,
+                            })
+                            .unwrap();
+                    }
+                }
+                let expected = render_checkpoint_partitioned(&mut oracle, &[64], 4_500);
+                assert!(
+                    expected.iter().flatten().any(|sample| *sample != 0.0),
+                    "admitted voice retains release"
+                );
+                assert_eq!(
+                    render_checkpoint_partitioned(&mut actual, &[1, 7, 193], 4_500),
+                    expected
+                );
+                if pause {
+                    for runtime in [&mut actual, &mut oracle] {
+                        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                    }
+                    assert_eq!(
+                        render_checkpoint_partitioned(&mut actual, &[193], 100),
+                        render_checkpoint_partitioned(&mut oracle, &[64], 100)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn analytic_wrap_then_queued_cut_is_partition_independent() {
+        let prepared = revision(
+            &analytic_pair(true, true),
+            Arc::new(hex_devices::SineTable::new()),
+        );
+        let run = |blocks: &[usize]| {
+            let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            runtime
+                .play_from_with_note_chase(750, crate::NoteChase::Off)
+                .unwrap();
+            runtime
+                .apply(SessionPlaybackCommand::StopTrack {
+                    track: runtime.routes[0].id,
+                    quantization: LaunchQuantization::ThirtySecond,
+                })
+                .unwrap();
+            render_checkpoint_partitioned(&mut runtime, blocks, 4_000)
+        };
+        let expected = run(&[1, 7, 64]);
+        assert!(
+            expected[2_250..]
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0),
+            "next-pass gate keeps its outgoing release"
+        );
+        let actual = run(&[4_000]);
+        assert!(
+            actual == expected,
+            "first differing frame {:?}",
+            actual.iter().zip(&expected).position(|(a, b)| a != b)
+        );
+    }
+
+    #[test]
+    fn analytic_handoff_capture_matches_deleted_note_oracle() {
+        for mutation in 0..4 {
+            let run = |keep_historical| {
+                let project = analytic_pair(keep_historical, false);
+                let mut old = analytic_started(&project);
+                old.render(&mut [[0.0; 2]; 17]).unwrap();
+                let candidate = match mutation {
+                    0 => without_instrument_slot(&project),
+                    1 => with_replaced_instrument_id(&project),
+                    2 => {
+                        let mut snapshot = project.snapshot();
+                        snapshot.tempo_points = vec![TempoPoint::new(
+                            BeatTime::ZERO,
+                            Tempo::new(60_000_000).unwrap(),
+                        )];
+                        Project::from_snapshot(snapshot).unwrap()
+                    }
+                    _ => {
+                        let mut editor = Editor::new(project.clone(), 8).unwrap();
+                        editor
+                            .execute(Command::RemoveTrack(project.tracks()[0].id()))
+                            .unwrap();
+                        editor.project().clone()
+                    }
+                };
+                let mut next = SessionPlayback::new(revision(
+                    &candidate,
+                    Arc::new(hex_devices::SineTable::new()),
+                ))
+                .unwrap();
+                next.try_inherit_state_from(&mut old).unwrap();
+                render_checkpoint_partitioned(&mut next, &[1, 7, 193], 512)
+            };
+            let expected = run(false);
+            assert!(
+                expected.iter().flatten().any(|sample| *sample != 0.0),
+                "admitted voice survives mutation={mutation}"
+            );
+            assert_eq!(run(true), expected, "mutation={mutation}");
+        }
+    }
+
+    #[test]
+    fn tempo_handoff_cannot_collapse_a_rejected_onset_into_the_start_bucket() {
+        let mut snapshot =
+            project_at_tempo(1.0, 1 << 29, 1 << 30, Tempo::new(60_000_000).unwrap()).snapshot();
+        snapshot.sample_rate = 8_000;
+        let original = Project::from_snapshot(snapshot.clone()).unwrap();
+        let mut old =
+            SessionPlayback::new(revision(&original, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        // The authored note maps to frame 1000. The action rejects it before
+        // any render, so handoff must not manufacture an owned release either.
+        old.play_from_with_note_chase(1_001, crate::NoteChase::Off)
+            .unwrap();
+        snapshot.tempo_points = vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(240_000_000).unwrap(),
+        )];
+        let faster = Project::from_snapshot(snapshot).unwrap();
+        let mut next =
+            SessionPlayback::new(revision(&faster, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(next.arrangement_frame(), 250);
+        let output = render_checkpoint_partitioned(&mut next, &[1, 7, 32], 32);
+        assert!(
+            output.iter().flatten().all(|sample| *sample == 0.0),
+            "tempo rounding must not revive the rejected frame-1000 note"
+        );
+    }
+
+    #[test]
+    fn explicit_policy_keeps_default_chase_and_accepts_exact_onsets_and_remaining_gate() {
+        let prepared = start_fixture(1 << 27, 1 << 27, None);
+        for (destination, note_chase, audible) in [
+            (1_000, crate::NoteChase::On, true),
+            (1_000, crate::NoteChase::Off, false),
+            (750, crate::NoteChase::Off, true),
+            (1_500, crate::NoteChase::On, false),
+            (1_500, crate::NoteChase::Off, false),
+        ] {
+            let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            runtime
+                .play_from_with_note_chase(destination, note_chase)
+                .unwrap();
+            let output = render_checkpoint_partitioned(&mut runtime, &[1, 7, 64], 532);
+            assert_eq!(
+                output[..16].iter().flatten().any(|sample| *sample != 0.0),
+                audible,
+                "destination={destination}, policy={note_chase:?}"
+            );
+            if destination == 1_000 {
+                assert!(
+                    output[520..].iter().flatten().all(|sample| *sample == 0.0),
+                    "chased note keeps authored gate end and bounded release"
+                );
+            }
+        }
+        let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        runtime
+            .play_from_with_note_chase(1_000, crate::NoteChase::Off)
+            .unwrap();
+        assert!(
+            render_checkpoint_partitioned(&mut runtime, &[64], 32)
+                .iter()
+                .flatten()
+                .all(|s| *s == 0.0)
+        );
+        runtime.play_from(1_000).unwrap();
+        assert!(
+            render_checkpoint_partitioned(&mut runtime, &[64], 32)
+                .iter()
+                .flatten()
+                .any(|s| *s != 0.0),
+            "ordinary default-on action restores chase without a sticky runtime preference"
+        );
+    }
+
+    #[test]
+    fn analytic_no_chase_floor_keeps_exact_onsets_and_expires_on_loop_wrap() {
+        let mut snapshot = project(1.0, 0, 1 << 28).snapshot();
+        snapshot.loop_region = Some(LoopRegion::new(0, 2_000, true).unwrap());
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+        let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        runtime
+            .play_from_with_note_chase(750, crate::NoteChase::Off)
+            .unwrap();
+        let silence = render_checkpoint_partitioned(&mut runtime, &[1, 64], 1_250);
+        assert!(silence.iter().flatten().all(|sample| *sample == 0.0));
+        let next_pass = render_checkpoint_partitioned(&mut runtime, &[1, 64], 32);
+        assert!(
+            next_pass.iter().flatten().any(|sample| *sample != 0.0),
+            "new loop occurrence remains eligible"
+        );
+        runtime
+            .play_from_with_note_chase(0, crate::NoteChase::Off)
+            .unwrap();
+        assert!(
+            render_checkpoint_partitioned(&mut runtime, &[64], 32)
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0),
+            "exact destination onset is admitted"
+        );
+        runtime.play_from(750).unwrap();
+        assert!(
+            render_checkpoint_partitioned(&mut runtime, &[64], 32)
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0),
+            "default-on start clears the previous floor"
+        );
+    }
+
+    #[test]
+    fn slipped_clip_boundary_distinguishes_synthetic_from_real_onsets() {
+        for (native, compensated) in [(false, false), (true, false), (true, true)] {
+            for (placement, reversed, clipped) in [
+                (0, false, true),
+                (0, false, false),
+                (2, true, true),
+                (2, true, false),
+            ] {
+                let start = if reversed || !clipped { 1 << 31 } else { 0 };
+                let duration = if clipped { 1 << 32 } else { 1 << 31 };
+                let definition = super::super::source_loop_tests::mutable_definition();
+                let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+                let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+                let project = project(1.0, start, duration);
+                let project = if native {
+                    with_test_instrument(&project, definition.metadata.id, 0)
+                } else {
+                    project
+                };
+                let mut snapshot = project.snapshot();
+                let clips = match &mut snapshot.tracks[0].content {
+                    TrackContentSnapshot::Instrument(clips)
+                    | TrackContentSnapshot::Hybrid {
+                        midi_clips: clips, ..
+                    } => clips,
+                    TrackContentSnapshot::Audio(_) => panic!("midi clips"),
+                };
+                clips[0].start_raw = placement << 32;
+                clips[0].length_raw = 1 << 31;
+                clips[0].playback_offset_raw = 1 << 31;
+                clips[0].content_view =
+                    Some(hex_project::ContentWindow::new(1 << 31, 1 << 32, reversed).unwrap());
+                if clipped && placement == 0 {
+                    snapshot.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+                }
+                if compensated {
+                    snapshot.main_devices.push(DeviceSnapshot {
+                        modulation: Default::default(),
+                        parent: None,
+                        automation: Vec::new(),
+                        comparison: None,
+                        id: snapshot.next_id,
+                        bypassed: false,
+                        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                    });
+                    snapshot.next_id += 1;
+                }
+                let project = Project::from_snapshot(snapshot).unwrap();
+                let prepared = if native {
+                    revision_with_instrument_registry(
+                        &project,
+                        Arc::new(hex_devices::SineTable::new()),
+                        &registry,
+                    )
+                } else {
+                    revision(&project, Arc::new(hex_devices::SineTable::new()))
+                };
+                let destination = placement * 24_000;
+                for note_chase in [crate::NoteChase::On, crate::NoteChase::Off] {
+                    let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+                    runtime
+                        .play_from_with_note_chase(destination, note_chase)
+                        .unwrap();
+                    let actual = render_checkpoint_partitioned(&mut runtime, &[1, 127, 64], 256);
+                    assert_eq!(
+                        actual.iter().flatten().any(|sample| *sample != 0.0),
+                        note_chase == crate::NoteChase::On || !clipped,
+                        "native={native}, compensated={compensated}, placement={placement}, reverse={reversed}, clipped={clipped}, policy={note_chase:?}"
+                    );
+                    if note_chase == crate::NoteChase::Off && clipped && placement == 0 {
+                        let next_pass = render_checkpoint_partitioned(&mut runtime, &[127], 12_000);
+                        assert!(
+                            next_pass[11_744..]
+                                .iter()
+                                .flatten()
+                                .any(|sample| *sample != 0.0),
+                            "a later loop occurrence retains its existing start law"
+                        );
+                    }
+                }
+                if clipped && placement != 0 && !compensated {
+                    let mut runtime = SessionPlayback::new(prepared).unwrap();
+                    runtime
+                        .play_from_with_note_chase(0, crate::NoteChase::Off)
+                        .unwrap();
+                    let actual = render_checkpoint_partitioned(
+                        &mut runtime,
+                        &[256],
+                        destination as usize + 256,
+                    );
+                    assert!(
+                        actual[destination as usize..]
+                            .iter()
+                            .flatten()
+                            .any(|sample| *sample != 0.0),
+                        "later clip start retains its existing playback law"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn audio_only_legacy_and_unavailable_session_fallback_keep_normal_pcm() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "audio".into(),
+                path: "chase-audio.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 32,
+                playback_frames: 32,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("audio import")
+        };
+        let audio = crate::Audio::new(
+            48_000,
+            (0..32).map(|frame| [frame as f32 / 32.0; 2]).collect(),
+        )
+        .unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::from([(asset, audio)]),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        for legacy in [false, true] {
+            let mut subject = if legacy {
+                Playback::from_shared(Arc::clone(prepared.arrangement()))
+            } else {
+                Playback::from_prepared_with_session_unavailable(
+                    Arc::clone(&prepared),
+                    SessionPlaybackError::InvalidCommand,
+                )
+            };
+            let mut oracle = Playback::from_shared(Arc::clone(prepared.arrangement()));
+            oracle.apply(PlaybackCommand::PlayFrom(7));
+            subject
+                .try_apply_action(PlaybackAction::Transport(
+                    PlaybackCommand::PlayFromWithNoteChase {
+                        frame: 7,
+                        note_chase: crate::NoteChase::Off,
+                    },
+                ))
+                .unwrap();
+            let mut actual = [[0.0; 2]; 8];
+            let mut expected = actual;
+            subject.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+            assert_eq!(subject.position(), 15);
+            assert!(subject.playing());
+        }
+    }
+
+    #[test]
+    fn unsupported_no_chase_start_refuses_before_transport_or_fade_changes() {
+        let prepared = start_fixture(0, 1 << 28, None);
+        let mut playback = Playback::from_prepared_with_session_unavailable(
+            prepared,
+            SessionPlaybackError::InvalidCommand,
+        );
+        playback.apply(PlaybackCommand::PlayFrom(50));
+        let action = PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+            frame: 750,
+            note_chase: crate::NoteChase::Off,
+        });
+        assert_eq!(
+            playback.try_apply_declicked_action(action),
+            Err(crate::PlaybackActionError::SessionNotPrepared)
+        );
+        assert_eq!(playback.position(), 50);
+        assert!(playback.playing());
+        assert!(playback.pending_transport_fade().is_none());
+    }
+
+    #[test]
+    fn no_chase_start_preserves_silence_through_ordinary_handoff() {
+        let prepared = start_fixture(0, 1 << 28, None);
+        let mut original = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        original
+            .play_from_with_note_chase(750, crate::NoteChase::Off)
+            .unwrap();
+        original.render(&mut [[0.0; 2]; 17]).unwrap();
+        let mut successor = SessionPlayback::new(prepared).unwrap();
+        successor.try_inherit_state_from(&mut original).unwrap();
+        assert!(
+            render_checkpoint_partitioned(&mut successor, &[1, 64], 800)
+                .iter()
+                .flatten()
+                .all(|sample| *sample == 0.0)
+        );
+    }
+}

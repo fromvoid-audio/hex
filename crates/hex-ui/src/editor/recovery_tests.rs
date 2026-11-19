@@ -1001,13 +1001,25 @@ fn play_recovers_a_faulted_output_with_a_degraded_worker(cx: &mut gpui::TestAppC
 
 #[gpui::test]
 fn explicit_play_from_recovers_degraded_vst3_at_the_requested_frame(cx: &mut gpui::TestAppContext) {
-    degraded_worker_recovers(cx, false, Some(18_000));
+    degraded_worker_recovers(cx, false, Some(PlaybackCommand::PlayFrom(18_000)));
+}
+
+#[gpui::test]
+fn explicit_no_chase_recovery_retains_the_exact_deferred_action(cx: &mut gpui::TestAppContext) {
+    degraded_worker_recovers(
+        cx,
+        false,
+        Some(PlaybackCommand::PlayFromWithNoteChase {
+            frame: 18_000,
+            note_chase: hex_engine::NoteChase::Off,
+        }),
+    );
 }
 
 fn degraded_worker_recovers(
     cx: &mut gpui::TestAppContext,
     stop_first: bool,
-    explicit_frame: Option<u64>,
+    explicit_command: Option<PlaybackCommand>,
 ) {
     let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
@@ -1047,15 +1059,22 @@ fn degraded_worker_recovers(
             view.stop();
             assert!(view.deferred_play.is_none());
         }
-        if let Some(frame) = explicit_frame {
-            view.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        if let Some(command) = explicit_command {
+            view.queue_audio_command(command);
         } else {
             view.toggle_play();
         }
         assert_eq!(
             view.deferred_play,
             Some((
-                hex_engine::playback::PlaybackAction::Transport(PlaybackCommand::Play),
+                hex_engine::playback::PlaybackAction::Transport(
+                    explicit_command
+                        .filter(|command| matches!(
+                            command,
+                            PlaybackCommand::PlayFromWithNoteChase { .. }
+                        ))
+                        .unwrap_or(PlaybackCommand::Play)
+                ),
                 None,
                 view.project_generation
             ))
@@ -1064,7 +1083,14 @@ fn degraded_worker_recovers(
         assert!(view.audio.is_none());
         assert!(view.pending_restart_request.is_some());
         assert!(view.stopped_playback_restore.is_none());
-        assert_eq!(view.recovery.position(), Some(explicit_frame.unwrap_or(0)));
+        let frame = match explicit_command {
+            Some(
+                PlaybackCommand::PlayFrom(frame)
+                | PlaybackCommand::PlayFromWithNoteChase { frame, .. },
+            ) => frame,
+            _ => 0,
+        };
+        assert_eq!(view.recovery.position(), Some(frame));
         view.stop();
         assert!(view.deferred_play.is_none());
     });

@@ -2939,7 +2939,13 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
     failed.release_scratch.clear();
     let owner = failed.routes[0].owner;
     failed
-        .capture_outgoing(0, owner, failed.arrangement_frame, failed.performance_frame)
+        .capture_outgoing(
+            0,
+            owner,
+            failed.arrangement_frame,
+            failed.performance_frame,
+            None,
+        )
         .unwrap();
     assert!(!failed.release_scratch.is_empty());
     let mut invalid_tail = failed.release_scratch[0];

@@ -238,9 +238,11 @@ fn append_track(
                 .tracks()
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let cut = previous.arrangement_frame;
+            let old_floor = previous.interactive_note_onset_floor();
             let mut failure = None;
             track
-                .for_each_active_midi_span(previous.arrangement_frame, |span, sampler| {
+                .for_each_active_midi_span(cut, old_floor, |span, sampler| {
                     if failure.is_some() {
                         return;
                     }

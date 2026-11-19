@@ -2037,7 +2037,9 @@ impl EditorView {
                     if matches!(
                         pending.action,
                         PlaybackAction::Transport(
-                            PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+                            PlaybackCommand::Seek(_)
+                                | PlaybackCommand::PlayFrom(_)
+                                | PlaybackCommand::PlayFromWithNoteChase { .. }
                         )
                     ) {
                         self.pending_seek_ticket = Some(ticket);
@@ -4293,7 +4295,11 @@ impl EditorView {
         let queued = self.pending_audio_commands.iter().any(|pending| {
             matches!(
                 pending.action,
-                PlaybackAction::Transport(PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_))
+                PlaybackAction::Transport(
+                    PlaybackCommand::Seek(_)
+                        | PlaybackCommand::PlayFrom(_)
+                        | PlaybackCommand::PlayFromWithNoteChase { .. }
+                )
             )
         });
         let consumed = self.audio_status().map_or(0, |status| {
@@ -4686,9 +4692,20 @@ impl EditorView {
             replace_status(&mut self.status, message);
             return;
         }
-        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action
+        if let PlaybackAction::Transport(
+            PlaybackCommand::PlayFrom(frame) | PlaybackCommand::PlayFromWithNoteChase { frame, .. },
+        ) = action
             && self.recover_degraded_play_at(frame)
         {
+            if matches!(
+                action,
+                PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase { .. })
+            ) && self.recovery.generation().is_some()
+            {
+                // Recovery already owns this start. Keep its explicit policy
+                // in the existing generation-bound deferred action slot.
+                self.deferred_play = Some((action, revision, self.project_generation));
+            }
             return;
         }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
@@ -4738,7 +4755,10 @@ impl EditorView {
                     self.admit_play_intent(pending, desired_playing, Some(ticket));
                     if matches!(
                         action,
-                        PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
+                        PlaybackAction::Transport(
+                            PlaybackCommand::PlayFrom(_)
+                                | PlaybackCommand::PlayFromWithNoteChase { .. }
+                        )
                     ) {
                         self.pending_seek_ticket = Some(ticket);
                     }
@@ -4769,7 +4789,10 @@ impl EditorView {
                         self.admit_play_intent(pending, desired_playing, None);
                         if matches!(
                             rejected,
-                            PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
+                            PlaybackAction::Transport(
+                                PlaybackCommand::PlayFrom(_)
+                                    | PlaybackCommand::PlayFromWithNoteChase { .. }
+                            )
                         ) {
                             self.pending_seek_ticket = None;
                         }
@@ -4794,7 +4817,9 @@ impl EditorView {
             self.pending_audio_commands.push_back(pending);
             if matches!(
                 action,
-                PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
+                PlaybackAction::Transport(
+                    PlaybackCommand::PlayFrom(_) | PlaybackCommand::PlayFromWithNoteChase { .. }
+                )
             ) {
                 self.pending_seek_ticket = None;
             }
@@ -5781,7 +5806,11 @@ fn retained_install_fresh_policy(
 
 fn intent_desired_playing(action: PlaybackAction) -> Option<bool> {
     match action {
-        PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::PlayFrom(_))
+        PlaybackAction::Transport(
+            PlaybackCommand::Play
+            | PlaybackCommand::PlayFrom(_)
+            | PlaybackCommand::PlayFromWithNoteChase { .. },
+        )
         | PlaybackAction::LaunchAndPlay(_) => Some(true),
         PlaybackAction::Transport(PlaybackCommand::Pause) => Some(false),
         PlaybackAction::Transport(PlaybackCommand::Stop)
