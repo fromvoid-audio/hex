@@ -85,7 +85,11 @@ impl SessionPlayback {
             self.native_removal = None;
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        Ok(NativeRemovalProgress::Fading)
+        Ok(if previous.native_removal_ready(transition) {
+            NativeRemovalProgress::Ready
+        } else {
+            NativeRemovalProgress::Fading
+        })
     }
 
     pub(crate) fn native_removal_pending(&self) -> bool {

@@ -1252,11 +1252,13 @@ pub struct NativeInsertTransition {
     position: usize,
 }
 
-/// The exact stage on a retiring predecessor that may ramp from wet to dry.
+/// The exact stage on a retiring predecessor. A committed powered-off stage
+/// already passes dry and needs no provisional bypass.
 #[derive(Clone, Copy)]
 pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
+    already_powered_off: bool,
 }
 
 impl NativeRemovalTransition {
@@ -2603,9 +2605,11 @@ impl NativeRuntimeChain {
         previous: &Self,
         continuation: Option<&ForeignConfigurationContinuation<'_>>,
     ) -> Option<NativeInsertTransition> {
-        let position = self.extra_native_stage_from(previous, |old, current| {
-            Self::entry_configuration_matches(old, current, continuation)
-        })?;
+        let position = self.extra_native_stage_from(
+            previous,
+            |added| !added.bypassed,
+            |old, current| Self::entry_configuration_matches(old, current, continuation),
+        )?;
         self.can_inherit_from(previous)
             .then_some(NativeInsertTransition { position })
     }
@@ -2616,18 +2620,25 @@ impl NativeRuntimeChain {
         &self,
         previous: &Self,
     ) -> Option<NativeRemovalTransition> {
-        let position = previous.extra_native_stage_from(self, |current, old| {
-            Self::entry_configuration_matches(old, current, None)
-        })?;
+        let position = previous.extra_native_stage_from(
+            self,
+            |removed| !removed.bypassed || removed.powered_off(removed.committed_bypass_ramp),
+            |current, old| Self::entry_configuration_matches(old, current, None),
+        )?;
         let removed = previous.entries.get(position)?;
         let identity = ProcessorInstanceIdentity::new(removed.owner, removed.device_id).ok()?;
         self.can_inherit_from(previous)
-            .then_some(NativeRemovalTransition { position, identity })
+            .then_some(NativeRemovalTransition {
+                position,
+                identity,
+                already_powered_off: removed.powered_off(removed.committed_bypass_ramp),
+            })
     }
 
     fn extra_native_stage_from(
         &self,
         shorter: &Self,
+        accepts_extra: impl Fn(&RuntimeEntry) -> bool,
         compatible: impl Fn(&RuntimeEntry, &RuntimeEntry) -> bool,
     ) -> Option<usize> {
         if shorter.len().checked_add(1) != Some(self.len()) {
@@ -2645,7 +2656,7 @@ impl NativeRuntimeChain {
             .iter()
             .take(position)
             .chain(self.entries.iter().skip(position + 1));
-        (!extra.bypassed
+        (accepts_extra(extra)
             && extra.algorithmic_latency_frames == Some(0)
             && extra.supports_smoothed_bypass
             && matches!(
@@ -2663,23 +2674,32 @@ impl NativeRuntimeChain {
     /// Start a proved removal on its predecessor. Only the affected stage's
     /// wet/dry mix changes. Its DSP stays owned by the predecessor.
     pub fn begin_native_removal(&mut self, transition: NativeRemovalTransition) -> bool {
-        self.set_native_removal_bypass(transition, true)
+        if transition.already_powered_off {
+            self.native_removal_ready(transition)
+        } else {
+            self.set_native_removal_bypass(transition, true)
+        }
     }
 
     /// Restore the same stage if the pending edit is cancelled or refused.
     pub fn cancel_native_removal(&mut self, transition: NativeRemovalTransition) {
-        self.set_native_removal_bypass(transition, false);
+        if !transition.already_powered_off {
+            self.set_native_removal_bypass(transition, false);
+        }
     }
 
-    /// Commit of the rendered bypass ramp is the terminal, independent of the
-    /// number or size of callback blocks used to render it.
+    /// A committed power-off or a completed removal ramp is the terminal.
     pub fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
         self.entries.get(transition.position).is_some_and(|entry| {
             entry.owner == transition.identity.owner()
                 && entry.device_id == transition.identity.device_id()
-                && entry.removal_bypassing
-                && entry.bypassed
-                && !entry.committed_bypass_ramp.is_active()
+                && if transition.already_powered_off {
+                    entry.powered_off(entry.committed_bypass_ramp)
+                } else {
+                    entry.removal_bypassing
+                        && entry.bypassed
+                        && !entry.committed_bypass_ramp.is_active()
+                }
         })
     }
 
