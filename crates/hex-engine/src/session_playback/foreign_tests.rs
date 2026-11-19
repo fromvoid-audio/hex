@@ -1112,6 +1112,161 @@ fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() 
 }
 
 #[test]
+fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
+    use hex_devices::limiter::DEFINITION as LIMITER;
+
+    const CUT: usize = 128;
+    for trailing in [true, false] {
+        let mut f = fixture(&[&[]], 512);
+        for media in f.media.values_mut() {
+            *media = crate::Audio::new(
+                48_000,
+                (0..512)
+                    .map(|frame| [0.125 + frame as f32 / 4096.0, -0.0625])
+                    .collect(),
+            )
+            .unwrap();
+        }
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "hosted return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return bus");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let mut insert = |state| {
+            let Created::Device(id) = f
+                .editor
+                .execute(Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("return device");
+            };
+            id
+        };
+        let limiter = LIMITER.default_state().unwrap();
+        let (hosted, removed) = if trailing {
+            (insert(state(19).unwrap()), insert(limiter))
+        } else {
+            let removed = insert(limiter);
+            (insert(state(19).unwrap()), removed)
+        };
+        let owner = ProcessorChainOwner::Return(bus.value());
+        let definition = BorrowedDefinition {
+            binding_epoch: Some(1),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+                3,
+            )],
+            unbounded_tail: false,
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &LIMITER];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepare = |project: &hex_project::Project| {
+            Arc::new(
+                PreparedRevision::prepare_with_effect_registry(
+                    project,
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &registry,
+                )
+                .unwrap(),
+            )
+        };
+        let before = prepare(f.editor.project());
+        f.editor.execute(Command::RemoveDevice(removed)).unwrap();
+        let after = prepare(f.editor.project());
+        assert_eq!(before.arrangement().main_latency_frames(), 91);
+        assert_eq!(after.arrangement().main_latency_frames(), 19);
+        let render = |runtime: &mut SessionPlayback, worker: &mut Borrowed, pcm: &mut [Frame]| {
+            worker.next_offset = 0;
+            runtime
+                .render_with_foreign_processors(pcm, None, None, None, worker)
+                .unwrap();
+            assert_eq!(worker.next_offset, pcm.len());
+        };
+        let mut donor = SessionPlayback::new(Arc::clone(&before)).unwrap();
+        let mut worker = Borrowed::new(owner, hosted.value());
+        worker.initial_unstamped_frames = if trailing { 0 } else { 72 };
+        donor.apply(SessionPlaybackCommand::Play).unwrap();
+        render(&mut donor, &mut worker, &mut [[0.0; 2]; CUT]);
+        let binding = donor.return_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap();
+        let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        unapproved.require_continuous_insert = true;
+        assert!(matches!(
+            unapproved.try_inherit_state_live_from(&mut donor),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+        donor.set_playing_at_device_insert_cut(false);
+        let mut candidate = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        let approval = candidate.try_inherit_state_at_device_insert_cut(&mut donor);
+        if !trailing {
+            assert!(matches!(
+                approval,
+                Err(SessionPlaybackError::LatencyLayoutChanged)
+            ));
+            assert_eq!(donor.performance_frame, CUT as u64);
+            donor.set_playing_at_device_insert_cut(true);
+            let mut reference = SessionPlayback::new(before).unwrap();
+            let mut oracle = Borrowed::new(owner, hosted.value());
+            oracle.initial_unstamped_frames = 72;
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            render(&mut reference, &mut oracle, &mut [[0.0; 2]; CUT]);
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = actual;
+            render(&mut donor, &mut worker, &mut actual);
+            render(&mut reference, &mut oracle, &mut expected);
+            assert_eq!(actual, expected);
+            continue;
+        }
+        approval.unwrap();
+        assert_eq!(candidate.arrangement_frame, CUT as u64);
+        assert_eq!(candidate.performance_frame, CUT as u64);
+        assert_eq!(
+            candidate.return_chains[0]
+                .foreign_bindings()
+                .flatten()
+                .next(),
+            Some(binding)
+        );
+        candidate.set_playing_at_device_insert_cut(true);
+        // Advance a separate instance with the unchanged prefix. Then start
+        // only its new local compensation at the cut, keeping its worker ring.
+        let mut prefix = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        let mut reference = SessionPlayback::new(after).unwrap();
+        let mut oracle = Borrowed::new(owner, hosted.value());
+        prefix.apply(SessionPlaybackCommand::Play).unwrap();
+        render(&mut prefix, &mut oracle, &mut [[0.0; 2]; CUT]);
+        reference.play_from(CUT as u64).unwrap();
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = actual;
+        render(&mut reference, &mut oracle, &mut expected);
+        render(&mut candidate, &mut worker, &mut actual);
+        assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+        assert_eq!(actual, expected);
+        assert_eq!(worker.processed, CUT + 64);
+    }
+}
+
+#[test]
 fn paused_device_removal_keeps_the_surviving_hosted_worker_and_cursor() {
     for location in 0..=2 {
         verify_effect_removal(location, false, true);

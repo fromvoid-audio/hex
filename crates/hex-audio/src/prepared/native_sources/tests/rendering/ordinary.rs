@@ -368,22 +368,28 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_track_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(0);
+    verify_approved_effect_removal(0, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_main_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(2);
+    verify_approved_effect_removal(2, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_return_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(1);
+    verify_approved_effect_removal(1, false);
 }
 
-fn verify_approved_effect_removal(location: usize) {
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_return_latency_reduction_keeps_the_original_native_endpoint() {
+    verify_approved_effect_removal(1, true);
+}
+
+fn verify_approved_effect_removal(location: usize, trailing_limiter: bool) {
     use hex_lattice_contract::NativeDeviceMetadata;
 
     const QUANTUM: usize = 128;
@@ -391,7 +397,11 @@ fn verify_approved_effect_removal(location: usize) {
     let mut f = fixture_with_quantum("processing", location, QUANTUM as u16);
     let track = &f.editor.project().tracks()[0];
     let track = track.id();
-    let state = hex_devices::eq::EQ_DEFINITION.default_state().unwrap();
+    let state = if trailing_limiter {
+        hex_devices::limiter::DEFINITION.default_state().unwrap()
+    } else {
+        hex_devices::eq::EQ_DEFINITION.default_state().unwrap()
+    };
     let insert = match location {
         0 => Command::InsertDevice {
             track,
@@ -402,7 +412,7 @@ fn verify_approved_effect_removal(location: usize) {
             let bus = &f.editor.project().return_tracks()[0];
             Command::InsertReturnDevice {
                 return_track: bus.id(),
-                before: Some(bus.devices()[0].id()),
+                before: (!trailing_limiter).then(|| bus.devices()[0].id()),
                 state,
             }
         }
@@ -411,8 +421,8 @@ fn verify_approved_effect_removal(location: usize) {
             state,
         },
     };
-    let Created::Device(eq) = f.editor.execute(insert).unwrap() else {
-        panic!("eq");
+    let Created::Device(removed) = f.editor.execute(insert).unwrap() else {
+        panic!("device to remove");
     };
     f.editor
         .execute(Command::PlaceClip {
@@ -456,9 +466,14 @@ fn verify_approved_effect_removal(location: usize) {
     for _ in 0..3 {
         render(&mut f);
     }
-    check_block(render(&mut f), 1);
+    let running_pcm = render(&mut f);
+    if trailing_limiter {
+        assert!(running_pcm.iter().all(|frame| *frame != [0.0; 2]));
+    } else {
+        check_block(running_pcm, 1);
+    }
     let predecessor = f.control.status.recording_source().unwrap();
-    f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+    f.editor.execute(Command::RemoveDevice(removed)).unwrap();
     let replacement = compile(&f, true);
     let fence = f.control.capture_fresh_runtime_fence().unwrap();
     let revision = publish_in_context(
@@ -471,7 +486,12 @@ fn verify_approved_effect_removal(location: usize) {
         },
     );
     let refused = f.control.fresh_runtime_receipt(revision).unwrap();
-    check_block(render(&mut f), 2);
+    let waiting_pcm = render(&mut f);
+    if trailing_limiter {
+        assert!(waiting_pcm.iter().all(|frame| *frame != [0.0; 2]));
+    } else {
+        check_block(waiting_pcm, 2);
+    }
     assert_eq!(
         refused.state(),
         PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
@@ -492,12 +512,19 @@ fn verify_approved_effect_removal(location: usize) {
         )
         .unwrap();
     let approved = approved.unwrap();
+    let position = f.control.status.position.load(Acquire);
     let fade_out = render(&mut f);
-    assert_eq!(
-        fade_out[0],
-        expected(3).map(|sample| sample * 127.0 / 128.0)
-    );
+    if !trailing_limiter {
+        assert_eq!(
+            fade_out[0],
+            expected(3).map(|sample| sample * 127.0 / 128.0)
+        );
+    }
     assert_eq!(fade_out[QUANTUM - 1], [0.0; 2]);
+    assert_eq!(
+        f.control.status.position.load(Acquire),
+        position + QUANTUM as u64
+    );
     assert_eq!(f.control.status.recording_source(), Some(predecessor));
     render(&mut f);
     assert_eq!(approved.state(), PublicationReceiptState::Installed);
@@ -509,7 +536,20 @@ fn verify_approved_effect_removal(location: usize) {
             ..predecessor
         })
     );
-    check_block(render(&mut f), 5);
+    assert_eq!(
+        f.control.status.position.load(Acquire),
+        position + (2 * QUANTUM) as u64
+    );
+    if trailing_limiter {
+        // The new delay layout refills its own PDC while the same worker
+        // keeps completing exactly one signed quantum per callback.
+        for _ in 0..3 {
+            render(&mut f);
+        }
+        check_block(render(&mut f), 8);
+    } else {
+        check_block(render(&mut f), 5);
+    }
 
     let OrdinaryFixture {
         mut control,
