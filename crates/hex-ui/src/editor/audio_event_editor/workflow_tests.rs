@@ -1425,6 +1425,7 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
             let source = view.state.as_ref().unwrap().audio_clip_waveforms[&clip]
                 .event_source
                 .as_ref()
+                .and_then(|source| source.frame_waveform())
                 .unwrap();
             assert!(source.bounded_samples(0..1, 1).is_none());
             Arc::clone(source)
@@ -1550,6 +1551,7 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
                 v.state.as_ref().unwrap().audio_clip_waveforms[&clip]
                     .event_source
                     .as_ref()
+                    .and_then(|source| source.frame_waveform())
                     .unwrap()
             ));
         }

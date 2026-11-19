@@ -2655,7 +2655,7 @@ impl EditorView {
             &state.project,
             clip,
             waveform,
-            prepared.and_then(|prepared| prepared.event_source.as_ref()),
+            prepared.and_then(|prepared| prepared.event_source.as_ref()?.frame_waveform()),
             fade,
             self.arrangement_event_amplitude(clip),
             gain,

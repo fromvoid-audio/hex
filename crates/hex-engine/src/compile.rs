@@ -2,7 +2,7 @@
 //! This allocates and retains PCM references; it must never run in a callback.
 use crate::{
     Audio, Invalid, Project, StreamedSourceMetadata, Track,
-    audio_transform::{materializes_musical_outer_fade, previews_transformed_frame_events},
+    audio_transform::{materializes_musical_outer_fade, previews_event_source_peaks},
     serial_effect_power::EffectPower,
 };
 use hex_project::{Asset, AssetId, DeviceId};
@@ -812,7 +812,7 @@ fn compile_project_inner<'a>(
                     return Ok(None);
                 }
                 let bakes_musical_fade = clip.audio_edit().is_some_and(materializes_musical_outer_fade);
-                let (mut compiled, mut neutral_musical_peaks) = if let Some(events) = clip.audio_edit()
+                let (mut compiled, mut neutral_musical_peaks, materialized_event_peaks) = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
                 {
@@ -829,15 +829,16 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new())
+                    (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new(), None)
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
                     if bakes_musical_fade {
-                        transforms.capture_musical_peaks(musical_peak_limit, || {
+                        let (compiled, peaks) = transforms.capture_musical_peaks(musical_peak_limit, || {
                             transforms.compile_clip(snapshot, clip, asset, source)
-                        })?
+                        })?;
+                        (compiled, peaks.destination, peaks.event_source)
                     } else {
-                        (transforms.compile_clip(snapshot, clip, asset, source)?, Vec::new())
+                        (transforms.compile_clip(snapshot, clip, asset, source)?, Vec::new(), None)
                     }
                 };
                 if let Some(compiled) = compiled.as_mut() {
@@ -862,10 +863,11 @@ fn compile_project_inner<'a>(
                         length: compiled.end - compiled.start,
                         sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
                         neutral_musical_peaks,
-                        event_source_peaks: clip
-                            .audio_edit()
-                            .filter(|edit| previews_transformed_frame_events(edit))
-                            .and_then(|_| transforms.event_source_peaks(audio)),
+                        event_source_peaks: materialized_event_peaks.or_else(|| {
+                            clip.audio_edit()
+                                .filter(|edit| previews_event_source_peaks(edit))
+                                .and_then(|_| transforms.event_source_peaks(audio))
+                        }),
                         repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
                             period: compiled.source_length as u64,
                             phase: compiled

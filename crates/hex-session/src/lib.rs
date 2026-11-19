@@ -2221,7 +2221,8 @@ fn prepare_with_waveforms_using(
                 event_source_waveform(
                     peaks,
                     old.get(&view.clip)
-                        .and_then(|entry| entry.event_source.as_ref()),
+                        .and_then(|entry| entry.event_source.as_ref())
+                        .map(|entry| &entry.waveform),
                     &mut event_roots,
                 )
             });
@@ -2280,14 +2281,21 @@ fn event_source_waveform(
     source: Arc<hex_engine::audio_transform::PreparedEventSourcePeaks>,
     previous: Option<&Arc<Waveform>>,
     roots: &mut Vec<EventWaveformRoot>,
-) -> Option<Arc<Waveform>> {
-    if let Some((_, waveform)) = roots.iter().find(|(other, _)| Arc::ptr_eq(other, &source)) {
-        return Some(Arc::clone(waveform));
-    }
-    let waveform = prepared_peak_waveform(source.source_frames(), source.bins(), previous)?;
-    roots.try_reserve(1).ok()?;
-    roots.push((source, Arc::clone(&waveform)));
-    Some(waveform)
+) -> Option<service::AudioEventSourceWaveform> {
+    let musical_clock = source.musical_clock().cloned();
+    let waveform =
+        if let Some((_, waveform)) = roots.iter().find(|(other, _)| Arc::ptr_eq(other, &source)) {
+            Arc::clone(waveform)
+        } else {
+            let waveform = prepared_peak_waveform(source.source_frames(), source.bins(), previous)?;
+            roots.try_reserve(1).ok()?;
+            roots.push((source, Arc::clone(&waveform)));
+            waveform
+        };
+    Some(service::AudioEventSourceWaveform {
+        waveform,
+        musical_clock,
+    })
 }
 
 fn prepared_peak_waveform(
