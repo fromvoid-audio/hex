@@ -1356,6 +1356,25 @@ impl PreparedRevision {
             || self.session.contains_streamed_sources()
     }
 
+    /// Whether these immutable resident revisions are suitable for attempting
+    /// a compensated Arrangement tempo cut. The callback still proves route,
+    /// transport and delay-history continuity against the actual donor.
+    pub fn can_schedule_resident_tempo_edit_from(&self, previous: &Self) -> bool {
+        !self
+            .session()
+            .timing()
+            .same_map(previous.session().timing())
+            && [self, previous].into_iter().all(|revision| {
+                let arrangement = revision.arrangement();
+                arrangement.main_latency_frames() > 0
+                    && !revision.contains_streamed_sources()
+                    && arrangement.source_effects.is_empty()
+                    && arrangement.tracks().iter().all(|track| {
+                        track.instrument.is_none() || track.foreign_instrument.is_some()
+                    })
+            })
+    }
+
     /// Whether the compiled Arrangement owns any enabled mutable instrument.
     /// Session-only inventory must not affect linear Arrangement range policy.
     pub fn has_arrangement_mutable_instruments(&self) -> bool {

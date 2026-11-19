@@ -110,7 +110,9 @@ impl Callback {
         let Ok(prefix) = usize::try_from(distance) else {
             return Ok(ScheduledCutRender::NotHandled);
         };
-        if prefix > output.len() {
+        // At a tempo cut on a block boundary the following block owns
+        // installation. The outgoing block renders only its own revision.
+        if prefix > output.len() || (tempo && prefix == output.len()) {
             return Ok(ScheduledCutRender::NotHandled);
         }
         let old_revision = old.revision;

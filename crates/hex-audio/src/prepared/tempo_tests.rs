@@ -263,7 +263,7 @@ fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
 }
 
 const FIRST_SOURCE: hex_engine::AudioSourceContext = hex_engine::AudioSourceContext {
-    project_generation: 1,
+    project_generation: 0,
     editor_revision: 1,
 };
 const RETIMED_SOURCE: hex_engine::AudioSourceContext = hex_engine::AudioSourceContext {
@@ -350,7 +350,7 @@ fn scheduled_tempo_cut_splits_the_callback_and_keeps_old_delay_and_audible_loop(
         let cut = control
             .prepare_fenced_tempo_anchor(
                 active,
-                1,
+                FIRST_SOURCE.project_generation,
                 Arc::clone(&old),
                 Arc::clone(&candidate),
                 cut_frame,
@@ -404,7 +404,7 @@ fn scheduled_tempo_cut_splits_the_callback_and_keeps_old_delay_and_audible_loop(
                 control.status.performance_frame.load(Acquire),
                 current as u64
             );
-            if current < cut_frame as usize {
+            if current <= cut_frame as usize {
                 assert_eq!(receipt.state(), PublicationReceiptState::Pending);
                 assert_eq!(control.status.applied_revision.load(Acquire), active);
             } else {
@@ -447,7 +447,13 @@ fn missed_cancelled_or_stopped_tempo_cut_keeps_the_exact_predecessor() {
         let [old, candidate] = tempo_revisions(true, false);
         let (mut control, mut callback, active) = resident_tempo_output(&old, 600, false);
         let cut = control
-            .prepare_fenced_tempo_anchor(active, 1, Arc::clone(&old), Arc::clone(&candidate), 700)
+            .prepare_fenced_tempo_anchor(
+                active,
+                FIRST_SOURCE.project_generation,
+                Arc::clone(&old),
+                Arc::clone(&candidate),
+                700,
+            )
             .unwrap()
             .unwrap();
         let mut origin = 600;

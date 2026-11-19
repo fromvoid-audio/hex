@@ -2559,7 +2559,8 @@ fn verify_automated_arrangement_tempo_edit(
         let before = status(harness).applied_revision.load(Acquire);
         let performance = status(harness).performance_frame.load(Acquire);
         let arrangement = status(harness).position.load(Acquire);
-        pcm.extend(render_completed_block(harness));
+        pcm.extend(render_replay_block(harness));
+        std::thread::sleep(Duration::from_millis(2));
         assert_eq!(
             status(harness).performance_frame.load(Acquire),
             performance + 256
@@ -2670,7 +2671,8 @@ fn verify_arrangement_tempo_edit(
         let performance = status(harness).performance_frame.load(Acquire);
         let position = status(harness).position.load(Acquire);
         let before = status(harness).applied_revision.load(Acquire);
-        assert_held(&render_completed_block(harness));
+        assert_held(&render_replay_block(harness));
+        std::thread::sleep(Duration::from_millis(2));
         assert_eq!(
             status(harness).performance_frame.load(Acquire),
             performance + 256

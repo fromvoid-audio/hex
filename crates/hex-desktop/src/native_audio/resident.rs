@@ -12,6 +12,7 @@ use hex_session::service::{
     DeviceInsertAudioReceipt, DeviceInsertAudioState, ResidentGraphSubmission,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
+    ResidentTempoEdit,
 };
 
 #[derive(Debug)]
@@ -63,6 +64,50 @@ pub(super) struct Pending {
     observation: Arc<hex_engine::PreparedPlaybackObservation>,
     metadata: ResidentPublicationMetadata,
     policy: ResidentPublicationPolicy,
+}
+
+fn prepare_resident_tempo_cut(
+    control: &hex_audio::prepared::PublicationControl,
+    playback: &Playback,
+    edit: ResidentTempoEdit<'_>,
+) -> Option<hex_audio::prepared::FencedTempoCut> {
+    use hex_audio::prepared::{SESSION_ROUTE_CAPACITY, SessionRouteEntry, SessionRouteOwner};
+    if control.output_identity() != Some(edit.source.output_identity)
+        || playback.has_foreign_continuation_states()
+    {
+        return None;
+    }
+    let source = control.status.recording_source()?;
+    if source.audio_revision != edit.source.audio_revision || source.context != edit.source.context
+    {
+        return None;
+    }
+    let (observation, fence) = control.capture_running_transport_fence()?;
+    let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
+    let snapshot = control.status.session_routes(&mut routes)?;
+    if snapshot.audio_revision != edit.source.audio_revision
+        || snapshot.route_state_generation != fence.route_state_generation()
+        || routes[..snapshot.count]
+            .iter()
+            .any(|entry| entry.owner != SessionRouteOwner::Arrangement || entry.pending.is_some())
+    {
+        return None;
+    }
+    // Give the ordinary resource publisher time to enqueue. Hosted workers
+    // use two of their configured quanta on the original performance clock.
+    let lead = control
+        .plugin_callback_quantum_on_control()
+        .map_or(256, |quantum| u64::from(quantum) * 2);
+    control
+        .prepare_fenced_tempo_anchor(
+            edit.source.audio_revision,
+            edit.source.context.project_generation,
+            Arc::clone(edit.previous),
+            Arc::clone(playback.prepared_revision()?),
+            observation.performance_frame.checked_add(lead)?,
+        )
+        .ok()
+        .flatten()
 }
 #[derive(Default)]
 pub(super) struct Resident {
@@ -284,6 +329,59 @@ impl NativeAudioSink {
                 return Err(format!(
                     "{operation} lost audio confirmation · restart audio"
                 ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A pending timeout can cancel future installation. Once the callback
+    /// wins admission, its terminal decides the edit, even after that timeout.
+    pub(super) fn confirm_tempo_cut(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        use hex_audio::prepared::PublicationReceiptState as Receipt;
+        use std::time::{Duration, Instant};
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Ok(());
+        };
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .filter(|control| control.output_identity() == Some(output_identity))
+            .ok_or("tempo edit lost its audio output")?;
+        let Some(receipt) = control.fresh_runtime_receipt(audio_revision) else {
+            // Stopped or out-of-scope scheduling uses ordinary publication.
+            return Ok(());
+        };
+        if receipt.context() != Some(context) || receipt.output_identity() != output_identity {
+            return Err("tempo edit receipt differs from its submission".into());
+        }
+        self.flush_events();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match receipt.state() {
+                Receipt::Installed => return Ok(()),
+                Receipt::Refused(reason) => return Err(reason.message().into()),
+                Receipt::Cancelled | Receipt::Expired => {
+                    return Err("tempo edit cancelled before installation".into());
+                }
+                Receipt::OutputClosed => return Err("tempo edit lost its audio output".into()),
+                Receipt::Pending
+                    if Instant::now() >= deadline
+                        || self.request_cancellation.as_ref().is_some_and(
+                            hex_session::service::RequestCancellation::is_cancelled,
+                        ) =>
+                {
+                    receipt.cancel();
+                }
+                Receipt::Pending | Receipt::Applying => {}
             }
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -732,7 +830,10 @@ impl NativeAudioSink {
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
+        tempo_edit: Option<ResidentTempoEdit<'_>>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        let tempo_edit =
+            tempo_edit.filter(|_| matches!(policy, ResidentPublicationPolicy::InheritRuntimeAt(_)));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut playback = playback;
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -1253,8 +1354,10 @@ impl NativeAudioSink {
                             }));
                         }
                     };
-                let published = match policy {
-                    hex_audio::prepared::PublicationPolicy::DeviceInsert { .. } => {
+                let cut = tempo_edit
+                    .and_then(|edit| prepare_resident_tempo_cut(control, &retained_playback, edit));
+                let published = match (policy, cut) {
+                    (hex_audio::prepared::PublicationPolicy::DeviceInsert { .. }, _) => {
                         let admit_resources = |prospective: DeviceResourceAdmission<'_>| {
                             admit(&[prospective, retired, pending])
                         };
@@ -1275,6 +1378,12 @@ impl NativeAudioSink {
                             )
                         }
                     }
+                    (_, Some(cut)) => control.publish_tempo_cut_with_admission_on_control(
+                        retained_playback,
+                        cut,
+                        metadata.context,
+                        |prospective| admit(&[prospective, retired, pending]),
+                    ),
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     _ if retained_playback.has_foreign_continuation_states() => {
                         match self.plugins.sequenced_publication_request(
@@ -1535,6 +1644,7 @@ impl NativeAudioSink {
             0,
             &mut with_capture,
             file_sources.as_ref(),
+            None,
         ) {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,

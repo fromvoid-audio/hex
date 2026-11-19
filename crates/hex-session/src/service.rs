@@ -99,9 +99,9 @@ pub use audio_sink::{
     ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentPublicationAcceptance,
-    ResidentPublicationFailure, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
-    ResidentSourceOrigin, WorkerAudioSink,
+    ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;

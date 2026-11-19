@@ -1767,15 +1767,21 @@ impl PublicationControl {
     /// make the observation lag until a later callback publication. The pair
     /// can become stale immediately and does not authorize installation; the
     /// callback must recheck the fence, exact graph and predicted clock. A
-    /// zero control generation is conservatively refused, even if explicit.
+    /// zero generation requires the original graph's canonical source context,
+    /// since the same scalar also represents legacy unknown context.
     pub fn capture_running_transport_fence(
         &self,
     ) -> Option<(TransportObservation, FreshRuntimeFence)> {
         let fence = capture_runtime_fence(&self.status)?;
         let observation = self.status.transport_observation()?;
+        let known_generation = observation.control_generation != 0
+            || self.status.recording_source().is_some_and(|source| {
+                source.audio_revision == observation.audio_revision
+                    && source.context.project_generation == observation.control_generation
+            });
         (observation.playing
             && observation.loop_state.is_some()
-            && observation.control_generation != 0
+            && known_generation
             && observation.audio_revision != 0
             && observation.audio_revision == fence.expected_active_revision
             && observation.consumed_command_ticket == fence.admitted_command_ticket

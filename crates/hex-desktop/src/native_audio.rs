@@ -1459,6 +1459,13 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> Result<(), String> {
         self.confirm_resident_edit_publication(context, acceptance, "source edit")
     }
+    fn confirm_resident_tempo_edit(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: hex_session::service::ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.confirm_tempo_cut(context, acceptance)
+    }
     fn resident_publication_readiness(
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
@@ -1984,7 +1991,7 @@ impl WorkerAudioSink for NativeAudioSink {
         hex_session::service::ResidentPublicationAcceptance,
         hex_session::service::ResidentPublicationRefusal,
     > {
-        self.publish_resident_with_files(
+        self.publish_resident_transition(
             playback,
             resources,
             observation,
@@ -1992,11 +1999,11 @@ impl WorkerAudioSink for NativeAudioSink {
             policy,
             metadata_limit,
             admit,
-            None,
+            hex_session::service::ResidentPublicationInputs::default(),
         )
     }
     #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Same graph custody, with borrowed factual file inputs.
-    fn publish_resident_with_files(
+    fn publish_resident_transition(
         &mut self,
         playback: hex_engine::playback::Playback,
         resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
@@ -2007,7 +2014,7 @@ impl WorkerAudioSink for NativeAudioSink {
         admit: &mut dyn FnMut(
             &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
         ) -> Result<(), String>,
-        files: Option<hex_session::service::ResidentFilePublication<'_>>,
+        inputs: hex_session::service::ResidentPublicationInputs<'_>,
     ) -> Result<
         hex_session::service::ResidentPublicationAcceptance,
         hex_session::service::ResidentPublicationRefusal,
@@ -2066,7 +2073,7 @@ impl WorkerAudioSink for NativeAudioSink {
             &playback,
             metadata,
             policy,
-            files.as_ref(),
+            inputs.files.as_ref(),
         ) {
             Ok(()) => self.publish_resident_graph(
                 playback,
@@ -2076,7 +2083,8 @@ impl WorkerAudioSink for NativeAudioSink {
                 policy,
                 metadata_limit,
                 admit,
-                files.as_ref().map(|files| files.sources),
+                inputs.files.as_ref().map(|files| files.sources),
+                inputs.tempo_edit,
             ),
             Err(error) => Err(hex_session::service::ResidentPublicationRefusal {
                 kind: hex_session::service::ResidentPublicationFailure::Other,
