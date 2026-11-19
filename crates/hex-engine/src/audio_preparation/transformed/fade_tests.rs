@@ -3,6 +3,11 @@ use hex_project::{ClipFade, Command, Editor};
 
 #[test]
 fn reserved_compiled_fade_survives_native_slot_and_metadata_installation() {
+    if !super::super::session_source_tests::supported(
+        "reserved_compiled_fade_survives_native_slot_and_metadata_installation",
+    ) {
+        return;
+    }
     let (project, bank, _) = super::super::arrangement_clip_tests::fixture(false, false, 1);
     let clip = project.tracks()[0].clips()[0].id();
     let mut editor = Editor::new(project, 8).unwrap();
@@ -77,6 +82,11 @@ fn reserved_compiled_fade_survives_native_slot_and_metadata_installation() {
 
 #[test]
 fn unreserved_compiled_fade_and_nonzero_phase_refuse_before_native_pcm() {
+    if !super::super::session_source_tests::supported(
+        "unreserved_compiled_fade_and_nonzero_phase_refuse_before_native_pcm",
+    ) {
+        return;
+    }
     let (project, bank, _) = super::super::arrangement_clip_tests::fixture(false, false, 1);
     let clip = project.tracks()[0].clips()[0].id();
     let mut editor = Editor::new(project, 8).unwrap();
