@@ -128,7 +128,8 @@ The safe `platform::CoreAudioWorkerTimeConstraint` handle uses the existing
 Mach dependency and stays on the dedicated calling thread. It validates the
 Mach timebase and arithmetic, owns one thread send right, and refuses to
 replace an existing time constraint. Enter applies the bounded policy and leave
-restores ordinary scheduling. The caller chooses any ordinary QoS after leaving.
+restores ordinary scheduling. macOS can refuse a subsequent pthread QoS
+request on a manually scheduled thread.
 Drop retries restoration and deallocates the right. Device callback code and
 stream ownership are outside this API.
 

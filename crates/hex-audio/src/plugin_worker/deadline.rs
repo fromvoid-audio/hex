@@ -30,9 +30,7 @@ pub(super) struct Deadline {
 
 impl Deadline {
     pub(super) fn for_native_pcm(state: &State) -> Option<Self> {
-        if std::env::var_os("HEX_VST3_TEST_WORKER_DEADLINE").is_none() {
-            return None;
-        }
+        std::env::var_os("HEX_VST3_TEST_WORKER_DEADLINE")?;
         let Some(Processor::Native(instance)) = state.processor.as_ref() else {
             return None;
         };
@@ -109,7 +107,7 @@ impl Deadline {
 
 impl Drop for Deadline {
     fn drop(&mut self) {
-        if self.admitted && self.leave().is_err() && self.admitted {
+        if self.leave().is_err() {
             // The time constraint's own drop retries restoration. The
             // temporary right and scheduling policy die with this worker.
             ACTIVE_TRANSPORTS.fetch_sub(1, AcqRel);
