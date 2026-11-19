@@ -25,6 +25,12 @@ pub use midi_input::{
     save_midi_input_preferences,
 };
 
+mod playback;
+pub use playback::{
+    PlaybackPreferences, load_playback_preferences, playback_preferences_path,
+    save_playback_preferences,
+};
+
 mod project_directory;
 pub use project_directory::{load_project_directory, save_project_directory};
 
