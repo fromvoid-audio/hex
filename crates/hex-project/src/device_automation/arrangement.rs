@@ -133,19 +133,28 @@ fn assemble_points(
         let last = placement.end.map_or(source.len(), |end| {
             source.partition_point(|point| point.beat < end)
         });
-        let interior = &source[first..last];
-        if points.len() + interior.len() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
-            return Err(Invalid(
-                "device automation section copy exceeds the lane point limit",
-            ));
-        }
-        for point in interior {
+        for point in &source[first..last] {
             points.push(AutomationPoint {
                 beat: placement.map(point.beat)?,
                 ..*point
             });
         }
         previous_end = placement.end;
+    }
+    // The curve holds its first value backwards. An initial synthetic hold
+    // that repeats that value spends capacity without changing the envelope.
+    let first_start = placements.first().map(|placement| placement.start);
+    if let [first, second, ..] = points.as_slice()
+        && first_start.is_some_and(|start| !source.iter().any(|point| point.beat == start))
+        && first.outgoing == AutomationInterpolation::Step
+        && first.value == second.value
+    {
+        points.remove(0);
+    }
+    if points.len() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
+        return Err(Invalid(
+            "device automation section copy exceeds the lane point limit",
+        ));
     }
     Ok(points)
 }

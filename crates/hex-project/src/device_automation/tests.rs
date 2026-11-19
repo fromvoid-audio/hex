@@ -506,7 +506,7 @@ fn section_copies_carry_base_and_touch_automation_at_the_final_insertion() {
 }
 
 #[test]
-fn section_copy_refuses_point_overflow_atomically() {
+fn section_copy_refuses_real_point_overflow_without_spending_capacity_on_holds() {
     let (mut editor, _, device) = fixture();
     let Created::ArrangementSection(section) = editor
         .execute(Command::AddArrangementSection {
@@ -519,28 +519,37 @@ fn section_copy_refuses_point_overflow_atomically() {
     else {
         panic!("section")
     };
-    let points = (0..MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
-        .map(|tick| AutomationPoint {
-            beat: BeatTime::from_raw(tick as u64),
-            ..point(0, 0.5, AutomationInterpolation::Step)
-        })
-        .collect();
-    editor
-        .execute(Command::ReplaceDeviceAutomation {
-            device,
-            parameter: ParameterId::from_static(1),
-            points,
-        })
-        .unwrap();
-    let before = editor.project().snapshot();
-    assert_eq!(
+    let parameter = ParameterId::from_static(1);
+    let length = BeatTime::from_quarters(4).unwrap().raw();
+    for offset in [0, length * 2] {
+        let points = (0..MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
+            .map(|tick| AutomationPoint {
+                beat: BeatTime::from_raw(offset + tick as u64),
+                ..point(0, 0.5, AutomationInterpolation::Step)
+            })
+            .collect();
         editor
-            .execute(Command::DuplicateArrangementSection(section))
-            .unwrap_err()
-            .0,
-        "device automation section copy exceeds the lane point limit"
-    );
-    assert_eq!(editor.project().snapshot(), before);
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        let result = editor.execute(Command::DuplicateArrangementSection(section));
+        if offset == 0 {
+            assert_eq!(
+                result.unwrap_err().0,
+                "device automation section copy exceeds the lane point limit"
+            );
+            assert_eq!(editor.project().snapshot(), before);
+        } else {
+            result.unwrap();
+            let lane = &editor.project().device(device).unwrap().automation()[0];
+            assert_eq!(lane.points.len(), MAX_DEVICE_AUTOMATION_POINTS_PER_LANE);
+            assert_eq!(lane.points[0].beat.raw(), offset + length);
+        }
+    }
 }
 
 #[test]
