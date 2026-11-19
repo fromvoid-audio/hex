@@ -1158,6 +1158,8 @@ impl SessionPlayback {
         let mut aligned = [false; MAX_TRACKS];
         let mut passthrough = [compensated::ResidentRoute::Scalar; MAX_TRACKS];
         let mut stamps = [None; 256];
+        let mut aligned_main = [[0.0; 2]; 256];
+        let mut main_is_batched = false;
         let mut projected_history = None;
         let mut batched_sends = false;
         // Shared-source contributions can cross track ownership; retain the
@@ -1269,6 +1271,26 @@ impl SessionPlayback {
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
+                // An entirely aligned window has no upstream consumers or
+                // Return buses. Sum those PCM blocks in the same track order
+                // as the frame loop, including the existing output value.
+                // Capture still needs the individual per-frame track taps.
+                main_is_batched = count > 1
+                    && capture.is_none()
+                    && !self.route_scratch.is_empty()
+                    && aligned[..self.route_scratch.len()]
+                        .iter()
+                        .all(|ready| *ready);
+                if main_is_batched {
+                    let main = &mut aligned_main[..count];
+                    main.copy_from_slice(&output[output_offset..output_offset + count]);
+                    for track in &self.resident_source_scratch {
+                        for (mixed, sample) in main.iter_mut().zip(track) {
+                            mixed[0] += sample[0];
+                            mixed[1] += sample[1];
+                        }
+                    }
+                }
                 passthrough.fill(compensated::ResidentRoute::Scalar);
                 if observer.is_none()
                     && scalar.is_none()
@@ -1382,7 +1404,7 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
-                    use_resident_sources.then_some(compensated::BatchedSources {
+                    use_resident_sources.then(|| compensated::BatchedSources {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
                         analytic: &resident_analytic_eligible,
@@ -1390,6 +1412,7 @@ impl SessionPlayback {
                         aligned: &aligned,
                         passthrough: &passthrough,
                         batched_sends,
+                        main: main_is_batched.then(|| aligned_main[resident_source_index]),
                     }),
                     live_audio,
                 )?;

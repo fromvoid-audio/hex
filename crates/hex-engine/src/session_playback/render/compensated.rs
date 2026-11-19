@@ -22,6 +22,8 @@ pub(super) struct BatchedSources<'a> {
     pub(super) aligned: &'a [bool; MAX_TRACKS],
     pub(super) passthrough: &'a [ResidentRoute; MAX_TRACKS],
     pub(super) batched_sends: bool,
+    /// Track sum in canonical Main mix order, including the incoming frame.
+    pub(super) main: Option<Frame>,
 }
 
 impl SessionPlayback {
@@ -803,9 +805,14 @@ impl SessionPlayback {
             .compensation
             .as_mut()
             .ok_or(SessionPlaybackError::DeviceRuntime)?;
-        compensation.inputs.fill([0.0; 2]);
-        compensation.main.fill([0.0; 2]);
-        let owner_count = compensation.graph.owner_order.len();
+        let batched_main = resident_source.and_then(|batch| batch.main);
+        let owner_count = if batched_main.is_some() {
+            0
+        } else {
+            compensation.inputs.fill([0.0; 2]);
+            compensation.main.fill([0.0; 2]);
+            compensation.graph.owner_order.len()
+        };
         for order in 0..owner_count {
             let owner = self
                 .compensation
@@ -1374,14 +1381,18 @@ impl SessionPlayback {
                 }
             }
         }
-        for main in &self
-            .compensation
-            .as_ref()
-            .ok_or(SessionPlaybackError::DeviceRuntime)?
-            .main
-        {
-            output[0][0] += main[0];
-            output[0][1] += main[1];
+        if let Some(main) = batched_main {
+            output[0] = main;
+        } else {
+            for main in &self
+                .compensation
+                .as_ref()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                .main
+            {
+                output[0][0] += main[0];
+                output[0][1] += main[1];
+            }
         }
         for scratch in &self.return_scratch {
             output[0][0] += scratch[return_offset][0];
@@ -1412,6 +1423,51 @@ impl SessionPlayback {
 mod tests {
     use super::*;
     use crate::signal_graph::tests::fixture;
+
+    #[test]
+    fn aligned_main_sum_preserves_sample_order_across_a_loop() {
+        let mut f = fixture(&[&[], &[], &[], &[7]], 384);
+        let small = f32::EPSILON / 4.0;
+        // Summing the small contribution after the cancellation changes the
+        // PCM bits. Render the oracle through scalar routing.
+        for (audio, frame) in
+            f.media
+                .values_mut()
+                .zip([[1.0, -1.0], [small, -small], [-1.0, 1.0], [0.125, -0.125]])
+        {
+            *audio = crate::Audio::new(48_000, vec![frame; 384]).unwrap();
+        }
+        f.editor
+            .execute(hex_project::Command::SetLoopRegion {
+                start: 32,
+                end: 321,
+                enabled: true,
+            })
+            .unwrap();
+        let revision = crate::signal_graph::tests::prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 7);
+        let mut batched = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for playback in [&mut batched, &mut scalar] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut actual = [[0.0; 2]; 704];
+        let mut expected = actual;
+        for block in actual.chunks_mut(257) {
+            batched.render(block).unwrap();
+        }
+        for frame in expected.chunks_mut(1) {
+            scalar.render(frame).unwrap();
+        }
+        assert!(expected.contains(&[0.125, -0.125]));
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+        assert_eq!(batched.arrangement_frame, scalar.arrangement_frame);
+        assert_eq!(batched.arrangement_loop_pass, scalar.arrangement_loop_pass);
+        assert_eq!(batched.performance_frame, scalar.performance_frame);
+    }
 
     #[test]
     fn unity_batch_preserves_each_meter_tap_and_refuses_active_faders() {
