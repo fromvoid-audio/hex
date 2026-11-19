@@ -387,7 +387,7 @@ pub struct ProcessTiming {
     pub cycle_beats_raw: Option<(u64, u64)>,
 }
 
-pub const MAX_TIMING_CHANGES: usize = 7;
+pub use hex_lattice_contract::MAX_FOREIGN_TIMING_CHANGES as MAX_TIMING_CHANGES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TimingChange {

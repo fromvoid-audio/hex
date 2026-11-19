@@ -125,6 +125,12 @@ pub struct ForeignAutomationSource<'a> {
 /// complete physical foreign processing quantum. This call borrows the program
 /// and must perform no allocation, waiting or I/O.
 pub trait ForeignAutomationProgram: Sync {
+    /// Bound for any admitted region of the quantum. Used by the graph
+    /// owner before a clock splice combines independently compiled programs.
+    fn quantum_point_budget(&self) -> Option<usize> {
+        None
+    }
+
     fn render_quantum(
         &self,
         origins: &[Option<u64>],
@@ -142,6 +148,9 @@ pub struct ForeignAutomation<'a> {
     pub revision: std::num::NonZeroU64,
     pub program: &'a dyn ForeignAutomationProgram,
     retained: &'a [Option<RetainedProgram>],
+    /// Frame-coordinate identity for an explicitly admitted authored clock splice.
+    /// Ordinary edits on the same Arrangement clock keep the same identity.
+    pub authored_clock_epoch: Option<NonZeroU64>,
 }
 
 impl<'a> ForeignAutomation<'a> {
@@ -156,16 +165,34 @@ impl<'a> ForeignAutomation<'a> {
             revision,
             program,
             retained: &[],
+            authored_clock_epoch: None,
+        }
+    }
+
+    fn program_at(self, revision: NonZeroU64) -> Option<&'a dyn ForeignAutomationProgram> {
+        if revision == self.revision {
+            Some(self.program)
+        } else {
+            self.retained
+                .iter()
+                .flatten()
+                .find(|entry| entry.revision == revision)
+                .map(|entry| entry.program.as_ref() as &dyn ForeignAutomationProgram)
         }
     }
 
     pub fn contains_revision(self, revision: NonZeroU64) -> bool {
-        revision == self.revision
-            || self
-                .retained
-                .iter()
-                .flatten()
-                .any(|entry| entry.revision == revision)
+        self.program_at(revision).is_some()
+    }
+
+    /// Both borrowed views resolve this key to the same immutable program on
+    /// the same worker. Scalar revision equality does not prove custody.
+    pub fn retains_program_from(self, previous: Self, revision: NonZeroU64) -> bool {
+        self.binding == previous.binding
+            && self
+                .program_at(revision)
+                .zip(previous.program_at(revision))
+                .is_some_and(|(next, old)| std::ptr::eq(next, old))
     }
 
     /// Resolve a complete quantum without cloning or releasing an owner.
@@ -176,17 +203,9 @@ impl<'a> ForeignAutomation<'a> {
         cuts: &[u16],
         output: &mut [ForeignParameterPoint],
     ) -> Result<usize, DeviceContractError> {
-        let program = if revision == self.revision {
-            self.program
-        } else {
-            self.retained
-                .iter()
-                .flatten()
-                .find(|entry| entry.revision == revision)
-                .map(|entry| entry.program.as_ref())
-                .ok_or(DeviceContractError::ForeignProcessingFailed)?
-        };
-        program.render_quantum(origins, cuts, output)
+        self.program_at(revision)
+            .ok_or(DeviceContractError::ForeignProcessingFailed)?
+            .render_quantum(origins, cuts, output)
     }
 }
 
@@ -468,6 +487,7 @@ impl PreparedForeignAutomation {
             revision: self.revision,
             program: self.program.as_ref(),
             retained: &self.retained,
+            authored_clock_epoch: None,
         }
     }
 }
