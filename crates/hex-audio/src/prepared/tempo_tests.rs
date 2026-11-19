@@ -5,7 +5,7 @@ use hex_project::{BeatTime, Command, Created, Editor, Project, Tempo};
 use std::collections::BTreeMap;
 
 #[test]
-fn compensated_tempo_restart_publishes_without_callback_allocations() {
+fn compensated_tempo_edits_publish_without_callback_allocations() {
     run_tempo_cases(&[(1, true, false), (257, true, false), (257, false, false)]);
 }
 
@@ -183,6 +183,20 @@ fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
         oracle.apply(PlaybackCommand::PlayFrom(800));
         let mut expected = [[0.0; 2]; 1024];
         oracle.render(&mut expected).unwrap();
+        if compensated && !looped {
+            // The ordinary linear publication keeps the predecessor's
+            // in-flight samples. Once they drain, the edited source supplies
+            // the same samples as the candidate started at the new beat.
+            let latency = candidate.arrangement().main_latency_frames() as usize;
+            let mut uninterrupted =
+                Playback::try_from_prepared_with_session(Arc::clone(&old_for_anchor)).unwrap();
+            uninterrupted.apply(PlaybackCommand::Play);
+            uninterrupted
+                .render(&mut vec![[0.0; 2]; cut_frames])
+                .unwrap();
+            uninterrupted.render(&mut expected[..latency]).unwrap();
+            assert!(expected[..latency].iter().any(|sample| *sample != [0.0; 2]));
+        }
         let applied = control
             .publish(Playback::try_from_prepared_with_session(candidate).unwrap())
             .unwrap();
