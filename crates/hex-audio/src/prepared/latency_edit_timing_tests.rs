@@ -1382,3 +1382,121 @@ fn resident_gate_power_restarts_closed_and_installs_at_the_callback_boundary() {
         }
     }
 }
+
+#[test]
+fn resident_eq8_power_reverses_wet_or_restarts_silent_at_the_callback_boundary() {
+    use hex_devices::eq8::{EQ8_DEFINITION, parameter};
+
+    const SILENCE: Frame = [0.0; 2];
+    const FADE: usize = 240;
+    let mut pcm = vec![SILENCE; 8192];
+    pcm[..BLOCK].fill(SIGNAL);
+    let (mut editor, _, prepare) = resident_input(pcm);
+    let mut state = EQ8_DEFINITION.default_state().unwrap();
+    for (parameter, value) in [
+        (parameter::enabled(0, 0), ParameterValue::Bool(true)),
+        (parameter::frequency(0, 0), ParameterValue::Float(40.0)),
+        (parameter::gain(0, 0), ParameterValue::Float(12.0)),
+        (parameter::q(0, 0), ParameterValue::Float(8.0)),
+    ] {
+        state = EQ8_DEFINITION
+            .patch_parameter(&state, parameter, value)
+            .unwrap();
+    }
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("EQ Eight insertion");
+    };
+    let on = prepare(editor.project());
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off = prepare(editor.project());
+
+    for off_frames in [64, BLOCK] {
+        let (mut control, mut callback) = channel(RATE).unwrap();
+        let mut position = 0;
+        for (index, (revision, frames)) in [(&on, BLOCK), (&off, off_frames), (&on, BLOCK)]
+            .into_iter()
+            .enumerate()
+        {
+            let context = hex_engine::AudioSourceContext {
+                project_generation: 5,
+                editor_revision: index as u64 + 1,
+            };
+            let policy = if index == 0 {
+                PublicationPolicy::InstallFreshRuntime
+            } else {
+                PublicationPolicy::InheritRuntime
+            };
+            let audio_revision = control
+                .publish_unaccounted_pcm_obligation(
+                    Playback::try_from_prepared_with_session(Arc::clone(revision)).unwrap(),
+                    policy,
+                    context.project_generation,
+                    true,
+                    false,
+                    Some(context),
+                )
+                .unwrap();
+            if index == 0 {
+                control.command(PlaybackCommand::Play).unwrap();
+            }
+            let mut buffer = [SILENCE; BLOCK];
+            let block = &mut buffer[..frames];
+            let mut render = || {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let counts = allocation_counter::measure(&mut render);
+                assert_eq!(
+                    (
+                        counts.count_total,
+                        counts.bytes_total,
+                        counts.count_current,
+                        counts.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            render();
+            let applied = control.status.recording_source().unwrap();
+            assert_eq!(
+                (applied.context, applied.audio_revision),
+                (context, audio_revision)
+            );
+            position += frames as u64;
+            assert_eq!(control.status.position.load(Acquire), position);
+            assert_eq!(control.reclaim(), usize::from(index > 0));
+            let has_tail = |samples: &[Frame]| samples.iter().any(|frame| frame[0].abs() > 1.0e-5);
+            match index {
+                0 => assert_ne!(block[BLOCK - 1], SIGNAL),
+                1 => {
+                    assert!(has_tail(&block[..frames.min(FADE - 1)]));
+                    if frames > FADE {
+                        assert_eq!(block[FADE..], [SILENCE; BLOCK - FADE]);
+                    }
+                }
+                _ if off_frames < FADE => assert!(
+                    has_tail(&block[FADE..]),
+                    "reversal discarded filter history"
+                ),
+                _ => assert_eq!(
+                    block, [SILENCE; BLOCK],
+                    "settled EQ Eight kept its old filter history"
+                ),
+            }
+        }
+    }
+}
