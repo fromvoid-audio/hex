@@ -3770,18 +3770,20 @@ impl Callback {
         self.diagnostics
             .push(event, &self.status.diagnostics_dropped);
     }
-    /// Native adapter supplies its already measured whole-host-callback time.
+    /// Native adapter supplies measured host callback duration and entry cadence.
     /// Reading the clock and formatting remain outside this record operation.
     pub(crate) fn trace_callback_timing(
         &mut self,
         elapsed_ns: u64,
         deadline_ns: u64,
         frames: usize,
+        start_interval_ns: Option<u64>,
     ) {
         self.trace_audio(
             AudioDiagnosticKind::CallbackTiming {
                 elapsed_ns,
                 deadline_ns,
+                start_interval_ns,
             },
             self.status.applied_revision.load(Relaxed),
             None,
