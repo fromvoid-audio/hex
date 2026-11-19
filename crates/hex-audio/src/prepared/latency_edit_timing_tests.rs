@@ -27,7 +27,7 @@ fn latency_revisions(
             ParameterValue::Choice(0),
         )
         .unwrap();
-    let ([dry, delayed], track) = insert_revisions_with_pcm(state, pcm);
+    let ([dry, delayed], track) = main_append_revisions(None, state, pcm);
     assert_eq!(dry.arrangement().main_latency_frames(), 0);
     assert_eq!(delayed.arrangement().main_latency_frames() as usize, DELAY);
     ([dry, delayed], track)
@@ -36,10 +36,11 @@ fn latency_revisions(
 fn insert_revisions(
     state: hex_lattice_contract::NativeDeviceState,
 ) -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
-    insert_revisions_with_pcm(state, vec![SIGNAL; 8192])
+    main_append_revisions(None, state, vec![SIGNAL; 8192])
 }
 
-fn insert_revisions_with_pcm(
+fn main_append_revisions(
+    prefix: Option<hex_lattice_contract::NativeDeviceState>,
     state: hex_lattice_contract::NativeDeviceState,
     pcm: Vec<Frame>,
 ) -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
@@ -66,15 +67,23 @@ fn insert_revisions_with_pcm(
                 .unwrap(),
         )
     };
-    let dry = prepare(editor.project());
+    if let Some(state) = prefix {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap();
+    }
+    let before = prepare(editor.project());
     editor
         .execute(Command::InsertMainDevice {
             before: None,
             state,
         })
         .unwrap();
-    let delayed = prepare(editor.project());
-    ([dry, delayed], track)
+    let after = prepare(editor.project());
+    ([before, after], track)
 }
 
 pub(super) fn begin_insert(
@@ -433,6 +442,157 @@ fn resident_native_removal_installs_with_an_ordinary_stream_workspace() {
             ..predecessor
         })
     );
+}
+
+#[test]
+fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+
+    const QUANTUM: usize = 128;
+    const CUT: usize = 3 * QUANTUM;
+    const TOTAL: usize = 1152;
+    let mut delay = DEFINITION.default_state().unwrap();
+    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+        delay = DEFINITION
+            .patch_parameter(&delay, parameter, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+        delay = DEFINITION
+            .patch_parameter(&delay, parameter, ParameterValue::Float(value))
+            .unwrap();
+    }
+    let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
+    let mut source = vec![[0.0; 2]; 2048];
+    source[0] = [0.125, -0.0625];
+    let ([before, after], _) = main_append_revisions(Some(delay), limiter, source);
+    assert_eq!(before.arrangement().main_latency_frames(), 0);
+    assert_eq!(after.arrangement().main_latency_frames(), DELAY as u32);
+    let mut uninterrupted = Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap();
+    uninterrupted.apply(PlaybackCommand::Play);
+    let mut oracle = [[0.0; 2]; TOTAL];
+    uninterrupted.render(&mut oracle).unwrap();
+    let onset = oracle.iter().position(|pcm| *pcm != [0.0; 2]).unwrap();
+    assert!(onset >= CUT + QUANTUM);
+    assert_eq!(onset, 480 + DELAY);
+
+    for partition in [1, BLOCK] {
+        let (mut control, mut callback) = channel(RATE).unwrap();
+        control.enable_native_custody().unwrap();
+        control
+            .configure_device_resource_publication_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 256,
+                    root_rows: 128,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 20_000_000,
+                },
+            )
+            .unwrap();
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 5,
+            editor_revision: 7,
+        };
+        let next_context = hex_engine::AudioSourceContext {
+            editor_revision: 8,
+            ..context
+        };
+        control
+            .publish_with_admission_and_source_on_control(
+                Playback::try_from_prepared_with_session(Arc::clone(&before)).unwrap(),
+                PublicationPolicy::InstallFreshRuntime,
+                context,
+                |_| Ok::<(), ()>(()),
+            )
+            .unwrap();
+        let mut block = |pcm: &mut [Frame]| {
+            let mut render = || {
+                callback.begin_block();
+                callback.render(pcm).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let counts = allocation_counter::measure(&mut render);
+                assert_eq!(
+                    (
+                        counts.count_total,
+                        counts.bytes_total,
+                        counts.count_current,
+                        counts.bytes_current,
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            render();
+        };
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut scratch = [[0.0; 2]; QUANTUM];
+        block(&mut scratch);
+        let predecessor = control.status.recording_source().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_device_insert_with_receipt_on_control(
+                Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap(),
+                PublicationPolicy::DeviceInsert { predecessor, fence },
+                next_context,
+                |_| {},
+                |_| Ok::<(), ()>(()),
+            )
+            .unwrap();
+        block(&mut scratch);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        assert_eq!(control.status.position.load(Acquire), (2 * QUANTUM) as u64);
+        let refused = control.fresh_runtime_receipt(revision).unwrap();
+        assert_eq!(
+            refused.state(),
+            PublicationReceiptState::Refused(
+                PlaybackHandoffRejection::DeviceInsertNeedsConfirmation
+            )
+        );
+        let offer = control
+            .offer_resident_device_insert_consent(&refused)
+            .unwrap();
+        assert_eq!(control.reclaim(), 1);
+        let revision = control
+            .publish_confirmed_device_insert_with_receipt_on_control(
+                Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap(),
+                offer,
+                |_| {},
+                |_| Ok::<(), ()>(()),
+            )
+            .unwrap();
+        block(&mut scratch);
+        assert_eq!(control.status.position.load(Acquire), CUT as u64);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        let approved = control.fresh_runtime_receipt(revision).unwrap();
+        assert_eq!(approved.state(), PublicationReceiptState::Applying);
+        assert_eq!(control.reclaim(), 0);
+        let mut actual = [[0.0; 2]; TOTAL - CUT];
+        for pcm in actual.chunks_mut(partition) {
+            block(pcm);
+        }
+        assert_eq!(approved.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                audio_revision: revision,
+                context: next_context,
+                ..predecessor
+            })
+        );
+        assert_eq!(control.status.position.load(Acquire), TOTAL as u64);
+        assert_eq!(control.reclaim(), 1);
+        assert_eq!(
+            actual.iter().position(|pcm| *pcm != [0.0; 2]),
+            Some(onset - CUT),
+            "delayed impulse should survive the approved cut, partition {partition}"
+        );
+        assert_eq!(actual, oracle[CUT..], "partition {partition}");
+    }
 }
 
 #[test]
