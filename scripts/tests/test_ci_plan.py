@@ -2504,6 +2504,93 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertIn("cache-dependency", " ".join(fixed.summary["target_cache"]["cleanup_argv"]))
             self.assertEqual(command(str(root / "target/debug/cache-consumer")), "new API")
 
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_dev_handoff_refuses_stale_output_from_excluded_build_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
+            (root / "app/src").mkdir(parents=True)
+            (root / "app/build_support").mkdir()
+            (root / "vendor/src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/target*/\n/artifacts/\n')
+            (root / "app/Cargo.toml").write_text(
+                '[package]\nname="selector-dev"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal-selector={path="../vendor"}\n')
+            (root / "vendor/Cargo.toml").write_text(
+                '[package]\nname="external-selector"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "vendor/build.rs").write_text(
+                'fn main() {\n'
+                '    println!("cargo:rerun-if-changed=build.rs");\n'
+                '    let s = std::fs::read_to_string("../app/build_support/selector.txt").unwrap();\n'
+                '    println!("cargo:rustc-env=SELECTOR_PROBE={}", s.trim());\n'
+                '}\n')
+            (root / "vendor/src/lib.rs").write_text(
+                'pub fn selected() -> &\'static str { env!("SELECTOR_PROBE") }\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", external_selector::selected()); }\n')
+            selector = root / "app/build_support/selector.txt"
+            selector.write_text("A\n")
+            env = dict(os.environ, CARGO_CACHE_RUSTC_INFO="0")
+            target = root / "target-a"
+            state_dir = root / "artifacts/target-state"
+            stages = (ci.Step("build", ("cargo", "build", "--offline", "--locked")),)
+
+            def command(*args):
+                return subprocess.check_output(args, cwd=root, env=env, text=True).strip()
+
+            def runner(name, selected=target, *, adopt=False, workspace=root):
+                return ci.LocalCiRunner(workspace, mode="component", run_id=name, steps=stages,
+                                        env=dict(env, CARGO_TARGET_DIR=str(selected)),
+                                        target_state_dir=state_dir, adopt_target=adopt)
+
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "dev cache fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector A")
+            first = runner("dev-a")
+            self.assertEqual(first.run(), 0, first.summary)
+            binary = target / "debug/selector-dev"
+            self.assertEqual(command(str(binary)), "A")
+            _, owner = ci.target_state_paths(target, state_dir)
+            original_owner = owner.read_bytes()
+            retained = target / "release/existing"
+            retained.parent.mkdir()
+            retained.write_bytes(b"unrelated release output")
+
+            # The unchanged dependency's build script declares a watch only on
+            # itself. Its old output survives workspace-only cleanup.
+            selector.write_text("B\n")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector B")
+            guarded = runner("dev-b-refusal", adopt=True)
+            status = guarded.run()
+            self.assertEqual(status, 1, f"guard admitted stale output {command(str(binary))!r}")
+            self.assertIn("fresh target", guarded.summary["target_cache_error"])
+            self.assertNotEqual(guarded._dependency_inputs, first._dependency_inputs)
+            self.assertEqual(owner.read_bytes(), original_owner)
+            self.assertEqual(command(str(binary)), "A")
+            self.assertEqual(retained.read_bytes(), b"unrelated release output")
+
+            worktree = root / "artifacts/worktree-b"
+            command("git", "worktree", "add", "--detach", str(worktree), "HEAD")
+            handoff = runner("other-worktree-refusal", workspace=worktree)
+            self.assertEqual(handoff.run(), 1, handoff.summary)
+            self.assertIn("fresh target", handoff.summary["target_cache_error"])
+            self.assertEqual(owner.read_bytes(), original_owner)
+
+            fresh = root / "target-b"
+            fresh.mkdir()
+            with ci.FreshTargetReservation.acquire(root, str(fresh), {"run_id": "dev-fresh"},
+                                                    state_dir=state_dir) as reservation:
+                updated = runner("dev-b-fresh", fresh)
+                self.assertEqual(updated.run(reservation=reservation), 0, updated.summary)
+            self.assertEqual(command(str(fresh / "debug/selector-dev")), "B")
+            self.assertEqual(runner("dev-b-reuse", fresh).run(), 0)
+
     def test_final_dependency_signal_releases_lock_and_restores_handlers(self):
         # Reuse the existing isolated fake-tool fixture, not the real app/target.
         fixtures = module("scope_runner_fixtures", "tests/test_local_ci.py")
