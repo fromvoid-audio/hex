@@ -2162,10 +2162,8 @@ fn prepare_with_waveforms_using(
                 waveform
             };
             let event_occurrences = view.event_source_occurrences.as_ref();
-            let mut event_peaks = event_occurrences
-                .and_then(|table| table.reads().first())
-                .map(|read| Arc::clone(&read.source))
-                .or_else(|| view.event_source_peaks.clone());
+            let first_occurrence = event_occurrences.and_then(|table| table.reads().first());
+            let mut event_peaks = view.event_source_peaks.clone();
             let preview_root = if let Some(clip) = project.clip(view.clip)
                 && clip
                     .audio_edit()
@@ -2176,10 +2174,7 @@ fn prepare_with_waveforms_using(
                         media.resident.get(&asset)
                     })?
                     .map(|root| {
-                        if event_occurrences.is_none()
-                            && view.event_source_repeat.is_none()
-                            && root.event_source_peaks.is_some()
-                        {
+                        if view.event_source_repeat.is_none() && root.event_source_peaks.is_some() {
                             event_peaks = root.event_source_peaks;
                         }
                         // A placement-only change can leave a large preview
@@ -2227,22 +2222,26 @@ fn prepare_with_waveforms_using(
             let previous_event = old
                 .get(&view.clip)
                 .and_then(|entry| entry.event_source.as_ref());
-            let event_source = event_peaks.and_then(|peaks| {
-                let mut source = event_source_waveform(
-                    peaks,
-                    view.event_source_repeat,
-                    previous_event.map(|entry| &entry.waveform),
-                    &mut event_roots,
-                )?;
-                source.occurrences = event_occurrences.and_then(|table| {
-                    event_occurrence_waveforms(
-                        table,
-                        &source.waveform,
-                        previous_event.and_then(|event| event.occurrences.as_ref()),
-                    )
+            let event_source = event_peaks
+                .or_else(|| first_occurrence.map(|read| Arc::clone(&read.source)))
+                .and_then(|peaks| {
+                    let first_matches =
+                        first_occurrence.is_some_and(|read| Arc::ptr_eq(&read.source, &peaks));
+                    let mut source = event_source_waveform(
+                        peaks,
+                        view.event_source_repeat,
+                        previous_event.map(|entry| &entry.waveform),
+                        &mut event_roots,
+                    )?;
+                    source.occurrences = event_occurrences.and_then(|table| {
+                        event_occurrence_waveforms(
+                            table,
+                            first_matches.then_some(&source.waveform),
+                            previous_event.and_then(|event| event.occurrences.as_ref()),
+                        )
+                    });
+                    Some(source)
                 });
-                Some(source)
-            });
             next.insert(
                 view.clip,
                 service::AudioClipWaveform {
@@ -2320,7 +2319,7 @@ fn event_source_waveform(
 
 fn event_occurrence_waveforms(
     prepared: &Arc<hex_engine::audio_transform::PreparedEventOccurrences>,
-    first_waveform: &Arc<Waveform>,
+    first_waveform: Option<&Arc<Waveform>>,
     previous: Option<&Arc<service::AudioEventOccurrenceWaveforms>>,
 ) -> Option<Arc<service::AudioEventOccurrenceWaveforms>> {
     if let Some(previous) = previous.filter(|old| Arc::ptr_eq(prepared, &old.prepared)) {
@@ -2328,13 +2327,16 @@ fn event_occurrence_waveforms(
     }
     let mut waveforms = Vec::new();
     waveforms.try_reserve_exact(prepared.reads().len()).ok()?;
-    waveforms.push(Arc::clone(first_waveform));
-    for (index, read) in prepared.reads().iter().enumerate().skip(1) {
-        waveforms.push(prepared_peak_waveform(
-            read.source.source_frames(),
-            read.source.bins(),
-            previous.and_then(|old| old.waveform(index)),
-        )?);
+    for (index, read) in prepared.reads().iter().enumerate() {
+        if let Some(first) = first_waveform.filter(|_| index == 0) {
+            waveforms.push(Arc::clone(first));
+        } else {
+            waveforms.push(prepared_peak_waveform(
+                read.source.source_frames(),
+                read.source.bins(),
+                previous.and_then(|old| old.waveform(index)),
+            )?);
+        }
     }
     Some(Arc::new(service::AudioEventOccurrenceWaveforms {
         prepared: Arc::clone(prepared),

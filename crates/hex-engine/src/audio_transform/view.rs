@@ -465,6 +465,16 @@ pub(super) fn occurrence_edit(
     preparation: &AudioTransformPreparation,
     current_tempo: &hex_project::TempoMap,
 ) -> Result<AudioClipEdit, Invalid> {
+    bind_occurrence_clock(edit, origin, || {
+        preparation.shared_tempo(edit.processing_tempo(current_tempo))
+    })
+}
+
+pub(super) fn bind_occurrence_clock(
+    edit: &AudioClipEdit,
+    origin: i128,
+    tempo: impl FnOnce() -> Result<Arc<hex_project::TempoMap>, Invalid>,
+) -> Result<AudioClipEdit, Invalid> {
     let mut root = edit.clone();
     root.content_view = None;
     root.view_start = 0;
@@ -474,7 +484,7 @@ pub(super) fn occurrence_edit(
         match &mut root.timing {
             AudioClipTiming::Musical(_) => {
                 root.processing_projection = Some(Arc::new(AudioProcessingProjection {
-                    tempo: preparation.shared_tempo(edit.processing_tempo(current_tempo))?,
+                    tempo: tempo()?,
                     origin_beat_raw: origin,
                 }));
             }
