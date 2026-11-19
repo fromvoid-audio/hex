@@ -8,6 +8,7 @@ use hex_widgets::{SplitterEvent, SplitterGesture, SplitterInput};
 pub(super) struct Zoom {
     gesture: SplitterGesture,
     scene: SceneKey,
+    applied_pitch: super::PitchViewport,
     viewport: Size<Pixels>,
     detail_height: f32,
     velocity_height: f32,
@@ -23,6 +24,7 @@ impl EditorView {
                 || self.detail_midi_clip_data() != Some(z.scene.clip)
                 || self.piano_beat_start != z.scene.beat_start
                 || self.piano_beat_span.raw() != z.scene.beat_span
+                || self.piano_pitch != z.applied_pitch
                 || !self.clip_view_open
                 || self.device_panel_active
                 || self.context_menu.is_some()
@@ -52,12 +54,7 @@ impl EditorView {
     ) -> bool {
         match event {
             SplitterEvent::Begin(gesture) => {
-                if !self.clip_view_open
-                    || self.device_panel_active
-                    || self.context_menu.is_some()
-                    || self.piano_pitch_rows == 0
-                    || u16::from(self.piano_pitch_low) + u16::from(self.piano_pitch_rows) > 128
-                {
+                if !self.clip_view_open || self.device_panel_active || self.context_menu.is_some() {
                     return false;
                 }
                 let Some(clip) = self.detail_midi_clip_data() else {
@@ -66,11 +63,7 @@ impl EditorView {
                 let Some(revision) = self.state.as_ref().map(|s| s.revision) else {
                     return false;
                 };
-                let Some(pitch) =
-                    super::PitchViewport::from_rows(self.piano_pitch_low, self.piano_pitch_rows)
-                else {
-                    return false;
-                };
+                let pitch = self.piano_pitch;
                 self.cancel_midi_note_gesture();
                 self.midi_focus.focus(window);
                 self.piano_pitch_zoom = Some(Zoom {
@@ -83,6 +76,7 @@ impl EditorView {
                         beat_span: self.piano_beat_span.raw(),
                         pitch,
                     },
+                    applied_pitch: pitch,
                     viewport: window.viewport_size(),
                     detail_height: self.clip_detail_body_height,
                     velocity_height: self.midi_velocity.visible_height(),
@@ -92,7 +86,7 @@ impl EditorView {
             }
             SplitterEvent::Change(delta) | SplitterEvent::Commit(delta) => {
                 self.reconcile_piano_pitch_zoom(window, cx);
-                let Some(z) = self.piano_pitch_zoom.as_ref() else {
+                let Some(z) = self.piano_pitch_zoom.as_mut() else {
                     return false;
                 };
                 if !delta.is_finite() {
@@ -103,18 +97,19 @@ impl EditorView {
                 let rows = (z.scene.pitch.span() as f32 * (delta / 120.).clamp(-8., 8.).exp2())
                     .round()
                     .clamp(1., 128.) as u8;
-                let low = (i16::from(z.scene.pitch.coverage().start)
-                    + (z.scene.pitch.coverage().len() as i16 - i16::from(rows)) / 2)
-                    .clamp(0, 128 - i16::from(rows)) as u8;
+                let low = (z.scene.pitch.low()
+                    + ((z.scene.pitch.span() - f64::from(rows)) / 2.0).trunc())
+                .clamp(0.0, f64::from(128 - rows));
+                let Some(pitch) = super::PitchViewport::new(low, f64::from(rows)) else {
+                    return false;
+                };
                 // Preserve the original integer-row redraw threshold. The
                 // window lease still consumes a sub-row move exclusively.
-                if matches!(event, SplitterEvent::Change(_))
-                    && (self.piano_pitch_low, self.piano_pitch_rows) == (low, rows)
-                {
+                if matches!(event, SplitterEvent::Change(_)) && self.piano_pitch == pitch {
                     return false;
                 }
-                self.piano_pitch_low = low;
-                self.piano_pitch_rows = rows;
+                self.piano_pitch = pitch;
+                z.applied_pitch = pitch;
                 if matches!(event, SplitterEvent::Commit(_)) {
                     self.piano_pitch_zoom = None;
                 }

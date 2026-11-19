@@ -1,5 +1,5 @@
 //! Pure piano-roll beat, pitch and compact-label mapping.
-use super::super::{midi_drag, midi_scene};
+use super::super::midi_drag;
 use hex_project::BeatTime;
 
 pub(super) fn beat_at_x(
@@ -58,28 +58,12 @@ pub(super) fn source_beat_label(raw: u64) -> String {
     }
 }
 
-pub(super) fn pitch_at_y(y: f32, height: f32, low: u8, rows: u8) -> Option<u8> {
-    if !y.is_finite()
-        || !height.is_finite()
-        || height <= 0.0
-        || y < 0.0
-        || y >= height
-        || !midi_scene::valid_pitch_range(low, rows)
-    {
-        return None;
-    }
-    Some(
-        low.saturating_add(rows - 1)
-            .saturating_sub(((y / height * f32::from(rows)).floor() as u8).min(rows - 1)),
-    )
-}
-
 #[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
     #[test]
-    fn piano_grid_and_pitch_mapping_stay_in_clip_and_midi_bounds() {
+    fn piano_grid_mapping_stays_in_clip_bounds() {
         let clip = BeatTime::from_quarters(4).unwrap();
         assert_eq!(
             beat_at_x(
@@ -115,14 +99,6 @@ mod tests {
             ),
             None
         );
-        assert_eq!(pitch_at_y(0.0, 120.0, 48, 24), Some(71));
-        for (pitch, low) in [(48_u8, 48_u8), (71, 48), (104, 104), (127, 104)] {
-            let row = low + 23 - pitch;
-            let y = (f32::from(row) + 0.5) / 24.0 * 120.0;
-            assert_eq!(pitch_at_y(y, 120.0, low, 24), Some(pitch));
-        }
-        assert_eq!(pitch_at_y(120.0, 120.0, 48, 24), None);
-        assert_eq!(pitch_at_y(f32::INFINITY, 120.0, 48, 24), None);
         assert_eq!((i16::from(0_u8) - 1).clamp(0, 127), 0);
         assert_eq!((i16::from(127_u8) + 1).clamp(0, 127), 127);
         assert_eq!(4 * BeatTime::ONE.raw(), 4 * 4 * BeatTime::ONE.raw() / 4);

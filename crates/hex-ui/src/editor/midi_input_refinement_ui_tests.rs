@@ -309,8 +309,10 @@ fn copy_modifier_cursor_tracks_actual_payload_and_restores_after_cancel(cx: &mut
     let y = editor.read_with(&visual, |v, _| {
         roll.origin.y
             + roll.size.height
-                * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - 60) + 0.5)
-                    / f32::from(v.piano_pitch_rows))
+                * ((f32::from(
+                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 60,
+                ) + 0.5)
+                    / f32::from(v.piano_pitch.test_row_count()))
     });
     let down = point(roll.origin.x + roll.size.width * 0.375, y);
     let end = point(down.x + roll.size.width * 0.375, y);
@@ -394,8 +396,10 @@ fn idle_hover_selected_note_paint_are_distinct_on_completed_frames(cx: &mut Test
     let y = editor.read_with(&visual, |v, _| {
         roll.origin.y
             + roll.size.height
-                * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - 60) + 0.5)
-                    / f32::from(v.piano_pitch_rows))
+                * ((f32::from(
+                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 60,
+                ) + 0.5)
+                    / f32::from(v.piano_pitch.test_row_count()))
     });
     let at = point(roll.origin.x + roll.size.width * 0.375, y);
     editor.update(&mut visual, |v, cx| {

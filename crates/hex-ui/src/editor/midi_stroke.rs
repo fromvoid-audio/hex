@@ -44,8 +44,7 @@ pub(super) struct StrokeContext {
     pub(super) pitch_modifier: bool,
     pub(super) view_start: i128,
     pub(super) view_span: u64,
-    pub(super) pitch_low: u8,
-    pub(super) pitch_rows: u8,
+    pub(super) pitch: super::PitchViewport,
     pub(super) bounds: CanvasBounds,
     pub(super) pitch_locked: bool,
     pub(super) draw_mode: bool,
@@ -70,7 +69,6 @@ impl StrokeContext {
                 .view_start
                 .checked_add(i128::from(self.view_span))
                 .is_some()
-            && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
             && self.draw_mode
     }
@@ -735,8 +733,7 @@ mod tests {
             pitch_modifier: false,
             view_start: 0,
             view_span: length,
-            pitch_low: 48,
-            pitch_rows: 24,
+            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
             bounds: CanvasBounds {
                 x: 0.0,
                 y: 0.0,
@@ -1656,11 +1653,6 @@ mod tests {
                 ..blank
             },
             StrokeContext {
-                pitch_low: 127,
-                pitch_rows: 2,
-                ..blank
-            },
-            StrokeContext {
                 bounds: CanvasBounds {
                     width: f32::NAN,
                     ..blank.bounds
@@ -1701,7 +1693,7 @@ mod tests {
         let mut view_span = base;
         view_span.view_span -= 1;
         let mut pitch_range = base;
-        pitch_range.pitch_low += 1;
+        pitch_range.pitch = pitch_range.pitch.scroll_rows(1).0;
         let mut bounds = base;
         bounds.bounds.x += 1.0;
         let mut mode = base;
