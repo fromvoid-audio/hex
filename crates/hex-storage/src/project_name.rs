@@ -9,6 +9,9 @@
 use crate::{journal_path, recovery_path, text::verbatim};
 use std::{fmt, path::Path};
 
+/// Desktop admission limit for an entire chosen or derived project path.
+pub const MAX_PROJECT_PATH_BYTES: usize = 4_096;
+
 /// Longest project filename, in UTF-8 bytes, whose recovery sidecar, journal
 /// and journal lock all fit a 255-byte filesystem component. The journal lock
 /// (`.{name}.hex-journal.lock`) is the tightest of them.

@@ -1,6 +1,5 @@
 //! Bounded metadata-only affine source retiming, shared by preview and commit.
 use super::*;
-use crate::{BeatsPreserve, BeatsTail, WarpMode};
 
 fn scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
     if numerator == 0 || denominator == 0 {
@@ -90,9 +89,8 @@ pub(super) fn retime(
     edit.sync_content_length()?;
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
-    if frames > MAX_AUDIO_DOMAIN_FRAMES {
-        return Err(transform_domain_limit(tempo.sample_rate()));
-    }
+    // Callers project the completed clip and apply its source-specific extent
+    // limit there, after the retimed fade and source metadata are in place.
     if frames == 0 {
         return Err(Invalid("stretch must retain a positive interval"));
     }
@@ -111,7 +109,8 @@ pub(super) fn retime(
         old_fade.in_curve(),
         old_fade.out_curve(),
     )?
-    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?;
+    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?
+    .with_curve_laws(old_fade.curve_laws());
     domain.fade_projection = Some(AudioFadeProjection {
         tempo: tempo.clone(),
         origin_beat_raw: origin + i128::from(domain.fade_start),
@@ -156,15 +155,7 @@ pub fn preview_audio_clip_stretch(
         .unwrap_or_else(|| AudioClipEdit::capture(clip));
     edit.anchor(clip.start, tempo)?;
     if edit.domain.warp.is_none() {
-        let settings = super::default_audio_warp(
-            clip,
-            tempo,
-            WarpMode::Beats {
-                preserve: BeatsPreserve::Transients,
-                tail: BeatsTail::Forward,
-                decay: 100,
-            },
-        )?;
+        let settings = initial_audio_warp(clip, tempo, asset_frames)?;
         Arc::make_mut(&mut edit.domain).warp = Some(settings);
     }
     Arc::make_mut(&mut edit.domain).warp_enabled = true;

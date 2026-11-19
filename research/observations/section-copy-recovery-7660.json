@@ -1,0 +1,30 @@
+{
+  "date": "2026-11-12",
+  "purpose": "attribute a held-playing section-copy terminal to worker publication and recovery on a generated reference workload",
+  "measured_source": "fbd24deffe3fd8235686b7cbccf547e3b58647d3",
+  "hardware": "Apple M5 Pro, macOS 26.6.2, arm64",
+  "build": "cargo test --release, allocation-probe enabled; optimized headless test binary, not an exact full local-CI or release-qualified app",
+  "binary_sha256": "d1139140654fb3e5ecf3912fe03a8ad26d44e5ef17ea138823717c41a42887db",
+  "fixture": {
+    "generator": "cargo run --release --locked -p hex-session --example create_section_benchmark -- /tmp/hex-7660-section-fixture",
+    "description": "16 tracks, 512 clips, 16 sections, 44100 Hz; temporary copied project and recovery journal",
+    "project_sha256": "a105866079d741f6310ac81e1068facc5d1a51620ab02096338ca9f3c1d64fd3",
+    "source_1_wav_sha256": "3e33e935271daff897c72aa1615be7dcb32f5e6fae8a7bb014743a7750282339",
+    "source_91_wav_sha256": "c1f788045de1d718de50e5caba7ada383dc54941dc1a914dff092638712acc2d",
+    "note": "project includes generated absolute paths, so its hash depends on the fixture directory"
+  },
+  "command": "HEX_SECTION_BENCH_PROJECT=/tmp/hex-7660-section-fixture/project.hex HEX_SECTION_BENCH_REPS=7 HEX_SECTION_BENCH_RECOVERY=1 HEX_SECTION_BENCH_DUPLICATE_ONLY=1 cargo test --release --locked -p hex-desktop --features allocation-probe --bin hex-desktop -- native_audio::tests::section_benchmark::section_edit_benchmark --ignored --exact --nocapture --test-threads=1",
+  "method": "one warm-up then seven copies and undos at early cursor while playing; headless callback rendered in 64-frame blocks and polled at approximately 1 ms; report median and maximum in milliseconds",
+  "section_copy_ms": {
+    "n": 7,
+    "submit_to_terminal": [23.3, 24.5],
+    "submit_to_first_observed_exact_callback_source": [4.0, 5.2],
+    "worker_total": [20.5, 21.0],
+    "worker_publication": [0.6, 0.8],
+    "duplicate_recovery": [19.0, 19.7]
+  },
+  "benchmark_test_body_seconds": 0.45,
+  "post_build_setup_and_execution_seconds": 1.004,
+  "raw_log": "artifacts/local-ci/issue-7660/optimized-benchmark-seven.log",
+  "interpretation": "Recovery accounts for most of this synthetic workload's worker time. Callback time is first observation of matching output, revision and source context, not a physical-device timing. This fixture and sample do not establish the cause of the historical 1.768-second user-project delay or prove an improvement. No user project, native interaction or listening was tested."
+}

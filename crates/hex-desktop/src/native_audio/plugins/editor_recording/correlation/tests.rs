@@ -68,6 +68,129 @@ fn capture(parameter: u32) -> Correlation {
     .unwrap()
 }
 
+#[test]
+fn restored_take_waits_for_its_audio_terminal_and_interrupts_on_failure() {
+    use hex_audio::foreign_parameter_delivery::editor::AbortReason;
+    use hex_session::service::PluginParameterDelivery;
+
+    for (reason, finished) in [
+        (AbortReason::Cancelled, true),
+        (AbortReason::SourceChanged, false),
+        (AbortReason::OutputFailed, false),
+    ] {
+        let correlation = capture(7);
+        let point = PluginParameterDelivery {
+            key: correlation.key,
+            context: correlation.audio.source.context,
+            target: correlation.target,
+            source: correlation.source,
+            sequence: 4,
+            application: Vst3ParameterApplication {
+                binding: correlation.target.binding,
+                parameter: correlation.target.parameter,
+                origin: DraftClock {
+                    performance_frame: 10,
+                    content_frame: 10,
+                    loop_pass: 0,
+                },
+                value: Vst3ApplicationValue::Restored,
+            },
+            delivery_performance_frame: 10,
+        };
+        let mut plugins = super::super::super::Plugins {
+            editor_recording: Some(super::super::Recording::Active(Box::new(
+                super::super::Active {
+                    correlation: super::super::ActiveCorrelation::Single(correlation),
+                    pending: None,
+                    observation: Some(Observation::Restored(point)),
+                    retired: None,
+                    cancel: true,
+                    closed: false,
+                    drained: false,
+                },
+            ))),
+            ..Default::default()
+        };
+        assert!(plugins.take_editor_recording_observation().is_none());
+        let Some(super::super::Recording::Active(active)) = plugins.editor_recording.as_mut()
+        else {
+            panic!("the pending terminal remains owned");
+        };
+        active.finish_completed_terminal(reason);
+        let result = plugins.take_editor_recording_observation();
+        if finished {
+            assert_eq!(result, Some(Observation::Restored(point)));
+        } else {
+            assert!(matches!(
+                result,
+                Some(Observation::Interrupted { sequence: 4, .. })
+            ));
+        }
+    }
+}
+
+#[test]
+fn completed_group_waits_for_audio_and_interrupts_on_source_change() {
+    use hex_audio::foreign_parameter_delivery::editor::AbortReason;
+    use hex_session::service::{
+        Vst3EditorGroupObservation, Vst3EditorGroupReceipt,
+        automation_draft::{Vst3GroupCaptureTarget, Vst3GroupTarget},
+    };
+
+    let single = capture(7);
+    let group = Vst3GroupTarget::new(single.target.device, single.target.class, &[7, 8]).unwrap();
+    let mut source = single.source;
+    source.target = DeviceCaptureTarget::Vst3Group(Vst3GroupCaptureTarget {
+        draft: group,
+        binding: single.target.binding,
+    });
+    let identity = Vst3EditorGroupObservation {
+        key: single.key,
+        context: single.audio.source.context,
+        source,
+        receipt: Vst3EditorGroupReceipt::Finished(DraftClock {
+            performance_frame: 10,
+            content_frame: 10,
+            loop_pass: 0,
+        }),
+    };
+    let mut plugins = super::super::super::Plugins {
+        editor_recording: Some(super::super::Recording::Active(Box::new(
+            super::super::Active {
+                correlation: super::super::ActiveCorrelation::Group(Box::new(
+                    super::super::GroupControl {
+                        correlation: super::super::group::GroupCorrelation::new(
+                            single.audio,
+                            group,
+                        ),
+                        identity,
+                        terminal_sent: true,
+                    },
+                )),
+                pending: None,
+                observation: Some(Observation::Grouped(identity)),
+                retired: None,
+                cancel: true,
+                closed: false,
+                drained: false,
+            },
+        ))),
+        ..Default::default()
+    };
+    assert!(plugins.take_editor_recording_observation().is_none());
+    let Some(super::super::Recording::Active(active)) = plugins.editor_recording.as_mut() else {
+        panic!("the pending group remains owned");
+    };
+    active.finish_completed_terminal(AbortReason::SourceChanged);
+    assert!(matches!(
+        plugins.take_editor_recording_observation(),
+        Some(Observation::Grouped(Vst3EditorGroupObservation {
+            receipt: Vst3EditorGroupReceipt::Interrupted,
+            ..
+        }))
+    ));
+}
+
 fn ordered(
     capture: &mut Correlation,
     kind: ParameterEditKind,

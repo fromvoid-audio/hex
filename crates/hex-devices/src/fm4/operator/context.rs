@@ -484,9 +484,19 @@ impl PreparedOperatorConfiguration {
         self.envelopes.uniform_levels(age, gate)
     }
 
+    pub(crate) fn has_modulation(&self) -> bool {
+        self.configuration
+            .routing
+            .modulation
+            .iter()
+            .flatten()
+            .any(|amount| *amount != 0.0)
+    }
+
     /// Borrow a provider-owned waveform law while preserving original routing,
     /// envelope, velocity and phase arithmetic. No preparation occurs here.
-    // Specialize the render loop for its borrowed waveform sampler.
+    // Specialize the render loop for its borrowed waveform sampler. The caller
+    // computes `has_modulation` once from this immutable configuration.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample_with_waveform_sampler(
@@ -498,6 +508,7 @@ impl PreparedOperatorConfiguration {
         levels: [f64; 4],
         carriers: [f64; 4],
         feedback: [f64; 4],
+        has_modulation: bool,
         filter: Option<(
             &mut [crate::operator_filter::Carrier; 4],
             crate::operator_filter::Frame,
@@ -513,13 +524,17 @@ impl PreparedOperatorConfiguration {
             if levels[target] == 0.0 {
                 continue;
             }
-            let mut modulation: f64 = signals
-                .iter()
-                .enumerate()
-                .map(|(source, signal)| {
-                    signal * self.configuration.routing.modulation[source][target]
-                })
-                .sum();
+            let mut modulation: f64 = if has_modulation {
+                signals
+                    .iter()
+                    .enumerate()
+                    .map(|(source, signal)| {
+                        signal * self.configuration.routing.modulation[source][target]
+                    })
+                    .sum()
+            } else {
+                0.0
+            };
             if feedback[target] != 0.0 {
                 modulation += feedback[target] * previous[target];
             }

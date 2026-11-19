@@ -993,6 +993,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1245,6 +1246,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -4324,11 +4326,17 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
         let mut editor =
             Editor::new(with_test_instrument(&project(1.0, 0, 8 << 32), id, 0), 8).unwrap();
         let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
-        let mut playback = SessionPlayback::new(revision(editor.project())).unwrap();
+        let original = revision(editor.project());
+        let mut playback = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut facade_old =
+            crate::playback::Playback::try_from_prepared_with_session(original).unwrap();
+        facade_old.apply(crate::PlaybackCommand::Play);
+        facade_old.render(&mut [[0.0; 2]; 8]).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
         playback.render(&mut [[0.0; 2]; 8]).unwrap();
         if paused {
             playback.apply(SessionPlaybackCommand::Pause).unwrap();
+            facade_old.apply(crate::PlaybackCommand::Pause);
         }
         let frame = playback.performance_frame();
         editor
@@ -4342,6 +4350,25 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
             })
             .unwrap();
         let edited = revision(editor.project());
+        let mut facade_next =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&edited)).unwrap();
+        let context = crate::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        let (_, facade_report) = facade_next
+            .stream_playback(context)
+            .preview_stream_handoff_with_report(
+                &mut facade_old.stream_playback(context),
+                64,
+                None,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(facade_report.running_audio_restart(), !paused);
+        facade_next
+            .try_inherit_runtime_from(&mut facade_old)
+            .unwrap();
         assert_eq!(
             SessionPlayback::new(Arc::clone(&edited))
                 .unwrap()
@@ -4350,9 +4377,32 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
             "strict planner; paused={paused}"
         );
         let mut candidate = SessionPlayback::new(Arc::clone(&edited)).unwrap();
-        candidate
+        let (_, preview) = candidate
+            .preview_stream_handoff_with_report(&mut playback, 64, None, &mut |_| Ok(()))
+            .unwrap();
+        let (_, ordinary) = candidate
+            .preview_stream_handoff_with_policy_and_report(
+                &mut playback,
+                64,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(playback.performance_frame(), frame);
+        let committed = candidate
             .try_inherit_state_live_from(&mut playback)
             .unwrap();
+        assert_eq!(preview.running_audio_restart(), !paused);
+        assert_eq!(
+            ordinary.running_audio_restart(),
+            preview.running_audio_restart()
+        );
+        assert_eq!(
+            preview.running_audio_restart(),
+            committed.running_audio_restart()
+        );
         assert_eq!(candidate.playing(), !paused);
         assert_eq!(candidate.performance_frame(), frame);
 
@@ -4417,9 +4467,32 @@ fn requested_live_restart_drops_a_removed_note_release_tail() {
             candidate.request_live_restart();
         }
         assert_eq!(candidate.live_restart_requested(), restart);
-        candidate
+        let (_, preview) = candidate
+            .preview_stream_handoff_with_report(&mut playback, 64, None, &mut |_| Ok(()))
+            .unwrap();
+        let (_, ordinary) = candidate
+            .preview_stream_handoff_with_policy_and_report(
+                &mut playback,
+                64,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+            )
+            .unwrap();
+        assert_eq!(playback.performance_frame(), frame);
+        let committed = candidate
             .try_inherit_state_live_from(&mut playback)
             .unwrap();
+        assert_eq!(preview.running_audio_restart(), restart);
+        assert_eq!(
+            ordinary.running_audio_restart(),
+            preview.running_audio_restart()
+        );
+        assert_eq!(
+            preview.running_audio_restart(),
+            committed.running_audio_restart()
+        );
         assert!(candidate.playing());
         assert_eq!(candidate.performance_frame(), frame);
         let mut pcm = [[0.0; 2]; 64];
@@ -4723,6 +4796,7 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     pitch: 60,
                     channel: 0,
                     velocity,
+                    contributor_fade_in: false,
                 })
                 .unwrap();
         }
@@ -4827,6 +4901,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 pitch,
                 channel: 0,
                 velocity,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -4931,6 +5006,7 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
         pitch: 60,
         channel: 4,
         velocity: 91,
+        contributor_fade_in: false,
     };
 
     let mut old =
@@ -5037,6 +5113,7 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        contributor_fade_in: false,
     };
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -5143,6 +5220,7 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -5182,6 +5260,11 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
     let graph_host_bytes =
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS).unwrap();
+    // The owner slots include the vector headers. Charge their reserved heap
+    // entries independently of the production frozen-parameter quote.
+    let frozen_parameter_bytes_per_owner = hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE
+        * (std::mem::size_of::<hex_lattice_contract::ParameterId>()
+            + std::mem::size_of::<Option<hex_lattice_contract::ParameterValue>>());
 
     assert_eq!(
         ledger_bytes,
@@ -5203,6 +5286,8 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
                 * 2
                 * MAX_SIMULTANEOUS_VOICES_PER_TRACK
                 * std::mem::size_of::<crate::mutable_instrument::MutableOccurrence>()
+            + (hex_project::MAX_TRACKS + hex_lattice::MAX_STATEFUL_PROCESSORS)
+                * frozen_parameter_bytes_per_owner
             + std::mem::size_of::<crate::mutable_instrument::MutableOnsetBuffer>()
             + crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY
                 * std::mem::size_of::<hex_lattice::NativeInstrumentEvent>()
@@ -5216,6 +5301,17 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
     );
     assert!(
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS + 1).is_none()
+    );
+    let one_track_increment = std::mem::size_of::<
+        Option<crate::mutable_instrument::MutableInstrumentTrackRuntime>,
+    >() + ledger_bytes
+        + frozen_parameter_bytes_per_owner
+        + crate::mutable_instrument::MutableInstrumentTrackRuntime::source_live_storage_upper_bound(
+        );
+    assert_eq!(
+        crate::mutable_instrument::host_storage_upper_bound(1).unwrap()
+            - crate::mutable_instrument::host_storage_upper_bound(0).unwrap(),
+        one_track_increment
     );
     println!(
         "mutable storage bytes: track_owner={}, ledger_pair={}, onset_buffer={}, event={}, runtime_pair={}, max_graph_host={graph_host_bytes}",
@@ -12322,14 +12418,12 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             let region = LoopRegion::new(24_000, 48_000, true).unwrap();
-            let source = mutable_feedback_with_stateful_track_and_return();
-            let oracle = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+            let source = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
                 snapshot.loop_region = Some(region)
             });
-            assert!(source.arrangement().loop_region().is_none());
             // Section launches use the interactive Play-from law at the loop
             // start: no prefix replay, empty tails and chased held notes.
-            let mut expected = SessionPlayback::new(oracle).unwrap();
+            let mut expected = SessionPlayback::new(Arc::clone(&source)).unwrap();
             expected.play_from(24_000).unwrap();
             let mut history = SessionPlayback::new(Arc::clone(&expected.revision)).unwrap();
             history.apply(SessionPlaybackCommand::Play).unwrap();
@@ -12367,12 +12461,9 @@ fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
             assert_ne!(rendered, replayed, "prefix history is not reconstructed");
             assert_eq!(actual.arrangement_frame(), expected.arrangement_frame());
             assert_eq!(actual.performance_frame(), expected.performance_frame());
-            assert!(
-                source.arrangement().loop_region().is_none(),
-                "saved loop remains unchanged"
-            );
             let playback =
                 crate::playback::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.section_loop(), None);
             assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(
@@ -12447,6 +12538,46 @@ fn arrangement_preroll_held_mutable_source_and_return_send_follow_seek_law() {
     assert_eq!(caller.return_chains[0].stateful_count(), 1);
     drop(caller);
     run_preroll_continuation_on_worker_stack(prepared, 512);
+}
+
+#[test]
+fn ordinary_preroll_refuses_stopped_pcm_and_preserves_held_instrument_history() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    let track = prepared.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let caller = SessionPlayback::new(prepared).unwrap();
+    let prepare = || {
+        caller
+            .prepare_arrangement_preroll(512, 512, false, &AtomicBool::new(false))
+            .unwrap()
+    };
+    let mut candidate = prepare();
+    let mut reference = prepare();
+    let mut output = [[1.0; 2]; 64];
+    assert_eq!(
+        candidate.render_paused_pcm(
+            track,
+            &[[0.5; 2]; 64],
+            &mut output,
+            &mut hex_lattice::RefuseForeign
+        ),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    assert_eq!(output, [[0.0; 2]; 64]);
+    candidate.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+    assert_eq!(candidate.performance_frame(), 512);
+    let mut expected = output;
+    for (runtime, frames) in [
+        (&mut candidate, &mut output),
+        (&mut reference, &mut expected),
+    ] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(frames).unwrap();
+    }
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(output, expected);
 }
 
 #[test]
@@ -13875,6 +14006,158 @@ mod reverb_bypass_tests;
 mod utility_bypass_tests;
 
 #[test]
+fn session_audio_release_handoff_never_renders_a_replaced_source() {
+    let project = audio_project(0, 32, 4);
+    let original = crate::Audio::new(48_000, vec![[0.5; 2]; 32]).unwrap();
+    let replacement = crate::Audio::new(48_000, vec![[-0.5; 2]; 32]).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let prepare = |project: &Project, audio: &crate::Audio| {
+        Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &audio_media(project, audio, audio),
+                Arc::clone(&table),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let original_revision = prepare(&project, &original);
+    let track = project.tracks()[0].id();
+    let clip = original_revision.session().audio_clips()[0].id;
+    let changed_region = audio_project(1, 32, 4);
+    let changed_asset = audio_project(0, 32, 5);
+    let mut snapshot = project.snapshot();
+    snapshot.session.cells.clear();
+    let removed = Project::from_snapshot(snapshot).unwrap();
+    for (candidate, expected_release) in [
+        (prepare(&project, &original), true),
+        (prepare(&project, &replacement), false),
+        (prepare(&changed_region, &original), false),
+        (prepare(&changed_asset, &original), false),
+        (prepare(&removed, &original), false),
+    ] {
+        let mut old = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+        old.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 8]).unwrap();
+        old.apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        let mut first = [[0.0; 2]; 1];
+        old.render(&mut first).unwrap();
+        assert!(first[0][0] > 0.0);
+        let mut next = SessionPlayback::new(candidate).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut after = [[0.0; 2]; 1];
+        next.render(&mut after).unwrap();
+        if expected_release {
+            assert!(after[0][0] > 0.0, "unchanged source retains its release");
+        } else {
+            assert_eq!(
+                after,
+                [[0.0; 2]],
+                "a replacement must not sound as the old release"
+            );
+        }
+    }
+}
+
+#[test]
+fn streamed_session_release_handoff_demands_only_the_unchanged_source() {
+    struct Pages {
+        frames: [[f32; 2]; 32],
+    }
+    impl MediaPages for Pages {
+        fn page(
+            &mut self,
+            _key: StreamSourceKey,
+            page_index: u64,
+        ) -> Option<BorrowedMediaPage<'_>> {
+            (page_index == 0).then_some(BorrowedMediaPage {
+                page_index,
+                frames: &self.frames,
+            })
+        }
+        fn request_page(&mut self, _key: StreamSourceKey, _page_index: u64) {}
+    }
+    let project = audio_project(0, 32, 4);
+    let prepare = |generation| {
+        let sources = project
+            .assets()
+            .map(|asset| {
+                let metadata = StreamedSourceMetadata::new(
+                    StreamSourceKey::new(generation, asset.id()),
+                    48_000,
+                    48_000,
+                    32,
+                    32,
+                    hex_project::IDENTITY_CONVERSION,
+                    [0x42; 32],
+                )
+                .unwrap();
+                (
+                    asset.id(),
+                    PreparedAudioSource::Streamed(Arc::new(metadata)),
+                )
+            })
+            .collect();
+        Arc::new(
+            PreparedRevision::prepare_with_prepared_audio_sources(
+                &project,
+                &sources,
+                generation,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let revision = prepare(1);
+    let track = project.tracks()[0].id();
+    let clip = revision.session().audio_clips()[0].id;
+    for (generation, keeps_release) in [(1, true), (2, false)] {
+        let mut pages = Pages {
+            frames: [[0.5; 2]; 32],
+        };
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        old.apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_pages(&mut [[0.0; 2]; 8], &mut pages)
+            .unwrap();
+        old.apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+        old.render_with_pages(&mut [[0.0; 2]; 1], &mut pages)
+            .unwrap();
+        let mut next = SessionPlayback::new(prepare(generation)).unwrap();
+        let mut extents = Vec::new();
+        next.preview_stream_handoff(&mut old, 1, None, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(!extents.is_empty(), keeps_release);
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut after = [[0.0; 2]; 1];
+        next.render_with_pages(&mut after, &mut pages).unwrap();
+        assert_eq!(after[0][0] > 0.0, keeps_release);
+    }
+}
+
+#[test]
 fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
     let source: Vec<Frame> = (0..32)
         .map(|i| [i as f32 / 64.0, -(i as f32) / 64.0])
@@ -13939,8 +14222,9 @@ fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
     }
 }
 
-#[test]
-fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+fn mixed_streamed_resident_and_midi_compensation_case(
+    return_gain: Option<f32>,
+) -> ([[f32; 2]; 512], u32) {
     #[derive(Default)]
     struct ChangingPages {
         frames: [[f32; 2]; 32],
@@ -13981,9 +14265,39 @@ fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_st
         .execute(Command::InsertDevice {
             track,
             before: None,
-            state: limiter,
+            state: limiter.clone(),
         })
         .unwrap();
+    if let Some(gain) = return_gain {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "latency return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return track expected");
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ReturnGain {
+                return_track: bus,
+                gain,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+    }
     editor
         .execute(Command::SetLoopRegion {
             start: 0,
@@ -14066,4 +14380,22 @@ fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_st
     assert!(actual.0.iter().flatten().any(|sample| *sample != 0.0));
     assert!(actual.1.len() > 1);
     assert_eq!(actual.2.len(), 1);
+    assert_eq!((actual.3, actual.4), (512, 8));
+    (actual.0, revision.arrangement().main_latency_frames())
+}
+
+#[test]
+fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+    let track_latency = mixed_streamed_resident_and_midi_compensation_case(None);
+    let silent_return = mixed_streamed_resident_and_midi_compensation_case(Some(0.0));
+    let sounding_return = mixed_streamed_resident_and_midi_compensation_case(Some(1.0));
+    assert_eq!(sounding_return.1, silent_return.1);
+    assert!(
+        sounding_return.1 > track_latency.1,
+        "the return must add latency"
+    );
+    assert_ne!(
+        sounding_return.0, silent_return.0,
+        "the return send must change rendered PCM"
+    );
 }

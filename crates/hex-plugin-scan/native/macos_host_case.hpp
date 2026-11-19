@@ -58,7 +58,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
                 if (e.scenario==10) e.worker_dispatch=static_cast<int>(instance.dispatch_host_callbacks().disposition);
                 std::unique_lock<std::mutex> lock(mutex);
                 reached=true; changed.notify_all(); changed.wait(lock,[&] { return resume; });
-                if(e.scenario==13) {
+                if(e.scenario==13 || e.scenario==15) {
                     lock.unlock();e.edit_order=1;
                     for(int wave=0;wave<2;++wave) {
                         for(int n=0;n<8;++n) {
@@ -102,7 +102,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
         std::thread background([&] {e.message=messages(2);});
         background.join();
     }
-    else if(e.scenario==13) {
+    else if(e.scenario==13 || e.scenario==15) {
         const auto wave=[&](uint32 id) {
             bool ok=edit(1,id,0)==kResultOk;
             for(int n=0;n<6;++n) ok=edit(2,id,0.75)==kResultOk && ok;
@@ -111,6 +111,13 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
         e.callback=wave(7)?kResultOk:kResultFalse;
         for(int n=0;n<8;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
         e.callback=wave(11) && e.callback==kResultOk?kResultOk:kResultFalse;
+        if(e.scenario==15) {
+            // The actual SDK controller has admitted two complete gestures.
+            // Sealing must not disturb the queued second one or poison Host.
+            e.known=instance.seal_editor_edits_on_control();
+            e.unknown=edit(1,7,0);
+            e.message=instance.pending_parameter_edits();
+        }
         const auto pending=instance.dispatch_host_callbacks();
         e.edit_backpressure=pending.disposition==hex_instance::HostDisposition::Pending && pending.sequence==10;
         {
@@ -145,7 +152,10 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     int observation[135]{};
     const int size=observe(observation,135);
     if (size>=7) e.violations=observation[0];
-    return diagnostics && e.pcm && e.violations==0 && (e.scenario!=13 || (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk));
+    return diagnostics && e.pcm && e.violations==0 &&
+        ((e.scenario!=13 && e.scenario!=15) ||
+            (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk)) &&
+        (e.scenario!=15 || (e.known && e.unknown==kResultFalse && e.message==16 && !e.refusals));
 }
 static void print_host() {
     const auto& e=host_evidence;

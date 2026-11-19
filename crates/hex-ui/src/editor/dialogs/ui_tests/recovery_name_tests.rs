@@ -214,6 +214,11 @@ fn rename_open(cx: &mut TestAppContext, clip: bool, answer: &str, initially_clea
             assert_eq!(view.state.as_ref().unwrap().project, target)
         });
         if answer == "save" {
+            let saved = if initially_clean {
+                saved
+            } else {
+                saved.with_extension("").join("current.hex")
+            };
             select_open(&mut visual, cx, saved);
             pump(&editor, cx, |view| {
                 settled(view) && view.project_generation == generation + 2

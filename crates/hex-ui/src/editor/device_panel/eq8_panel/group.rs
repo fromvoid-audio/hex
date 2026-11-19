@@ -21,6 +21,8 @@ pub(super) struct Drag {
     origin: [f32; 2],
     rate: u32,
     bands: Vec<Origin>,
+    axes: (ParameterId, ParameterId),
+    touch: super::super::eq_automation::DragTouch,
 }
 
 fn bank(view: &mut EditorView, device: DeviceId, metadata: &NativeDeviceView) -> usize {
@@ -94,7 +96,13 @@ fn snapshot(
     DeviceParameterSnapshot::new(&entries).map_err(|_| "eq8 group parameters unavailable")
 }
 
-pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: ResponseGraphEvent) {
+pub(super) fn event(
+    view: &mut EditorView,
+    device: DeviceId,
+    mask: u8,
+    event: ResponseGraphEvent,
+    cx: &Context<EditorView>,
+) {
     if event.phase == Phase::Begin {
         if let Some(control) = view.device_panel.eq8_graphs.get_mut(&device) {
             control.group_drag = None;
@@ -112,6 +120,7 @@ pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: Re
             .as_ref()
             .map_or(48_000, |s| s.project.sample_rate());
         let upper = (rate as f32 * 0.49).min(MAX_HZ);
+        let mut axes = None;
         let mut bands = Vec::with_capacity(BAND_COUNT);
         for band in 0..BAND_COUNT {
             if mask & (1 << band) == 0 {
@@ -131,6 +140,9 @@ pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: Re
             else {
                 return;
             };
+            if band == event.node_id as usize {
+                axes = Some((first, second));
+            }
             bands.push(Origin {
                 first,
                 second,
@@ -145,6 +157,9 @@ pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: Re
                 q,
             });
         }
+        let Some(axes) = axes else {
+            return;
+        };
         match snapshot(&bands, [0.0, 0.0], rate).and_then(|initial| {
             view.device_gesture
                 .begin_snapshot(view.project_generation, device, initial)
@@ -157,6 +172,11 @@ pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: Re
                         origin: event.position,
                         rate,
                         bands,
+                        axes,
+                        touch: super::super::eq_automation::DragTouch::new(
+                            event.position,
+                            control.entity.read(cx).plot_bounds(),
+                        ),
                     });
                 }
             }
@@ -164,7 +184,7 @@ pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: Re
         }
         return;
     }
-    let Some(plan) = view
+    let Some(mut plan) = view
         .device_panel
         .eq8_graphs
         .get_mut(&device)
@@ -190,18 +210,23 @@ pub(super) fn event(view: &mut EditorView, device: DeviceId, mask: u8, event: Re
         Phase::Cancel => view.cancel_device_gesture(),
         Phase::Commit => snapshot(&plan.bands, delta, plan.rate)
             .and_then(|values| view.device_gesture.finish_snapshot(values)),
-        Phase::Change => {
-            let result = snapshot(&plan.bands, delta, plan.rate)
-                .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()));
-            if let Some(control) = view.device_panel.eq8_graphs.get_mut(&device) {
-                control.group_drag = Some(plan);
-            }
-            result
-        }
+        Phase::Change => snapshot(&plan.bands, delta, plan.rate)
+            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ())),
         _ => Ok(()),
     };
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
+    } else if matches!(event.phase, Phase::Change | Phase::Commit)
+        && let Some(target) = plan
+            .touch
+            .moved(event.position, Some(plan.axes.0), plan.axes.1)
+    {
+        view.remember_automation_parameter(device, target);
+    }
+    if event.phase == Phase::Change
+        && let Some(control) = view.device_panel.eq8_graphs.get_mut(&device)
+    {
+        control.group_drag = Some(plan);
     }
 }
 
@@ -253,7 +278,7 @@ pub(super) fn disable(view: &mut EditorView, device: DeviceId, cx: &mut Context<
     cx.notify();
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

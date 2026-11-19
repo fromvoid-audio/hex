@@ -1357,6 +1357,13 @@ fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
         )
         .unwrap();
         tested.computer_keyboard = Some(Box::new(keyboard));
+        let linear_export = tested.linear_arrangement_export;
+        tested.linear_arrangement_export = false;
+        assert_eq!(
+            tested.visit_current_stream_quantum_at(0, 128, Some(true), false, &mut |_| Ok(())),
+            Err(crate::playback::StreamQuantumProjectionError::Unsupported)
+        );
+        tested.linear_arrangement_export = linear_export;
         let before = (tested.arrangement_frame, tested.performance_frame);
         let mut output = [[0.0; 2]; 128];
         let mut master = [[0.0; 2]; 128];

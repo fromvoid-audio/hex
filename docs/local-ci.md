@@ -43,6 +43,42 @@ clippy, build or runner) at a time. A session's own worktree target may need
 Do not edit a checkout while a runner is using it: a changed tree marks the
 run stale, and Python self-tests that start scripts would test the edit.
 
+The `--quick` profile runs guards and `cargo fmt --all --check`. It can run in
+an unchanged checkout during another executor's build.
+
+For Cargo-heavy verification, wrap the entire command (including scripts that
+may spawn Cargo) in the shared slot:
+
+```sh
+python3 scripts/cargo-slot.py cargo test -p OWNER --locked
+python3 scripts/cargo-slot.py --wait-seconds 60 cargo test -p OWNER --locked FILTER
+python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
+```
+
+All participating Hex and Yield worktrees on the same user account must use the
+same `~/.cache/hex/cargo-slot.lock`. From a Yield worktree, invoke this wrapper
+by its absolute path in a Hex checkout. An upgraded wrapper first reserves the
+next turn using the sibling `cargo-slot.lock.admission` lock, then waits for
+the execution lock. Once it reports `next cargo slot reserved`, later upgraded
+wrappers wait behind it. Order among waiters for the reservation is unspecified.
+Legacy wrappers still share the execution lock and can contend for the next turn.
+
+Set `--wait-seconds` to the remaining time available for admission. It covers
+both locks, accepts zero for an immediate attempt, and exits 75 with a timeout
+message before starting the command when the budget expires. Without it, the
+wrapper waits until it acquires both locks. `cargo slot acquired` confirms
+admission; the child exit status reports the command result. Record admission
+wait separately from build and test execution. The active command keeps its
+slot until it finishes or releases its inherited descriptor.
+
+The wrapper passes only the execution lock to the child, so killing the
+wrapper does not free the slot while the child retains that descriptor. Leave
+both lock files in place. These advisory locks are separate from the runner's
+target-custody lock and cover cooperating commands. Check for nonparticipants and
+coordinate with their owners before starting; do not kill their work.
+`HEX_CARGO_SLOT_FILE` is for isolated tests: different values do not coordinate
+with each other.
+
 Reviewed check set template for a PR description:
 
 ```text
@@ -137,15 +173,63 @@ Section hit tests use:
 cargo test -p hex-ui --features ui-unit-tier --test unit_section --locked
 ```
 
-Editor logic tests, including Session route view state, EQ response sampling and
-overview-waveform geometry, use:
+Editor logic tests, including Session route view state, EQ response sampling,
+overview-waveform, loop and stretch projections, waveform-grid, peak and fade paint geometry,
+clip-drag geometry,
+arrangement-map and group-overview projections, browser tree and sample state, recent-project labels, session-receipt reconciliation,
+output-meter logic, project tempo value conversion, and passive time-move interval splitting, use:
 
 ```sh
 cargo test -p hex-ui --features ui-unit-tier --test unit_editor_logic --locked
 ```
-Other `hex-ui` tests have not yet been classified into separate tiers; in
-particular, the real-window receipt and delayed-acknowledgement tests remain in
-the `ui-test-support` library suite.
+
+The seven default standalone targets run with the default package tests.
+Whole-package plans that elide the default package run select those standalone
+targets directly. A change confined to reviewed standalone unit test targets and
+harnesses runs the owning unit targets and keeps the reviewed feature Clippy
+checks. Changes to product source still select its unit and rendered support
+coverage.
+
+The windowed library and the standalone MIDI pressure and recorder layout tests
+use `ui-test-support` in separate invocations:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --lib --locked
+cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+cargo test -p hex-ui --features ui-test-support --test sample_recorder_layout --locked
+```
+
+Run `cargo test -p hex-ui --tests --locked` for the default library and
+default standalone unit targets. The six `ui-unit-tier` targets above complete
+the unit tier. These `ui-test-support` invocations form the integration tier,
+including rendered focus and shortcuts, pending-edit receipts, delayed
+acknowledgement repaint, and open/save flows. For each tier, time the combined
+setup and test execution with compilation measured separately. The unit limit
+is 30 seconds and the integration limit is three minutes.
+
+To time the tiers independently, add `--no-run --message-format=json` to each
+Cargo command and collect the test-profile `compiler-artifact` executables.
+Measure wall time for running all distinct executables in each tier, including
+process startup and fixture setup. Run them from the package directory, as Cargo
+does, and keep the default harness arguments so the same tests run. Record the
+source, toolchain, test counts, build times and the two tier totals. Timing the
+feature-enabled library executable measures the windowed integration suite.
+
+For a focused first-launch comparison, time the first exact test invocation on
+the newly linked executable, then repeat it on the same file. Run `--list` on
+separate fresh APFS copies to sample launch and discovery without executing the
+test. Keep the executable format, signing preparation, toolchain and system
+settings consistent between comparisons. Record the process wall time and
+harness time separately. This establishes the launch cost on that configuration.
+
+For focused recorder layout timing on macOS arm64, build
+`sample_recorder_layout` with `--release --no-run --message-format=json`.
+Copy Cargo's reported test executable to a local artifact directory and prepare
+that copy with `xcrun strip -S -x`, `codesign --force --sign -`, and
+`codesign --verify --strict`. Time a fresh APFS copy of the prepared executable
+and run `recorder_header_fits_the_button_labels_and_hit_targets` with
+`--exact --test-threads=1`. Repeat on the same executable for warm timing and
+report compilation and one-time signature preparation separately.
 
 Plans containing self-tests run the existing changelog, architecture, dependency,
 UI/layout and formatting checks first, once each, before Python self-tests and
@@ -200,31 +284,45 @@ carries a doc example (a fenced block in `///` or `//!` comments). A reviewed ru
 consumer that is itself the changed owner (for example hex-storage) is
 module-scoped like any owner.
 
+For a module-scoped `hex-session` automation-take adoption change, the
+planner also runs the `automation_take_density` integration target when it is
+present. It exercises the real durable overflow boundary and must run at least
+one test. Whole-package checks already include it; unrelated modules stay scoped.
+
 Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
-comprehensive discovery. Merge checks without explicit native acceptance inputs
+comprehensive discovery. Ordinary unscoped full audits and comprehensive merge
+checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
 eight workers and batches of up to eight ordinary cases from the same
 module or package. When Git on the
-original PATH is Apple's `/usr/bin/git` launcher, discovery resolves the
-selected Git once with `xcrun` and puts only that executable ahead of the
-original PATH for its child processes. Comprehensive full, release and health runs
-remain serial. Owner selections run through `scripts/python_shards.py`:
-one process per test from a shared work queue (up to 12 workers), which brings
-`test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+original PATH is Apple's `/usr/bin/git` launcher, sharded runs resolve the
+selected Git once with `xcrun` and put only that executable ahead of the
+original PATH for its child processes. Full audits with explicit native
+acceptance inputs, scoped full plans, and the release and health profiles
+retain serial comprehensive discovery. Unscoped full reports record sharded
+discovery explicitly. Reports predating that marker retain their serial
+configuration for certificate validation. Owner selections run through `scripts/python_shards.py`:
+ordinary cases from the same module are batched up to eight per process in a
+shared work queue with a default cap of 12 workers.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
-use at most two workers. Owner selections run them after ordinary tests.
-Discovery queues them after the first wave of ordinary batches and shares the
-same worker limit. The real Cargo fixture classes marked
-`__hex_shard_early__ = True` start as isolated cases in that first wave. Both modes report every
-result and include the time spent on every case.
+use at most two workers. Owner selections and discovery queue them after the
+first ordinary wave and share the same worker limit. Real Cargo fixture
+classes marked `__hex_shard_early__ = True` are queued as isolated cases
+ahead of other ordinary batches. Both modes report every case and include
+its execution time.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
 example or bench, so building and linking those targets was pure overhead
-(hex-session has 28 test and 7 example targets, hex-storage 34).
+(hex-session has 28 test and 7 example targets, hex-storage 34). Explicit
+source-by-path targets are exceptions. Arrangement focus, track indentation and
+track-reorder subtree changes also select the standalone `hex-ui`
+`track_group_focus` unit target. It owns the in-memory visibility and indentation
+assertions. Changes to those sources also select the rendered consumers in the
+`ui-test-support` library.
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
@@ -263,6 +361,10 @@ prints its own `test result`; every listed test runs exactly once (70 s).
 Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
+The hex-ui gesture barrier and waveform geometry unit tests use the default
+library. Merge plans select the relevant modules,
+`editor::device_gesture::unit_tests::` and `editor::waveform_geometry::tests::`.
+Run either directly with `cargo test -p hex-ui --lib --locked MODULE`.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
 feature tests. Consumers lint in two invocations: default features
@@ -390,6 +492,53 @@ the previous target and failed report; changing the location is not evidence tha
 every test meets its time limit. Measure test setup and execution, including any
 copying or other setup, and investigate any remaining slow test separately.
 
+For a one-time dev target admission, first create an empty target directory,
+set its explicit absolute path as `CARGO_TARGET_DIR`, and pass `--fresh-target`
+to a full or scoped run.
+
+```sh
+mkdir -p artifacts/cargo-ci-target
+CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target" \
+  python3 scripts/cargo-slot.py python3 scripts/local-ci.py --profile full --fresh-target
+```
+
+The target must already exist, be empty and have no existing owner. An absent
+target is refused before Cargo metadata: the runner cannot yet prove the identity
+of a directory it creates before opening it. Create an empty directory yourself
+and retry; existing target contents are never removed. The reservation
+pins directory ancestry and holds the same lock across planner metadata, runner
+metadata, create-only owner publication and guarded checks. Metadata temporarily
+disables the rustc information cache, then must report the selected workspace
+and target and leave the directory fresh. The report records `claim-fresh` and
+the admitted target identity. Use the ordinary command to reuse that owned cache
+later. Resume and adoption have their own ownership contracts. Config-inferred
+targets use the ordinary path.
+
+The programmatic dev and release guards can also accept a live
+`FreshTargetReservation` acquired before the caller starts Cargo. The reservation
+invalidates authority when closed. Raw Cargo and other processes which ignore the
+cooperative target lock remain outside this observation.
+A target-wide `.admission-pending` sentinel beside its lock makes cooperating
+lock users refuse before cleanup or build, including explicit adoption and
+release recovery. Its contents are not trusted: any entry, including a dangling
+symlink, requires preserving it and choosing a fresh target. The standalone dev
+publisher syncs this sentinel before creating the existing dev owner record,
+verifies and syncs that record, then removes the sentinel before transferring the
+same lock to the runner. A failed publication before removal preserves the
+sentinel. A failed final directory sync denies handoff after the verified owner
+has been made durable. After a crash the sentinel can still be present, in which
+case the target remains unavailable to cooperating consumers.
+The refusal relies on the same intact lock-state directory; a replaced state
+directory can hide the sentinel. Use a target dedicated to current cooperating
+runners. The ordinary guarded path may run initial Cargo metadata before locking.
+For the opt-in identity-resolution API, the caller must acquire a reservation
+before its first Cargo operation and retain it through the later custody
+decision. Metadata must report exactly the explicit target and leave it fresh;
+resolution alone neither admits the target nor publishes ownership. A target
+inferred only from Cargo configuration does not meet this API's proof contract.
+The dev publisher uses the existing owner schema for pre-existing empty targets.
+Identity-bound creation for absent targets remains unsupported.
+
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
 preparation failure names that phase and the next unstarted stage; a failed
@@ -487,14 +636,27 @@ PY
 Use one persistent Cargo target per executor, with no concurrent raw Cargo writer.
 Repository tools acquire an advisory target lock. Unknown/foreign/pending cache
 ownership refuses before normal checks. Read the diagnostic before recovery.
+The lock file is opened without following a final symlink and its existing bytes
+are left unchanged. Contention reports that the target is in use without reading
+or displaying the untrusted lock-file contents as a holder identity. Older
+runner versions may still display stale holder information from that file.
 `--adopt-target` explicitly invalidates supported workspace development outputs
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
-Development and release ownership are separate markers: a target populated by
-local CI has no release owner, so packaging refuses it unless it is empty or
-explicitly adopted. Set separate `CARGO_TARGET_DIR` values for local CI and
-release packaging when both are needed; see [native macOS builds](test-builds.md).
+If a development cache handoff needs cleanup and any dependency outside the
+workspace runs a Cargo build script or procedural macro, the runner requires an
+empty target. Use a separate existing empty directory with `--fresh-target`.
+The first build recompiles dependencies. The old cache and its owner remain
+available for their original inputs. Cargo can only track declared inputs and
+the runner's recorded witnesses, so arbitrary reads outside them remain
+nonhermetic.
+
+Development and release ownership use separate markers. Packaging needs an empty
+target or a release owner that records an empty origin and matches the current
+checkout, exact source and build inputs. Explicit recovery can resume a matching
+pending owner. Set separate Cargo target paths for local CI and release packaging.
+See [native macOS builds](test-builds.md).
 
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across
@@ -540,6 +702,54 @@ inputs change. This controlled helper test does not establish installed plug-in,
 native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
+
+### Signed VST3 editor regression timing
+
+Use the optimized desktop test target to time the signed regression that
+checks whether a late editor value reaches the original worker across graph
+publication. Use the verified fixture receipts from the commands above.
+
+```sh
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test --locked --release -p hex-desktop --features allocation-probe --bin hex-desktop \
+  -- --ignored --exact --test-threads=1 \
+  native_audio::tests::plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
+```
+
+Measure first and repeated invocations separately and record both process wall
+time and the test harness duration. Report compilation separately. A fresh
+copy of the desktop executable can spend measurable time before libtest
+produces its first output, including on a listing-only run.
+
+### Long Re-Pitch regression timing
+
+The verified-worker Re-Pitch regression imports a file past the resident limit,
+applies history, seeks to audio beyond that limit, and saves and reopens the
+project. Use the compact macOS arm64 test build for focused first-launch timing.
+
+```sh
+cargo --config 'profile.release.package.hex-desktop.opt-level="z"' \
+  --config 'profile.release.package.hex-desktop.strip="symbols"' \
+  --config 'profile.release.package.hex-ui.opt-level="z"' \
+  --config 'profile.release.package.gpui.opt-level="z"' \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  test --release --locked -p hex-desktop --features allocation-probe \
+  --bin hex-desktop --no-run --message-format=json
+```
+
+Use the executable from Cargo's `hex-desktop` test artifact. Prepare a local
+APFS copy, sign that copy with `codesign --force --sign -` and verify it with
+`codesign --verify --strict`. Run the following exact test with
+`--exact --test-threads=1` on a fresh APFS copy of the signed executable, then
+repeat on the same executable for warm timing.
+
+`native_audio::tests::resident_lifecycle::ordinary_long_repitch_plays_and_reopens_through_verified_workers`
+
+Record executable copy setup, process wall time and harness time. Report the
+compilation and one-time signature preparation separately. The fresh copy tests
+a new executable identity on the current filesystem cache.
 
 ### Dense playback baseline
 

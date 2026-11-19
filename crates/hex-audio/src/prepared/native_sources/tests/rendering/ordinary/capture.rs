@@ -30,6 +30,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
             .try_fenced_native_quantum_on_control(source, fence, f.binding)
             .is_err()
     );
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     allocation_free(|| {
         f.data
             .owner_mut()
@@ -39,6 +44,56 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
     assert_eq!(
         f.control.stopped_edit_fence_state(fence),
         StoppedEditFenceState::Ready
+    );
+    let frontier = f
+        .control
+        .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+        .unwrap();
+    let observed = f
+        .control
+        .try_fenced_native_quantum_on_control(source, fence, f.binding)
+        .unwrap()
+        .unwrap()
+        .observation();
+    let expected_key = match observed.state {
+        crate::plugin_worker::CommittedQuantumState::OpenProgram(key) => Some(key),
+        crate::plugin_worker::CommittedQuantumState::Closed
+        | crate::plugin_worker::CommittedQuantumState::OpenUnprogrammed => None,
+    };
+    let worker = f
+        .control
+        .try_native_source_program_frontier_on_control(f.binding)
+        .unwrap();
+    assert_eq!(
+        frontier,
+        hex_engine::ForeignProgramFrontier::Stopped {
+            open_quantum: expected_key,
+            worker_empty: worker == hex_engine::ForeignProgramFrontier::Empty,
+        }
+    );
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(
+                AppliedAudioSource {
+                    audio_revision: source.audio_revision + 1,
+                    ..source
+                },
+                fence,
+                f.binding
+            )
+            .is_err()
+    );
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(
+                source,
+                fence,
+                Binding {
+                    epoch: f.binding.epoch + 1,
+                    ..f.binding
+                }
+            )
+            .is_err()
     );
     let checkpoint = f
         .control
@@ -56,6 +111,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
                     .try_fenced_native_quantum_on_control(source, fence, f.binding),
                 Err("native preparation is busy")
             );
+            assert_eq!(
+                f.control
+                    .try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+                Err("native preparation is busy")
+            );
         })
         .unwrap();
     f.control.status.closing.store(true, Release);
@@ -65,6 +125,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
             .is_err()
     );
     assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     f.control.status.closing.store(false, Release);
     assert!(
         f.control
@@ -103,6 +168,11 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
     );
     assert!(f.control.fenced_native_quantum_fence_is_ready(checkpoint));
     f.control.stop();
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
     assert!(
         f.control
@@ -111,11 +181,104 @@ fn fenced_quantum_requires_its_current_uninterrupted_graph_fence() {
     );
     f.control.release_stopped_edit_fence(fence);
     assert!(!f.control.fenced_native_quantum_fence_is_ready(checkpoint));
+    assert!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding)
+            .is_err()
+    );
     let returned = dispose(f);
     assert!(
         matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
         if retired.status.success() && retired.terminal.is_some())
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_frontier_observes_the_untouched_original_callback() {
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 0, 256, &[7]);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    physical_block::<8>(&mut f);
+    let source = f.control.status.native_effect_source().unwrap();
+    let fence = f.control.request_native_epoch_fence(source).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        f.control.stopped_edit_fence_state(fence),
+        StoppedEditFenceState::Ready
+    );
+    assert_eq!(
+        f.control
+            .try_fenced_native_quantum_on_control(source, fence, f.binding),
+        Ok(None),
+        "the existing API must still report no committed observation"
+    );
+    assert!(matches!(
+        f.control
+            .try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+        Ok(hex_engine::ForeignProgramFrontier::Stopped {
+            open_quantum: None,
+            ..
+        })
+    ));
+    f.control.release_stopped_edit_fence(fence);
+    dispose(f);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_frontier_keeps_a_real_partial_programmed_quantum() {
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 0, 256, &[7]);
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    physical_block::<64>(&mut f);
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    for _ in 0..32 {
+        physical_block::<8>(&mut f);
+        if !f.control.status.playing.load(Acquire) {
+            break;
+        }
+    }
+    assert!(!f.control.status.playing.load(Acquire));
+    let source = f.control.status.native_effect_source().unwrap();
+    let fence = f.control.request_native_epoch_fence(source).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert_eq!(
+        f.control.stopped_edit_fence_state(fence),
+        StoppedEditFenceState::Ready
+    );
+    let checkpoint = f
+        .control
+        .try_fenced_native_quantum_on_control(source, fence, f.binding)
+        .unwrap()
+        .unwrap();
+    let crate::plugin_worker::CommittedQuantumState::OpenProgram(key) =
+        checkpoint.observation().state
+    else {
+        panic!(
+            "expected a real partially staged programmed quantum: {:?}",
+            checkpoint.observation()
+        );
+    };
+    assert!(
+        matches!(f.control.try_fenced_native_program_frontier_on_control(source, fence, f.binding),
+        Ok(hex_engine::ForeignProgramFrontier::Stopped { open_quantum: Some(actual), .. }) if actual == key)
+    );
+    f.control.release_stopped_edit_fence(fence);
+    dispose(f);
 }
 
 #[test]
@@ -785,4 +948,269 @@ fn actual_ordinary_live_capture_held_sdk_keeps_installed_source_and_pcm() {
     );
     drop(request);
     dispose(f);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sequenced_capture_reserves_only_the_installed_original_endpoint() {
+    use crate::plugin_worker::{
+        NativeWorkerParameterProgress, NativeWorkerSequencedCaptureProgress,
+    };
+    if std::env::var_os("HEX_SEQUENCED_ENDPOINT_DRIVER").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env("HEX_SEQUENCED_ENDPOINT_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_at("processing", 0);
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, f.binding, 1);
+    let until = Instant::now() + Duration::from_secs(3);
+    let request = loop {
+        match f
+            .control
+            .begin_native_source_parameter_change_on_control(f.binding, 7, 0.75)
+        {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+            Err(error) => panic!("input admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    for n in 1..5_u64 {
+        block(&mut f);
+        replacement::wait_for_blocks(&root, f.binding, n + 1);
+    }
+    loop {
+        match f
+            .control
+            .poll_native_source_parameter_change_on_control(f.binding, &request)
+        {
+            Ok(NativeWorkerParameterProgress::Processed(_)) => break,
+            Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
+            other => panic!("input terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    }
+    let capture = loop {
+        match f
+            .control
+            .begin_native_capture_after_parameter_on_control(f.binding, &request)
+        {
+            Ok(capture) => break capture,
+            Err("native preparation is busy" | "native capture mailbox is busy") => {}
+            Err(error) => panic!("capture admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let fact = loop {
+        match f
+            .control
+            .poll_native_capture_after_parameter_on_control(f.binding, &capture)
+        {
+            Ok(NativeWorkerSequencedCaptureProgress::Captured(fact)) => break fact,
+            Ok(NativeWorkerSequencedCaptureProgress::Pending)
+            | Err("native preparation is busy" | "native capture mailbox is busy") => {}
+            _ => panic!("capture terminal"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let approved = loop {
+        match f
+            .control
+            .approve_native_sequenced_capture_on_control(f.binding, &fact)
+        {
+            Ok(state) => break state,
+            Err(
+                "native preparation is busy"
+                | "native source is busy"
+                | "native capture mailbox is busy",
+            ) => {}
+            Err(error) => panic!("sequenced capture provenance: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert!(approved.processing_eq(fact.state()));
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(f.binding, &approved),
+        Some(false),
+        "capture correspondence alone must not approve processing"
+    );
+    assert!(
+        f.control
+            .approve_native_sequenced_capture_on_control(
+                Binding {
+                    epoch: f.binding.epoch + 1,
+                    ..f.binding
+                },
+                &fact,
+            )
+            .is_err()
+    );
+    let identity = crate::plugin_effects::Hosting::saved_identity_on_control(&approved).unwrap();
+    let selection =
+        crate::plugin_effects::AuthoredSelection::for_no_parameters(identity.class.bytes())
+            .unwrap();
+    let (build, _, preparation) = crate::candidate_custody::native_source_test_fixture::input_for(
+        "processing",
+        [
+            0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ],
+    );
+    let host = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let applied = f.control.status.native_parameter_source(true).unwrap().0;
+    let wrong_class =
+        crate::plugin_effects::AuthoredSelection::for_no_parameters([33; 16]).unwrap();
+    assert_eq!(
+        host.begin_canonical_bases_capture_on_control(
+            &mut f.control,
+            applied,
+            f.binding,
+            &approved,
+            &wrong_class,
+            true
+        )
+        .err()
+        .as_deref(),
+        Some("native canonical base class differs"),
+    );
+    let stale = AppliedAudioSource {
+        audio_revision: applied.audio_revision + 1,
+        ..applied
+    };
+    assert_eq!(
+        host.begin_canonical_bases_capture_on_control(
+            &mut f.control,
+            stale,
+            f.binding,
+            &approved,
+            &selection,
+            true
+        )
+        .err()
+        .as_deref(),
+        Some("native base capture requires the current ordinary processor"),
+    );
+    let mut query = loop {
+        match host.begin_canonical_bases_capture_on_control(
+            &mut f.control,
+            applied,
+            f.binding,
+            &approved,
+            &selection,
+            true,
+        ) {
+            Ok(query) => break query,
+            Err(error)
+                if error == "native preparation is busy" || error == "native source is busy" => {}
+            Err(error) => panic!("empty canonical profile admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    let facts = loop {
+        if let Some(result) = query.poll_on_control(&mut f.control, &mut || false) {
+            break result.expect("empty canonical profile must be restorable");
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert_eq!(facts.binding(), f.binding);
+    assert!(facts.canonical_state().processing_eq(&approved));
+    assert_eq!(facts.parameters().count(), 0);
+    assert_eq!(
+        f.control
+            .native_source_approves_processing_state_on_control(f.binding, facts.canonical_state()),
+        Some(true),
+        "the private empty-selection preparation must approve the exact state"
+    );
+    let source = loop {
+        match f
+            .control
+            .observe_native_sequenced_capture_input_on_control(f.binding, &fact)
+        {
+            Ok(Some(source)) => break source,
+            Err(
+                "native preparation is busy"
+                | "native source is busy"
+                | "native capture mailbox is busy",
+            ) => {}
+            _ => panic!("source observation"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            let wrong = Binding {
+                epoch: f.binding.epoch + 1,
+                ..f.binding
+            };
+            assert!(
+                callback
+                    .reserve_native_parameter_input_observation(wrong, &source)
+                    .is_none()
+            );
+            let mut fence = callback
+                .reserve_native_parameter_input_observation(f.binding, &source)
+                .unwrap();
+            assert!(fence.is_live());
+            assert!(fence.try_order_before_revocation());
+            assert!(
+                callback
+                    .reserve_native_parameter_input_observation(f.binding, &source)
+                    .is_none()
+            );
+        })
+    });
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            let mut fence = callback
+                .reserve_native_parameter_input_observation(f.binding, &source)
+                .unwrap();
+            f.control.status.closing.store(true, Release);
+            assert!(!fence.is_live());
+            assert!(!fence.try_order_before_revocation());
+        })
+    });
+    f.control.status.closing.store(false, Release);
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            callback.revoke_native_effects();
+            assert!(
+                callback
+                    .reserve_native_parameter_input_observation(f.binding, &source)
+                    .is_none()
+            );
+        })
+    });
+    drop(source);
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some())
+    );
 }

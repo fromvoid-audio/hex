@@ -235,6 +235,7 @@ impl EditorView {
             || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
         {
@@ -301,6 +302,7 @@ impl EditorView {
             || self.automation_take_recovery.unresolved()
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
         {
@@ -421,7 +423,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

@@ -237,12 +237,11 @@ impl NativeWorker {
             instance,
             |instance| {
                 let config = instance.configuration();
-                let prefix = instance.completed_blocks_on_control();
-                if config.input_channels == 0 {
-                    instrument_channel_from_completed_prefix(config.binding, config.quantum, prefix)
-                } else {
-                    channel_from_completed_prefix(config.binding, config.quantum, prefix)
-                }
+                native_pcm_channel_from_completed_prefix(
+                    config.binding,
+                    config.quantum,
+                    instance.completed_blocks_on_control(),
+                )
             },
             spawn,
         )
@@ -315,10 +314,12 @@ impl NativeWorker {
             }
         };
         let cancellation = instance.cancellation_on_control();
+        let offline = instance.is_offline_on_control();
         match spawn_processor_with(
             control,
             worker,
             Processor::Native(Box::new(instance)),
+            offline,
             spawn,
         ) {
             Ok(reaper) => Ok((
@@ -327,6 +328,7 @@ impl NativeWorker {
                     binding,
                     quantum,
                     retirement_requested: false,
+                    editor_edits_sealed: false,
                     grouped_editor_callbacks,
                     source_storage: Some(source_storage),
                 },

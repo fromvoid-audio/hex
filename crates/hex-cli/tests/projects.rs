@@ -61,7 +61,7 @@ fn run(directory: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
+fn explicit_cli_export_range_stems_and_overwrite_preserve_previous_file() {
     let directory = TempDir::new();
     fs::write(
         directory.path().join("source.wav"),
@@ -127,14 +127,23 @@ fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
         String::from_utf8_lossy(&replaced.stderr)
     );
     let text = String::from_utf8(replaced.stdout).unwrap();
-    assert!(!text.contains("previous file preserved"));
-    assert!(fs::read_dir(directory.path()).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".hex-export-")
-    }));
+    let retained = text
+        .lines()
+        .find_map(|line| line.strip_prefix("previous file preserved at "))
+        .expect("confirmed overwrite reports the retained file");
+    let retained = directory.path().join(retained);
+    assert_eq!(fs::read(&retained).unwrap(), b"old recording");
+    let staging: Vec<_> = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hex-export-")
+        })
+        .collect();
+    assert_eq!(staging, vec![retained]);
     // Main and stem files carry independent ±1 LSB TPDF dither streams.
     let replaced = fs::read(directory.path().join("existing.wav")).unwrap();
     assert_eq!(replaced.len(), data.len());

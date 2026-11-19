@@ -132,6 +132,7 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
     for kind in [
         "select", "move", "range", "leading", "trailing", "fade", "gain", "start",
     ] {
+        let cx = &mut cx.new_app();
         let Fixture {
             _files,
             mut visual,
@@ -141,7 +142,14 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
             outside,
             cursor,
         } = fixture(cx, kind);
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(
+            down,
+            MouseButton::Left,
+            Modifiers {
+                alt: kind == "gain",
+                ..Modifiers::default()
+            },
+        );
         editor.read_with(&visual, |v, _| {
             let gesture = v
                 .audio_event_editor
@@ -222,6 +230,8 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
 fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppContext) {
     for kind in ["leading", "fade", "gain", "start"] {
         for loss in ["button", "focus", "generation", "hide", "escape", "invalid"] {
+            // Each case registers its own bindings and keeps only its own window.
+            let cx = &mut cx.new_app();
             let Fixture {
                 _files,
                 mut visual,

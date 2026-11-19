@@ -265,7 +265,18 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
             "lane selection stays idle"
         );
     });
-    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    let prior_range = visual.debug_bounds("loop-rail-range").expect("held range");
+    let prior_builds = editor.read_with(&visual, |view, _| view.track_row_builds);
+    let vertical = outside + point(px(0.), px(18.));
+    visual.simulate_mouse_move(vertical, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("loop-rail-range"), Some(prior_range));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.loop_rail_gesture.is_some());
+        assert!(view.time_selection_gesture.is_none());
+        assert_eq!(view.track_row_builds, prior_builds);
+    });
+    visual.simulate_mouse_up(vertical, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 384_000, false)));
 }
@@ -458,8 +469,8 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
             });
             let first = view.state.as_ref().unwrap().project.tracks()[0].id();
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: first,
-                end_track: first,
+                anchor_track: Some(first),
+                end_track: Some(first),
                 anchor_frame: 111,
                 end_frame: 222,
             });
@@ -599,8 +610,8 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
         let state = view.state.as_ref().unwrap().clone();
         let first = state.project.tracks()[0].id();
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: first,
-            end_track: first,
+            anchor_track: Some(first),
+            end_track: Some(first),
             anchor_frame: 111,
             end_frame: 222,
         });

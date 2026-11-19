@@ -2,10 +2,10 @@
 //! completion ordinals are the same contract used by trim and group-copy intents.
 //! This owns metadata paint only; the worker validates and commits the real edit.
 use super::pending_edit::{Disposition, Receipt};
-use super::{EditorView, drag::ClipDrag};
-use hex_project::{Command, Project};
+use super::{EditorView, drag::ClipDrag, edit_cursor::DropCursor, viewport::Viewport};
+use hex_project::{ClipId, Command, Created, Project};
 use hex_session::service::{Event, Request};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 pub(super) struct Pending {
     pub(super) drag: ClipDrag,
@@ -13,10 +13,17 @@ pub(super) struct Pending {
     receipt: Receipt,
     source: Arc<Project>,
     members: Vec<hex_project::ClipId>,
+    validated_source: Option<Weak<Project>>,
+    cursor_epoch: Option<u64>,
 }
 
 impl Pending {
-    pub(super) fn new(drag: ClipDrag, command: Command, source: Arc<Project>) -> Self {
+    pub(super) fn new(
+        drag: ClipDrag,
+        command: Command,
+        source: Arc<Project>,
+        cursor_epoch: Option<u64>,
+    ) -> Self {
         let receipt = Receipt::new(drag.project_generation);
         let mut members = drag.group.borrow().ids.clone();
         members.sort_unstable();
@@ -24,8 +31,10 @@ impl Pending {
             drag,
             command,
             receipt,
+            validated_source: Some(Arc::downgrade(&source)),
             source,
             members,
+            cursor_epoch,
         }
     }
 
@@ -199,9 +208,26 @@ impl Pending {
         self.drag.project_generation == view.project_generation
             && view.state.as_ref().is_some_and(|s| {
                 s.revision >= self.drag.revision
-                    && (Arc::ptr_eq(&s.project, &self.source)
-                        || selected_sources_unchanged(&self.source, &s.project, &self.members))
+                    && self
+                        .validated_source
+                        .as_ref()
+                        .is_some_and(|project| project.as_ptr() == Arc::as_ptr(&s.project))
             })
+    }
+
+    fn observe_source(&mut self, project: &Arc<Project>) {
+        if self
+            .validated_source
+            .as_ref()
+            .is_some_and(|last| last.as_ptr() == Arc::as_ptr(project))
+        {
+            return;
+        }
+        // Source validation belongs to canonical installation. Painting can
+        // then check the validated identity in constant time on every frame.
+        self.validated_source = (Arc::ptr_eq(project, &self.source)
+            || selected_sources_unchanged(&self.source, project, &self.members))
+        .then(|| Arc::downgrade(project));
     }
 }
 
@@ -269,18 +295,65 @@ impl EditorView {
 
     /// Position of the captured anchor clip in the displayed move preview.
     /// The same borrowed payload survives release until its own receipt settles.
-    pub(super) fn displayed_clip_move_guide_frame(&self) -> Option<u64> {
-        use super::drag::{ClipDropDestination, preview_for};
-        let drag = self.displayed_clip_drag()?;
-        match drag.destination.get()? {
-            ClipDropDestination::ExistingTrack(_) => {
-                drag.preview.get().map(|preview| preview.start_frame)
-            }
-            ClipDropDestination::NewTrack { position, .. } => {
-                let project = &self.state.as_ref()?.project;
-                preview_for(project, drag.source_track, position).map(|preview| preview.start_frame)
-            }
+    pub(super) fn displayed_clip_move_guide_frame(&self, viewport: Viewport) -> Option<u64> {
+        let drag = self
+            .pending_clip_move
+            .as_ref()
+            .filter(|p| p.current(self))
+            .map(|p| &p.drag)
+            .or_else(|| self.pending_bounce_drag())
+            .or_else(|| {
+                let state = self.state.as_ref()?;
+                self.active_clip_drag.as_ref().filter(|drag| {
+                    let group = drag.group.borrow();
+                    !self.opening_project
+                        && !self.close_prompt_open
+                        && drag.project_generation == self.project_generation
+                        && drag.revision == state.revision
+                        && drag.viewport() == viewport
+                        && drag.snap_grid == self.snap_grid
+                        && (group.ids.len() <= 1
+                            || group.selection_epoch == Some(self.clip_selection.epoch))
+                })
+            })?;
+        drag.cursor_position().map(|(_, frame)| frame)
+    }
+
+    /// Show the callback-confirmed anchor for the held gesture. Never infer an
+    /// audible position from a submitted pointer target.
+    pub(super) fn audible_clip_move_anchor(&self) -> Option<(hex_project::TrackId, u64)> {
+        let (destination, frame) = self.audible_clip_move_position()?;
+        Some((destination.existing_track()?, frame))
+    }
+
+    pub(super) fn audible_clip_move_position(
+        &self,
+    ) -> Option<(hex_session::service::ClipMovePreviewDestination, u64)> {
+        let drag = self.active_clip_drag.as_ref()?;
+        let (audio_revision, applied) = self.applied_clip_preview?;
+        let desired = self.expected_clip_preview?;
+        let state = self.state.as_ref()?;
+        if !self.drag_start_is_current(drag)
+            || self
+                .audio_status()?
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                != audio_revision
+            || applied.context != desired.context
+            || applied.context.project_generation != self.project_generation
+            || applied.context.editor_revision != state.revision
+            || applied.gesture != desired.gesture
+            || applied.sequence > desired.sequence
+        {
+            return None;
         }
+        let frame = match applied.position {
+            hex_project::ClipGroupPosition::Audio(frame) => frame,
+            hex_project::ClipGroupPosition::Midi(beat) => {
+                state.project.tempo_map().beat_to_frame(beat).ok()?
+            }
+        };
+        Some((applied.destination, frame))
     }
 
     pub(super) fn pending_clip_move_matches(&self, request: &Request) -> bool {
@@ -295,26 +368,47 @@ impl EditorView {
         }
     }
 
-    pub(super) fn clip_move_request_complete(&mut self, event: &Event) {
-        let Some(p) = self.pending_clip_move.as_mut() else {
-            return;
-        };
-        if p.receipt.observe(
+    pub(super) fn clip_move_request_complete(
+        &mut self,
+        event: &Event,
+    ) -> Option<(DropCursor, Option<ClipId>)> {
+        let p = self.pending_clip_move.as_mut()?;
+        let disposition = p.receipt.observe(
             self.project_generation,
             event.project_replaced,
             event.request_complete,
-        ) != Disposition::Waiting
-        {
-            // Accepted and refused terminals both retire before the event's
-            // canonical state is installed, in the same synchronous receive.
-            self.retire_pending_clip_move();
+        );
+        if disposition == Disposition::Waiting {
+            p.observe_source(&event.state.project);
+            return None;
         }
+        let pending = self.pending_clip_move.take()?;
+        self.service.retire_arrangement_move_audition();
+        self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
+        let cursor = (disposition == Disposition::Terminal)
+            .then(|| committed_drop_cursor(&pending.drag, pending.cursor_epoch, event))
+            .flatten();
+        let moved_clip = matches!(
+            pending.command,
+            Command::MoveClipWithOverwrite { .. }
+                | Command::MoveMidiClipWithOverwrite { .. }
+                | Command::MoveClipToNewTrack { .. }
+                | Command::MoveMidiClipToNewTrack { .. }
+                | Command::MoveClipsWithOverwrite { copy: false, .. }
+        )
+        .then_some(pending.drag.clip);
+        pending.drag.retire();
+        cursor.map(|cursor| (cursor, moved_clip))
     }
 
     pub(super) fn retire_pending_clip_move(&mut self) -> bool {
         let Some(pending) = self.pending_clip_move.take() else {
             return false;
         };
+        self.service.retire_arrangement_move_audition();
+        self.expected_clip_preview = None;
+        self.applied_clip_preview = None;
         pending.drag.retire();
         true
     }
@@ -333,7 +427,42 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+/// Use only the exact successful terminal. A new-track alias can name the
+/// copied clip rather than its owner, so resolve that owner from the receipt.
+pub(super) fn committed_drop_cursor(
+    drag: &ClipDrag,
+    epoch: Option<u64>,
+    event: &Event,
+) -> Option<DropCursor> {
+    if event.error.is_some() || event.project_replaced {
+        return None;
+    }
+    let created = event.created.as_ref()?;
+    let (track, frame) = drag.cursor_position()?;
+    let track = match (track, created) {
+        (Some(track), _) => track,
+        (None, Created::Track(track)) => *track,
+        (None, Created::Clip(clip) | Created::Clips { first: clip, .. }) => event
+            .state
+            .project
+            .tracks()
+            .iter()
+            .find(|track| {
+                track.clips().iter().any(|item| item.id() == *clip)
+                    || track.midi_clips().iter().any(|item| item.id() == *clip)
+            })?
+            .id(),
+        _ => return None,
+    };
+    Some(DropCursor {
+        track,
+        frame,
+        generation: drag.project_generation,
+        epoch: epoch?,
+    })
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{BeatTime, Created, Editor};

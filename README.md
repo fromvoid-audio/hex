@@ -45,6 +45,13 @@ launches. See
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
 
+### keep spacebar on transport with a vst3 editor focused
+
+On macOS, plain Space starts or pauses playback when a VST3 editor has focus.
+Modified Space and other shortcuts still go to the plug-in. To give plain Space
+to the plug-in too, open **hex → settings…** and turn off **space controls
+transport in vst3 editors**. Restart hex to apply a change.
+
 To run the optimized desktop directly from source:
 
 ```sh

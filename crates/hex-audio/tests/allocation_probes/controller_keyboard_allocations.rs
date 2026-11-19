@@ -139,3 +139,82 @@ fn held_keyboard_controller_publication_note_off_and_retirement_have_zero_callba
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn live_audition_trigger_expiry_and_hardware_release_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    use hex_engine::computer_keyboard::LiveNoteEvent;
+
+    let mut editor = Editor::new(Project::new(48_000)?, 8)?;
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
+        name: "audition".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
+    })?
+    else {
+        return Err("track missing".into());
+    };
+    let revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let root = Arc::new(ComputerKeyboardInput::default().with_live_notes()?);
+    let activation = root.begin_live_notes_activation_on_control()?;
+    let hardware = root.live_notes().ok_or("hardware queue missing")?;
+    let mut playback = Playback::try_from_prepared_with_session(revision)?;
+    playback.prepare_computer_keyboard(editor.project(), track, Arc::clone(&root))?;
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    control
+        .publish_with_policy_and_context_generation(playback, PublicationPolicy::InheritRuntime, 0)
+        .map_err(|error| error.reason)?;
+
+    hardware
+        .publish(
+            activation,
+            LiveNoteEvent::NoteOn {
+                channel: 1,
+                pitch: 60,
+                velocity: 37,
+            },
+        )
+        .map_err(|_| "could not publish hardware onset")?;
+    root.trigger_live_note_audition_on_control(&[(60, 93)], 64)?;
+    let mut frames = [[0.0; 2]; 64];
+    for step in 0..3 {
+        if step == 2 {
+            hardware
+                .publish(
+                    activation,
+                    LiveNoteEvent::NoteOff {
+                        channel: 1,
+                        pitch: 60,
+                        velocity: 0,
+                    },
+                )
+                .map_err(|_| "could not publish hardware release")?;
+        }
+        let mut rendered = None;
+        let counts = measure(|| {
+            callback.begin_block();
+            rendered = Some(callback.render(&mut frames));
+        });
+        rendered.ok_or("callback did not render")??;
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "audition step {step}"
+        );
+        assert!(frames.iter().flatten().any(|sample| *sample != 0.0));
+        assert!(hardware.same_current_activation(activation));
+    }
+    control.reclaim();
+    Ok(())
+}

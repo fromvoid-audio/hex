@@ -99,8 +99,8 @@ impl NativeEffectEntry {
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
         self.callback.take_accepted_manual_parameter()
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
-        self.callback.end_staging_at_pause(frame);
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.callback.end_staging_at_rendered_prefix(frame);
     }
     pub(crate) fn reject(&mut self) {
         self.callback.reject_callback();
@@ -206,8 +206,8 @@ impl NativeEffectCallbacks {
         self.quantum
     }
     /// Offline only. Wait outside rendering for the exact committed prefixes
-    /// so a later callback sees their replies. A failed source is fatal to
-    /// the file render even though interactive carriers can contain it.
+    /// so a later callback sees their replies. A failed source or concealed
+    /// reply is fatal to the file render.
     pub fn wait_offline_on_control(
         &self,
         workers: &[NativeWorker],
@@ -221,21 +221,30 @@ impl NativeEffectCallbacks {
             if self.entries.len() != workers.len() {
                 return Err(Error::Protocol("offline vst3 endpoint count differs"));
             }
-            let mut ready = true;
+            let mut waiting = None;
             for (entry, worker) in self.entries.iter().zip(workers) {
                 if !entry.callback.matches_worker(worker) || !entry.transport_is_live() {
                     return Err(Error::Protocol("offline vst3 worker failed"));
                 }
-                ready &= worker.published_blocks_on_control()
-                    >= entry.callback.transport.dispatched_blocks_on_control();
+                if entry.callback.concealed_output {
+                    return Err(Error::Protocol("offline vst3 output is incomplete"));
+                }
+                let target = entry.callback.transport.dispatched_blocks_on_control();
+                if worker.published_blocks_on_control() < target {
+                    worker.wake_offline_on_control();
+                    waiting.get_or_insert((worker, target));
+                }
             }
-            if ready {
+            let Some((worker, target)) = waiting else {
                 return Ok(());
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(Error::Timeout);
-            }
-            std::thread::sleep(std::time::Duration::from_micros(50));
+            };
+            let timeout = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .filter(|timeout| !timeout.is_zero())
+                .ok_or(Error::Timeout)?;
+            worker
+                .wait_for_offline_blocks_on_control(target, timeout)
+                .map_err(|_| Error::Protocol("offline vst3 progress unavailable"))?;
         }
     }
     /// Declare the complete physical callback. Endpoints begin only when the

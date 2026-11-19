@@ -29,6 +29,8 @@ fn verify_delivery(held: bool, restore_base: bool) {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env(CHILD, "1")
+            // The fixture builds several full prepared graphs on this test thread.
+            .env("RUST_MIN_STACK", "16777216")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
             .output()
             .unwrap();

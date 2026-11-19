@@ -88,11 +88,9 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::Allocation)?;
         Ok(bytes)
     }
-    /// Prepare a graph-local section audition using the same interactive seek
-    /// law and exact device-resource scope as an ordinary interactive seek.
-    /// Install the loop before construction so admission, gate clipping and
-    /// periodic timing use the loop; device history starts empty at the loop
-    /// start. Saved state is untouched.
+    /// Prepare a section start using the interactive seek law and exact
+    /// device-resource scope. If the region is the Arrangement loop, the
+    /// candidate inherits that loop directly from its prepared revision.
     pub fn prepare_section_arrangement_preroll(
         revision: Arc<PreparedRevision>,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
@@ -437,7 +435,11 @@ impl SessionPlayback {
             matches!(policy, PrerollRuntimePolicy::LinearExport),
             resources,
             match policy {
-                PrerollRuntimePolicy::SectionLoop(region) => Some(region),
+                PrerollRuntimePolicy::SectionLoop(region)
+                    if revision.arrangement().loop_region() != Some(region) =>
+                {
+                    Some(region)
+                }
                 _ => None,
             },
         )?;
@@ -563,7 +565,13 @@ impl SessionPlayback {
             suppressions: self.suppressions.capacity(),
             suppression_scratch: self.suppression_scratch.capacity(),
         }
-        .bytes()
+        .bytes()?
+        .checked_add(self.browser_audition.retained_bytes()?)?
+        .checked_add(
+            self.paused_source_monitor
+                .as_deref()
+                .map_or(Some(0), PausedTrackMonitor::runtime_storage_bytes)?,
+        )
     }
 }
 
@@ -755,7 +763,13 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
-    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, true)
+}
+
+pub(super) fn paused_source_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, false)
 }
 
 pub(super) fn linear_export_runtime_storage_preflight_bytes(
@@ -764,12 +778,14 @@ pub(super) fn linear_export_runtime_storage_preflight_bytes(
     runtime_storage_preflight_bytes(
         revision,
         SessionPlayback::release_capacity_for(revision, true),
+        true,
     )
 }
 
 fn runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
     release_capacity: usize,
+    owns_instrument_sources: bool,
 ) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
@@ -801,10 +817,12 @@ fn runtime_storage_preflight_bytes(
             &arrangement.source_effects,
         )?,
     )?;
-    checked_add(
-        &mut total,
-        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
-    )?;
+    if owns_instrument_sources {
+        checked_add(
+            &mut total,
+            foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+        )?;
+    }
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,
@@ -873,7 +891,14 @@ fn runtime_storage_preflight_bytes(
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
     let source_routing = revision.source_routing();
-    for (index, track) in arrangement.tracks().iter().enumerate() {
+    // The private pause route keeps the full slot vector and event scratch.
+    // Actual instruments and resource leases are charged to the resident.
+    for (index, track) in arrangement
+        .tracks()
+        .iter()
+        .enumerate()
+        .filter(|_| owns_instrument_sources)
+    {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(

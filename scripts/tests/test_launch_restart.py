@@ -329,6 +329,7 @@ class FixturePathTests(unittest.TestCase):
                 self.assertEqual(second.summary['target_cache']['cleanup_status'], 'not_needed')
                 self.assertEqual(retained.read_bytes(), b'preserve')
             finally:
+                fixture.doCleanups()
                 owned.cleanup()
 
 
@@ -824,6 +825,19 @@ class PreflightTests(ReleaseFixture):
             with self.assertRaises(fixtures.local_ci.TargetCacheError):self.prepare()
         finally:held.release()
         self.factory.assert_not_called();self.assertEqual(self.read(),hashlib.sha256(self.owner.read_bytes()).hexdigest())
+
+    def test_pending_admission_refuses_before_process_control(self):
+        self.prepare_fixture()
+        lockpath,_=fixtures.local_ci.target_state_paths(self.target,self.runner.target_state_dir)
+        pending=fixtures.local_ci.target_admission_pending_path(lockpath)
+        pending.write_bytes(b'incomplete admission')
+        raw=self.owner.read_bytes()
+        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError,'admission is incomplete'):
+            self.prepare()
+        self.factory.assert_not_called()
+        self.assertEqual(self.owner.read_bytes(),raw)
+        self.assertEqual(pending.read_bytes(),b'incomplete admission')
+        self.assertIsNone(self.runner.target_lock)
 
     def test_foreign_owner_and_unknown_install_files_and_legacy_journal_preserved_before_quit(self):
         self.prepare_fixture();raw=self.owner.read_bytes()

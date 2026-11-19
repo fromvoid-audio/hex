@@ -423,9 +423,18 @@ fn return_chain_window_preserves_focus_drafts_gestures_and_history(cx: &mut Test
 fn short_chain_window_does_not_add_scroll_extent(cx: &mut TestAppContext) {
     let (service, state, track, _, _, _) = actor_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
-    let visual = VisualTestContext::from_window(handle, cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(900.0), px(700.0)));
     visual.run_until_parked();
+    let source = visual
+        .debug_bounds("device-source-summary")
+        .expect("source summary");
+    let header = visual
+        .debug_bounds("device-panel-header")
+        .expect("device header");
+    assert!(source.origin.x >= header.origin.x);
+    assert!(source.origin.y >= header.origin.y);
+    assert!(source.origin.y + source.size.height <= header.origin.y + header.size.height);
     assert_eq!(
         editor.read_with(cx, |view, _| view
             .device_panel

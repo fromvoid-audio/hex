@@ -67,8 +67,9 @@ mod tests {
             panic!("track")
         };
         let before = editor.project().snapshot();
-        let command = || Command::ImportDeviceAssetIntoEmptyInstrument {
+        let command = || Command::ImportDeviceAssetIntoNewInstrument {
             track,
+            placement: crate::InstrumentLoadPlacement::First,
             path: "source.wav".into(),
             sample_rate: 8000,
             frames: 4,
@@ -145,8 +146,9 @@ mod replacement_tests {
         };
         let slot = DeviceAssetSlot::new(1).unwrap();
         editor
-            .execute(Command::ImportDeviceAssetIntoEmptyInstrument {
+            .execute(Command::ImportDeviceAssetIntoNewInstrument {
                 track,
+                placement: crate::InstrumentLoadPlacement::First,
                 path: "old.wav".into(),
                 sample_rate: 8000,
                 frames: 4,
@@ -178,7 +180,7 @@ mod replacement_tests {
             .with_host_metadata_from(&expected)
             .unwrap();
         let command = || Command::ImportDeviceAssetReplacingInstrument {
-            track,
+            owner: crate::InstrumentAssetOwner::Track(track),
             device: id,
             expected_state: expected.clone(),
             path: "new.wav".into(),
@@ -290,7 +292,7 @@ mod first_binding_tests {
             .unwrap();
         let slot = DeviceAssetSlot::new(1).unwrap();
         let command = || Command::ImportDeviceAssetReplacingInstrument {
-            track,
+            owner: crate::InstrumentAssetOwner::Track(track),
             device,
             expected_state: empty.clone(),
             path: "original.wav".into(),
@@ -368,5 +370,180 @@ mod first_binding_tests {
         assert!(editor.project().assets().next().is_none());
         assert!(editor.redo());
         assert_eq!(editor.project(), &after);
+    }
+}
+
+#[cfg(test)]
+mod unassigned_instrument_asset_tests {
+    use crate::{Command, Created, Editor, InstrumentAssetOwner, Invalid, Project};
+    use hex_lattice_contract::{DeviceAssetSlot, DeviceTypeId, NativeDeviceState};
+
+    #[test]
+    fn original_asset_binding_to_unassigned_source_is_atomic_and_history_safe() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let empty = NativeDeviceState::new(DeviceTypeId::from_static("test.resource"), 1, vec![0])
+            .unwrap()
+            .with_input_gain_millidb(3000)
+            .unwrap();
+        let create = |name: &str| Command::CreateNativeSource {
+            name: name.into(),
+            devices: vec![empty.clone()],
+            instrument_index: 0,
+        };
+        let Created::NativeSource(source) = editor.execute(create("source")).unwrap() else {
+            panic!("source")
+        };
+        let Created::NativeSource(other) = editor.execute(create("other")).unwrap() else {
+            panic!("other")
+        };
+        let device = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let other_device = editor
+            .project()
+            .native_source(other)
+            .unwrap()
+            .instrument()
+            .id();
+        let slot = DeviceAssetSlot::new(1).unwrap();
+        for generation in 1..=2 {
+            let before = editor.project().clone();
+            let expected = before.device(device).unwrap().state().clone();
+            let template = NativeDeviceState::new(expected.type_id(), 1, vec![generation])
+                .unwrap()
+                .with_host_metadata_from(&expected)
+                .unwrap();
+            let command = || Command::ImportDeviceAssetReplacingInstrument {
+                owner: InstrumentAssetOwner::Source(source),
+                device,
+                expected_state: expected.clone(),
+                path: format!("original-{generation}.wav").into(),
+                sample_rate: 48_000,
+                frames: 4,
+                state: template.clone(),
+                source_slot: slot,
+            };
+            assert!(
+                editor
+                    .execute_prepared::<(), Invalid>(command(), |_| Err(Invalid("refused")))
+                    .is_err()
+            );
+            assert_eq!(editor.project(), &before);
+            for case in 0..4 {
+                let mut invalid = command();
+                if let Command::ImportDeviceAssetReplacingInstrument {
+                    owner,
+                    device,
+                    expected_state,
+                    state,
+                    ..
+                } = &mut invalid
+                {
+                    match case {
+                        0 => *device = other_device,
+                        1 => *owner = InstrumentAssetOwner::Source(other),
+                        2 => *state = state.clone().with_input_gain_millidb(0).unwrap(),
+                        _ => {
+                            *expected_state = expected_state
+                                .clone()
+                                .with_output_gain_millidb(1000)
+                                .unwrap()
+                        }
+                    }
+                }
+                assert!(editor.execute(invalid).is_err());
+                assert_eq!(editor.project(), &before);
+            }
+            let Created::Asset(asset) = editor.execute(command()).unwrap() else {
+                panic!("asset")
+            };
+            let after = editor.project().clone();
+            let instrument = after.native_source(source).unwrap().instrument();
+            assert_eq!(instrument.id(), device);
+            assert_eq!(instrument.state().input_gain_millidb(), 3000);
+            assert_eq!(
+                instrument.state().asset_references()[0].asset.value(),
+                asset.value()
+            );
+            assert_eq!(after.track(track).unwrap().source_id(), None);
+            let delta = after
+                .instrument_history_delta(&before)
+                .expect("source asset history");
+            assert_eq!(
+                delta.owner,
+                crate::InstrumentHistoryOwner::UnassignedSource(source)
+            );
+            assert!(
+                matches!(delta.assets, crate::InstrumentAssetHistoryDelta::Removed(removed) if removed.id() == asset)
+            );
+            assert!(editor.undo());
+            // Undo retains the monotonic identity allocator while restoring all
+            // authored state and asset custody.
+            let mut before_with_retired_id = before.clone();
+            before_with_retired_id.next_id = editor.project().next_id;
+            assert_eq!(editor.project(), &before_with_retired_id);
+            let redo = editor
+                .project()
+                .instrument_history_delta(&after)
+                .expect("redo source asset history");
+            assert_eq!(
+                redo.owner,
+                crate::InstrumentHistoryOwner::UnassignedSource(source)
+            );
+            assert!(
+                matches!(redo.assets, crate::InstrumentAssetHistoryDelta::Added(added) if added.id() == asset)
+            );
+            assert!(editor.redo());
+            assert_eq!(editor.project(), &after);
+        }
+        let expected = editor.project().device(device).unwrap().state().clone();
+        let template = expected.clone();
+        editor.execute(Command::RemoveNativeSource(other)).unwrap();
+        let missing = editor.project().clone();
+        assert!(
+            editor
+                .execute(Command::ImportDeviceAssetReplacingInstrument {
+                    owner: InstrumentAssetOwner::Source(other),
+                    device,
+                    expected_state: expected.clone(),
+                    path: "missing.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 4,
+                    state: template.clone(),
+                    source_slot: slot,
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &missing);
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+        let bound = editor.project().clone();
+        let command = Command::ImportDeviceAssetReplacingInstrument {
+            owner: InstrumentAssetOwner::Source(source),
+            device,
+            expected_state: expected,
+            path: "refused.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+            state: template,
+            source_slot: slot,
+        };
+        assert!(editor.execute(command).is_err());
+        assert_eq!(editor.project(), &bound);
     }
 }

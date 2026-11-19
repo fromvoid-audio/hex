@@ -19,6 +19,7 @@ pub(super) fn display_only(row: &PluginParameterRow) -> PluginParameterRow {
         editable: false,
         automation_class: None,
         metadata_revision: 0,
+        editor_sequence: 0,
         ..row.clone()
     }
 }
@@ -32,34 +33,30 @@ pub(super) fn matching_rows(rows: &[PluginParameterRow], filter: &str) -> Vec<us
         .collect()
 }
 
-pub(super) fn merge_page(
-    cached: &[PluginParameterRow],
+/// Borrow the exact cached page that an incoming live page may replace.
+pub(super) fn matching_page<'a>(
+    cached: &'a [PluginParameterRow],
     cached_signature: Option<[u8; 32]>,
     cached_total: Option<u16>,
     total: u16,
     first: u16,
     live_signature: [u8; 32],
     rows: &[PluginParameterRow],
-) -> Option<Vec<PluginParameterRow>> {
+) -> Option<&'a [PluginParameterRow]> {
     let first = usize::from(first);
     let total_usize = usize::from(total);
     let page_len = total_usize.saturating_sub(first).min(PAGE_SIZE);
+    let prior = cached.get(first..first.saturating_add(rows.len()))?;
     if cached_signature != Some(live_signature)
         || first % PAGE_SIZE != 0
         || total_usize != cached.len()
         || cached_total != Some(total)
         || rows.len() != page_len
-        || cached
-            .get(first..first.saturating_add(rows.len()))
-            .is_none_or(|prior| prior.iter().zip(rows).any(|(old, new)| old.id != new.id))
+        || prior.iter().zip(rows).any(|(old, new)| old.id != new.id)
     {
         return None;
     }
-    let mut merged = cached.to_vec();
-    for (offset, row) in rows.iter().cloned().enumerate() {
-        merged[first + offset] = row;
-    }
-    Some(merged)
+    Some(prior)
 }
 
 pub(super) fn refresh_page(
@@ -130,6 +127,7 @@ mod tests {
             automation_class: None,
             page_first: 0,
             metadata_revision: 0,
+            editor_sequence: 0,
         };
         let stale = display_only(&PluginParameterRow {
             value: "live".into(),
@@ -137,6 +135,7 @@ mod tests {
             editable: true,
             automation_class: Some([1; 16]),
             metadata_revision: 7,
+            editor_sequence: 0,
             ..cached.clone()
         });
         assert!(stale.value.is_empty());
@@ -162,6 +161,7 @@ mod tests {
                 automation_class: None,
                 page_first: 0,
                 metadata_revision: 0,
+                editor_sequence: 0,
             })
             .collect::<Vec<_>>();
         let found = matching_rows(&rows, "filter");
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn live_page_merge_requires_the_cached_total_and_ordered_ids() {
+    fn live_page_validation_requires_the_cached_total_and_ordered_ids() {
         let rows = (0_u32..6)
             .map(|index| PluginParameterRow {
                 id: 20 + index,
@@ -189,21 +189,24 @@ mod tests {
                 automation_class: None,
                 page_first: ((index / 4) * 4) as u16,
                 metadata_revision: 0,
+                editor_sequence: 0,
             })
             .collect::<Vec<_>>();
         let mut second_page = rows[4..].to_vec();
         second_page[0].value = "live".into();
-        let merged =
-            merge_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &second_page).unwrap();
-        assert_eq!(merged[4].value, "live");
-        assert!(merge_page(&rows, Some([8; 32]), Some(5), 6, 4, [8; 32], &second_page).is_none());
-        assert!(merge_page(&rows, Some([8; 32]), Some(6), 6, 1, [8; 32], &rows[1..5]).is_none());
+        let prior =
+            matching_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &second_page).unwrap();
+        assert_eq!(prior, &rows[4..]);
+        assert!(
+            matching_page(&rows, Some([8; 32]), Some(5), 6, 4, [8; 32], &second_page).is_none()
+        );
+        assert!(matching_page(&rows, Some([8; 32]), Some(6), 6, 1, [8; 32], &rows[1..5]).is_none());
         let mut reordered = second_page;
         reordered.swap(0, 1);
-        assert!(merge_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &reordered).is_none());
+        assert!(matching_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &reordered).is_none());
         let unchanged_ids_with_changed_signature = rows[4..].to_vec();
         assert!(
-            merge_page(
+            matching_page(
                 &rows,
                 Some([8; 32]),
                 Some(6),
@@ -223,7 +226,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(
-            merge_page(
+            matching_page(
                 &rows,
                 Some([8; 32]),
                 Some(6),
@@ -288,6 +291,7 @@ mod tests {
             automation_class: None,
             page_first: 4,
             metadata_revision: 0,
+            editor_sequence: 0,
         };
         let live = PluginParameterRow {
             value: "0.75".into(),
@@ -295,6 +299,7 @@ mod tests {
             editable: true,
             automation_class: Some([6; 16]),
             metadata_revision: 3,
+            editor_sequence: 0,
             ..cached.clone()
         };
         assert_eq!(

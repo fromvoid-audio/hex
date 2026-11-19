@@ -291,7 +291,7 @@ fn move_scroll(
     cx.notify();
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

@@ -389,11 +389,7 @@ impl AudioTransformPreparation {
         identities
             .try_reserve_exact(sources.len())
             .map_err(|_| Invalid("grouped audio source identity allocation failed"))?;
-        let mut source_bytes = 0usize;
         for source in sources {
-            source_bytes = source_bytes
-                .checked_add(std::mem::size_of_val(source.audio.frames()))
-                .ok_or(Invalid("grouped audio source byte count overflow"))?;
             identities.push((
                 source.audio.clone(),
                 source.asset.conversion_version(),
@@ -414,7 +410,6 @@ impl AudioTransformPreparation {
             source_rate: anchor.asset.source_sample_rate(),
             prepared: audio.clone(),
             bytes: std::mem::size_of_val(audio.frames()),
-            source_bytes,
         })?;
         Ok(audio)
     }

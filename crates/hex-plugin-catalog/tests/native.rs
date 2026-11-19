@@ -39,13 +39,17 @@ fn app() -> PathBuf {
             .expect("explicit original signed package fixture required"),
     )
 }
-fn module(name: &str) -> PathBuf {
+fn original_resources() -> PathBuf {
     PathBuf::from(
         std::env::var_os("HEX_VST3_CATALOG_FIXTURES")
             .expect("explicit original native fixtures required"),
     )
-    .join("hex-vst3-host.app/Contents/Resources/factory-fixtures")
-    .join(format!("{name}.vst3"))
+    .join("hex-vst3-host.app/Contents/Resources")
+}
+fn module(name: &str) -> PathBuf {
+    original_resources()
+        .join("factory-fixtures")
+        .join(format!("{name}.vst3"))
 }
 fn copy(source: &Path, target: &Path) {
     fs::create_dir_all(target).unwrap();
@@ -85,6 +89,47 @@ fn source_launch_tools_scan_and_publish_catalog_metadata() {
             .rows("")
             .is_empty()
     );
+}
+
+#[test]
+#[ignore = "explicit source-launch tools and original native fixtures required"]
+fn source_launch_discovers_processing_and_tail_as_distinct_effects() {
+    let fixture = Fixture::new();
+    let tools = worker::available_app().unwrap();
+    let roots = original_resources().join("fixtures");
+    let examples = [
+        ("processing", "hex original processing fixture"),
+        ("tail", "hex original tail fixture"),
+    ];
+    for (module, _) in examples {
+        let cancellation = Cancellation::default();
+        let update = worker::scan(
+            &fixture.catalog(),
+            &tools,
+            roots.join(format!("{module}.vst3")),
+            cancellation.token(),
+        );
+        assert!(update.status.contains("discovered"), "{}", update.status);
+    }
+    let catalog = Catalog::load(&fixture.catalog()).unwrap();
+    let cid = [
+        0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ];
+    for (module, name) in examples {
+        let path = roots.join(format!("{module}.vst3")).canonicalize().unwrap();
+        let selected = catalog.select_effect(&path, cid).unwrap();
+        assert_eq!(selected.role, hex_plugin_catalog::PluginRole::Effect);
+        assert_eq!(selected.class_name, name);
+        assert_eq!(selected.module, path);
+        assert_eq!(
+            selected.info_sha256,
+            hex_plugin_scan::hash(&fs::read(path.join("Contents/Info.plist")).unwrap())
+        );
+        assert_eq!(
+            selected.executable_sha256,
+            hex_plugin_scan::hash(&fs::read(path.join("Contents/MacOS/fixture")).unwrap())
+        );
+    }
 }
 
 #[test]

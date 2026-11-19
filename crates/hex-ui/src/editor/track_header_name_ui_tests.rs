@@ -43,32 +43,14 @@ fn assert_color(visual: &mut VisualTestContext, editor: &Entity<EditorView>, tra
             c.muted
         }
     });
-    let mesh = visual.rendered_path_triangles(selector("track-name-plate", track.value()));
-    assert!(!mesh.is_empty(), "actual completed name-plate path");
-    assert!(
-        mesh.iter()
-            .all(|triangle| triangle.color == gpui::rgb(expected).into())
+    assert_eq!(
+        visual.rendered_background(selector("track-name-plate", track.value())),
+        Some(gpui::rgb(expected).into())
     );
 }
 
-fn path_covers(mesh: &[gpui::RenderedPathTriangle], at: gpui::Point<gpui::ScaledPixels>) -> bool {
-    mesh.iter().any(|triangle| {
-        if !triangle.mask.contains(&at) {
-            return false;
-        }
-        let cross = |a: gpui::Point<gpui::ScaledPixels>, b: gpui::Point<gpui::ScaledPixels>| {
-            let (ax, ay) = (f64::from(a.x), f64::from(a.y));
-            let (bx, by) = (f64::from(b.x), f64::from(b.y));
-            (bx - ax) * (f64::from(at.y) - ay) - (by - ay) * (f64::from(at.x) - ax)
-        };
-        let [a, b, c] = triangle.vertices;
-        let signs = [cross(a, b), cross(b, c), cross(c, a)];
-        signs.iter().all(|sign| *sign >= 0.0) || signs.iter().all(|sign| *sign <= 0.0)
-    })
-}
-
 #[gpui::test]
-fn colored_header_paths_keep_open_corners_and_neutral_expanded_backing(cx: &mut TestAppContext) {
+fn colored_name_column_fills_compact_and_expanded_headers(cx: &mut TestAppContext) {
     let (_environment, mut visual, editor, tracks) = setup(cx);
     for group in [false, true] {
         let id = if group {
@@ -101,7 +83,8 @@ fn colored_header_paths_keep_open_corners_and_neutral_expanded_backing(cx: &mut 
             cx.notify();
         });
         visual.run_until_parked();
-        for height in [super::super::tracks::TRACK_ROW_HEIGHT, 150.0] {
+        let mut plate_width = None;
+        for height in [22.0, 44.0, 154.0] {
             let header = bounds(&mut visual, "arrangement-track-header", id.value());
             let start = bounds(&mut visual, "track-height-resize", id.value()).center();
             let end = start + point(px(0.0), px(height - f32::from(header.size.height)));
@@ -110,33 +93,19 @@ fn colored_header_paths_keep_open_corners_and_neutral_expanded_backing(cx: &mut 
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             let plate = bounds(&mut visual, "track-name-plate", id.value());
-            let mesh = visual.rendered_path_triangles(selector("track-name-plate", id.value()));
-            let scale = visual.update(|window, _| window.scale_factor());
-            let at = |x, y| (plate.origin + point(px(x), px(y))).scale(scale);
-            let (w, h) = (f32::from(plate.size.width), f32::from(plate.size.height));
+            let header = bounds(&mut visual, "arrangement-track-header", id.value());
+            let controls = bounds(&mut visual, "track-controls", id.value());
             assert_color(&mut visual, &editor, id);
-            assert!(
-                path_covers(&mesh, at(w / 2.0, h / 2.0)),
-                "visible plate center · group={group}, height={height}"
-            );
-            assert!(
-                !path_covers(&mesh, at(w - 0.5, h - 0.5)),
-                "lower-right cut reveals the header"
-            );
-            assert!(
-                path_covers(&mesh, at(w - 8.0, h - 1.0)),
-                "fill reaches the diagonal without gaps"
-            );
+            assert_eq!(header.size.height, px(height));
+            assert_eq!(plate.top(), header.top());
             assert_eq!(
-                path_covers(&mesh, at(0.5, 0.5)),
-                !group,
-                "only group starts have a rounded upper-left corner"
+                plate.bottom(),
+                header.bottom() - px(if group { 0.0 } else { 1.0 })
             );
-            assert!(
-                visual
-                    .rendered_background(selector("track-name-area", id.value()))
-                    .is_none(),
-                "no rectangular colored backing"
+            assert!(plate.right() <= controls.left());
+            assert_eq!(
+                *plate_width.get_or_insert(plate.size.width),
+                plate.size.width
             );
             let header_fill = visual
                 .rendered_background(selector("arrangement-track-header", id.value()))
@@ -309,11 +278,11 @@ fn colored_names_stay_bounded_when_headers_or_rows_are_compacted(cx: &mut TestAp
     visual.run_until_parked();
     let header = bounds(&mut visual, "arrangement-track-header", tracks[0].value());
     let name = bounds(&mut visual, "track-name", tracks[0].value());
-    assert_eq!(header.size.height, px(23.));
+    assert_eq!(header.size.height, px(22.));
     assert!(name.top() >= header.top() && name.bottom() <= header.bottom());
     assert!(
         visual
-            .debug_bounds(selector("track-controls", tracks[0].value()))
+            .debug_bounds(selector("track-volume", tracks[0].value()))
             .is_none()
     );
     editor.read_with(&visual, |v, _| assert_eq!(v.worker_requests_pending, 0));

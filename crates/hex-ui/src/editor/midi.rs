@@ -470,10 +470,10 @@ impl EditorView {
                 notes: updates,
             }
         };
-        if prefix > 0 {
+        if prefix > 0 || self.midi_audition.enabled {
             self.submit_midi_drag_preview(
                 clip_id,
-                super::midi_pending_drag::Frozen::OriginNudge,
+                super::midi_pending_drag::Frozen::Nudge,
                 command,
             );
         } else {
@@ -586,13 +586,19 @@ impl EditorView {
     }
 
     pub(super) fn edit_pending(&self) -> bool {
-        (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+        self.edit_blocked_outside_request_queue()
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+    }
+
+    pub(super) fn edit_blocked_outside_request_queue(&self) -> bool {
+        self.gain_recorder.blocks_edits()
+            || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.automation_view.devices.pointer_active()
             || self.sampler_parameter_pending()
             || self.opening_project
             || self.close_prompt_open
-            || self.worker_requests_pending != 0
-            || !self.pending_requests.is_empty()
             || self.device_gesture_pending()
     }
 
@@ -710,7 +716,15 @@ impl EditorView {
                 velocity,
             }
         };
-        self.enqueue(Request::Edit(command));
+        if self.midi_audition.enabled && (start != old_start || pitch != old_pitch) {
+            self.submit_midi_drag_preview(
+                clip_id,
+                super::midi_pending_drag::Frozen::Nudge,
+                command,
+            );
+        } else {
+            self.enqueue(Request::Edit(command));
+        }
     }
 }
 

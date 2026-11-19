@@ -30,7 +30,7 @@ pub use controller_input::install_controller_input;
 pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
-#[cfg(any(test, feature = "ui-test-support"))]
+#[cfg(feature = "ui-test-support")]
 mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
@@ -127,6 +127,13 @@ pub fn exercise_midi_receipt_pressure(
     editor::midi_pressure_fixture(cx, root, reservation, output, render)
 }
 
+/// Exercise the real recorder header with native text shaping and a private fixture root.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_sample_recorder_layout(cx: &mut gpui::TestAppContext, root: std::path::PathBuf) {
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    editor::sample_recorder_layout_fixture(cx, root);
+}
+
 /// Read-only browser insertion evidence. Neither the view nor this query owns
 /// a native endpoint, and a pending request alone grants no applied source.
 #[cfg(feature = "ui-test-support")]
@@ -134,7 +141,7 @@ pub struct PluginEffectTestView {
     pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
     pub pending: bool,
     pub queued_requests: usize,
-    /// Read-only VST3 parameter control identities keyed by device and ID.
+    /// Source-bound VST3 parameter controls keyed by device and parameter ID.
     pub parameter_controls: Vec<(u64, u32, gpui::EntityId)>,
     /// A controller parameter enumeration/page query is awaiting its terminal.
     pub parameter_query_pending: bool,
@@ -148,6 +155,8 @@ pub struct PluginEffectTestView {
     pub selected_owner: Option<hex_session::service::PluginEffectDestination>,
     pub status: String,
     pub applied: Option<hex_audio::prepared::AppliedAudioSource>,
+    /// Original callback status, copied for native graph recovery tests.
+    pub transport: Option<(u64, bool)>,
 }
 
 #[cfg(feature = "ui-test-support")]

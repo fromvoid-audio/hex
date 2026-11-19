@@ -102,7 +102,8 @@ pub use numeric_control::{
     COMPACT_DIAL_HEIGHT, COMPACT_DIAL_WIDTH, INLINE_VALUE_HEIGHT, INLINE_VALUE_WIDTH,
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
     NumericControlKind, NumericControlPresentation, NumericEditState, NumericEscape,
-    NumericEventPhase, NumericGestureId, bind_numeric_control_keys,
+    NumericEventPhase, NumericGestureId, NumericTextRequest, NumericTextRequestId,
+    bind_numeric_control_keys,
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
@@ -159,7 +160,7 @@ mod waveform_plot;
 pub use waveform_plot::{
     MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformColors,
     WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
-    WaveformStroke, WaveformViewport, waveform_plot,
+    WaveformStroke, WaveformViewport, waveform_plot, waveform_plot_with_offset,
 };
 
 #[cfg(test)]

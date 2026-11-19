@@ -204,6 +204,7 @@ pub(super) fn render(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .children(std::iter::once(source_manager::button(view, window, cx)))
         .child(track_name_view)
         .child(add_button);
     let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
@@ -260,7 +261,7 @@ pub(super) fn render_return_effect(
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions = actions.child(vst3_editor_button(id, selected, cx));
+        actions = actions.child(vst3_editor_button(view, id, selected, cx));
     }
     actions = actions.child(
         action_button(

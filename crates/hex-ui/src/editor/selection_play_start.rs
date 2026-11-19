@@ -2,6 +2,13 @@
 //! Membership remains with clip_selection and arrangement_sections; transport
 //! precedence and display consumers use this query without seeking playback.
 use super::EditorView;
+use hex_project::ClipId;
+
+#[derive(Clone, Copy)]
+pub(super) struct SelectedClipPlayStart {
+    scope: (u64, u64, u64, ClipId),
+    frame: Option<u64>,
+}
 
 impl EditorView {
     /// Whole Arrangement selection supplies Play's start, as in Live: the earliest
@@ -11,10 +18,21 @@ impl EditorView {
     /// applies and the viewport does not move. Stale and Session IDs are ignored.
     /// A non-empty time selection outranks this in `playback_start_frame`; a
     /// point cursor placed inside the selected clip afterwards keeps its frame,
-    /// so split-at-cursor stays visible. While this applies the point cursor is
-    /// hidden but retained, and returns when the whole-rectangle selection clears.
+    /// so split-at-cursor stays visible. The selected clip's marker replaces
+    /// the retained point cursor until the whole-clip selection clears.
     pub(super) fn selected_arrangement_play_start(&self) -> Option<u64> {
-        let project = &self.state.as_ref()?.project;
+        if self.project_point_cursor().is_some()
+            || self.clip_drop_cursor_epoch.is_some_and(|epoch| {
+                self.selection_intent_epoch == Some(epoch)
+                    && self
+                        .edit_cursor
+                        .is_some_and(|cursor| cursor.generation == self.project_generation)
+            })
+        {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        let project = &state.project;
         let Some(primary) = self.selected_clip else {
             // Q can retain section IDs while ordinary lanes own the selection.
             // Only current Main ownership makes those IDs a play-start source.
@@ -44,8 +62,21 @@ impl EditorView {
         {
             return None;
         }
+        // Rulers and the editor tick read the same projection. Scan the clip
+        // collection only when the canonical project or selection changes.
+        let scope = (
+            self.project_generation,
+            state.revision,
+            self.clip_selection.epoch,
+            primary,
+        );
+        if let Some(cached) = self.selected_clip_play_start.get()
+            && cached.scope == scope
+        {
+            return cached.frame;
+        }
         let tempo = project.tempo_map();
-        project
+        let frame = project
             .tracks()
             .iter()
             .flat_map(|track| {
@@ -62,7 +93,10 @@ impl EditorView {
                 audio.chain(midi)
             })
             .flatten()
-            .min()
+            .min();
+        self.selected_clip_play_start
+            .set(Some(SelectedClipPlayStart { scope, frame }));
+        frame
     }
 }
 
@@ -87,7 +121,7 @@ mod tests {
             view.reconcile_clip_selection();
             view.section_autoplay = false;
             view.edit_cursor = Some(EditCursor {
-                track,
+                track: Some(track),
                 frame: 73_000,
                 generation: view.project_generation,
                 pulse_color: 0xffffff,
@@ -153,10 +187,10 @@ mod tests {
             );
         });
         editor.update(&mut visual, |view, _| {
-            let track = view.edit_cursor.unwrap().track;
+            let track = view.edit_cursor.unwrap().track.unwrap();
             view.time_selection = Some(TimeSelection {
-                anchor_track: track,
-                end_track: track,
+                anchor_track: Some(track),
+                end_track: Some(track),
                 anchor_frame: 10_000,
                 end_frame: 5_000,
             });
@@ -186,6 +220,20 @@ mod tests {
                 None,
                 "old Main ownership cannot select reused section IDs"
             );
+            view.device_panel.main_selected = Some(view.project_generation);
+            view.install_drop_cursor(
+                super::super::edit_cursor::DropCursor {
+                    track,
+                    frame: 48_000,
+                    generation: view.project_generation,
+                    epoch: view.selection_intent_epoch.unwrap(),
+                },
+                None,
+            );
+            assert_eq!(view.playback_start_frame(), 48_000);
+            assert_eq!(view.sections.selected_ids().len(), 2);
+            view.advance_selection_intent();
+            assert_eq!(view.playback_start_frame(), 0);
         });
     }
     #[gpui::test]

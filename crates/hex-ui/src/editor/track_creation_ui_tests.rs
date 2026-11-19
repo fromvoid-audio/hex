@@ -129,7 +129,7 @@ fn section_focus_keeps_new_active_track_through_authoring_then_filters_on_select
     // Empty, out-of-section and in-section content use the same creation path.
     for content_start in [None, Some(4), Some(0)] {
         focus(&editor, &mut visual, Some(original));
-        visual.simulate_keystrokes("cmd-t");
+        visual.simulate_keystrokes("t");
         pump(&editor, &mut visual);
         let created = editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
@@ -208,7 +208,7 @@ fn keyboard_creation_inserts_after_first_middle_last_with_one_history_step_and_r
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, environment, ids) = setup(cx);
-    for key in ["cmd-t", "cmd-shift-t"] {
+    for key in ["t", "cmd-shift-t"] {
         for index in 0..ids.len() {
             focus(&editor, &mut visual, Some(ids[index]));
             let before = snapshot(&editor, &visual);
@@ -239,7 +239,7 @@ fn keyboard_creation_inserts_after_first_middle_last_with_one_history_step_and_r
             editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
             pump(&editor, &mut visual);
             assert_eq!(snapshot(&editor, &visual), after);
-            if key == "cmd-t" && index == 1 {
+            if key == "t" && index == 1 {
                 let path = environment.root().join("inserted-track.hex");
                 editor.update(&mut visual, |v, _| {
                     assert!(v.enqueue(Request::SaveNew(path.clone())))
@@ -279,7 +279,7 @@ fn no_ordinary_selection_and_return_or_main_focus_append_before_pinned_buses(
             }
         });
         let before = snapshot(&editor, &visual);
-        visual.simulate_keystrokes("cmd-t");
+        visual.simulate_keystrokes("t");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let state = v.state.as_ref().unwrap();

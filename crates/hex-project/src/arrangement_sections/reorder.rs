@@ -496,6 +496,10 @@ fn reorder_preview(
         track.content.midi_clips = midi;
         tracks.push(track);
     }
+    project.arrangement_locators =
+        crate::arrangement_locators::remap(project, &new_tempo, &mut next_id, |frame| {
+            Ok((Some(frame_permutation.map(frame)?), None))
+        })?;
     project.next_id = next_id;
     project.tracks = tracks;
     project.tempo_map = new_tempo;

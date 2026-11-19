@@ -1,12 +1,13 @@
 //! One accepted loop intent, correlated with the existing worker FIFO.
 //! Section focus is a view-only consequence of its successful canonical install,
 //! guarded by the captured selection intent and current stable section scope.
-use super::{EditorView, LoopRegion, PendingLoop, Request};
+use super::{EditorView, LoopRegion, PendingLoop};
 use hex_project::Command;
-use hex_session::service::Event;
+use hex_session::arrangement_seek::SectionLaunch;
+use hex_session::service::{Event, Request};
 
 impl EditorView {
-    pub(super) fn pending_loop_region(&self) -> Option<LoopRegion> {
+    pub(in crate::editor) fn pending_loop_region(&self) -> Option<LoopRegion> {
         self.pending_loop
             .filter(|pending| pending.generation == self.project_generation)
             .map(|pending| pending.region)
@@ -16,8 +17,25 @@ impl EditorView {
         self.pending_loop.is_some_and(|pending| {
             pending.generation == self.project_generation
                 && pending.remaining.is_none()
-                && matches!(request, Request::Edit(Command::SetLoopRegion { start, end, enabled })
-                    if (*start, *end, *enabled) == (pending.region.start(), pending.region.end(), pending.region.enabled()))
+                && match (pending.toggle, request) {
+                    (true, Request::Edit(Command::ToggleLoopRegion)) => true,
+                    (
+                        false,
+                        Request::Edit(Command::SetLoopRegion {
+                            start,
+                            end,
+                            enabled,
+                        }),
+                    ) => {
+                        (*start, *end, *enabled)
+                            == (
+                                pending.region.start(),
+                                pending.region.end(),
+                                pending.region.enabled(),
+                            )
+                    }
+                    _ => false,
+                }
         })
     }
 
@@ -46,20 +64,80 @@ impl EditorView {
         false
     }
 
-    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) {
+    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) -> bool {
+        self.submit_loop_intent(
+            generation,
+            region,
+            Command::SetLoopRegion {
+                start: region.start(),
+                end: region.end(),
+                enabled: region.enabled(),
+            },
+        )
+    }
+
+    pub(in crate::editor) fn toggle_loop(&mut self) {
+        if self.recovery.holds_loop_region() {
+            return;
+        }
+        let command = Command::ToggleLoopRegion;
+        // Predict the toggle only when no earlier edit can change its input.
+        // Keep the command relative to the worker's actual loop in either case.
+        if !self.edit_pending()
+            && let Some(region) = self.state().and_then(|state| state.project.loop_region())
+            && let Ok(preview) = LoopRegion::new(region.start(), region.end(), !region.enabled())
+        {
+            self.submit_loop_intent(self.project_generation, preview, command);
+        } else {
+            self.enqueue(Request::Edit(command));
+        }
+    }
+
+    fn submit_loop_intent(
+        &mut self,
+        generation: u64,
+        region: LoopRegion,
+        command: Command,
+    ) -> bool {
+        if self.recovery.holds_loop_region() {
+            return false;
+        }
         self.pending_loop = Some(PendingLoop {
             generation,
             region,
+            toggle: matches!(command, Command::ToggleLoopRegion),
             remaining: None,
             focus_intent: None,
             start_intent: None,
+            launch: None,
         });
-        if !self.enqueue(Request::Edit(Command::SetLoopRegion {
-            start: region.start(),
-            end: region.end(),
-            enabled: region.enabled(),
-        })) {
+        if !self.enqueue(Request::Edit(command)) {
             self.pending_loop = None;
+            return false;
+        }
+        true
+    }
+
+    pub(in crate::editor) fn submit_section_launch_loop(
+        &mut self,
+        launch: SectionLaunch,
+        region: LoopRegion,
+    ) {
+        if self.submit_loop_preview(self.project_generation, region)
+            && let Some(pending) = self.pending_loop.as_mut()
+        {
+            pending.launch = Some(launch);
+        }
+    }
+
+    pub(in crate::editor) fn pending_loop_launch(&self) -> bool {
+        self.pending_loop
+            .is_some_and(|pending| pending.launch.is_some())
+    }
+
+    pub(in crate::editor) fn cancel_pending_loop_launch(&mut self) {
+        if let Some(pending) = self.pending_loop.as_mut() {
+            pending.launch = None;
         }
     }
 
@@ -69,8 +147,9 @@ impl EditorView {
         section: bool,
     ) {
         let intent = self.selection_intent_epoch;
-        self.submit_loop_preview(self.project_generation, region);
-        if let Some(pending) = self.pending_loop.as_mut() {
+        if self.submit_loop_preview(self.project_generation, region)
+            && let Some(pending) = self.pending_loop.as_mut()
+        {
             pending.start_intent = intent;
             if section {
                 pending.focus_intent = intent;
@@ -95,6 +174,12 @@ impl EditorView {
         let Some(pending) = self.pending_loop.take() else {
             return;
         };
+        if succeeded
+            && pending.generation == self.project_generation
+            && let Some(launch) = pending.launch
+        {
+            self.section_loop_committed(launch);
+        }
         if succeeded
             && pending.generation == self.project_generation
             && pending.start_intent.is_some()

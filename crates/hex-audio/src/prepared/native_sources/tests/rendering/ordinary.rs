@@ -13,6 +13,9 @@ mod manual_origin;
 mod manual_pause;
 mod manual_preroll;
 mod parameter_extension;
+mod parameter_pressure;
+mod parameter_publication;
+mod paused_monitor;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
@@ -64,6 +67,17 @@ fn fixture_with_authored_mode(
     ids: &[u32],
     instrument: bool,
 ) -> OrdinaryFixture {
+    fixture_with_authored_mode_and_capacity(profile, location, quantum, ids, instrument, 2)
+}
+
+fn fixture_with_authored_mode_and_capacity(
+    profile: &str,
+    location: usize,
+    quantum: u16,
+    ids: &[u32],
+    instrument: bool,
+    source_capacity: usize,
+) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
         .configure_plugin_callback_quantum(&mut callback, quantum)
@@ -86,7 +100,7 @@ fn fixture_with_authored_mode(
         )
         .unwrap();
     control
-        .configure_native_source_preparation(2, source_reservation())
+        .configure_native_source_preparation(source_capacity, source_reservation())
         .unwrap();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
@@ -259,15 +273,21 @@ fn fixture_with_authored_mode(
     }
 }
 fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
+    compile_with_bindings(
+        f,
+        if with_native {
+            std::slice::from_ref(&f.binding)
+        } else {
+            &[]
+        },
+    )
+}
+fn compile_with_bindings(f: &OrdinaryFixture, bindings: &[Binding]) -> Playback {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let result = crate::plugin_effects::Hosting::prepare_on_control(
             &f.control,
-            if with_native {
-                std::slice::from_ref(&f.binding)
-            } else {
-                &[]
-            },
+            bindings,
             &[],
             &mut |effects| {
                 effects.prepare_registered_revision(
@@ -345,6 +365,335 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
     physical_block::<8>(f)
 }
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retained_foreign_track_tail_and_successor_use_distinct_original_workers() {
+    retained_foreign_track_tail(false, false, false, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retained_foreign_track_tail_routes_through_unchanged_compensated_group() {
+    retained_foreign_track_tail(true, false, false, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn silent_group_child_edits_keep_the_original_instrument_worker_and_gate() {
+    const CHILD: &str = "HEX_COLD_GROUP_CHILD_SDK_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "16777216")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut edited = fixture_with_authored_mode("processing", 0, 8, &[], true);
+    let mut reference = fixture_with_authored_mode("processing", 0, 8, &[], true);
+    let track = edited.editor.project().tracks()[0].id();
+    for f in [&mut edited, &mut reference] {
+        f.editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        let playback = compile(f, true);
+        assert!(playback.main_output_latency_frames() > 0);
+        publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+        f.control.command(PlaybackCommand::Play).unwrap();
+    }
+    let render = |f: &mut OrdinaryFixture| {
+        let output = block(f);
+        let mut frames = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            frames = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(
+            &f.control.native_candidate_root(),
+            f.binding,
+            frames.unwrap() / 8,
+        );
+        output
+    };
+    let mut pcm = [[0.0; 2]; 80];
+    let mut empty = None;
+    for (index, chunk) in pcm.chunks_exact_mut(8).enumerate() {
+        let edit = match index {
+            3 => {
+                let Created::Track(track) = edited
+                    .editor
+                    .execute(Command::InsertTrack {
+                        name: "empty".into(),
+                        before_track: Some(track),
+                    })
+                    .unwrap()
+                else {
+                    panic!("inserted track");
+                };
+                empty = Some(track);
+                true
+            }
+            4 => {
+                edited
+                    .editor
+                    .execute(Command::RemoveTrack(empty.unwrap()))
+                    .unwrap();
+                true
+            }
+            _ => false,
+        };
+        let revision = edit.then(|| {
+            let playback = compile(&edited, true);
+            publish(
+                &mut edited.control,
+                playback,
+                PublicationPolicy::InheritRuntime,
+            )
+        });
+        chunk.copy_from_slice(&render(&mut edited));
+        assert_eq!(
+            chunk,
+            render(&mut reference),
+            "original SDK quantum {index}"
+        );
+        if let Some(revision) = revision {
+            assert_eq!(
+                edited.control.status.applied_revision.load(Acquire),
+                revision
+            );
+        }
+        assert!(edited.control.status.rejected_revision().is_none());
+        assert!(edited.control.status.render_fault_snapshot().is_none());
+        assert!(edited.control.status.playing.load(Acquire));
+    }
+    assert!(pcm[24..40].iter().all(|frame| frame[0].abs() > 0.001));
+    assert!(pcm[64..].iter().all(|frame| *frame == [0.0; 2]));
+    for f in [edited, reference] {
+        assert!(
+            matches!(dispose(f).disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retained_foreign_track_tail_preserves_direct_send_through_group() {
+    retained_foreign_track_tail(true, true, false, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn overlapping_foreign_tails_keep_their_original_workers() {
+    retained_foreign_track_tail(true, true, true, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_foreign_tails_keep_original_workers_through_overlap_and_shutdown() {
+    const CHILD: &str = "HEX_UNBOUNDED_TAIL_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", u32::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    retained_foreign_track_tail(true, true, true, true);
+}
+
+fn retained_foreign_track_tail(
+    grouped: bool,
+    direct_send: bool,
+    overlap: bool,
+    expect_unbounded: bool,
+) {
+    let _serial = serial();
+    let mut f = if overlap {
+        fixture_with_authored_mode_and_capacity("processing", 0, 8, &[], false, 3)
+    } else {
+        fixture_at("processing", 0)
+    };
+    let old = f.binding;
+    let track = f.editor.project().tracks()[0].id();
+    let device = f.editor.project().tracks()[0].devices()[0].id();
+    f.editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    if grouped {
+        let Created::Track(group) = f
+            .editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        f.editor
+            .execute(Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    if direct_send {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    let first = compile(&f, true);
+    if expect_unbounded {
+        assert!(first.foreign_nodes_on_control().any(|node| {
+            matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(old) && prepared.output_tail() == hex_lattice::OutputTail::Unbounded)
+        }));
+    }
+    publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    let root = f.control.native_candidate_root();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, old, 1);
+    let saved = f.control.native_source_prepared_state(old).unwrap();
+    let state = hex_plugin_state::decode(&saved).unwrap();
+    let mut component = state.component.unwrap().to_vec();
+    component[8..12].copy_from_slice(&0.75_f32.to_le_bytes());
+    let restored = hex_plugin_state::encode(hex_plugin_state::State {
+        component: Some(&component),
+        ..state
+    })
+    .unwrap();
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(track.value()), device.value())
+            .unwrap();
+    let next = source_for_profile(&mut f.control, identity, "processing", 8, Some(restored));
+    assert_ne!(old, next);
+    let captured = f.control.native_source_prepared_state(next).unwrap();
+    f.editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: captured.clone(),
+        })
+        .unwrap();
+    f.control.publish_native_source_endpoint(next).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    f.binding = next;
+    let successor = compile(&f, true);
+    let mut revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+    let mut last = None;
+    if overlap {
+        assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+        replacement::wait_for_blocks(&root, old, 2);
+        replacement::wait_for_blocks(&root, next, 1);
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+        let third = source_for_profile(&mut f.control, identity, "processing", 8, Some(captured));
+        assert_ne!(third, old);
+        assert_ne!(third, next);
+        f.control.publish_native_source_endpoint(third).unwrap();
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        f.binding = third;
+        let successor = compile(&f, true);
+        revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+        last = Some(third);
+    }
+    let mut output = [[0.0; 2]; 32];
+    for (index, chunk) in output.chunks_mut(8).enumerate() {
+        chunk.copy_from_slice(&block(&mut f));
+        if index == 0 && !overlap {
+            replacement::wait_for_blocks(&root, old, 2);
+        }
+        if let Some(third) = last {
+            if index == 0 {
+                replacement::wait_for_blocks(&root, old, 3);
+                replacement::wait_for_blocks(&root, next, 2);
+            }
+            replacement::wait_for_blocks(&root, third, index as u64 + 1);
+        } else {
+            replacement::wait_for_blocks(&root, next, index as u64 + 1);
+        }
+    }
+    assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+    let gain = if grouped && !direct_send { 0.5 } else { 1.0 };
+    if overlap {
+        assert_eq!(&output[..8], &[[0.125 * gain, -0.25 * gain]; 8]);
+        assert_eq!(&output[8..16], &[[0.09375 * gain, -0.1875 * gain]; 8]);
+    } else {
+        assert_eq!(&output[..8], &[[0.0; 2]; 8]);
+        assert_eq!(&output[8..16], &[[0.125 * gain, -0.25 * gain]; 8]);
+        assert_eq!(&output[16..24], &[[0.09375 * gain, -0.1875 * gain]; 8]);
+        assert_eq!(&output[24..], &[[0.1171875 * gain, -0.234375 * gain]; 8]);
+    }
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    for binding in [Some(old), Some(next), last].into_iter().flatten() {
+        let returned = recover(&mut control, binding);
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
+    drop(control);
+    finish(&mut retirement);
+}
+
 fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAMES] {
     let mut output = [[0.0; 2]; FRAMES];
     let mut host = [0.0_f32; 512];
@@ -366,6 +715,134 @@ fn physical_block<const FRAMES: usize>(f: &mut OrdinaryFixture) -> [Frame; FRAME
         })
     });
     output
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_paused_vst3_instrument_auditions_on_its_original_worker() {
+    const CHILD: &str = "HEX_PAUSED_VST3_INSTRUMENT_SDK_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "16777216")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_lattice_contract::DeviceTypeId;
+    const QUANTUM: usize = 256;
+    let _serial = serial();
+    let mut f = fixture_with_authored_mode("processing", 0, QUANTUM as u16, &[], true);
+    // This fixture accepts MIDI channel 0 and pitch 60 for both authored
+    // and keyboard gates. Sustain the authored note across the Pause cut.
+    let note = f.editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+    f.editor
+        .execute(Command::UpdateMidiNote {
+            note,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let keys = Arc::new(ComputerKeyboardInput::default());
+    let mut playback = compile(&f, true);
+    let track = f.editor.project().tracks()[0].id();
+    playback
+        .prepare_computer_keyboard(f.editor.project(), track, Arc::clone(&keys))
+        .unwrap();
+    assert!(
+        Playback::paused_source_monitor_allowance_on_control(
+            playback.prepared_revision().unwrap(),
+            Some(&f.resources),
+        )
+        .unwrap()
+            > 0
+    );
+    playback
+        .prepare_resident_paused_source_monitor(Some(&f.resources))
+        .unwrap();
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    let root = f.control.native_candidate_root();
+    let render = |f: &mut OrdinaryFixture| {
+        let output = physical_block::<QUANTUM>(f);
+        let mut committed = None;
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            committed = callback.native_sources.test_committed_frames(f.binding);
+        });
+        replacement::wait_for_blocks(&root, f.binding, committed.unwrap() / QUANTUM as u64);
+        output
+    };
+    f.control.command(PlaybackCommand::Play).unwrap();
+    let mut authored = false;
+    for _ in 0..6 {
+        authored |= render(&mut f)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001);
+    }
+    assert!(authored, "the arrangement note must sound before Pause");
+    f.control.command(PlaybackCommand::Pause).unwrap();
+    render(&mut f);
+    assert!(!f.control.status.playing.load(Acquire));
+    let frozen = f.control.status.position.load(Acquire);
+    assert!(frozen > 0);
+    for _ in 0..5 {
+        render(&mut f);
+    }
+    assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
+    keys.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut heard = false;
+    for _ in 0..6 {
+        heard |= render(&mut f)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001);
+    }
+    assert!(heard, "the original worker must render the paused key");
+    assert_eq!(f.control.status.position.load(Acquire), frozen);
+    assert_eq!(
+        f.control.native_source_endpoint_status(f.binding),
+        Some((true, true))
+    );
+    keys.set_key(0, None).unwrap();
+    for _ in 0..5 {
+        render(&mut f);
+    }
+    assert_eq!(render(&mut f), [[0.0; 2]; QUANTUM]);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    render(&mut f);
+    assert!(f.control.status.playing.load(Acquire));
+    f.control.command(PlaybackCommand::Stop).unwrap();
+    render(&mut f);
+    assert_eq!(f.control.status.position.load(Acquire), 0);
+    let returned = dispose(f);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
 }
 
 #[test]
@@ -631,6 +1108,92 @@ fn actual_ordinary_second_stop_cannot_install_an_already_revoked_native_successo
         matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
         if retired.status.success() && retired.terminal.is_some_and(|terminal| (terminal.blocks, terminal.frames) == (6, 48)))
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn ordinary_publication_reports_unavailable_source_without_losing_candidate() {
+    // The existing original-SDK fixture exceeds the default debug test stack.
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let _serial = serial();
+            let mut f = fixture("processing");
+            let initial = compile(&f, true);
+            let revision = publish(&mut f.control, initial, PublicationPolicy::InheritRuntime);
+            block(&mut f);
+            let candidate = compile(&f, true);
+            let prepared = Arc::clone(candidate.prepared_revision().unwrap());
+            let candidate = match f.control.publish_with_policy_and_context_generation(
+                candidate,
+                PublicationPolicy::InheritRuntime,
+                41,
+            ) {
+                Err(refused) => {
+                    assert_eq!(refused.kind, crate::prepared::PublishErrorKind::Other);
+                    assert_eq!(
+                        refused.reason,
+                        "native graph publication requires a canonical source context"
+                    );
+                    refused.playback
+                }
+                Ok(_) => panic!("native graph must have its source context"),
+            };
+            let candidate = match f.control.publish_with_admission_and_source_on_control(
+                candidate,
+                PublicationPolicy::InheritRuntime,
+                context(),
+                |_| Err::<(), _>("admission refusal"),
+            ) {
+                Err(AdmittedPublishError::Admission { reason, playback }) => {
+                    assert_eq!(reason, "admission refusal");
+                    playback
+                }
+                _ => panic!("unrelated admission must remain distinct"),
+            };
+            allocation_free(|| {
+                f.data
+                    .owner_mut()
+                    .unwrap()
+                    .run(|callback, _| callback.revoke_native_effects())
+            });
+            let mut candidate = Some(candidate);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match f.control.publish_with_admission_and_source_on_control(
+                    candidate.take().unwrap(),
+                    PublicationPolicy::InheritRuntime,
+                    context(),
+                    |_| Ok::<_, ()>(()),
+                ) {
+                    Err(AdmittedPublishError::Publication(refused))
+                        if refused.reason == "native graph preparation is busy" =>
+                    {
+                        candidate = Some(refused.playback);
+                        assert!(Instant::now() < deadline);
+                        std::thread::yield_now();
+                    }
+                    Err(AdmittedPublishError::Publication(refused)) => {
+                        assert_eq!(
+                            refused.kind,
+                            crate::prepared::PublishErrorKind::NativeSourceUnavailable
+                        );
+                        assert_eq!(refused.reason, "native graph source is unavailable");
+                        assert!(Arc::ptr_eq(
+                            refused.playback.prepared_revision().unwrap(),
+                            &prepared
+                        ));
+                        assert_eq!(f.control.submitted_revision(), revision);
+                        break;
+                    }
+                    _ => panic!("revoked source must refuse publication"),
+                }
+            }
+            dispose(f);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -990,4 +1553,201 @@ fn ordinary_epochs(location: usize) {
         matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
         if retired.status.success() && retired.terminal.is_some_and(|terminal| (terminal.blocks, terminal.frames) == (9, 72)))
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_native_return_tail_refuses_unaligned_removal_without_losing_source() {
+    unbounded_return_or_main_tail(1);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_native_main_tail_is_held_until_stop_and_shutdown() {
+    unbounded_return_or_main_tail(2);
+}
+
+fn unbounded_return_or_main_tail(location: usize) {
+    const CHILD: &str = "HEX_UNBOUNDED_RETURN_TAIL_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", u32::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_at("tail", location);
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    assert!(playback.foreign_nodes_on_control().any(|node| matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(f.binding) && prepared.output_tail() == hex_lattice::OutputTail::Unbounded)));
+    let original_revision = publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, f.binding, 1);
+    let device = f
+        .editor
+        .project()
+        .devices()
+        .find(|device| device.id().value() == f.binding.instance)
+        .unwrap()
+        .id();
+    f.editor.execute(Command::RemoveDevice(device)).unwrap();
+    let successor = compile(&f, false);
+    let revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+    let mut heard_tail = false;
+    for n in 2..=5 {
+        let output = block(&mut f);
+        heard_tail |= output.iter().flatten().any(|sample| *sample != 0.0);
+        replacement::wait_for_blocks(&root, f.binding, n);
+        f.control.reclaim();
+    }
+    if location == 1 {
+        assert_eq!(
+            f.control.status.applied_revision.load(Acquire),
+            original_revision
+        );
+        assert_eq!(
+            f.control.status.rejected_revision(),
+            Some((revision, PlaybackHandoffRejection::LatencyLayoutChanged))
+        );
+    } else {
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+    }
+    assert!(heard_tail, "original endpoint must contribute to output");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !f.control.retire_native_source_preparation(f.binding) {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    f.control.reclaim();
+    assert!(
+        f.control
+            .recover_native_source_preparation(f.binding)
+            .is_none()
+    );
+    f.control.stop();
+    block(&mut f);
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        binding,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    let returned = recover(&mut control, binding);
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn unbounded_native_return_replacement_refuses_without_losing_original_worker() {
+    const CHILD: &str = "HEX_UNBOUNDED_RETURN_REPLACEMENT_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", u32::MAX.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_at("tail", 1);
+    let root = f.control.native_candidate_root();
+    let old = f.binding;
+    let first = compile(&f, true);
+    assert!(first.foreign_nodes_on_control().any(|node| matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(old) && prepared.output_tail() == hex_lattice::OutputTail::Unbounded)));
+    let original_revision = publish(&mut f.control, first, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    for n in 1..=4 {
+        block(&mut f);
+        replacement::wait_for_blocks(&root, old, n);
+    }
+    let device = f
+        .editor
+        .project()
+        .devices()
+        .find(|device| device.id().value() == old.instance)
+        .unwrap()
+        .id();
+    let return_id = f.editor.project().return_tracks()[0].id();
+    let identity = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Return(return_id.value()),
+        device.value(),
+    )
+    .unwrap();
+    let saved = f.control.native_source_prepared_state(old).unwrap();
+    let next = source_for_profile(&mut f.control, identity, "tail", 8, Some(saved));
+    assert_ne!(old, next);
+    f.control.publish_native_source_endpoint(next).unwrap();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    f.binding = next;
+    let successor = compile(&f, true);
+    let revision = publish(&mut f.control, successor, PublicationPolicy::InheritRuntime);
+    let mut output = [[0.0; 2]; 32];
+    for (index, chunk) in output.chunks_mut(8).enumerate() {
+        chunk.copy_from_slice(&block(&mut f));
+        replacement::wait_for_blocks(&root, old, index as u64 + 5);
+    }
+    assert_eq!(
+        f.control.status.applied_revision.load(Acquire),
+        original_revision
+    );
+    assert_eq!(
+        f.control.status.rejected_revision(),
+        Some((revision, PlaybackHandoffRejection::SessionRuntime))
+    );
+    assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+    let OrdinaryFixture {
+        mut control,
+        data,
+        errors,
+        retirement,
+        ..
+    } = f;
+    let mut retirement = close_backend(data, errors, retirement);
+    for binding in [old, next] {
+        let returned = recover(&mut control, binding);
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+        );
+    }
+    drop(control);
+    finish(&mut retirement);
 }

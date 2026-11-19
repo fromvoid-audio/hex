@@ -889,7 +889,7 @@ fn button(id: impl Into<gpui::ElementId>, label: impl AsRef<str>) -> Stateful<Di
         .child(theme::text(label))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]

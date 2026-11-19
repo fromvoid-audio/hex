@@ -1,33 +1,125 @@
-//! Transient section audition intent; seek preparation/publication retains all
-//! graph/resource custody. Pointer gestures dispatch only stationary ordinary
-//! section clicks. A newer click cancels the previous seek through its exact
-//! preparation/publication token; toolbar mode does not own a playback timer.
-use super::EditorView;
-use gpui::{Bounds, Pixels, point, px, size};
+//! Launch a section with the quantized seek worker. L-click enables the
+//! canonical Arrangement loop. A plain launch disables an enabled loop in
+//! place and continues through the Arrangement from the section start.
+//! A refused live loop handoff can still launch from the worker's committed
+//! revision. Only the adjacent loop change can use the prior audible graph as
+//! its quantization source, under the same fresh-runtime fence as a normal launch.
+use super::{
+    EditorView,
+    audio_admission::{AdmissionState, ProjectRevision},
+};
 use hex_project::{LoopRegion, SectionId};
 use hex_session::arrangement_seek::SectionLaunch;
 
 gpui::actions!(hex_section_launch, [ActivateSectionLaunch]);
 pub(super) fn bind_keys(cx: &mut gpui::App) {
-    cx.bind_keys([
-        gpui::KeyBinding::new("enter", ActivateSectionLaunch, Some("hex_section_launch")),
-        gpui::KeyBinding::new("space", ActivateSectionLaunch, Some("hex_section_launch")),
-    ]);
+    cx.bind_keys([gpui::KeyBinding::new(
+        "enter",
+        ActivateSectionLaunch,
+        Some("hex_section_launch"),
+    )]);
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum SectionLoopKey {
+    #[default]
+    Up,
+    Held,
+    Used,
+    ForwardedToMidi,
+}
+
+pub(super) struct SectionLaunchAfterLoop {
+    project: ProjectRevision,
+    section: SectionLaunch,
+    expected_loop: Option<LoopRegion>,
 }
 
 impl EditorView {
+    pub(super) fn has_arrangement_sections(&self) -> bool {
+        self.mode == super::EditorMode::Arrangement
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.project.arrangement_sections().is_empty())
+    }
+
+    /// Delay the ordinary L shortcut until release so a section click can
+    /// consume the held key without first looping the current selection.
+    pub(super) fn section_loop_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &gpui::Window,
+    ) -> bool {
+        if event.keystroke.key != "l" || event.keystroke.modifiers != gpui::Modifiers::default() {
+            return false;
+        }
+        if self.section_loop_key != SectionLoopKey::Up {
+            return self.section_loop_key != SectionLoopKey::ForwardedToMidi;
+        }
+        if event.is_held || !self.has_arrangement_sections() {
+            return false;
+        }
+        let context = window.context_stack();
+        if !context.iter().any(|key| key.contains("hex_editor"))
+            || context.iter().any(|key| {
+                key.contains("hex_text_editing")
+                    || key.contains("hex_text_input")
+                    || key.contains("hex_browser_search")
+            })
+        {
+            return false;
+        }
+        if self.computer_keyboard.enabled {
+            let position = window.mouse_position();
+            if !self.pointer_hits_section_launch(position.x.into(), position.y.into()) {
+                // Preserve the musical key and its note-off while allowing the
+                // user to move the pointer to a section before releasing L.
+                self.section_loop_key = SectionLoopKey::ForwardedToMidi;
+                return false;
+            }
+        }
+        self.section_loop_key = SectionLoopKey::Held;
+        true
+    }
+
+    pub(super) fn section_loop_key_up(
+        &mut self,
+        event: &gpui::KeyUpEvent,
+        window: &gpui::Window,
+        cx: &gpui::Context<Self>,
+    ) -> bool {
+        if event.keystroke.key != "l" {
+            return false;
+        }
+        let prior = std::mem::take(&mut self.section_loop_key);
+        if prior == SectionLoopKey::Held && self.mode == super::EditorMode::Arrangement {
+            self.loop_selection_key(window, cx);
+        }
+        matches!(prior, SectionLoopKey::Held | SectionLoopKey::Used)
+    }
+
+    pub(super) fn use_section_loop_key(&mut self) -> bool {
+        if self.section_loop_key == SectionLoopKey::Held {
+            self.section_loop_key = SectionLoopKey::Used;
+        }
+        self.section_loop_key != SectionLoopKey::Up
+    }
+
     pub(super) fn toggle_section_autoplay(&mut self) {
         self.section_autoplay = !self.section_autoplay;
         if !self.section_autoplay
-            && (self
-                .prepared_seek
-                .as_ref()
-                .is_some_and(|seek| seek.kind.section().is_some())
+            && (self.section_launch_waiting()
+                || self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.kind.section().is_some())
                 || self
                     .latched_seek_intent
                     .as_ref()
                     .is_some_and(|seek| seek.kind.section().is_some()))
         {
+            self.cancel_section_launch_wait();
             self.invalidate_prepared_seek();
         }
         self.status = if self.section_autoplay {
@@ -42,11 +134,11 @@ impl EditorView {
         if !self.section_autoplay {
             return;
         }
-        self.launch_arrangement_section_once(id);
+        self.launch_section(id, true);
     }
 
     /// Explicit momentary action, independent of header-click autoplay mode.
-    pub(super) fn launch_arrangement_section_once(&mut self, id: SectionId) {
+    pub(super) fn launch_section(&mut self, id: SectionId, looped: bool) {
         let region = (|| {
             let state = self.state.as_ref().ok_or("section source is unavailable")?;
             let section = state
@@ -60,49 +152,159 @@ impl EditorView {
             let end = tempo
                 .beat_to_frame(section.end())
                 .map_err(|_| "section end exceeds playback timing")?;
-            LoopRegion::new(start, end, true)
+            LoopRegion::new(start, end, looped)
                 .map_err(|_| "section must contain a positive playback interval")
         })();
         match region {
-            Ok(region) => self.request_section_launch(SectionLaunch {
+            Ok(region) => self.prepare_section_launch(SectionLaunch {
                 region,
                 quantization: self.session_quantization,
             }),
             Err(error) => self.error = Some(error.into()),
         }
     }
-}
 
-pub(super) const ACTION_SIZE: f32 = 12.0;
-pub(super) const ACTION_LEFT: f32 = 6.0;
-pub(super) const ACTION_TOP: f32 = 1.0;
-/// One geometry contract for the painted action and the raw capture exclusion.
-pub(super) fn action_bounds(left: f32, top: f32, width: f32) -> Option<Bounds<Pixels>> {
-    if !left.is_finite() || !top.is_finite() || !width.is_finite() || width < 26.0 {
-        return None;
-    }
-    let x = left + ACTION_LEFT;
-    let y = top + ACTION_TOP;
-    (x.is_finite() && y.is_finite())
-        .then(|| Bounds::new(point(px(x), px(y)), size(px(ACTION_SIZE), px(ACTION_SIZE))))
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn action_bounds_keep_narrow_sections_and_header_edges_exact() {
-        assert!(action_bounds(10.0, 20.0, 25.99).is_none());
-        assert_eq!(
-            action_bounds(10.0, 20.0, 26.0),
-            Some(Bounds::new(
-                point(px(16.0), px(21.0)),
-                size(px(12.0), px(12.0))
-            ))
-        );
-        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(action_bounds(bad, 0.0, 100.0).is_none());
-            assert!(action_bounds(0.0, bad, 100.0).is_none());
-            assert!(action_bounds(0.0, 0.0, bad).is_none());
+    fn prepare_section_launch(&mut self, section: SectionLaunch) {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error = Some("section playback is unavailable in verified streaming mode".into());
+            return;
+        }
+        if self.audible_playback.is_none() || self.audio_status().is_none() {
+            self.error = Some("section playback source is unavailable".into());
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let current = state.project.loop_region();
+        if section.matches_loop(current) {
+            self.section_loop_committed(section);
+            return;
+        }
+        let region = if section.region.enabled() {
+            Some(section.region)
+        } else {
+            current.and_then(|current| LoopRegion::new(current.start(), current.end(), false).ok())
+        };
+        if let Some(region) = region {
+            self.submit_section_launch_loop(section, region);
         }
     }
+
+    pub(super) fn section_loop_committed(&mut self, section: SectionLaunch) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let expected_loop = state.project.loop_region();
+        if !section.matches_loop(expected_loop) {
+            return;
+        }
+        self.section_launch_after_loop = Some(SectionLaunchAfterLoop {
+            project: ProjectRevision {
+                generation: self.project_generation,
+                revision: state.revision,
+            },
+            section,
+            expected_loop,
+        });
+        self.wake_poll();
+    }
+
+    pub(super) fn section_can_replace_refused_loop(&self, section: SectionLaunch) -> bool {
+        let (Some(state), Some(audible), Some(admission)) = (
+            self.state.as_ref(),
+            self.audible_playback.as_ref(),
+            self.audio_admission.current(),
+        ) else {
+            return false;
+        };
+        admission.project.generation == self.project_generation
+            && admission.project.revision == state.revision
+            && matches!(admission.state, AdmissionState::Rejected(_))
+            && admission.audio_revision.is_some_and(|revision| {
+                self.audio_status()
+                    .and_then(|status| status.rejected_revision())
+                    == Some((
+                        revision,
+                        hex_engine::PlaybackHandoffRejection::SessionRuntime,
+                    ))
+            })
+            && audible.project_generation == self.project_generation
+            && self.applied_project_revision() == Some(audible.state.revision)
+            && audible.state.revision.checked_add(1) == Some(state.revision)
+            && section.matches_loop(state.project.loop_region())
+            && !section.matches_loop(audible.state.project.loop_region())
+    }
+
+    pub(super) fn tick_section_launch(&mut self) -> bool {
+        let Some(pending) = self.section_launch_after_loop.as_ref() else {
+            return false;
+        };
+        if self.mode != super::EditorMode::Arrangement
+            || self.opening_project
+            || self.close_prompt_open
+            || self
+                .audio
+                .as_ref()
+                .is_none_or(|audio| !super::arrangement_seek::audio_ready_for_seek(&audio.control))
+            || self.project_generation != pending.project.generation
+            || self.state.as_ref().is_none_or(|state| {
+                state.revision != pending.project.revision
+                    || state.project.loop_region() != pending.expected_loop
+            })
+        {
+            self.section_launch_after_loop = None;
+            return true;
+        }
+        if self.applied_project_revision() != Some(pending.project.revision)
+            && !self.section_can_replace_refused_loop(pending.section)
+        {
+            if let Some(admission) = self.audio_admission.current()
+                && admission.project == pending.project
+                && let AdmissionState::Rejected(reason) = admission.state
+            {
+                self.section_launch_after_loop = None;
+                self.error = Some(reason.into());
+                return true;
+            }
+            return false;
+        }
+        let section = pending.section;
+        self.section_launch_after_loop = None;
+        self.request_section_launch(section);
+        true
+    }
+
+    pub(super) fn section_launch_waiting(&self) -> bool {
+        self.section_launch_after_loop.is_some() || self.pending_loop_launch()
+    }
+
+    pub(super) fn cancel_section_launch_wait(&mut self) {
+        self.section_launch_after_loop = None;
+        self.cancel_pending_loop_launch();
+    }
+}
+
+#[path = "section_launch/geometry.rs"]
+mod geometry;
+pub(super) use geometry::{ACTION_LEFT, ACTION_SIZE, ACTION_TOP, action_bounds};
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) fn test_section_loop_key(visual: &mut gpui::VisualTestContext, down: bool) {
+    let keystroke = gpui::Keystroke::parse("l").unwrap();
+    if down {
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke,
+            is_held: false,
+        });
+    } else {
+        visual.simulate_event(gpui::KeyUpEvent { keystroke });
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) fn test_tap_loop_key(visual: &mut gpui::VisualTestContext) {
+    test_section_loop_key(visual, true);
+    test_section_loop_key(visual, false);
+    visual.run_until_parked();
 }

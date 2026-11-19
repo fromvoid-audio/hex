@@ -697,8 +697,16 @@ impl EditorView {
                         cx.new(|_| super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: format!(
-                                "{}{} · hold f to show all fade handles",
+                                "{}{}{} · hold f to show all fade handles",
                                 handle.name().replace('-', " "),
+                                if handle.curve_side().is_some_and(|out| {
+                                    local_fade.curve_laws()[usize::from(out)]
+                                        == ClipFade::DEFAULT_S_CURVE
+                                }) {
+                                    " · double click to straighten"
+                                } else {
+                                    ""
+                                },
                                 if reanchors {
                                     " · editing fits fades to this clip"
                                 } else {
@@ -715,11 +723,24 @@ impl EditorView {
                                 && view.active_fade_drag.is_none()
                                 && view.set_selected_clip(track, clip_id, window, cx)
                             {
+                                let straighten = handle.curve_side().filter(|&out| {
+                                    event.click_count == 2
+                                        && drag.original.curve_laws()[usize::from(out)]
+                                            == ClipFade::DEFAULT_S_CURVE
+                                });
                                 view.active_fade_drag = Some(FadeDrag {
                                     pointer: event.position,
+                                    preview: straighten.map_or(drag.original, |out| {
+                                        drag.original.straighten_ramp(out)
+                                    }),
+                                    moved: straighten.is_some(),
                                     ..drag.clone()
                                 });
-                                cx.notify();
+                                if straighten.is_some() {
+                                    view.finish_fade_gesture(window, cx);
+                                } else {
+                                    cx.notify();
+                                }
                             }
                             cx.stop_propagation();
                         }),
@@ -800,7 +821,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
