@@ -4953,40 +4953,64 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
-fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppContext) {
+fn browser_limiter_insertion_waits_for_consent_and_installs_on_the_same_output(
+    cx: &mut gpui::TestAppContext,
+) {
+    // Exercise resident and verified-file playback, including Main and an
+    // ordinary audio track. Both use the stock browser action and real prompt.
+    for frame_limit in [262_144, 8_192] {
+        for main in [false, true] {
+            browser_limiter_insertion(&mut cx.new_app(), frame_limit, main);
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, main: bool) {
+    use gpui::{Modifiers, MouseButton};
+    use hex_session::service::PluginEffectDestination;
+
     let _native = native_fixture();
     let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(262_144);
+    let mut h = ResidentHarness::with_frame_limit(frame_limit);
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
     h.applied(applied);
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
-    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    assert_eq!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            )),
+        frame_limit < 96_000
+    );
+    let track = imported.state.project.tracks()[0].id();
+    let audio = h.audio.as_mut().unwrap();
+    let previous = audio.status().unwrap().recording_source().unwrap();
+    audio.control.command(PlaybackCommand::Play).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[0.25; 2]; 64] {
+        assert!(
+            Instant::now() < deadline,
+            "original source never became audible"
+        );
+        std::thread::yield_now();
+    }
     h.enable_confirmed_device_inserts();
-    let state = hex_engine::default_native_device_state_for_class(
-        hex_engine::NativeDeviceClass::Effect,
-        hex_engine::DeviceTypeId::from_static("hex.limiter"),
-    )
-    .unwrap();
-    h.service
-        .submit(Request::Edit(hex_project::Command::InsertMainDevice {
-            before: None,
-            state,
-        }))
-        .unwrap();
     let callback = Arc::clone(&h.callback);
     let backend = h.into_plugin_ui_backend();
     let window =
         hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
             .unwrap();
-    let visual = gpui::VisualTestContext::from_window(window, cx);
-    let step = |cx: &mut gpui::TestAppContext| {
+    let mut visual = gpui::VisualTestContext::from_window(window, cx);
+    visual.update(|window, _| window.activate_window());
+    let step = |cx: &mut gpui::TestAppContext, visual: &mut gpui::VisualTestContext| {
         let mut pcm = [[0.0; 2]; 64];
         callback
             .lock()
@@ -5001,10 +5025,63 @@ fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppC
         std::thread::yield_now();
         pcm
     };
+    let read = |cx: &mut gpui::TestAppContext| {
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+    };
+    let before = &imported.state;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !read(cx)
+        .state
+        .is_some_and(|s| s.revision == before.revision)
+    {
+        step(cx, &mut visual);
+        assert!(
+            Instant::now() < deadline,
+            "original project did not reach the editor"
+        );
+    }
+    let (selector, owner) = if main {
+        ("main-track-header", PluginEffectDestination::Main)
+    } else {
+        let name: &'static str =
+            Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
+        (name, PluginEffectDestination::Track(track))
+    };
+    let header = visual.debug_bounds(selector).unwrap();
+    let selection = if main {
+        gpui::point(header.origin.x + gpui::px(8.0), header.center().y)
+    } else {
+        header.center()
+    };
+    visual.simulate_click(selection, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(read(cx).selected_owner, Some(owner));
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("limiter");
+    visual.run_until_parked();
+    let row = visual
+        .debug_bounds("browser-device-effect-hex.limiter")
+        .expect("the built-in Limiter search result")
+        .center();
+    for count in [1, 2] {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: row,
+            button: MouseButton::Left,
+            click_count: count,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+    }
     let deadline = Instant::now() + Duration::from_secs(2);
     while !cx.has_pending_prompt() {
-        assert_eq!(step(cx), [[0.25; 2]; 64]);
-        assert!(Instant::now() < deadline, "confirmed insert did not prompt");
+        assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
+        assert!(
+            Instant::now() < deadline,
+            "browser Limiter did not prompt: {:?}",
+            read(cx).error
+        );
     }
     let (title, detail) = cx.pending_prompt().unwrap();
     assert_eq!(title, "interrupt playback to insert this device?");
@@ -5013,28 +5090,44 @@ fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppC
         "playback will fade out briefly and resume from the same position. \
          held notes and effect tails may reset."
     );
-    let read = |cx: &mut gpui::TestAppContext| {
-        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
-            .unwrap()
-    };
-    assert_eq!(read(cx).state.unwrap().project, imported.state.project);
-    assert_eq!(step(cx), [[0.25; 2]; 64]);
+    let offered = read(cx);
+    assert_eq!(offered.state.unwrap().project, before.project);
+    assert_eq!(offered.applied, Some(previous));
+    assert!(offered.pending);
+    assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
+
     cx.simulate_prompt_answer("proceed");
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        step(cx);
+        step(cx, &mut visual);
         let view = read(cx);
         assert!(view.error.is_none(), "{:?}", view.error);
         if let Some(state) = view.state
-            && state.revision != imported.state.revision
+            && state.revision != before.revision
         {
-            assert_eq!(state.project.main_devices().len(), 1);
+            let devices = if main {
+                state.project.main_devices()
+            } else {
+                state.project.track(track).unwrap().devices()
+            };
+            assert_eq!(devices.len(), 1);
+            assert_eq!(
+                devices[0].state().type_id(),
+                hex_engine::DeviceTypeId::from_static("hex.limiter")
+            );
+            assert_eq!(state.revision, before.revision + 1);
+            let installed = view.applied.expect("installed audio source");
+            assert_eq!(installed.output_identity, previous.output_identity);
+            assert_eq!(installed.context.editor_revision, state.revision);
+            assert_ne!(installed.audio_revision, previous.audio_revision);
+            assert!(view.transport.is_some_and(|(_, playing)| playing));
+            assert!(!view.pending);
             assert!(!cx.has_pending_prompt());
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "proceed did not install the device"
+            "browser Limiter did not install after Proceed"
         );
     }
 }
