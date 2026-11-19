@@ -1093,25 +1093,32 @@ struct QuietTrackEffect;
 
 #[test]
 fn confirmed_track_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
-    verify_confirmed_effect_removal(0, false);
+    verify_effect_removal(0, false, false);
 }
 
 #[test]
 fn confirmed_main_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
-    verify_confirmed_effect_removal(2, false);
+    verify_effect_removal(2, false, false);
 }
 
 #[test]
 fn confirmed_return_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
-    verify_confirmed_effect_removal(1, false);
+    verify_effect_removal(1, false, false);
 }
 
 #[test]
 fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() {
-    verify_confirmed_effect_removal(1, true);
+    verify_effect_removal(1, true, false);
 }
 
-fn verify_confirmed_effect_removal(location: usize, remove_hosted: bool) {
+#[test]
+fn paused_device_removal_keeps_the_surviving_hosted_worker_and_cursor() {
+    for location in 0..=2 {
+        verify_effect_removal(location, false, true);
+    }
+}
+
+fn verify_effect_removal(location: usize, remove_hosted: bool, paused: bool) {
     use hex_devices::eq::EQ_DEFINITION;
 
     let mut f = fixture(&[&[], &[]], 64);
@@ -1196,9 +1203,7 @@ fn verify_confirmed_effect_removal(location: usize, remove_hosted: bool) {
             eq
         }))
         .unwrap();
-    let mut refused = prepare(f.editor.project());
-    refused.require_continuous_insert = true;
-    let mut approved = prepare(f.editor.project());
+    let mut candidate = prepare(f.editor.project());
 
     let mut endpoint = Borrowed::new(owner, hosted.value());
     let mut oracle = Borrowed::new(owner, hosted.value());
@@ -1208,8 +1213,16 @@ fn verify_confirmed_effect_removal(location: usize, remove_hosted: bool) {
     reference
         .render_with_foreign_processors(&mut expected, None, None, None, &mut oracle)
         .unwrap();
+    let mut before_cut = [[0.0; 2]; 8];
+    let first_block = if paused { 8 } else { 7 };
     predecessor
-        .render_with_foreign_processors(&mut [[0.0; 2]; 7], None, None, None, &mut endpoint)
+        .render_with_foreign_processors(
+            &mut before_cut[..first_block],
+            None,
+            None,
+            None,
+            &mut endpoint,
+        )
         .unwrap();
     let chain = match location {
         0 => &predecessor.device_chains[0],
@@ -1217,24 +1230,51 @@ fn verify_confirmed_effect_removal(location: usize, remove_hosted: bool) {
         _ => &predecessor.main_chain,
     };
     assert!(!chain.committed_range_is_quiescent(0..chain.len()));
-    assert_eq!(
-        refused.try_inherit_state_live_from(&mut predecessor),
-        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
-    );
-    assert_eq!(predecessor.performance_frame, 7);
-    endpoint.next_offset = 0;
-    let mut before_cut = [[0.0; 2]; 1];
-    predecessor
-        .render_with_foreign_processors(&mut before_cut, None, None, None, &mut endpoint)
-        .unwrap();
-    assert_eq!(before_cut, expected[7..8]);
-
-    predecessor.set_playing_at_device_insert_cut(false);
-    approved
-        .try_inherit_state_at_device_insert_cut(&mut predecessor)
-        .unwrap();
-    assert_eq!(approved.performance_frame, 8);
-    approved.set_playing_at_device_insert_cut(true);
+    if paused {
+        predecessor.apply(SessionPlaybackCommand::Pause).unwrap();
+        assert!(predecessor.renders_no_device_chains());
+        assert_eq!(
+            candidate.try_inherit_state_live_from(&mut predecessor),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        );
+        candidate.require_continuous_insert = true;
+        candidate
+            .preview_stream_handoff_with_policy_and_report(
+                &mut predecessor,
+                24,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+            )
+            .unwrap();
+        let cursor = predecessor.arrangement_frame;
+        candidate
+            .try_inherit_state_live_from(&mut predecessor)
+            .unwrap();
+        assert!(!candidate.playing);
+        assert_eq!(candidate.arrangement_frame, cursor);
+        candidate.apply(SessionPlaybackCommand::Play).unwrap();
+    } else {
+        let mut unapproved = prepare(f.editor.project());
+        unapproved.require_continuous_insert = true;
+        assert_eq!(
+            unapproved.try_inherit_state_live_from(&mut predecessor),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        );
+        assert_eq!(predecessor.performance_frame, 7);
+        endpoint.next_offset = 0;
+        predecessor
+            .render_with_foreign_processors(&mut before_cut[7..], None, None, None, &mut endpoint)
+            .unwrap();
+        assert_eq!(before_cut[7..], expected[7..8]);
+        predecessor.set_playing_at_device_insert_cut(false);
+        candidate
+            .try_inherit_state_at_device_insert_cut(&mut predecessor)
+            .unwrap();
+        candidate.set_playing_at_device_insert_cut(true);
+    }
+    assert_eq!(candidate.performance_frame, 8);
     if remove_hosted {
         let mut reference = prepare(f.editor.project());
         reference.apply(SessionPlaybackCommand::Seek(8)).unwrap();
@@ -1244,14 +1284,14 @@ fn verify_confirmed_effect_removal(location: usize, remove_hosted: bool) {
         let mut actual = [[0.0; 2]; 64];
         // Rendering without a foreign runner proves the retiring worker has
         // no obligations, including zero-input tail work, on the successor.
-        approved.render(&mut actual).unwrap();
+        candidate.render(&mut actual).unwrap();
         assert_eq!(actual, expected);
         assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
         return;
     }
     endpoint.next_offset = 0;
     let mut after_cut = [[0.0; 2]; 24];
-    approved
+    candidate
         .render_with_foreign_processors(&mut after_cut, None, None, None, &mut endpoint)
         .unwrap();
     assert_eq!(after_cut, expected[8..]);
