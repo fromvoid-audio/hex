@@ -4,6 +4,8 @@ use crate::{BeatTime, Clip, ClipFade, Invalid, TempoMap, TrimEdge};
 use std::sync::Arc;
 
 mod content;
+mod outer_fade;
+pub use outer_fade::ProjectedOuterAudioFade;
 mod prefix;
 pub(crate) use prefix::extend_frame_left;
 mod timing;
@@ -195,7 +197,12 @@ impl AudioDomainClock {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioFadeProjection {
     pub tempo: TempoMap,
+    /// Outer retains this original author reference through crops and prefixes.
+    /// LegacyRoot keeps its historical captured-root projection semantics.
     pub origin_beat_raw: i128,
+    /// LegacyRoot: root-local fade start. Outer: full consumed raw beat ticks;
+    /// subtract domain.fade_start to get signed unwrapped displacement. For
+    /// Outer at most one of these two unsigned distances may be nonzero.
     pub local_start_raw: u64,
 }
 /// Finite musical source read retained independently of event destinations.
@@ -261,6 +268,9 @@ pub struct AudioClipDomain {
     pub looping: bool,
     pub fade: ClipFade,
     pub fade_clock: AudioClipFadeClock,
+    /// LegacyRoot: retained root fade start. Outer: before-envelope distance,
+    /// in frames for a frame domain or raw beat ticks for a musical domain.
+    /// An Outer frame domain never combines a nonzero offset and prefix.
     pub fade_start: u64,
     pub fade_projection: Option<AudioFadeProjection>,
 }
