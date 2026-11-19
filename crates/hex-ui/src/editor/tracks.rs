@@ -2723,7 +2723,7 @@ impl EditorView {
             )
             .unwrap_or_else(|| div().absolute().inset_0());
         }
-        use super::waveform_geometry::WaveformMapping;
+        use super::waveform_geometry::{WaveformMapping, WaveformWindow};
 
         let waveform = state.waveforms.get(&clip.asset());
         let gain = self
@@ -2779,7 +2779,14 @@ impl EditorView {
                 waveform,
                 WaveformMapping::Frame {
                     projection,
-                    fallback: fallback.map(std::sync::Arc::new),
+                    clock: super::waveform_frame::Clock::Arrangement,
+                    fallback: fallback.map(|(waveform, mapping)| {
+                        std::sync::Arc::new(WaveformWindow {
+                            waveform,
+                            mapping,
+                            visible: visible_start..visible_end,
+                        })
+                    }),
                 },
             )),
             None => fallback,

@@ -1,11 +1,17 @@
-//! Original resident-source amplitude for eligible Arrangement frame clips.
+//! Original resident-source amplitude for eligible clips and events.
 //! Geometry and the overrange worker share the engine's source clock and
 //! multiplication order. Wide columns use midpoint-weighted cached peaks.
 use super::waveform_source::aggregate_peaks;
-use hex_engine::audio_transform::{FrameFadeOverrides, FrameFadePreview};
+use hex_engine::{
+    Invalid,
+    audio_transform::{
+        FrameFadeCoverage, FrameFadeEvent, FrameFadeOverrides, FrameFadePreview, FrameFadeRange,
+        FrameFadeSample,
+    },
+};
 use hex_project::{
-    Asset, AudioClipEdit, AudioClipFadeClock, AudioEvents, Clip, ClipFade, ClipGain, Project,
-    Tempo, TempoMap,
+    Asset, AudioClipEdit, AudioClipFadeClock, AudioEvent, AudioEvents, Clip, ClipFade, ClipGain,
+    Project, Tempo, TempoMap,
 };
 use hex_session::{CachedOverrange, CachedPeak, CachedWaveform};
 use std::{ops::Range, sync::Arc};
@@ -105,8 +111,66 @@ impl Projection {
     }
 }
 
+/// Coordinates supplied by the containing waveform. Event windows use the
+/// retained source-root clock, including the event's source start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Clock {
+    Arrangement,
+    Event(u64),
+}
+
+impl Clock {
+    pub(super) fn resolve<'q, 'source>(
+        self,
+        query: &'q FrameFadePreview<'source>,
+    ) -> Option<Read<'q, 'source>> {
+        match self {
+            Self::Arrangement => Some(Read::Arrangement(query)),
+            Self::Event(id) => Some(Read::Event(query.event(id)?)),
+        }
+    }
+}
+
+pub(super) enum Read<'q, 'source> {
+    Arrangement(&'q FrameFadePreview<'source>),
+    Event(FrameFadeEvent<'q, 'source>),
+}
+
+impl Read<'_, '_> {
+    fn sample(&self, frame: u64) -> Result<Option<FrameFadeSample>, Invalid> {
+        match self {
+            Self::Arrangement(query) => query.timeline_sample(frame),
+            Self::Event(event) => event.sample(frame),
+        }
+    }
+
+    fn visit_ranges(
+        &self,
+        range: Range<u64>,
+        remaining: &mut usize,
+        visit: impl FnMut(FrameFadeRange),
+    ) -> Result<Option<FrameFadeCoverage>, Invalid> {
+        match self {
+            Self::Arrangement(query) => query.visit_timeline_ranges(range, remaining, visit),
+            Self::Event(event) => event.visit_ranges(range, remaining, visit),
+        }
+    }
+}
+
+/// Translate a clipped event's destination window into its retained read clock.
+pub(super) fn event_source_window(event: AudioEvent, visible: Range<u64>) -> Option<Range<u64>> {
+    if visible.start >= visible.end || visible.end > event.end {
+        return None;
+    }
+    let first = event
+        .source_start
+        .checked_add(visible.start.checked_sub(event.start)?)?;
+    let last = first.checked_add(visible.end - visible.start)?;
+    Some(first..last)
+}
+
 pub(super) fn detail(
-    query: &FrameFadePreview<'_>,
+    query: &Read<'_, '_>,
     waveform: &CachedWaveform,
     range: Range<u64>,
     limit: usize,
@@ -117,7 +181,7 @@ pub(super) fn detail(
     }
     let mut peaks = None;
     for frame in range {
-        let sample = match query.timeline_sample(frame).ok()? {
+        let sample = match query.sample(frame).ok()? {
             Some(sample) => {
                 let source = usize::try_from(sample.source_frame()).ok()?;
                 let pcm = waveform.bounded_samples(source..source.checked_add(1)?, 1)?;
@@ -139,7 +203,7 @@ pub(super) fn detail(
 /// A capped approximation for wide columns. Silence contributes real zero;
 /// unavailable data or budget exhaustion defers to the caller's fallback.
 pub(super) fn coarse(
-    query: &FrameFadePreview<'_>,
+    query: &Read<'_, '_>,
     waveform: &CachedWaveform,
     range: Range<u64>,
     remaining: &mut usize,
@@ -147,7 +211,7 @@ pub(super) fn coarse(
     let mut peaks = None;
     let mut available = true;
     let coverage = query
-        .visit_timeline_ranges(range, remaining, |part| {
+        .visit_ranges(range, remaining, |part| {
             for range in part.source.into_iter().flatten() {
                 let Some(mut pair) = usize::try_from(range.start).ok().and_then(|start| {
                     aggregate_peaks(waveform, start, usize::try_from(range.end).ok()?)
@@ -200,6 +264,65 @@ mod tests {
     use hex_project::{AudioEventEdit, AudioEventFade, Command, Created, Editor};
 
     #[test]
+    fn panned_event_uses_its_slipped_source_and_ordered_fade_gain() {
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = model
+            .execute(Command::ImportAudioTrack {
+                name: "slipped".into(),
+                path: "slipped.wav".into(),
+                sample_rate: 48_000,
+                frames: 24,
+            })
+            .unwrap()
+        else {
+            panic!("import a frame clip");
+        };
+        let audio = hex_engine::Audio::new(
+            48_000,
+            (0..24)
+                .map(|frame| [frame as f32, -(frame as f32)])
+                .collect(),
+        )
+        .unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 24).unwrap();
+        let project = model.project();
+        let clip = project.clip(clip).unwrap();
+        let mut events = clip.editable_audio_events().unwrap();
+        let fade = AudioEventFade::new(4, ClipFade::new(8, 0, 4, 0).unwrap()).unwrap();
+        let gain = ClipGain::new(-6_000).unwrap();
+        let event = AudioEvent {
+            start: 9,
+            end: 17,
+            source_start: 4,
+            fade: Some(fade),
+            gain,
+            ..events.events[0]
+        };
+        assert!(event_source_window(event, 8..12).is_none());
+        assert!(event_source_window(event, 11..18).is_none());
+        let visible = event_source_window(event, 11..15).unwrap();
+        assert_eq!(visible, 6..10);
+        events.events[0] = event;
+        let projection =
+            Projection::new(project, clip, &waveform, None, Some(events), None).unwrap();
+        let query = projection.query().unwrap();
+        let event_read = Clock::Event(event.id).resolve(&query).unwrap();
+        let arrangement = Clock::Arrangement.resolve(&query).unwrap();
+        let exact = detail(&event_read, &waveform, 6..7, 1).unwrap();
+        assert_eq!(exact, detail(&arrangement, &waveform, 11..12, 1).unwrap());
+        assert_eq!(
+            exact[0].max,
+            (6.0 * fade.shape().gain_at(2)) * gain.linear()
+        );
+        assert_eq!(exact[1].min, -exact[0].max);
+        let mut remaining = RANGE_BUDGET;
+        let coarse = coarse(&event_read, &waveform, visible, &mut remaining).unwrap();
+        assert_eq!(coarse[0].max, 9.0 * gain.linear());
+        assert!(remaining < RANGE_BUDGET);
+        assert!(Clock::Event(event.id + 1).resolve(&query).is_none());
+    }
+
+    #[test]
     fn frame_fades_reveal_original_samples_and_keep_effective_identity_at_commit() {
         let mut model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
         let Created::Imported { clip, .. } = model
@@ -228,7 +351,13 @@ mod tests {
             .unwrap()
         };
         let peaks = |projection: &Projection, range| {
-            detail(&projection.query().unwrap(), &waveform, range, 8).unwrap()
+            detail(
+                &Read::Arrangement(&projection.query().unwrap()),
+                &waveform,
+                range,
+                8,
+            )
+            .unwrap()
         };
         let fade = ClipFade::new(24, 0, 16, 0).unwrap();
         let plain = projection(&model, None, None);
@@ -278,7 +407,7 @@ mod tests {
         let mut remaining = RANGE_BUDGET;
         assert_eq!(
             coarse(
-                &installed.query().unwrap(),
+                &Read::Arrangement(&installed.query().unwrap()),
                 &waveform,
                 12..24,
                 &mut remaining
@@ -287,6 +416,14 @@ mod tests {
                 .max,
             2.0
         );
-        assert!(coarse(&installed.query().unwrap(), &waveform, 0..24, &mut 0).is_none());
+        assert!(
+            coarse(
+                &Read::Arrangement(&installed.query().unwrap()),
+                &waveform,
+                0..24,
+                &mut 0
+            )
+            .is_none()
+        );
     }
 }

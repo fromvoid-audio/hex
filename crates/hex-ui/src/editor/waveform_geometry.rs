@@ -186,11 +186,13 @@ impl OverrangeCache {
                 timeline_origin: *timeline_origin,
                 fade: Some(*fade),
             },
-            WaveformMapping::Frame { projection, .. } => {
+            WaveformMapping::Frame {
+                projection, clock, ..
+            } => {
                 if layout.all_columns_exact() {
                     return WaveformOverrange::NotApplicable;
                 }
-                waveform_overrange::Mapping::Frame(Arc::clone(projection))
+                waveform_overrange::Mapping::Frame(Arc::clone(projection), *clock)
             }
             _ => return WaveformOverrange::NotApplicable,
         };
@@ -410,7 +412,7 @@ struct CoarseEntryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
-    Frame(Arc<waveform_frame::Key>),
+    Frame(Arc<waveform_frame::Key>, waveform_frame::Clock),
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
@@ -709,7 +711,7 @@ fn coarse_entry_key(
             timeline_origin,
             ..
         } => (*id, *timeline_origin),
-        WaveformMappingKey::Frame(key) => (None, key.start),
+        WaveformMappingKey::Frame(key, waveform_frame::Clock::Arrangement) => (None, key.start),
         _ => return None,
     };
     let WaveformPlacementKey::Coarse {
@@ -733,7 +735,8 @@ fn coarse_entry_key(
 pub(super) enum WaveformMapping {
     Frame {
         projection: Arc<waveform_frame::Projection>,
-        fallback: Option<Arc<(Arc<CachedWaveform>, WaveformMapping)>>,
+        clock: waveform_frame::Clock,
+        fallback: Option<Arc<WaveformWindow>>,
     },
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
@@ -760,6 +763,14 @@ pub(super) enum WaveformMapping {
     Source {
         timeline_origin: u64,
     },
+}
+
+/// A waveform with its own visible coordinates. Events can have different
+/// origins in the prepared root and original source.
+pub(super) struct WaveformWindow {
+    pub(super) waveform: Arc<CachedWaveform>,
+    pub(super) mapping: WaveformMapping,
+    pub(super) visible: std::ops::Range<u64>,
 }
 
 mod grid;
@@ -991,9 +1002,9 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
-        WaveformMapping::Frame { projection, .. } => {
-            WaveformMappingKey::Frame(Arc::clone(&projection.key))
-        }
+        WaveformMapping::Frame {
+            projection, clock, ..
+        } => WaveformMappingKey::Frame(Arc::clone(&projection.key), *clock),
         WaveformMapping::MusicalEvent(projection) => {
             WaveformMappingKey::MusicalEvent(projection.clone())
         }
@@ -1132,8 +1143,14 @@ fn build_waveform_geometry(
     } else {
         bounds.origin.y
     };
+    let frame_query;
     let frame = match mapping {
-        WaveformMapping::Frame { projection, .. } => Some(projection.query()?),
+        WaveformMapping::Frame {
+            projection, clock, ..
+        } => {
+            frame_query = projection.query()?;
+            Some(clock.resolve(&frame_query)?)
+        }
         _ => None,
     };
     let mut range_budget = waveform_frame::RANGE_BUDGET;
@@ -1466,6 +1483,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            clock: waveform_frame::Clock::Arrangement,
             fallback: None,
         };
         let cache = RefCell::new(WaveformGeometryCache::default());

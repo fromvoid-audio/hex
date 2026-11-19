@@ -1,9 +1,13 @@
-use super::super::waveform;
+use super::super::{
+    waveform, waveform_frame,
+    waveform_geometry::{WaveformMapping, WaveformWindow},
+};
 use super::*;
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb};
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
+use std::{rc::Rc, sync::Arc};
 
 const EVENT_RULER_HEIGHT: f32 = super::super::timeline_strip::RULER_HEIGHT;
 const EVENT_TOP: f32 = EVENT_RULER_HEIGHT + 1.0;
@@ -20,10 +24,8 @@ pub(in crate::editor) fn view(
     let state = view.state.as_ref()?;
     let revision = state.revision;
     let clip = state.project.clip(clip_id)?.clone();
-    let clip_gain = view
-        .waveform_clip_gain(&clip)
-        .unwrap_or(clip.gain())
-        .linear();
+    let gain_preview = view.waveform_clip_gain(&clip);
+    let clip_gain = gain_preview.unwrap_or(clip.gain()).linear();
     let events = match clip.editable_audio_events() {
         Ok(events) => events,
         Err(error) => {
@@ -193,6 +195,22 @@ pub(in crate::editor) fn view(
         ));
     }
     body = body.children([ruler]);
+    let source = state.waveforms.get(&clip.asset());
+    // Structural edits retain their existing prepared/placement previews. The
+    // amplitude path consumes this pane's same resolved events and receipt.
+    let frame_source = source
+        .filter(|_| placement.is_none() && operation.is_none_or(is_event_amplitude_edit))
+        .and_then(|waveform| {
+            let projection = waveform_frame::Projection::new(
+                &state.project,
+                &clip,
+                waveform,
+                None,
+                Some(preview.clone()),
+                gain_preview,
+            )?;
+            Some((waveform, Arc::new(projection)))
+        });
     for event in &preview.events {
         let raw_a = event.start.max(content_bounds(&root).0);
         let raw_b = event.end.min(content_bounds(&root).1);
@@ -312,47 +330,79 @@ pub(in crate::editor) fn view(
                 .checked_add(source_root.saturating_sub(first))?
                 .checked_add(visible_start - start)?;
             let end_frame = source_frame.checked_add(visible_end - visible_start)?;
-            if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
-                // The prepared peaks already include the canonical event
-                // gain. Scale only the held or pending difference.
+            let prepared = state.audio_clip_waveforms.get(&clip_id);
+            let fallback = if let Some(prepared) = prepared {
+                // The prepared peaks include canonical event gain. Scale only
+                // the held or pending difference on this fallback path.
                 let gain = if event.gain == original.gain {
                     clip_gain
                 } else {
                     clip_gain * (event.gain.linear() / original.gain.linear())
                 };
-                element = element.child(
-                    waveform::waveform_source_segment_gain_view_cached(
-                        std::sync::Arc::clone(
-                            prepared
-                                .preview_root
-                                .as_ref()
-                                .filter(|_| {
-                                    matches!(root.timing, hex_project::AudioClipTiming::Frames)
-                                })
-                                .map_or(&prepared.waveform, |root| &root.waveform),
-                        ),
-                        0,
-                        source_root + (visible_start - start)..source_root + (visible_end - start),
+                let waveform = prepared
+                    .preview_root
+                    .as_ref()
+                    .filter(|_| matches!(root.timing, hex_project::AudioClipTiming::Frames))
+                    .map_or(&prepared.waveform, |root| &root.waveform);
+                Some(WaveformWindow {
+                    waveform: Arc::clone(waveform),
+                    mapping: WaveformMapping::GainedSource {
+                        timeline_origin: 0,
                         gain,
-                        true,
-                        std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
-                        ink,
-                    )
-                    .debug_selector(move || format!("audio-event-waveform-{event_id}")),
+                        detail: true,
+                    },
+                    visible: source_root.checked_add(visible_start - start)?
+                        ..source_root.checked_add(visible_end - start)?,
+                })
+            } else {
+                source
+                    .filter(|_| events.sources.is_empty())
+                    .map(|waveform| WaveformWindow {
+                        waveform: Arc::clone(waveform),
+                        mapping: WaveformMapping::Clip {
+                            clip: clip.clone(),
+                            timeline_origin: clip.start(),
+                            gain: Some(clip_gain * event.gain.linear()),
+                            fade: None,
+                        },
+                        visible: source_frame..end_frame,
+                    })
+            };
+            let frame_window = frame_source
+                .as_ref()
+                .filter(|_| event.active)
+                .and_then(|source| {
+                    let visible =
+                        waveform_frame::event_source_window(*event, visible_start..visible_end)?;
+                    Some((source, visible))
+                });
+            let waveform_active = clip.active() || (frame_window.is_none() && prepared.is_some());
+            let displayed = if let Some(((waveform, projection), visible)) = frame_window {
+                Some(WaveformWindow {
+                    waveform: Arc::clone(waveform),
+                    mapping: WaveformMapping::Frame {
+                        projection: Arc::clone(projection),
+                        clock: waveform_frame::Clock::Event(event.id),
+                        fallback: fallback.map(Arc::new),
+                    },
+                    visible,
+                })
+            } else {
+                fallback
+            };
+            if let Some(displayed) = displayed {
+                let body = waveform::timeline_waveform_view_cached(
+                    displayed.waveform,
+                    displayed.mapping,
+                    displayed.visible.start,
+                    displayed.visible.end,
+                    Rc::clone(&view.clip_waveform_geometry_cache),
+                    None,
+                    ink,
                 );
-            } else if events.sources.is_empty()
-                && let Some(wave) = state.waveforms.get(&clip.asset())
-            {
                 element = element.child(
-                    waveform::waveform_view_cached(
-                        wave,
-                        &clip,
-                        source_frame..end_frame,
-                        Some(clip_gain * event.gain.linear()),
-                        std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
-                        ink,
-                    )
-                    .debug_selector(move || format!("audio-event-waveform-{event_id}")),
+                    waveform::clip_waveform_activity(body, waveform_active)
+                        .debug_selector(move || format!("audio-event-waveform-{event_id}")),
                 );
             }
         }

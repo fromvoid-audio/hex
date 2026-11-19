@@ -45,7 +45,7 @@ pub(super) enum Mapping {
         timeline_origin: u64,
         fade: Option<ClipFade>,
     },
-    Frame(Arc<waveform_frame::Projection>),
+    Frame(Arc<waveform_frame::Projection>, waveform_frame::Clock),
 }
 
 pub(super) struct Job {
@@ -208,8 +208,12 @@ fn calculate(job: Job) -> Option<Reply> {
             cancelled,
         });
     }
+    let frame_query;
     let frame = match &request.mapping {
-        Mapping::Frame(projection) => projection.query(),
+        Mapping::Frame(projection, clock) => {
+            frame_query = projection.query();
+            frame_query.as_ref().and_then(|query| clock.resolve(query))
+        }
         Mapping::Clip { .. } => None,
     };
     let mut budget = MAX_FRAMES;
@@ -246,7 +250,7 @@ fn calculate(job: Job) -> Option<Reply> {
                     *fade,
                     CHUNK_FRAMES as usize,
                 ),
-                Mapping::Frame(_) => frame.as_ref().and_then(|frame| {
+                Mapping::Frame(..) => frame.as_ref().and_then(|frame| {
                     waveform_frame::detail(
                         frame,
                         &request.waveform,
