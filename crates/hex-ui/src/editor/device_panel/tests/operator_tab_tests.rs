@@ -250,6 +250,19 @@ impl Drop for OperatorTabBrowser {
     }
 }
 
+/// Keep the real editor and Session behind the device controls without laying
+/// out the browser, transport and Session grid again for each key press.
+struct OperatorTabPanel(gpui::Entity<EditorView>);
+
+impl gpui::Render for OperatorTabPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        self.0.update(cx, |editor, cx| {
+            editor.wake_poll_if_busy();
+            view(editor, Some(window), cx)
+        })
+    }
+}
+
 #[gpui::test]
 fn operator_tab_browser_bootstrap_with_saved_places_excludes_unrelated_cached_media(
     cx: &mut TestAppContext,
@@ -286,7 +299,13 @@ fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edit
     let browser = OperatorTabBrowser::new(false);
     let (handle, editor) = browser.window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
+    visual.update(|window, app| {
+        window.replace_root(app, |_, cx| {
+            cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+            OperatorTabPanel(editor.clone())
+        });
+        window.activate_window();
+    });
     visual.run_until_parked();
     browser.assert_bounded(&editor, cx);
     let coarse = visual
@@ -300,7 +319,6 @@ fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edit
     let mut order = vec![first.clone()];
     for _ in 0..96 {
         visual.simulate_keystrokes("tab");
-        visual.run_until_parked();
         let next = focused(&mut visual);
         if order.contains(&next) {
             assert_eq!(
@@ -344,7 +362,6 @@ fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edit
     let mut reverse = Vec::new();
     for _ in 0..96 {
         visual.simulate_keystrokes("shift-tab");
-        visual.run_until_parked();
         let previous = focused(&mut visual);
         if previous == first {
             break;
