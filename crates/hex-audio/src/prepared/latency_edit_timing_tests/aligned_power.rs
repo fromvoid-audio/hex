@@ -1,20 +1,65 @@
-//! Exercise the real Rattle processor and the host's separate dry delay.
+//! Exercise real fixed-latency effects and the host's separate dry delay.
 use super::*;
-use hex_devices::rattle::{LATENCY_FRAMES, RATTLE_DEFINITION, RattleDefinition};
-use hex_lattice::{EMPTY_DEVICE_RESOURCES, PreparedNativeProcessor};
+use hex_devices::{
+    overdrive::OVERDRIVE_DEFINITION, rattle::RATTLE_DEFINITION, saturator::SATURATOR_DEFINITION,
+};
+use hex_lattice::{
+    DevicePreparationContext, EMPTY_DEVICE_RESOURCES, PreparedProcessorFactory, TuningTable,
+};
+use hex_lattice_contract::NativeDeviceState;
 
 #[test]
 fn rattle_power_retains_aligned_dry_and_restarts_its_dsp_fresh() {
-    const LATENCY: usize = LATENCY_FRAMES as usize;
+    aligned_effect_power(RATTLE_DEFINITION.default_state().unwrap());
+}
+
+#[test]
+fn saturator_power_retains_aligned_dry_and_restarts_its_dsp_fresh() {
+    let state = SATURATOR_DEFINITION
+        .patch_parameter(
+            &SATURATOR_DEFINITION.default_state().unwrap(),
+            hex_devices::saturator::parameter::DRIVE,
+            ParameterValue::Float(9.0),
+        )
+        .unwrap();
+    aligned_effect_power(state);
+}
+
+#[test]
+fn overdrive_power_retains_aligned_dry_and_restarts_its_dsp_fresh() {
+    let state = OVERDRIVE_DEFINITION
+        .patch_parameter(
+            &OVERDRIVE_DEFINITION.default_state().unwrap(),
+            hex_devices::overdrive::parameter::DRY_WET,
+            ParameterValue::Float(0.8),
+        )
+        .unwrap();
+    aligned_effect_power(state);
+}
+
+fn aligned_effect_power(state: NativeDeviceState) {
+    const LATENCY: usize = 11;
     const FADE: usize = 240;
-    let state = RATTLE_DEFINITION.default_state().unwrap();
     let input: Vec<_> = (0..8192)
         .map(|frame| {
             let sample = (frame as f32 * 0.037).sin() * 0.3;
             [sample, -sample * 0.8]
         })
         .collect();
-    let factory = RattleDefinition::prepare_owned(&state, RATE, &[]).unwrap();
+    let registry = hex_devices::native_registry().unwrap();
+    let prepared = registry
+        .prepare_runtime_device(
+            &state,
+            &DevicePreparationContext {
+                sample_rate: RATE,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
+    let Some(PreparedProcessorFactory::Legacy(factory)) = prepared.processor else {
+        panic!("aligned native stage");
+    };
     let wet = |input: &[Frame]| {
         let mut rendered = input.to_vec();
         factory
@@ -24,25 +69,25 @@ fn rattle_power_retains_aligned_dry_and_restarts_its_dsp_fresh() {
     };
     let uninterrupted = wet(&input[..3 * BLOCK]);
     let (mut editor, _, prepare) = resident_input(input.clone());
-    let Created::Device(rattle) = editor
+    let Created::Device(device) = editor
         .execute(Command::InsertMainDevice {
             before: None,
             state,
         })
         .unwrap()
     else {
-        panic!("Rattle insertion");
+        panic!("aligned native stage insertion");
     };
     let on = prepare(editor.project());
     editor
         .execute(Command::SetDeviceBypass {
-            device: rattle,
+            device,
             bypassed: true,
         })
         .unwrap();
     let off = prepare(editor.project());
-    assert_eq!(on.arrangement().main_latency_frames(), LATENCY_FRAMES);
-    assert_eq!(off.arrangement().main_latency_frames(), LATENCY_FRAMES);
+    assert_eq!(on.arrangement().main_latency_frames(), LATENCY as u32);
+    assert_eq!(off.arrangement().main_latency_frames(), LATENCY as u32);
 
     for off_frames in [64, BLOCK] {
         let reenable = BLOCK + off_frames;
@@ -138,14 +183,14 @@ fn rattle_power_retains_aligned_dry_and_restarts_its_dsp_fresh() {
                 if mix == 0.0 {
                     assert_eq!(
                         *actual, dry,
-                        "Rattle must retain exactly aligned dry, phase {phase}, frame {frame}"
+                        "Effect must retain exactly aligned dry, phase {phase}, frame {frame}"
                     );
                 } else {
                     for ((actual, dry), wet) in actual.iter().zip(dry).zip(wet) {
                         let expected = dry + (wet - dry) * mix;
                         assert!(
                             (actual - expected).abs() < 1e-6,
-                            "Rattle power PCM, settled={settled}, phase={phase}, frame={frame}: {actual} vs {expected}"
+                            "Aligned power PCM, settled={settled}, phase={phase}, frame={frame}: {actual} vs {expected}"
                         );
                     }
                 }
