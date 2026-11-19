@@ -297,6 +297,7 @@ mod update_flow;
 mod viewport;
 mod waveform;
 mod waveform_columns;
+mod waveform_frame;
 mod waveform_geometry;
 mod waveform_loop;
 mod waveform_overrange;

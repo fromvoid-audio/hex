@@ -4,7 +4,7 @@
 //! paint, submits finite requests without waiting and drains replies on control.
 //! Replacing a clip request cancels older work in bounded chunks; the result
 //! identity also prevents an already-completed stale reply from being installed.
-use super::waveform_source::bounded_clip_overrange;
+use super::{waveform_frame, waveform_source::bounded_clip_overrange};
 use hex_project::{Clip, ClipFade};
 use hex_session::CachedOverrange as Overrange;
 use hex_session::CachedWaveform;
@@ -30,11 +30,22 @@ pub(super) struct Request {
     /// A caller-owned view slot. Distinct views of the same clip must not
     /// cancel each other; the caller cancels a slot when it is retired.
     pub slot: u64,
-    pub clip: Clip,
     pub waveform: Arc<CachedWaveform>,
-    pub timeline_origin: u64,
-    pub fade: Option<ClipFade>,
+    pub mapping: Mapping,
     pub columns: Vec<Range<u64>>,
+}
+
+// The queue is capped at eight and already carried Clip inline. Boxing it
+// would add a heap allocation for every ordinary waveform query.
+#[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Mapping {
+    Clip {
+        clip: Clip,
+        timeline_origin: u64,
+        fade: Option<ClipFade>,
+    },
+    Frame(Arc<waveform_frame::Projection>),
 }
 
 pub(super) struct Job {
@@ -197,6 +208,10 @@ fn calculate(job: Job) -> Option<Reply> {
             cancelled,
         });
     }
+    let frame = match &request.mapping {
+        Mapping::Frame(projection) => projection.query(),
+        Mapping::Clip { .. } => None,
+    };
     let mut budget = MAX_FRAMES;
     for column in request.columns {
         if cancelled.load(Ordering::Acquire) {
@@ -218,15 +233,29 @@ fn calculate(job: Job) -> Option<Reply> {
                 return None;
             }
             let end = start.saturating_add(CHUNK_FRAMES).min(column.end);
-            let next = bounded_clip_overrange(
-                &request.waveform,
-                &request.clip,
-                request.timeline_origin,
-                start..end,
-                request.fade,
-                // Each chunk is no larger than CHUNK_FRAMES.
-                CHUNK_FRAMES as usize,
-            );
+            let next = match &request.mapping {
+                Mapping::Clip {
+                    clip,
+                    timeline_origin,
+                    fade,
+                } => bounded_clip_overrange(
+                    &request.waveform,
+                    clip,
+                    *timeline_origin,
+                    start..end,
+                    *fade,
+                    CHUNK_FRAMES as usize,
+                ),
+                Mapping::Frame(_) => frame.as_ref().and_then(|frame| {
+                    waveform_frame::detail(
+                        frame,
+                        &request.waveform,
+                        start..end,
+                        CHUNK_FRAMES as usize,
+                    )
+                    .map(waveform_frame::overrange)
+                }),
+            };
             result = result.zip(next).map(|(mut current, next)| {
                 for channel in 0..2 {
                     current.positive[channel] |= next.positive[channel];
@@ -271,10 +300,12 @@ mod tests {
         Request {
             id,
             slot: 1,
-            clip: editor.project().clip(clip).unwrap().clone(),
             waveform: Arc::new(hex_media::waveform::summarize(&audio, 1).unwrap()),
-            timeline_origin: 0,
-            fade: Some(ClipFade::new(8, 0, 8, 0).unwrap()),
+            mapping: Mapping::Clip {
+                clip: editor.project().clip(clip).unwrap().clone(),
+                timeline_origin: 0,
+                fade: Some(ClipFade::new(8, 0, 8, 0).unwrap()),
+            },
             columns: vec![0..1, 7..8],
         }
     }

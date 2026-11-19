@@ -35,6 +35,52 @@ fn repeated() -> (Clip, TempoMap) {
 }
 
 #[test]
+fn replaces_a_plain_fade_after_the_first_retained_event_edit() {
+    use crate::{AudioEventEdit, ClipGain};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "event".into(),
+            path: "event.wav".into(),
+            sample_rate: 48_000,
+            frames: 24,
+        })
+        .unwrap()
+    else {
+        panic!("audio fixture");
+    };
+    let fade = ClipFade::new(24, 0, 16, 0).unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    let gain = ClipGain::new(-6_000).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    let shortened = ClipFade::new(24, 0, 2, 0).unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: shortened,
+        })
+        .unwrap();
+    let project = editor.project();
+    let edited = project.clip(clip).unwrap();
+    assert!(edited.fade().is_neutral());
+    assert_eq!(edited.audio_events().events[0].gain, gain);
+    let fade = edited
+        .projected_outer_fade(project.tempo_map())
+        .unwrap()
+        .unwrap();
+    assert_eq!(fade.gain_at(0).unwrap(), 0.0);
+    assert_eq!(fade.gain_at(2).unwrap(), 1.0);
+}
+
+#[test]
 fn reported_four_cycle_geometry_has_one_forward_envelope_and_exact_knots() {
     let (clip, tempo) = repeated();
     let fade = clip.retained_fade();

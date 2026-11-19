@@ -2723,69 +2723,91 @@ impl EditorView {
             )
             .unwrap_or_else(|| div().absolute().inset_0());
         }
+        use super::waveform_geometry::WaveformMapping;
+
         let waveform = state.waveforms.get(&clip.asset());
         let gain = self
             .waveform_clip_gain(clip)
             .filter(|gain| *gain != clip.gain());
-        let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
-            // The immutable prepared peaks cover the retained root. Cropping
-            // changes its visible offset, never its processing/source origin.
-            let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
-                let (_, _, offset, _) = clip
-                    .audio_edit()?
-                    .projected_domain(state.project.tempo_map())
-                    .ok()?;
-                let mut preview = prepared.clone();
-                preview.offset = offset;
-                preview.length = clip.duration();
-                Some(preview)
-            });
-            let prepared = preview.as_ref().unwrap_or(prepared);
-            super::waveform::timeline_waveform_view_cached(
+        let fade = self.fade_preview(clip.id());
+        let trim = self.fade_trim_preview(clip.id());
+        let fallback = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+            // Cropping changes the visible offset in the immutable prepared root.
+            let root_offset = trim
+                .and_then(Clip::audio_edit)
+                .and_then(|edit| edit.projected_domain(state.project.tempo_map()).ok())
+                .map_or(prepared.offset, |(_, _, offset, _)| offset);
+            Some((
                 std::sync::Arc::clone(&prepared.waveform),
-                super::waveform_geometry::WaveformMapping::Prepared {
+                WaveformMapping::Prepared {
                     timeline_origin: clip.start(),
-                    root_offset: prepared.offset,
+                    root_offset,
                     gain: gain.unwrap_or(clip.gain()),
                 },
+            ))
+        } else {
+            waveform
+                .filter(|_| clip.audio_edit().is_none())
+                .map(|waveform| {
+                    (
+                        std::sync::Arc::clone(waveform),
+                        WaveformMapping::Clip {
+                            clip: clip.clone(),
+                            timeline_origin: clip.start(),
+                            gain: gain.map(hex_project::ClipGain::linear),
+                            fade: Some(fade.unwrap_or(clip.retained_fade())),
+                        },
+                    )
+                })
+        };
+        let source = waveform.and_then(|waveform| {
+            let projection = super::waveform_frame::Projection::new(
+                &state.project,
+                clip,
+                waveform,
+                fade,
+                self.arrangement_event_amplitude(clip),
+                gain,
+            )?;
+            Some((
+                std::sync::Arc::clone(waveform),
+                std::sync::Arc::new(projection),
+            ))
+        });
+        let displayed = match source {
+            Some((waveform, projection)) => Some((
+                waveform,
+                WaveformMapping::Frame {
+                    projection,
+                    fallback: fallback.map(std::sync::Arc::new),
+                },
+            )),
+            None => fallback,
+        };
+        let body = match displayed {
+            Some((waveform, mapping)) => super::waveform::timeline_waveform_view_cached(
+                waveform,
+                mapping,
                 visible_start,
                 visible_end,
                 std::rc::Rc::clone(&self.waveform_geometry_cache),
                 grid,
                 ink,
-            )
-        } else if clip.audio_edit().is_some() {
-            div()
+            ),
+            None if clip.audio_edit().is_some() => div()
                 .absolute()
                 .inset_0()
                 .text_xs()
-                .child(theme::text("prepared waveform unavailable"))
-        } else {
-            match waveform {
-                Some(waveform) => super::waveform::timeline_waveform_view_cached(
-                    std::sync::Arc::clone(waveform),
-                    super::waveform_geometry::WaveformMapping::Clip {
-                        clip: clip.clone(),
-                        timeline_origin: clip.start(),
-                        gain: gain.map(hex_project::ClipGain::linear),
-                        fade: Some(self.fade_preview(clip.id()).unwrap_or(clip.retained_fade())),
-                    },
-                    visible_start,
-                    visible_end,
-                    std::rc::Rc::clone(&self.waveform_geometry_cache),
-                    grid,
-                    ink,
-                ),
-                None => div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .px_1()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text("missing media")),
-            }
+                .child(theme::text("prepared waveform unavailable")),
+            None => div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .px_1()
+                .text_xs()
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                .child(theme::text("missing media")),
         };
         super::waveform::clip_waveform_activity(
             body,
