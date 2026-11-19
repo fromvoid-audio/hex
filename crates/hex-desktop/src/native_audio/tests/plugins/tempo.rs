@@ -1,5 +1,8 @@
 //! Check the actual Session tempo edit against the hosted worker's PCM.
-use super::{instruments::render_completed_block, *};
+use super::{
+    instruments::{render_completed_block, render_replay_block},
+    *,
+};
 use hex_engine::playback::PlaybackCommand;
 use hex_project::Tempo;
 
@@ -313,7 +316,9 @@ fn delayed_effect_automation_follows_the_source_clock_at_a_live_tempo_cut() {
         let before = status.applied_revision.load(Acquire);
         let performance = status.performance_frame.load(Acquire);
         let cursor = status.position.load(Acquire);
-        pcm.extend(render_completed_block(&h));
+        // Source preparation can wait for a callback acknowledgement.
+        // Pace the callback while the tempo edit is still in flight.
+        pcm.extend(render_replay_block(&h));
         assert_eq!(status.performance_frame.load(Acquire), performance + 256);
         if before == applied && status.applied_revision.load(Acquire) > applied {
             cut = Some((performance, cursor, status.position.load(Acquire)));
@@ -322,6 +327,7 @@ fn delayed_effect_automation_follows_the_source_clock_at_a_live_tempo_cut() {
             Instant::now() < until,
             "tempo edit did not reach the callback"
         );
+        std::thread::sleep(Duration::from_millis(2));
     }
     for _ in 0..5 {
         pcm.extend(render_completed_block(&h));
