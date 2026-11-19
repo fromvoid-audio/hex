@@ -243,18 +243,11 @@ fn held_legacy_override_and_acknowledged_outer_share_capture_law() {
             AudioClipFadeClock::LegacyRoot;
         let fade = ClipFade::new(clip.duration(), 0, 1_200, 2_400).unwrap();
         let held = clip.projected_outer_fade_preview(&tempo, fade).unwrap();
-        let mut accepted = clip.clone();
-        let placement = AudioViewProjection::new(&accepted, &tempo).unwrap();
-        let author = musical.then(|| AudioFadeProjection {
-            tempo: placement.placement_tempo().clone(),
-            origin_beat_raw: placement.placement_reference(),
-            local_start_raw: 0,
-        });
-        let domain = Arc::make_mut(&mut accepted.audio_edit_mut().unwrap().domain);
-        domain.fade_clock = AudioClipFadeClock::Outer;
-        domain.fade = fade;
-        domain.fade_start = 0;
-        domain.fade_projection = author;
+        let accepted = clip.with_authored_outer_fade(&tempo, fade).unwrap();
+        assert!(Arc::ptr_eq(
+            &clip.audio_edit().unwrap().domain.content,
+            &accepted.audio_edit().unwrap().domain.content,
+        ));
         let canonical = accepted.projected_outer_fade(&tempo).unwrap().unwrap();
         assert_eq!(
             held.breakpoints().unwrap(),
@@ -270,20 +263,14 @@ fn held_legacy_override_and_acknowledged_outer_share_capture_law() {
                 canonical.domain_position_at_frame(elapsed).unwrap()
             );
         }
-        assert!(
-            clip.projected_outer_fade_preview(
-                &tempo,
-                ClipFade::neutral(clip.duration() - 1).unwrap()
-            )
-            .is_err()
-        );
-        assert!(
-            clip.projected_outer_fade_preview(
-                &tempo,
-                ClipFade::new(clip.duration(), 1, 0, 0).unwrap()
-            )
-            .is_err()
-        );
+        let original = clip.clone();
+        for invalid in [
+            ClipFade::neutral(clip.duration() - 1).unwrap(),
+            ClipFade::new(clip.duration(), 1, 0, 0).unwrap(),
+        ] {
+            assert!(clip.with_authored_outer_fade(&tempo, invalid).is_err());
+        }
+        assert_eq!(clip, original);
     }
 }
 
@@ -625,4 +612,82 @@ fn scalar_frame_playback_rejects_overflow_and_a_musical_author_clock() {
             .frame_playback_envelope()
             .is_err()
     );
+}
+
+#[test]
+fn reauthoring_a_phased_musical_repeat_uses_the_held_destination_clock() {
+    let (mut clip, _) = repeated();
+    let tempo = TempoMap::new(
+        48_000,
+        vec![
+            TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT),
+            TempoPoint::new(BeatTime::ONE, Tempo::new(60_000_000).unwrap()),
+        ],
+    )
+    .unwrap();
+    let start = 12_000;
+    clip.start = start;
+    let edit = clip.audio_edit_mut().unwrap();
+    edit.view_start = 1_000;
+    edit.placement.as_mut().unwrap().cycle_phase = 500;
+    edit.anchor_at_reference(start, 0, &tempo).unwrap();
+    crate::audio_edit::project_clip(&mut clip, &tempo).unwrap();
+    let fade = ClipFade::new(clip.duration(), 0, 10_000, 3_000).unwrap();
+    let held = clip.projected_outer_fade_preview(&tempo, fade).unwrap();
+    let mut authored = clip.clone();
+    crate::audio_edit::set_clip_fade_envelope(&mut authored, fade, &tempo).unwrap();
+    let actual = authored.projected_outer_fade(&tempo).unwrap().unwrap();
+    assert_eq!(
+        actual.domain_position_at_frame(authored.start()).unwrap(),
+        Some(0)
+    );
+    assert_eq!(actual.breakpoints().unwrap(), held.breakpoints().unwrap());
+    for frame in (clip.start()..clip.start() + clip.duration()).step_by(257) {
+        assert_eq!(actual.gain_at(frame).unwrap(), held.gain_at(frame).unwrap());
+    }
+}
+
+#[test]
+fn explicit_outer_fade_on_plain_clip_keeps_ordinary_frame_envelope() {
+    let (mut clip, tempo) = repeated();
+    clip.edit = None;
+    clip.duration = clip.source_length;
+    clip.fade = ClipFade::neutral(clip.duration()).unwrap();
+    let original = clip.clone();
+    let fade = ClipFade::new(clip.duration(), 0, 390, 740).unwrap();
+    let mut authored = clip.with_authored_outer_fade(&tempo, fade).unwrap();
+    assert_eq!(authored.fade(), fade);
+    assert!(authored.audio_edit().is_none());
+    authored.fade = original.fade();
+    assert_eq!(authored, original);
+}
+
+#[test]
+fn authored_clock_matches_a_moved_live_placement_under_a_new_tempo_map() {
+    let (mut clip, old) = repeated();
+    clip.audio_edit_mut()
+        .unwrap()
+        .anchor_at_reference(0, 0, &old)
+        .unwrap();
+    let tempo = TempoMap::new(
+        48_000,
+        vec![
+            TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT),
+            TempoPoint::new(BeatTime::ONE, Tempo::new(75_000_000).unwrap()),
+        ],
+    )
+    .unwrap();
+    let start = tempo
+        .beat_to_frame(BeatTime::from_ratio(1, 2).unwrap())
+        .unwrap();
+    crate::audio_edit::move_clip(&mut clip, start, &tempo).unwrap();
+    let fade = ClipFade::new(clip.duration(), 0, 25_000, 7_000).unwrap();
+    let held = clip.projected_outer_fade_preview(&tempo, fade).unwrap();
+    let authored = clip.with_authored_outer_fade(&tempo, fade).unwrap();
+    let stored = authored.projected_outer_fade(&tempo).unwrap().unwrap();
+    assert_eq!(authored.start(), start);
+    assert_eq!(stored.breakpoints().unwrap(), held.breakpoints().unwrap());
+    for frame in (start..start + clip.duration()).step_by(653) {
+        assert_eq!(stored.gain_at(frame).unwrap(), held.gain_at(frame).unwrap());
+    }
 }
