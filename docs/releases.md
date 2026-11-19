@@ -101,6 +101,27 @@ The option delegates to the existing guarded release owner. It never infers
 release ownership from a development receipt or changes the frozen candidate.
 Ordinary subsequent builds reuse their valid release ownership without the flag.
 
+To reserve a fresh optimized Cargo target before release preparation, give the
+full CI run and optimized build separate existing absolute directories. The
+optimized directory must be empty and have no owner marker.
+
+```sh
+mkdir -p artifacts/release-ci-target artifacts/distribution-target
+CARGO_TARGET_DIR="$PWD/artifacts/release-ci-target" \
+  ./release beta --fresh-release-target "$PWD/artifacts/distribution-target"
+```
+
+The option acquires the cooperative lock before freezing the candidate or
+starting Cargo and retains it through the optimized artifact copy. Full CI
+uses `CARGO_TARGET_DIR`, while the optimized build uses the explicit option
+path. Both use `CARGO_CACHE_RUSTC_INFO=0` so their verification inputs agree.
+Use the same option and CI target when resuming a frozen candidate while the
+optimized target remains empty and unowned. After ownership has been
+published, set `CARGO_TARGET_DIR` to the optimized target and
+`CARGO_CACHE_RUSTC_INFO=0` for the ordinary resume or recovery workflow.
+The fresh option and `--adopt-release-target` are mutually exclusive.
+This uses the existing empty-target custody contract for cooperating runners.
+
 Resume requires the exact original clean source and frozen inputs. It reuses
 successful full CI and the same notarization submission; repairs to source need a
 new cut. Diagnostics remain beside the plan. Verification checks the actual final

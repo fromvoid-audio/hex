@@ -1,9 +1,15 @@
 //! Compact source-window and cycle controls for the selected Console audio cell.
+//! The waveform also shows the accepted Session playback position of that cell.
+#[path = "session_audio_panel/playhead.rs"]
+mod playhead;
+
 use super::EditorView;
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
-use hex_project::{AssetId, ClipId, Command, SessionCellContent};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
+use hex_audio::prepared::SessionRouteOwner;
+use hex_project::{AssetId, ClipId, Command, SessionAudioClip, SessionCellContent, TrackId};
 use hex_session::CachedWaveform;
+use playhead::playhead_fraction;
 use std::ops::Range;
 
 const WAVEFORM_COLUMNS: usize = 48;
@@ -29,6 +35,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let name = clip.name().to_lowercase();
     let gain = clip.gain();
     let loop_range = clip.loop_range();
+    let playhead = view.session_audio_playhead(track, clip);
     let captured = SourceWindow {
         clip: id,
         asset: asset_id,
@@ -207,6 +214,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if let Some(amplitudes) = waveform {
         let linear_gain = gain.linear();
         let mut bars = div()
+            .debug_selector(|| "session-audio-waveform".into())
+            .relative()
             .h(px(24.0))
             .flex_1()
             .min_w_0()
@@ -225,9 +234,77 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ),
             );
         }
+        if let Some(fraction) = playhead {
+            bars = bars.child(
+                div()
+                    .debug_selector(|| "session-audio-playback-position".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(fraction))
+                    .w(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
+        }
         row = row.child(bars);
     }
     Some(row)
+}
+
+impl EditorView {
+    /// Accepted Session playback of this cell only: the same revision, fault
+    /// and route-owner guards as the piano roll's Session cursor, reading the
+    /// launch published with the route snapshot. Never an optimistic launch.
+    fn session_audio_playhead(&self, track: TrackId, clip: &SessionAudioClip) -> Option<f32> {
+        use std::sync::atomic::Ordering::Acquire;
+        if !clip.active() {
+            return None;
+        }
+        let state = self.state.as_ref()?;
+        let audible = self.audible_playback.as_ref()?;
+        if audible.project_generation != self.project_generation
+            || audible.state.revision != state.revision
+        {
+            return None;
+        }
+        let audio = self.audio.as_ref()?;
+        let status = audio.control.status()?;
+        if status.applied_revision.load(Acquire) != audible.audio_revision
+            || status.device_fault.load(Acquire)
+            || status.render_fault.load(Acquire)
+            || status.shutdown_complete.load(Acquire)
+        {
+            return None;
+        }
+        let snapshot = self.session_routes.matching_snapshot(
+            audio.control.output_identity()?,
+            Some((
+                audible.audio_revision,
+                state.revision,
+                self.project_generation,
+            )),
+            state.revision,
+            self.project_generation,
+        )?;
+        let route = self
+            .session_routes
+            .entry_for_track(snapshot, true, track.value())?;
+        if route.owner
+            != (SessionRouteOwner::Session {
+                clip_id: clip.id().value(),
+            })
+        {
+            return None;
+        }
+        let fraction = playhead_fraction(
+            clip,
+            route.audio_launch_frame?,
+            status.performance_frame.load(Acquire),
+        )?;
+        // A publication can change during scalar reads; never paint it against
+        // another compiled revision's launch.
+        (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(fraction)
+    }
 }
 
 fn session_audio_loop_button(
@@ -517,7 +594,7 @@ fn adjusted_source_range(
 }
 
 fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
-    let source_frames = waveform.source_frames;
+    let source_frames = waveform.source_frames();
     let start = usize::try_from(start)
         .unwrap_or(usize::MAX)
         .min(source_frames);
@@ -525,7 +602,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
         .unwrap_or(usize::MAX)
         .min(source_frames)
         .max(start);
-    if start == end || source_frames == 0 || waveform.bins.is_empty() {
+    if start == end || source_frames == 0 || waveform.bins().is_empty() {
         return vec![0.0; WAVEFORM_COLUMNS];
     }
     (0..WAVEFORM_COLUMNS)
@@ -539,7 +616,7 @@ fn waveform_bars(waveform: &CachedWaveform, start: u64, end: u64) -> Vec<f32> {
                 .min(end);
             let bins = bin_range(waveform, left, right);
             waveform
-                .bins
+                .bins()
                 .get(bins)
                 .unwrap_or(&[])
                 .iter()
@@ -556,14 +633,14 @@ fn fraction(length: usize, numerator: usize, denominator: usize) -> usize {
 }
 
 fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize> {
-    let start = start.min(waveform.source_frames);
-    let end = end.min(waveform.source_frames).max(start);
-    let count = waveform.bins.len();
-    if start == end || count == 0 || waveform.source_frames == 0 {
+    let start = start.min(waveform.source_frames());
+    let end = end.min(waveform.source_frames()).max(start);
+    let count = waveform.bins().len();
+    if start == end || count == 0 || waveform.source_frames() == 0 {
         return 0..0;
     }
-    let width = waveform.source_frames / count;
-    let extra = waveform.source_frames % count;
+    let width = waveform.source_frames() / count;
+    let extra = waveform.source_frames() % count;
     let wide_frames = (width + 1).saturating_mul(extra);
     let at = |frame: usize| {
         if frame < wide_frames {
@@ -575,171 +652,12 @@ fn bin_range(waveform: &CachedWaveform, start: usize, end: usize) -> Range<usize
     at(start).min(count)..(at(end - 1) + 1).min(count)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::{
-        SourceEdge, SourceWindow, WAVEFORM_COLUMNS, adjusted_source_range, bin_range, source_step,
-        source_window_is_current, waveform_bars,
-    };
-    #[cfg(feature = "ui-test-support")]
     use gpui::{AnyWindowHandle, AppContext, Empty, TestAppContext, VisualTestContext, px};
-    use hex_project::{Command, Created, Editor, Project, SessionCellContent};
-    use hex_session::{CachedPeak, CachedWaveform};
-    #[cfg(feature = "ui-test-support")]
+    use hex_project::{Command, Editor, Project, SessionCellContent};
     use std::sync::Arc;
 
-    #[test]
-    fn source_waveform_is_cropped_to_the_half_open_one_shot_window() {
-        let waveform = CachedWaveform::from_peaks(
-            9,
-            (0..9)
-                .map(|index| {
-                    let value = if (3..7).contains(&index) { 0.75 } else { 0.0 };
-                    [
-                        CachedPeak {
-                            min: -value,
-                            max: value,
-                        },
-                        CachedPeak { min: 0.0, max: 0.0 },
-                    ]
-                })
-                .collect(),
-        )
-        .expect("valid waveform fixture");
-        let bars = waveform_bars(&waveform, 3, 7);
-        assert_eq!(bars.len(), WAVEFORM_COLUMNS);
-        assert!(bars.iter().all(|value| *value == 0.75));
-        assert_eq!(bin_range(&waveform, 3, 7), 3..7);
-        assert!(
-            waveform_bars(&waveform, 7, 7)
-                .iter()
-                .all(|value| *value == 0.0)
-        );
-    }
-
-    #[test]
-    fn source_nudges_keep_the_half_open_window_inside_the_asset() {
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::StartEarlier, 1),
-            (0, 10)
-        );
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::StartLater, 1),
-            (2, 10)
-        );
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::EndEarlier, 1),
-            (1, 9)
-        );
-        assert_eq!(
-            adjusted_source_range(1, 10, 10, SourceEdge::EndLater, 1),
-            (1, 10)
-        );
-        assert_eq!(source_step(48_000, false), 48);
-        assert_eq!(source_step(44_100, false), 44);
-        assert_eq!(source_step(192_000, true), 1);
-        assert_eq!(source_step(1, false), 1);
-        assert_eq!(
-            adjusted_source_range(10, 20, 100, SourceEdge::StartLater, 48),
-            (19, 20)
-        );
-        assert_eq!(
-            adjusted_source_range(10, 20, 100, SourceEdge::EndEarlier, 48),
-            (10, 11)
-        );
-        assert_eq!(
-            adjusted_source_range(10, 20, 100, SourceEdge::EndLater, u64::MAX),
-            (10, 100)
-        );
-    }
-
-    #[test]
-    fn source_controls_reject_stale_generation_revision_or_selection() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
-        let track = match editor
-            .execute(Command::AddTrack {
-                name: "audio".into(),
-            })
-            .expect("audio track")
-        {
-            Created::Track(id) => id,
-            _ => panic!("track"),
-        };
-        let scene = match editor
-            .execute(Command::AddScene {
-                name: "scene".into(),
-            })
-            .expect("scene")
-        {
-            Created::Scene(id) => id,
-            _ => panic!("scene"),
-        };
-        let asset = match editor
-            .execute(Command::AddAsset {
-                path: "source.wav".into(),
-                sample_rate: 48_000,
-                frames: 32,
-            })
-            .expect("asset")
-        {
-            Created::Asset(id) => id,
-            _ => panic!("asset"),
-        };
-        let clip = match editor
-            .execute(Command::CreateSessionAudioClip {
-                track,
-                scene,
-                name: "audio".into(),
-                asset,
-                source_start: 4,
-                source_end: 20,
-            })
-            .expect("Session audio clip")
-        {
-            Created::SessionClip(id) => id,
-            _ => panic!("Session clip"),
-        };
-        let window = SourceWindow {
-            clip,
-            asset,
-            track,
-            scene,
-            start: 4,
-            end: 20,
-            asset_frames: 32,
-            revision: 7,
-            project_generation: 3,
-        };
-        let project = editor.project();
-        assert!(source_window_is_current(
-            window,
-            3,
-            Some((track, scene)),
-            7,
-            project
-        ));
-        assert!(!source_window_is_current(
-            window,
-            4,
-            Some((track, scene)),
-            7,
-            project
-        ));
-        assert!(!source_window_is_current(
-            window,
-            3,
-            Some((track, scene)),
-            8,
-            project
-        ));
-        assert!(!source_window_is_current(window, 3, None, 7, project));
-        assert!(matches!(
-            project.session_cell(track, scene),
-            Some(SessionCellContent::Audio(item)) if item.id() == clip
-        ));
-    }
-
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn source_panel_keeps_its_compact_row_while_an_edit_is_pending(cx: &mut TestAppContext) {
         use super::super::{EditorMode, EditorView, install_close_guard};
@@ -836,7 +754,6 @@ mod tests {
             .expect("source bounds remain visible while editing");
         assert!(readout.size.width > px(0.0));
     }
-    #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn console_audio_loop_controls_edit_real_cell_history_and_saved_state(cx: &mut TestAppContext) {
         use super::super::{EditorMode, clip_drag_ui_test, midi_ruler};
@@ -946,3 +863,6 @@ mod tests {
         });
     }
 }
+#[cfg(all(test, not(feature = "ui-test-support")))]
+#[path = "session_audio_panel/unit_tests.rs"]
+mod unit_tests;

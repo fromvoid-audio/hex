@@ -6,13 +6,34 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 mod capture;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+mod editor_pcm;
 mod edits;
+mod parameter_page;
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
+pub(crate) use editor_pcm::pcm_packet_extent;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use editor_pcm::{
+    EDITOR_GROUP_TOUCH_BIT, EDITOR_PCM_BIT, EDITOR_TOUCH_BIT, SDK_TIMING_BIT,
+    editor_group_touch_pcm, editor_pcm, editor_touch_pcm, timed_pcm,
+};
 pub use edits::{
-    MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, edit_request,
-    parameter_edits,
+    EditorPcm, EditorPerform, EditorPerforms, EditorRestoration, EditorRestorations,
+    EditorTouchPlan, EditorTouchPlanSet, EditorTouchTarget, MAX_PARAMETER_EDITS, ParameterEdit,
+    ParameterEditKind, ParameterEdits, RecoveryEdits, edit_request, idle_editor_edit_request,
+    parameter_edits, recovery_edit_request, recovery_edits,
+};
+pub use parameter_page::{
+    ControllerParameter, ControllerRequest, EditorSealState, MAX_CONTROLLER_PARAMETERS,
+    PARAMETER_PAGE_SIZE, ParameterConversion, ParameterConversionResult, ParameterConversionStatus,
+    ParameterPage, ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
+    PluginEditorPosition, PluginEditorState, parameter_page, parameter_page_request,
 };
 mod flush;
-pub use capture::{capture_request, captured_state, live_capture_request, live_captured_state};
+pub use capture::{
+    CAPTURE_REFUSAL_MAGIC, StateCaptureRefusal, capture_refusal, capture_request, captured_state,
+    live_capture_reply, live_capture_request, live_captured_state,
+};
 pub use flush::{
     FlushDisposition, FlushedParameter, FlushedParameters, MAX_FLUSHED_PARAMETERS, flush_request,
     flushed_parameters,
@@ -20,13 +41,28 @@ pub use flush::{
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
-pub const PACKET_LIMIT: usize = CONFIG_LIMIT + 12;
+pub const PACKET_LIMIT: usize = 12 + hex_plugin_state::MAX_ENVELOPE_BYTES + 166;
+pub(crate) fn control_limit(magic: &[u8]) -> usize {
+    let prefix = match magic {
+        b"HXVICF03" => return CONFIG_LIMIT,
+        b"HXVIST02" => 39,
+        b"HXVIFA04" => 140,
+        b"HXVIQF03" => 156,
+        b"HXVIAR02" => 164,
+        b"HXVIRR03" => 166,
+        b"HXVIRD05" => 86,
+        b"HXVICS02" => 62,
+        b"HXVLCA02" => 63,
+        _ => return CONTROL_LIMIT,
+    };
+    prefix + hex_plugin_state::MAX_ENVELOPE_BYTES
+}
 /// Explicit protocol DATA during preparation/completion and quiescent capture:
 /// at most two outgoing frames, or a presentation frame plus both bounded
-/// Vec/Arc state payloads during capture. Fixed incoming Packet storage belongs
+/// Vec/Arc state payloads during capture. Heap-backed incoming Packet storage belongs
 /// to its enclosing owner. Source/configuration, file/inventory workspaces,
 /// errors and allocator/Arc/OS implementation overhead are separate.
-pub const MAX_WORKING_DATA_BYTES: usize = 2 * PACKET_LIMIT;
+pub const MAX_WORKING_DATA_BYTES: usize = 2 * PACKET_LIMIT + CONFIG_LIMIT;
 
 #[derive(Clone, Debug)]
 pub struct Configuration {
@@ -70,8 +106,8 @@ impl Configuration {
     pub fn startup_request(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let mut out = control_prefix(
-            *b"HXVIST01",
-            37 + self
+            *b"HXVIST02",
+            39 + self
                 .restore
                 .as_ref()
                 .map_or(0, |state| state.payload().len()),
@@ -86,7 +122,7 @@ impl Configuration {
             .as_ref()
             .map_or(&[][..], |state| state.payload());
         out.push(u8::from(self.restore.is_some()));
-        out.extend((payload.len() as u16).to_le_bytes());
+        out.extend((payload.len() as u32).to_le_bytes());
         out.extend(payload);
     }
     fn check_restore_ack(&self, r: &mut Reader<'_>) -> Result<bool> {
@@ -99,7 +135,7 @@ impl Configuration {
                 ));
             }
         };
-        let count = usize::from(u16::from_le_bytes(r.array()?));
+        let count = u32::from_le_bytes(r.array()?) as usize;
         let expected = self
             .restore
             .as_ref()
@@ -141,7 +177,11 @@ impl Configuration {
             || block.frames != self.quantum
             || block.sequence != sequence
             || sequence.checked_mul(u64::from(self.quantum)) != Some(block.first_frame)
-            || !block.events.as_slice().is_empty()
+            || block.events.as_slice().iter().any(|event| {
+                self.input_channels != 0
+                    || event.len != 3
+                    || !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90)
+            })
             || !block.pcm[..usize::from(self.quantum)]
                 .iter()
                 .flatten()
@@ -159,20 +199,85 @@ impl Configuration {
     }
 }
 
-/// Actual caller-derived per-direction contributions. Absence is represented
-/// by None, never by substituting zero for an unknown device/graph contribution.
+/// Actual caller-derived per-direction contributions. Unknown uses a separate
+/// plan, so its SDK sentinel cannot be mistaken for measured zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PresentationLatency {
     pub input_frames: u32,
     pub output_frames: u32,
 }
+/// Unknown is a deliberate compatibility mode, distinct from a known zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentationPlan {
+    RequireKnown,
+    Known(PresentationLatency),
+    /// Known input contribution; output is explicitly unknown, including when
+    /// the known input is zero. Only the SDK boundary encodes unknown as zero.
+    KnownInput(u32),
+    /// Known output contribution; input is explicitly unknown.
+    KnownOutput(u32),
+    AllowUnknown,
+}
+impl From<Option<PresentationLatency>> for PresentationPlan {
+    fn from(value: Option<PresentationLatency>) -> Self {
+        value.map_or(Self::RequireKnown, Self::Known)
+    }
+}
+impl PresentationPlan {
+    fn flag(self) -> u8 {
+        match self {
+            Self::RequireKnown => 0,
+            Self::Known(_) => 1,
+            Self::AllowUnknown => 2,
+            Self::KnownInput(_) => 3,
+            Self::KnownOutput(_) => 4,
+        }
+    }
+    // Mixed modes reserve the unknown word as zero; the direction flag, not
+    // that reserved word, identifies known facts. SDK sentinel mapping is native.
+    fn wire_values(self) -> Option<PresentationLatency> {
+        match self {
+            Self::Known(value) => Some(value),
+            Self::KnownInput(input_frames) => Some(PresentationLatency {
+                input_frames,
+                output_frames: 0,
+            }),
+            Self::KnownOutput(output_frames) => Some(PresentationLatency {
+                input_frames: 0,
+                output_frames,
+            }),
+            _ => None,
+        }
+    }
+    fn receipt_flag(self) -> u8 {
+        if self.wire_values().is_some() {
+            self.flag()
+        } else {
+            0
+        }
+    }
+    pub(super) fn expected(self, available: bool) -> Result<Presentation> {
+        match (self, available) {
+            (_, false) => Ok(Presentation::Absent),
+            (Self::Known(_), true) => Ok(Presentation::Applied),
+            (Self::KnownInput(_), true) => Ok(Presentation::InputKnown),
+            (Self::KnownOutput(_), true) => Ok(Presentation::OutputKnown),
+            (Self::AllowUnknown, true) => Ok(Presentation::Unknown),
+            (Self::RequireKnown, true) => Err(Error::Protocol(
+                "actual presentation contributions are unavailable",
+            )),
+        }
+    }
+}
 pub fn presentation_request(
     binding: Binding,
-    value: Option<PresentationLatency>,
+    plan: impl Into<PresentationPlan>,
 ) -> Result<Vec<u8>> {
+    let plan = plan.into();
+    let value = plan.wire_values();
     let mut out = control_prefix(*b"HXVIPR01", 35 + usize::from(value.is_some()) * 8)?;
     stamp(&mut out, binding);
-    out.push(u8::from(value.is_some()));
+    out.push(plan.flag());
     if let Some(value) = value {
         out.extend(value.input_frames.to_le_bytes());
         out.extend(value.output_frames.to_le_bytes());
@@ -230,6 +335,40 @@ impl Facts {
 pub enum Presentation {
     Absent,
     Applied,
+    Unknown,
+    /// Input is known; output is explicitly unknown.
+    InputKnown,
+    /// Output is known; input is explicitly unknown.
+    OutputKnown,
+}
+
+fn presentation_ack(r: &mut Reader<'_>, expected: PresentationPlan) -> Result<Presentation> {
+    let presentation = match r.byte()? {
+        0 => Presentation::Absent,
+        1 => Presentation::Applied,
+        2 => Presentation::Unknown,
+        3 => Presentation::InputKnown,
+        4 => Presentation::OutputKnown,
+        _ => return Err(Error::Protocol("refused presentation cannot be ready")),
+    };
+    let flag = r.byte()?;
+    let supplied = match flag {
+        0 => None,
+        1 | 3 | 4 => Some(PresentationLatency {
+            input_frames: u32::from_le_bytes(r.array()?),
+            output_frames: u32::from_le_bytes(r.array()?),
+        }),
+        _ => return Err(Error::Protocol("invalid presentation acknowledgement")),
+    };
+    if flag != expected.receipt_flag()
+        || supplied != expected.wire_values()
+        || (presentation != Presentation::Absent && presentation != expected.expected(true)?)
+    {
+        return Err(Error::Protocol(
+            "presentation acknowledgement differs from the requested contributions",
+        ));
+    }
+    Ok(presentation)
 }
 #[derive(Clone, Debug)]
 pub struct Ready {
@@ -249,8 +388,9 @@ impl Ready {
     pub fn decode(
         body: &[u8],
         config: &Configuration,
-        expected: Option<PresentationLatency>,
+        expected: impl Into<PresentationPlan>,
     ) -> Result<Self> {
+        let expected = expected.into();
         config.validate()?;
         let mut r = Reader::new(body);
         if r.binding()? != config.binding
@@ -264,24 +404,7 @@ impl Ready {
         }
         let algorithmic_latency_frames = u32::from_le_bytes(r.array()?);
         let tail_frames = u32::from_le_bytes(r.array()?);
-        let presentation = match r.byte()? {
-            0 => Presentation::Absent,
-            1 => Presentation::Applied,
-            _ => return Err(Error::Protocol("refused presentation cannot be ready")),
-        };
-        let supplied = match r.byte()? {
-            0 => None,
-            1 => Some(PresentationLatency {
-                input_frames: u32::from_le_bytes(r.array()?),
-                output_frames: u32::from_le_bytes(r.array()?),
-            }),
-            _ => return Err(Error::Protocol("invalid presentation acknowledgement")),
-        };
-        if supplied != expected {
-            return Err(Error::Protocol(
-                "presentation acknowledgement differs from the requested contributions",
-            ));
-        }
+        let presentation = presentation_ack(&mut r, expected)?;
         let restored = match r.byte()? {
             0 => false,
             1 => true,
@@ -297,8 +420,8 @@ impl Ready {
             1 => true,
             _ => return Err(Error::Protocol("invalid ready state presence")),
         };
-        let count = usize::from(u16::from_le_bytes(r.array()?));
-        if count > 4096 {
+        let count = u32::from_le_bytes(r.array()?) as usize;
+        if count > hex_plugin_state::MAX_ENVELOPE_BYTES {
             return Err(Error::Protocol("ready state exceeds envelope bound"));
         }
         let payload = r.take(count)?;
@@ -327,6 +450,8 @@ pub struct Terminal {
     pub frames: u64,
     pub failure: u32,
     pub closed: bool,
+    /// False on clean process-only retirement of a stopped instance with a
+    /// retained host reference. The direct child's successful reap is required.
     pub unloaded: bool,
 }
 impl Terminal {
@@ -365,7 +490,7 @@ pub fn control(magic: [u8; 8], body: &[u8]) -> Result<Vec<u8>> {
     finish_control(out)
 }
 
-fn buffer(capacity: usize) -> Result<Vec<u8>> {
+pub(crate) fn buffer(capacity: usize) -> Result<Vec<u8>> {
     if capacity > PACKET_LIMIT {
         return Err(Error::Protocol("protocol allocation exceeds frame bound"));
     }
@@ -379,12 +504,7 @@ fn buffer(capacity: usize) -> Result<Vec<u8>> {
 }
 
 fn control_prefix(magic: [u8; 8], body_len: usize) -> Result<Vec<u8>> {
-    let limit = if &magic == b"HXVICF03" {
-        CONFIG_LIMIT
-    } else {
-        CONTROL_LIMIT
-    };
-    if body_len > limit {
+    if body_len > control_limit(&magic) {
         return Err(Error::Protocol("control frame exceeds bound"));
     }
     let mut out = buffer(12 + body_len)?;
@@ -436,6 +556,31 @@ pub fn quiesce(config: &Configuration, sequence: u64) -> Result<[u8; 64]> {
     Ok(out)
 }
 
+/// Stopped restoration discards the old graph's instrument gates. The helper
+/// releases its accepted notes without extending the acknowledged PCM prefix.
+pub(crate) fn quiesce_for_stopped_restore(
+    config: &Configuration,
+    sequence: u64,
+) -> Result<[u8; 64]> {
+    let mut out = quiesce(config, sequence)?;
+    if config.input_channels == 0 {
+        out[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// Explicit stopped component reactivation, distinct from ordinary quiescence.
+pub fn reactivate(config: &Configuration, sequence: u64, operation: u64) -> Result<[u8; 72]> {
+    if operation == 0 {
+        return Err(Error::Protocol("reactivation operation must be nonzero"));
+    }
+    let mut out = [0; 72];
+    out[..64].copy_from_slice(&quiesce(config, sequence)?);
+    out[..4].copy_from_slice(b"HXVA");
+    out[64..].copy_from_slice(&operation.to_le_bytes());
+    Ok(out)
+}
+
 pub fn validate_resume(previous: Binding, next: Binding) -> Result<()> {
     if [
         previous.root,
@@ -461,13 +606,15 @@ pub fn validate_resume(previous: Binding, next: Binding) -> Result<()> {
 pub fn resume_request(
     config: &Configuration,
     next: Binding,
-    presentation: Option<PresentationLatency>,
+    plan: impl Into<PresentationPlan>,
 ) -> Result<Vec<u8>> {
+    let plan = plan.into();
+    let presentation = plan.wire_values();
     config.validate()?;
     validate_resume(config.binding, next)?;
     let mut header = stop(config.binding, next.graph, next.epoch);
     header[..4].copy_from_slice(b"HXVR");
-    header[10] = u8::from(presentation.is_some());
+    header[10] = plan.flag();
     let mut out = buffer(64 + usize::from(presentation.is_some()) * 8)?;
     out.extend(header);
     if let Some(value) = presentation {
@@ -484,7 +631,7 @@ fn epoch_facts<'a>(
 ) -> Result<(Facts, Reader<'a>)> {
     // Current fixed facts plus the exact optional original startup envelope.
     config.validate()?;
-    let size = 138_usize
+    let size = 140_usize
         .checked_add(
             config
                 .restore
@@ -519,41 +666,37 @@ pub fn quiescent_facts(body: &[u8], config: &Configuration, sequence: u64) -> Re
     Ok(facts)
 }
 
+pub fn reactivated_facts(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<Facts> {
+    let (facts, mut rest) = epoch_facts(body, config, sequence)?;
+    if operation == 0 || u64::from_le_bytes(rest.array()?) != operation {
+        return Err(Error::Protocol("reactivation operation differs"));
+    }
+    rest.end()?;
+    Ok(facts)
+}
+
 pub fn resumed(
     body: &[u8],
     config: &Configuration,
     sequence: u64,
     expected: Facts,
-    presentation: Option<PresentationLatency>,
+    presentation: impl Into<PresentationPlan>,
 ) -> Result<Presentation> {
+    let presentation = presentation.into();
     let (facts, mut rest) = epoch_facts(body, config, sequence)?;
     if facts != expected {
         return Err(Error::Protocol(
             "native facts changed before resumed acknowledgement",
         ));
     }
-    let result = match rest.byte()? {
-        0 => Presentation::Absent,
-        1 => Presentation::Applied,
-        _ => return Err(Error::Protocol("native presentation resume refused")),
-    };
-    let supplied = match rest.byte()? {
-        0 => None,
-        1 => Some(PresentationLatency {
-            input_frames: u32::from_le_bytes(rest.array()?),
-            output_frames: u32::from_le_bytes(rest.array()?),
-        }),
-        _ => {
-            return Err(Error::Protocol(
-                "invalid resumed presentation acknowledgement",
-            ));
-        }
-    };
+    let result = presentation_ack(&mut rest, presentation)?;
     rest.end()?;
-    if supplied != presentation
-        || (result == Presentation::Applied && supplied.is_none())
-        || (result == Presentation::Applied) != facts.presentation_available
-    {
+    if result != presentation.expected(facts.presentation_available)? {
         return Err(Error::Protocol(
             "resumed presentation differs from actual plan",
         ));
@@ -561,12 +704,18 @@ pub fn resumed(
     Ok(result)
 }
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
+    read_pcm(Cursor::new(bytes), config, sequence)
+}
+fn read_pcm(
+    mut reader: impl std::io::Read,
+    config: &Configuration,
+    sequence: u64,
+) -> Result<Block> {
     config.validate()?;
-    let mut cursor = Cursor::new(bytes);
-    let block = crate::transport::wire::read(&mut cursor)
+    let block = crate::transport::wire::read(&mut reader)
         .map_err(Error::Io)?
         .ok_or(Error::Protocol("missing instance PCM reply"))?;
-    if cursor.position() != bytes.len() as u64
+    if reader.read(&mut [0]).map_err(Error::Io)? != 0
         || block.binding != config.binding
         || block.sequence != sequence
         || block.frames != config.quantum

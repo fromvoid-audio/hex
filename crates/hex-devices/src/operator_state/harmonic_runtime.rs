@@ -37,6 +37,15 @@ pub(super) struct Factory {
     parameters: [f64; 12],
     filter: FilterTrajectory,
     companion_active: bool,
+    // Identical authored machine laws start equal and receive the same
+    // per-voice age, clock observations and note-off. Active history may only
+    // transfer across compatible companion and envelope laws. Per-operator
+    // machine events would require invalidating this proof.
+    uniform_companion: bool,
+    companion_sources: [u8; 4],
+    partial_companion: bool,
+    shared_loop_timing: bool,
+    uniform_envelopes: bool,
 }
 impl Factory {
     #[cfg(test)]
@@ -61,7 +70,40 @@ impl Factory {
                 .feedback_parameters(settings.effective_feedback().map(f64::from))
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?,
         );
+        // Each alias points backward to the first bit-identical machine law.
+        let mut companion_sources = [0, 1, 2, 3];
+        for (operator, source) in companion_sources.iter_mut().enumerate().skip(1) {
+            for previous in 0..operator {
+                if settings.companion.words[operator] == settings.companion.words[previous]
+                    && (0..ENVELOPE_FIELDS).all(|field| {
+                        settings.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + field].to_bits()
+                            == settings.fields[CORE_FIELDS + previous * ENVELOPE_FIELDS + field]
+                                .to_bits()
+                    })
+                {
+                    *source = previous as u8;
+                    break;
+                }
+            }
+        }
+        let uniform_companion = companion_sources == [0, 0, 0, 0];
+        let partial_companion = !uniform_companion && companion_sources != [0, 1, 2, 3];
+        // Matching mode, velocity time scaling, loop return, attack and decay
+        // imply equal prepared timing for every note velocity at this rate.
+        let shared_loop_timing = !uniform_companion
+            && !partial_companion
+            && (0..4).all(|i| {
+                settings.companion.words[i][5] == 1
+                    && [3, 6]
+                        .into_iter()
+                        .all(|j| settings.companion.words[i][j] == settings.companion.words[0][j])
+                    && [3, 4].into_iter().all(|j| {
+                        settings.fields[CORE_FIELDS + i * ENVELOPE_FIELDS + j].to_bits()
+                            == settings.fields[CORE_FIELDS + j].to_bits()
+                    })
+            });
         Ok(Self {
+            uniform_envelopes: configuration.has_uniform_envelopes(),
             configuration,
             tuning,
             base: state.payload()[..ENABLE_PAYLOAD_BYTES]
@@ -74,6 +116,10 @@ impl Factory {
                 FilterTrajectory::new(settings.filter, rate)?
             },
             companion_active: settings.companion.requires_runtime(),
+            uniform_companion,
+            companion_sources,
+            partial_companion,
+            shared_loop_timing,
             settings,
             table,
             phase_table: harmonic_phase_table()?,
@@ -172,6 +218,11 @@ fn compatible_base(
     b: &[u8; ENABLE_PAYLOAD_BYTES],
     allow_routing: bool,
 ) -> bool {
+    // An unrelated graph edit commonly inherits an unchanged instrument.
+    // Compare its prepared bytes in bulk before checking retargetable fields.
+    if a == b {
+        return true;
+    }
     a.iter().zip(b).enumerate().all(|(i, (a, b))| {
         let levels = [4..8, 16..20, 28..32, 40..44]
             .iter()
@@ -182,8 +233,48 @@ fn compatible_base(
         let enabled = (LFO_PAYLOAD_BYTES..ENABLE_PAYLOAD_BYTES).contains(&i);
         let lfo = (FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES).contains(&i);
         let routing = allow_routing && (48..112).contains(&i);
-        routing || levels || carriers || waveforms || feedback || enabled || lfo || a == b
+        // Keytrack's fixed endpoint mirrors the legacy fixed-mode word. The
+        // target prepares all new phase steps before preserving voice history.
+        let pitch_mode = (WAVEFORM_PAYLOAD_BYTES..TUNING_PAYLOAD_BYTES).contains(&i)
+            && (i - WAVEFORM_PAYLOAD_BYTES) % 12 < 4;
+        routing
+            || levels
+            || carriers
+            || waveforms
+            || feedback
+            || enabled
+            || lfo
+            || pitch_mode
+            || a == b
     })
+}
+// Keep the partially shared path out of the distinct-envelope render path.
+#[inline(never)]
+#[cold]
+fn partial_levels(
+    machines: &[Option<companion::Machine>; 4],
+    sources: [u8; 4],
+    age: u64,
+) -> [f64; 4] {
+    let [a, b, c, d] = machines;
+    let a = a.as_ref().map_or(0.0, |machine| machine.level(age));
+    let b = if sources[1] == 0 {
+        a
+    } else {
+        b.as_ref().map_or(0.0, |machine| machine.level(age))
+    };
+    let c = match sources[2] {
+        0 => a,
+        1 => b,
+        _ => c.as_ref().map_or(0.0, |machine| machine.level(age)),
+    };
+    let d = match sources[3] {
+        0 => a,
+        1 => b,
+        2 => c,
+        _ => d.as_ref().map_or(0.0, |machine| machine.level(age)),
+    };
+    [a, b, c, d]
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Voice {
@@ -363,6 +454,9 @@ impl EventProof {
             return self.apply_global(factory, event);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -508,6 +602,9 @@ impl Runtime {
     fn expire(&mut self) {
         let release = self.factory.configuration.release_frames();
         for voice in &mut self.voices {
+            if voice.id == 0 || voice.gate.is_none() {
+                continue;
+            }
             let finished = if self.factory.settings.global.active {
                 voice.drain >= quality::TAIL as u32
             } else if self.factory.companion_active {
@@ -521,7 +618,7 @@ impl Runtime {
                     .gate
                     .is_some_and(|gate| voice.age >= gate.saturating_add(release))
             };
-            if voice.id != 0 && voice.gate.is_some() && finished {
+            if finished {
                 *voice = Voice::default();
             }
         }
@@ -537,6 +634,9 @@ impl Runtime {
             return self.apply_global(event, origin, beat, running);
         }
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -706,7 +806,11 @@ impl MutableInstrumentRuntime for Runtime {
             };
             // Shared analytic contexts are neutral; custom tables opt into the
             // wide mutable owner before any note is prepared.
-            let note = if self.factory.tuning.is_some() {
+            let note = if self.factory.tuning.is_some()
+                || self.factory.settings.fine.values() != source.configuration.fine_offsets_hz()
+                || self.factory.settings.pitch_keytrack.values()
+                    != source.configuration.pitch_keytrack_percent()
+            {
                 let Ok(note) = self.factory.retuned_note(source_note) else {
                     return;
                 };
@@ -788,14 +892,29 @@ impl MutableInstrumentRuntime for Runtime {
         {
             return Err(Error::EventCapacityExceeded);
         }
+        // With no events and only held voices, no proof voice can expire or
+        // affect later admission in this block. Check the same frame and age
+        // overflow bounds without replaying each held voice sample by sample.
+        if events.is_empty()
+            && self.voices.iter().all(|voice| {
+                voice.id == 0 || (voice.gate.is_none() && voice.envelope_gate.is_none())
+            })
+        {
+            self.local_frame
+                .checked_add(frames as u64)
+                .ok_or(Error::InvalidEventBatch)?;
+            for voice in self.voices.iter().filter(|voice| voice.id != 0) {
+                voice
+                    .age
+                    .checked_add(frames as u64)
+                    .ok_or(Error::InvalidEventBatch)?;
+            }
+            return Ok(());
+        }
         let mut proof = EventProof::new(self);
         let mut offset = 0;
         for event in events {
-            let at = match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let at = event.frame_offset();
             if at < offset || at >= frames {
                 return Err(Error::InvalidEventBatch);
             }
@@ -886,30 +1005,54 @@ impl MutableInstrumentRuntime for Runtime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut cursor = 0;
+        // Events can populate later slots; retirement only removes voices.
+        let mut voice_end = self
+            .voices
+            .iter()
+            .rposition(|voice| voice.id != 0)
+            .map_or(0, |i| i + 1);
+        // Events can create released voices during this block. Once an event
+        // occurs, keep checking until the next block rather than maintaining
+        // another copy of voice ownership state.
+        let mut may_expire = self
+            .voices
+            .iter()
+            .any(|voice| voice.id != 0 && voice.gate.is_some());
+        let companion = self.factory.settings.companion;
+        let needs_companion_beat = companion.needs_clock();
+        let has_modulation = self.factory.configuration.has_modulation();
+        let needs_companion_transport = companion.needs_running();
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let beat = clock.and_then(|clock| clock.beat_at_offset(offset));
-            let running = clock.and_then(|clock| clock.transport_is_running());
-            for voice in &mut self.voices {
-                if voice.id != 0 {
-                    for machine in voice.machines.iter_mut().flatten() {
-                        let _ = machine.observe(
-                            if self.factory.settings.global.active {
-                                voice.envelope_age as u64
-                            } else {
-                                voice.age
-                            },
-                            beat,
-                            running,
-                        );
+            let beat = if needs_companion_beat {
+                clock.and_then(|clock| clock.beat_at_offset(offset))
+            } else {
+                None
+            };
+            let running = if needs_companion_transport {
+                clock.and_then(|clock| clock.transport_is_running())
+            } else {
+                None
+            };
+            if self.factory.companion_active {
+                for voice in &mut self.voices {
+                    if voice.id != 0 {
+                        for machine in voice.machines.iter_mut().flatten() {
+                            let _ = machine.observe(
+                                if self.factory.settings.global.active {
+                                    voice.envelope_age as u64
+                                } else {
+                                    voice.age
+                                },
+                                beat,
+                                running,
+                            );
+                        }
                     }
                 }
             }
+            let mut voices_changed = false;
             while let Some(event) = events.get(cursor) {
-                let at = match *event {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-                };
+                let at = event.frame_offset();
                 if at != offset {
                     break;
                 }
@@ -917,7 +1060,16 @@ impl MutableInstrumentRuntime for Runtime {
                     .and_then(|clock| clock.performance_frame_at_offset(offset))
                     .unwrap_or(self.local_frame);
                 let _ = self.apply(*event, origin, beat, running);
+                voices_changed = true;
+                may_expire = true;
                 cursor += 1;
+            }
+            if voices_changed {
+                voice_end = self
+                    .voices
+                    .iter()
+                    .rposition(|voice| voice.id != 0)
+                    .map_or(0, |i| i + 1);
             }
             let transition = (self.elapsed < self.frames).then(|| self.spectrum());
             let spectrum = transition.as_ref().unwrap_or(&self.factory.target);
@@ -935,7 +1087,7 @@ impl MutableInstrumentRuntime for Runtime {
             } else {
                 law.rate() / f64::from(self.factory.rate)
             };
-            for voice in &mut self.voices {
+            for voice in self.voices.iter_mut().take(voice_end) {
                 if voice.id == 0 {
                     continue;
                 }
@@ -971,32 +1123,53 @@ impl MutableInstrumentRuntime for Runtime {
                 } else {
                     PreparedOperatorConfiguration::lfo_steps(&voice.note)
                 };
+                // Envelope age and machines advance only after both quality
+                // subframes, so one evaluation serves the whole output frame.
+                let age = if quality {
+                    voice.envelope_frame()
+                } else {
+                    voice.age
+                };
+                let gate = if quality {
+                    voice.envelope_gate.unwrap_or(u64::MAX)
+                } else {
+                    voice.gate.unwrap_or(u64::MAX)
+                };
+                let amplitudes = if self.factory.companion_active {
+                    if self.factory.uniform_companion {
+                        [voice.machines[0]
+                            .as_ref()
+                            .map_or(0.0, |machine| machine.level(age)); 4]
+                    } else if self.factory.partial_companion {
+                        partial_levels(&voice.machines, self.factory.companion_sources, age)
+                    } else {
+                        let independent = || {
+                            std::array::from_fn(|i| {
+                                voice.machines[i]
+                                    .as_ref()
+                                    .map_or(0.0, |machine| machine.level(age))
+                            })
+                        };
+                        if self.factory.shared_loop_timing {
+                            companion::Machine::shared_loop_levels(&voice.machines, age)
+                                .unwrap_or_else(independent)
+                        } else {
+                            independent()
+                        }
+                    }
+                } else if self.factory.uniform_envelopes {
+                    self.factory
+                        .configuration
+                        .uniform_envelope_levels(age, gate)
+                } else {
+                    self.factory.configuration.envelope_levels(age, gate)
+                };
                 let mut rendered = 0.0;
                 for subframe in 0..if quality { 2 } else { 1 } {
                     let (sample, previous) =
                         self.factory.configuration.sample_with_waveform_sampler(
                             &voice.note,
-                            if quality {
-                                voice.envelope_frame()
-                            } else {
-                                voice.age
-                            },
-                            if quality {
-                                voice.envelope_gate.unwrap_or(u64::MAX)
-                            } else {
-                                voice.gate.unwrap_or(u64::MAX)
-                            },
-                            self.factory.companion_active.then(|| {
-                                std::array::from_fn(|i| {
-                                    voice.machines[i].as_ref().map_or(0.0, |machine| {
-                                        machine.level(if quality {
-                                            voice.envelope_frame()
-                                        } else {
-                                            voice.age
-                                        })
-                                    })
-                                })
-                            }),
+                            amplitudes,
                             &voice.phases,
                             voice.previous,
                             std::array::from_fn(|i| {
@@ -1010,6 +1183,7 @@ impl MutableInstrumentRuntime for Runtime {
                             }),
                             std::array::from_fn(|i| parameters[4 + i]),
                             std::array::from_fn(|i| parameters[8 + i]),
+                            has_modulation,
                             (if quality {
                                 voice
                                     .modulated_filter
@@ -1019,24 +1193,20 @@ impl MutableInstrumentRuntime for Runtime {
                                 filter_frame
                             })
                             .map(|frame| (&mut voice.filters, frame)),
-                            |operator, phase, _| {
-                                let step = steps[operator];
+                            |operator, phase, base_step| {
                                 spectrum.sample_policy(
                                     operator,
                                     phase,
-                                    if law.active() {
-                                        if quality {
-                                            step
-                                        } else {
-                                            step.saturating_mul(2)
-                                        }
-                                    } else if quality {
-                                        step / 2
-                                    } else {
-                                        step
-                                    },
                                     voice.age,
-                                    PreparedOperatorConfiguration::lfo_steps(&voice.note)[operator],
+                                    || {
+                                        let step = steps[operator];
+                                        let render_step = match (law.active(), quality) {
+                                            (true, false) => step.saturating_mul(2),
+                                            (false, true) => step / 2,
+                                            _ => step,
+                                        };
+                                        (render_step, base_step)
+                                    },
                                     self.factory.table,
                                     self.factory.bank,
                                     self.factory.phase_table,
@@ -1055,18 +1225,26 @@ impl MutableInstrumentRuntime for Runtime {
                         sample
                     };
                     voice.previous = previous;
-                    for (i, step) in steps.iter().enumerate() {
-                        let step = if law.active() && law.selected(i) {
-                            (*step as f64 * multiplier).round() as u64
-                        } else {
-                            *step
-                        };
-                        let step = if quality {
-                            step / 2 + if subframe == 1 { step % 2 } else { 0 }
-                        } else {
-                            step
-                        };
-                        voice.phases[i] = voice.phases[i].wrapping_add(step);
+                    if quality && !law.active() {
+                        // Both subframes must sum to the original step, including odd steps.
+                        for (phase, step) in voice.phases.iter_mut().zip(steps) {
+                            let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
+                            *phase = phase.wrapping_add(step);
+                        }
+                    } else {
+                        for (i, step) in steps.iter().enumerate() {
+                            let step = if law.active() && law.selected(i) {
+                                (*step as f64 * multiplier).round() as u64
+                            } else {
+                                *step
+                            };
+                            let step = if quality {
+                                step / 2 + if subframe == 1 { step % 2 } else { 0 }
+                            } else {
+                                step
+                            };
+                            voice.phases[i] = voice.phases[i].wrapping_add(step);
+                        }
                     }
                 }
                 let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
@@ -1106,7 +1284,9 @@ impl MutableInstrumentRuntime for Runtime {
                 }
                 voice.age = voice.age.saturating_add(1);
                 if quality {
-                    if EventVoice::read(voice, &self.factory).envelope_finished() {
+                    if voice.envelope_gate.is_some()
+                        && EventVoice::read(voice, &self.factory).envelope_finished()
+                    {
                         voice.drain = voice.drain.saturating_add(1);
                     } else {
                         voice.drain = 0;
@@ -1127,7 +1307,9 @@ impl MutableInstrumentRuntime for Runtime {
             }
             self.filter.advance();
             self.local_frame = self.local_frame.saturating_add(1);
-            self.expire();
+            if may_expire {
+                self.expire();
+            }
         }
     }
     fn reset(&mut self) {
@@ -1157,7 +1339,18 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(p) = previous.as_any().downcast_ref::<Self>()
             && self.can_copy_history_from(p)
         {
-            self.voices.copy_from_slice(&p.voices);
+            // Empty slots are reset wholesale on construction, expiry and
+            // compaction. The legacy note-off path can still set the gate of an
+            // ID-zero slot, so copy those slots too to preserve its history.
+            for (target, source) in self.voices.iter_mut().zip(&p.voices) {
+                if target.id != 0
+                    || source.id != 0
+                    || target.gate.is_some()
+                    || source.gate.is_some()
+                {
+                    *target = *source;
+                }
+            }
             self.source = p.source;
             self.elapsed = p.elapsed;
             self.frames = p.frames;
@@ -1189,37 +1382,44 @@ impl MutableInstrumentRuntime for Runtime {
             .as_any()
             .downcast_ref::<Target>()
             .is_some_and(|t| t.0 == self.factory.configuration.configuration_id())
-            && Legacy::read(previous).is_some_and(|p| {
+            && Admission::read(previous).is_some_and(|p| {
                 self.factory.rate == p.rate
-                    && (p.voices().all(|voice| voice.id == 0)
+                    && (p.admission_voices().all(|(id, _)| id == 0)
                         || self.factory.settings.companion == p.companion)
                     && compatible_base(
                         &self.factory.base,
                         &p.base,
                         self.factory.settings.global.active,
                     )
-                    && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
-                    && (p.tuning == self.factory.tuning.as_ref()
-                        || p.voices().filter(|v| v.id != 0).all(|v| {
-                            self.factory.retuned_note(v.note).is_ok_and(|note| {
-                                (!self.factory.settings.lfo.active()
-                                    || PreparedOperatorConfiguration::lfo_steps(&note)
-                                        .iter()
-                                        .all(|step| *step < (1u64 << 62)))
-                                    && (!self.factory.settings.global.active
-                                        || self
-                                            .factory
-                                            .effective(note, expression)
-                                            .and_then(|e| self.factory.modulated_filter(e))
-                                            .is_ok())
-                            })
-                        }))
+                    && p.admission_voices().filter(|(id, _)| *id != 0).count()
+                        <= self.factory.capacity()
+                    && ((p.tuning == self.factory.tuning.as_ref()
+                        && p.fine_offsets == self.factory.settings.fine.values()
+                        && p.pitch_keytrack == self.factory.settings.pitch_keytrack.values())
+                        || p.admission_voices()
+                            .filter(|(id, _)| *id != 0)
+                            .all(|(_, note)| {
+                                self.factory.retuned_note(note).is_ok_and(|note| {
+                                    (!self.factory.settings.lfo.active()
+                                        || PreparedOperatorConfiguration::lfo_steps(&note)
+                                            .iter()
+                                            .all(|step| *step < (1u64 << 62)))
+                                        && (!self.factory.settings.global.active
+                                            || self
+                                                .factory
+                                                .effective(note, expression)
+                                                .and_then(|e| self.factory.modulated_filter(e))
+                                                .is_ok())
+                                })
+                            }))
                     && (!self.factory.settings.lfo.active()
-                        || p.voices().filter(|v| v.id != 0).all(|v| {
-                            PreparedOperatorConfiguration::lfo_steps(&v.note)
-                                .iter()
-                                .all(|step| *step < (1u64 << 62))
-                        }))
+                        || p.admission_voices()
+                            .filter(|(id, _)| *id != 0)
+                            .all(|(_, note)| {
+                                PreparedOperatorConfiguration::lfo_steps(&note)
+                                    .iter()
+                                    .all(|step| *step < (1u64 << 62))
+                            }))
             })
     }
     fn retarget_history_from(
@@ -1237,7 +1437,10 @@ impl MutableInstrumentRuntime for Runtime {
                 .zip(p.voices().filter(|voice| voice.id != 0))
             {
                 *target = source;
-                if p.tuning != self.factory.tuning.as_ref() {
+                if p.tuning != self.factory.tuning.as_ref()
+                    || p.fine_offsets != self.factory.settings.fine.values()
+                    || p.pitch_keytrack != self.factory.settings.pitch_keytrack.values()
+                {
                     let Ok(note) = self.factory.retuned_note(source.note) else {
                         return;
                     };
@@ -1305,14 +1508,22 @@ impl MutableInstrumentRuntime for Runtime {
 // one voice at a time, so no adapter materializes a 64-machine-bank temporary.
 pub(super) trait VoiceHistory {
     fn voice(&self, index: usize) -> Option<Voice>;
+    fn admission_voice(&self, index: usize) -> Option<(u64, PreparedOperatorNote)> {
+        self.voice(index).map(|voice| (voice.id, voice.note))
+    }
 }
 impl VoiceHistory for Runtime {
     fn voice(&self, index: usize) -> Option<Voice> {
         self.voices.get(index).copied()
     }
+    fn admission_voice(&self, index: usize) -> Option<(u64, PreparedOperatorNote)> {
+        self.voices.get(index).map(|voice| (voice.id, voice.note))
+    }
 }
 
 pub(super) struct Legacy<'a> {
+    pub fine_offsets: [f32; 4],
+    pub pitch_keytrack: [f32; 4],
     pub tuning: Option<&'a hex_lattice::TuningTable>,
     pub rate: u32,
     pub base: [u8; ENABLE_PAYLOAD_BYTES],
@@ -1328,11 +1539,52 @@ pub(super) struct Legacy<'a> {
     pub companion: companion::Settings,
     pub local_frame: u64,
 }
+
+struct Admission<'a> {
+    fine_offsets: [f32; 4],
+    pitch_keytrack: [f32; 4],
+    tuning: Option<&'a hex_lattice::TuningTable>,
+    rate: u32,
+    base: [u8; ENABLE_PAYLOAD_BYTES],
+    voices: &'a dyn VoiceHistory,
+    companion: companion::Settings,
+}
+
+impl<'a> Admission<'a> {
+    fn admission_voices(&self) -> impl Iterator<Item = (u64, PreparedOperatorNote)> + '_ {
+        (0..VOICES).filter_map(|index| self.voices.admission_voice(index))
+    }
+
+    fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
+        if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
+            return Some(Self {
+                fine_offsets: p.factory.settings.fine.values(),
+                pitch_keytrack: p.factory.settings.pitch_keytrack.values(),
+                tuning: p.factory.tuning.as_ref(),
+                rate: p.factory.rate,
+                base: p.factory.base,
+                voices: p,
+                companion: p.factory.settings.companion,
+            });
+        }
+        let p = Legacy::read(previous)?;
+        Some(Self {
+            fine_offsets: p.fine_offsets,
+            pitch_keytrack: p.pitch_keytrack,
+            tuning: p.tuning,
+            rate: p.rate,
+            base: p.base,
+            voices: p.voices,
+            companion: p.companion,
+        })
+    }
+}
 pub(super) fn builtin_spectrum(base: &[u8; ENABLE_PAYLOAD_BYTES]) -> Option<Spectrum> {
     let mut out = Spectrum {
         coefficients: [[0.0; 64]; 4],
         builtin: [[0.0; crate::operator_waveform::BUILTIN_CHOICE_COUNT]; 4],
         builtin_active: [0; 4],
+        custom_active: [false; 4],
     };
     for operator in 0..4 {
         let offset = LEGACY_PAYLOAD_BYTES + operator * 4;
@@ -1358,6 +1610,8 @@ impl<'a> Legacy<'a> {
     fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
             return Some(Self {
+                fine_offsets: p.factory.settings.fine.values(),
+                pitch_keytrack: p.factory.settings.pitch_keytrack.values(),
                 tuning: p.factory.tuning.as_ref(),
                 rate: p.factory.rate,
                 base: p.factory.base,
@@ -1384,3 +1638,6 @@ mod tests;
 
 #[cfg(test)]
 mod global_tests;
+
+#[cfg(test)]
+mod fine_tests;

@@ -11,6 +11,21 @@ impl RuntimeOwner {
         &mut self,
         action: crate::PlaybackAction,
     ) -> Result<(), crate::PlaybackActionError> {
+        self.check_current_sampler_action(action)?;
+        self.playback.try_apply_action(action)
+    }
+    /// `apply_action` with the transport declick of `Playback::try_apply_declicked_action`.
+    pub(super) fn apply_declicked_action(
+        &mut self,
+        action: crate::PlaybackAction,
+    ) -> Result<(), crate::PlaybackActionError> {
+        self.check_current_sampler_action(action)?;
+        self.playback.try_apply_declicked_action(action)
+    }
+    fn check_current_sampler_action(
+        &self,
+        action: crate::PlaybackAction,
+    ) -> Result<(), crate::PlaybackActionError> {
         if self.sampler_sources.is_some() {
             use crate::{PlaybackAction::Transport, PlaybackCommand};
             match action {
@@ -39,7 +54,7 @@ impl RuntimeOwner {
                 }
             }
         }
-        self.playback.try_apply_action(action)
+        Ok(())
     }
     pub(super) fn render_with_signal_observers(
         &mut self,
@@ -56,6 +71,25 @@ impl RuntimeOwner {
             self.playback
                 .render_with_signal_observers(output, observer, project)
         }
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let sources = self
+            .sampler_sources
+            .as_ref()
+            .map(|(sources, _)| &***sources);
+        self.playback.render_live_audio(
+            output, track, input, pages, observer, project, sources, foreign,
+        )
     }
     pub(super) fn render_with_foreign_processors(
         &mut self,

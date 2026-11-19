@@ -56,6 +56,24 @@ impl TuningState {
         }
     }
 
+    pub(super) fn fixed_flags(self) -> [bool; OPERATORS] {
+        self.fixed
+    }
+
+    pub(super) fn set_fixed_flags(&mut self, flags: [bool; OPERATORS]) {
+        self.fixed = flags;
+    }
+
+    pub(super) fn fixed_anchors(self) -> Result<[OperatorTuning; OPERATORS], DeviceContractError> {
+        let mut result = [OperatorTuning::Ratio; OPERATORS];
+        for (i, anchor) in result.iter_mut().enumerate() {
+            *anchor =
+                OperatorTuning::fixed(f64::from(self.frequency[i]), f64::from(self.multiplier[i]))
+                    .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        }
+        Ok(result)
+    }
+
     pub fn modes(self) -> Result<[OperatorTuning; OPERATORS], DeviceContractError> {
         let mut modes = [OperatorTuning::Ratio; OPERATORS];
         for (index, mode) in modes.iter_mut().enumerate() {

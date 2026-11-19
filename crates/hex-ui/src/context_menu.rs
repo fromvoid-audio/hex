@@ -22,7 +22,7 @@ pub(crate) struct MenuItem<A> {
 pub(crate) struct PopupMenu<A> {
     pub scroll: gpui::ScrollHandle,
     pub position: Point<Pixels>,
-    // Item zero and any items after the glyph catalog are full-width actions.
+    // Item zero and any items after the icon catalog are full-width actions.
     pub icon_grid: Option<Vec<&'static str>>,
     pub items: Vec<MenuItem<A>>,
     pub selected: usize,
@@ -184,12 +184,18 @@ pub(crate) fn popup_with_labels<T: 'static, A: Clone + 'static>(
                 .border_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .bg(rgb(color))
         }))
-        .child(
+        .children(glyph.map(|path| {
+            gpui::svg()
+                .path(path)
+                .size(px(14.0))
+                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+        }))
+        .children(glyph.is_none().then(|| {
             div()
                 .min_w_0()
                 .truncate()
-                .child(theme::text(glyph.unwrap_or(label.as_ref()))),
-        )
+                .child(theme::text(label.as_ref()))
+        }))
         .children(item.checked.then(|| {
             div()
                 .debug_selector(move || format!("context-menu-current-{index}"))
@@ -308,7 +314,7 @@ impl gpui::Render for MenuTooltip {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

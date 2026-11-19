@@ -10,8 +10,8 @@ mod view;
 pub(crate) use actions::StageAction;
 pub(in crate::candidate_custody) use ordinary::OrdinaryReservation;
 pub(crate) use ordinary::OrdinaryStreams;
-pub(crate) use view::ActiveView;
 use view::StateView;
+pub(crate) use view::{ActiveView, QuantumFailure, QuantumPins};
 #[derive(Clone, Copy)]
 struct ScheduledAction {
     ticket: u64,
@@ -25,14 +25,21 @@ enum CandidateRole {
     Publication,
     LaunchPrewarm { ticket: u64, due: u64 },
 }
-pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress};
+pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow};
 struct PendingAction {
     prepared: hex_engine::PreparedStreamAction,
     ticket: u64,
 }
 pub(super) struct Workspace {
     handoff_diagnostic: Option<hex_engine::PlaybackHandoffError>,
+    pub(super) source_changed: bool,
+    pub(super) read_failed: bool,
+    pub(super) capacity_conflict: bool,
+    capacity_attempts: u8,
+    candidate_capacity_attempts: u8,
+    candidate_frame_limit: usize,
     pub(super) extents: [Vec<StreamResourceExtent>; 2],
+    pub(super) quantum_extents: [Vec<StreamResourceExtent>; 2],
     pub(super) limit: usize,
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
@@ -54,9 +61,22 @@ impl Workspace {
             rows.try_reserve_exact(limit)
                 .map_err(|_| "stream demand reservation failed")?;
         }
+        let mut quantum_extents: [Vec<StreamResourceExtent>; 2] =
+            std::array::from_fn(|_| Vec::new());
+        for rows in &mut quantum_extents {
+            rows.try_reserve_exact(limit)
+                .map_err(|_| "stream quantum demand reservation failed")?;
+        }
         Ok(Self {
             handoff_diagnostic: None,
+            source_changed: false,
+            read_failed: false,
+            capacity_conflict: false,
+            capacity_attempts: 0,
+            candidate_capacity_attempts: 0,
+            candidate_frame_limit: 256,
             extents,
+            quantum_extents,
             limit,
             stamps: [None; 2],
             active: [None; 2],
@@ -69,22 +89,35 @@ impl Workspace {
         })
     }
     pub(super) fn backing_bytes(&self) -> Option<usize> {
-        self.extents.iter().try_fold(0usize, |bytes, rows| {
-            rows.capacity()
-                .checked_mul(std::mem::size_of::<StreamResourceExtent>())?
-                .checked_add(bytes)
-        })
+        self.extents
+            .iter()
+            .chain(&self.quantum_extents)
+            .try_fold(0usize, |bytes, rows| {
+                rows.capacity()
+                    .checked_mul(std::mem::size_of::<StreamResourceExtent>())?
+                    .checked_add(bytes)
+            })
     }
     pub(super) fn valid(&self) -> bool {
         self.limit != 0
             && self
                 .extents
                 .iter()
+                .chain(&self.quantum_extents)
                 .all(|rows| rows.len() <= self.limit && rows.capacity() >= self.limit)
     }
     pub(super) fn clear(&mut self) {
         self.handoff_diagnostic = None;
+        self.source_changed = false;
+        self.read_failed = false;
+        self.capacity_conflict = false;
+        self.capacity_attempts = 0;
+        self.candidate_capacity_attempts = 0;
+        self.candidate_frame_limit = 256;
         for rows in &mut self.extents {
+            rows.clear();
+        }
+        for rows in &mut self.quantum_extents {
             rows.clear();
         }
         self.stamps = [None; 2];
@@ -95,6 +128,22 @@ impl Workspace {
         self.scheduled = None;
         self.prewarm_stamps = [None; 2];
         self.candidate_role = CandidateRole::None;
+    }
+
+    /// Retry a bounded number of current-window capacity conflicts before
+    /// returning a capacity-specific refusal to the publication owner.
+    pub(super) fn retry_capacity_conflict(&mut self) -> bool {
+        const MAX_CAPACITY_ATTEMPTS: u8 = 8;
+        self.capacity_attempts = self.capacity_attempts.saturating_add(1);
+        self.capacity_attempts < MAX_CAPACITY_ATTEMPTS
+    }
+
+    /// Candidate windows can halve from 256 to one; permit the one-frame
+    /// attempt before returning a bounded capacity refusal.
+    pub(super) fn retry_candidate_capacity_conflict(&mut self) -> bool {
+        const MAX_CANDIDATE_ATTEMPTS: u8 = 9;
+        self.candidate_capacity_attempts = self.candidate_capacity_attempts.saturating_add(1);
+        self.candidate_capacity_attempts < MAX_CANDIDATE_ATTEMPTS
     }
 }
 impl Custody {
@@ -129,10 +178,19 @@ impl Custody {
                 bank.accounted_base(true)?,
             )
         };
+        // One receipt can accompany each retained constructor State, plus
+        // the last attempted receipt retained by its control publisher.
+        let receipt_bytes = count
+            .checked_add(1)
+            .and_then(|n| {
+                n.checked_mul(crate::prepared::CancellablePublicationReceipt::payload_bytes())
+            })
+            .ok_or("stream receipt storage overflow")?;
         let requested = count
-            .checked_mul(2)
+            .checked_mul(4)
             .and_then(|n| n.checked_mul(limit))
             .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
+            .and_then(|n| n.checked_add(receipt_bytes))
             .ok_or("stream demand storage overflow")?;
         let temporary = count
             .checked_mul(std::mem::size_of::<Workspace>())
@@ -156,7 +214,7 @@ impl Custody {
         }
         let actual = workspaces
             .iter()
-            .try_fold(0usize, |bytes, rows| {
+            .try_fold(receipt_bytes, |bytes, rows| {
                 rows.backing_bytes()?.checked_add(bytes)
             })
             .ok_or("stream demand storage overflow")?;

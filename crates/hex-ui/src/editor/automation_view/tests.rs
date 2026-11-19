@@ -25,8 +25,8 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
     editor.update(&mut visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
         v.time_selection = Some(crate::editor::time_selection::TimeSelection {
-            anchor_track: p.tracks()[0].id(),
-            end_track: p.tracks()[1].id(),
+            anchor_track: Some(p.tracks()[0].id()),
+            end_track: Some(p.tracks()[1].id()),
             anchor_frame: 12_000,
             end_frame: 36_000,
         });
@@ -299,7 +299,7 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
-    visual.simulate_keystrokes("a");
+    visual.simulate_keystrokes("a shift-a");
     visual.simulate_input("a");
     visual.run_until_parked();
     editor.read_with(&visual, |v, cx| {
@@ -307,15 +307,17 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
         assert!(v.browser.search.read(cx).text().contains('a'));
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
-    visual.simulate_keystrokes("a");
+    visual.simulate_keystrokes("a shift-a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = true);
     visual.simulate_keystrokes("a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
+    visual.simulate_keystrokes("shift-a");
+    editor.read_with(&visual, |v, _| assert!(v.automation_view.enabled));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = false);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    for enabled in [true, false] {
+    for enabled in [false, true, false] {
         visual.simulate_keystrokes("a");
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
@@ -375,7 +377,7 @@ fn next_event(
     editor: &gpui::Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Some(event) = editor.update(&mut *visual, |v, _| v.service.try_event().ok()) {
             return event;
@@ -408,13 +410,19 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
     let at = point(plot.center().x, plot.top() + plot.size.height * 0.25);
     visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
     let draft = editor.read_with(&visual, |v, _| v.gain_lane.draft.unwrap().point);
+    // Inject an independently admitted worker edit after the draft starts. The
+    // UI rejects new edits here; this models a stale canonical snapshot so the
+    // FIFO receipt and refusal paths remain covered despite that admission rule.
     editor.update(&mut visual, |v, _| {
-        assert!(v.enqueue(hex_session::service::Request::Edit(
-            hex_project::Command::RenameTrack {
-                track,
-                name: "renamed".into()
-            }
-        )))
+        v.service
+            .submit(hex_session::service::Request::Edit(
+                hex_project::Command::RenameTrack {
+                    track,
+                    name: "renamed".into(),
+                },
+            ))
+            .unwrap();
+        v.worker_requests_pending += 1;
     });
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     let marker =

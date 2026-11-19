@@ -151,6 +151,7 @@ impl Import {
             note_off_sent: gate <= cut,
             gain_at_end_bits: gain.to_bits(),
             gain_frozen,
+            contributor_fade: None,
         });
         self.len += 1;
         Ok(())
@@ -434,9 +435,7 @@ pub(super) fn preflight(
     if !supported && imported.len != 0 && previous.revision.source_routing().is_shared(index) {
         // The legacy per-track fallback cannot prove a complete shared-source
         // history. Refuse before it could admit only the receiver's voices.
-        return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-            "shared source provider cannot adopt its complete active history",
-        ));
+        return Err(SessionPlaybackError::SourceHistoryUnavailable);
     }
     Ok(supported)
 }

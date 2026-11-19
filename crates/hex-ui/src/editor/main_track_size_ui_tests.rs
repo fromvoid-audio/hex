@@ -29,6 +29,8 @@ fn main_shrinks_to_header_only_expands_and_keeps_pin_alignment_and_controls(
     let lane = visual.debug_bounds("main-track-lane").unwrap();
     assert_eq!(header.size.height, lane.size.height);
     assert_eq!(header.top(), lane.top());
+    let meter = visual.debug_bounds("main-output-meter").unwrap();
+    assert!(meter.top() >= header.top() && meter.bottom() <= header.bottom());
     assert!(
         visual.debug_bounds("main-track-controls").is_none(),
         "compact controls have no hidden hits"
@@ -36,7 +38,7 @@ fn main_shrinks_to_header_only_expands_and_keeps_pin_alignment_and_controls(
     let from = edge(&mut visual);
     drag(&mut visual, from, from - point(px(0.), px(70.)));
     let expanded = main(&mut visual);
-    assert_eq!(expanded.size.height, compact.size.height + px(70.));
+    assert_eq!(expanded.size.height, compact.size.height + px(66.));
     assert_eq!(expanded.bottom(), original.bottom());
     let controls = visual.debug_bounds("main-track-controls").unwrap();
     let handle = visual.debug_bounds("main-track-height-resize").unwrap();
@@ -46,9 +48,9 @@ fn main_shrinks_to_header_only_expands_and_keeps_pin_alignment_and_controls(
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert_eq!(v.worker_requests_pending, 0);
     });
-    let gain = visual.debug_bounds("main-gain-up").unwrap().center();
-    visual.simulate_click(gain, Modifiers::default());
-    editor.read_with(&visual, |v, _| assert!(v.last_enqueued_edit.is_some()));
+    let gain = visual.debug_bounds("main-volume-slider").unwrap();
+    assert!(gain.top() >= controls.top() && gain.bottom() <= controls.bottom());
+    assert!(visual.debug_bounds("main-gain-up").is_none());
 }
 #[gpui::test]
 fn main_all_track_resize_and_overview_share_rollback_and_restore_normal_heights(
@@ -64,28 +66,28 @@ fn main_all_track_resize_and_overview_share_rollback_and_restore_normal_heights(
     let to = from - point(px(0.), px(30.));
     visual.simulate_mouse_down(from, MouseButton::Left, alt);
     visual.simulate_mouse_move(to, MouseButton::Left, alt);
-    assert_heights(&mut visual, &tracks, &[74.; 2]);
-    assert_eq!(main(&mut visual).size.height, px(74.));
+    assert_heights(&mut visual, &tracks, &[66.; 2]);
+    assert_eq!(main(&mut visual).size.height, px(66.));
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(to, MouseButton::Left, alt);
     assert_heights(&mut visual, &tracks, &[44.; 2]);
     assert_eq!(main(&mut visual), original);
     let from = edge(&mut visual);
     drag(&mut visual, from, from - point(px(0.), px(30.)));
-    assert_eq!(main(&mut visual).size.height, px(74.));
+    assert_eq!(main(&mut visual).size.height, px(66.));
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.; 2]);
-    assert_eq!(main(&mut visual).size.height, px(23.));
+    assert_heights(&mut visual, &tracks, &[22.; 2]);
+    assert_eq!(main(&mut visual).size.height, px(22.));
     let from = edge(&mut visual);
-    drag(&mut visual, from, from - point(px(0.), px(10.)));
-    assert_eq!(main(&mut visual).size.height, px(33.));
+    drag(&mut visual, from, from - point(px(0.), px(15.)));
+    assert_eq!(main(&mut visual).size.height, px(44.));
     visual.simulate_keystrokes("h");
     assert_heights(&mut visual, &tracks, &[44.; 2]);
-    assert_eq!(main(&mut visual).size.height, px(74.));
+    assert_eq!(main(&mut visual).size.height, px(66.));
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.; 2]);
-    assert_eq!(main(&mut visual).size.height, px(23.));
+    assert_heights(&mut visual, &tracks, &[22.; 2]);
+    assert_eq!(main(&mut visual).size.height, px(22.));
 }
 
 #[gpui::test]
@@ -96,15 +98,18 @@ fn main_resize_after_window_shrink_starts_from_painted_height(cx: &mut TestAppCo
     visual.simulate_resize(size(px(880.), px(540.)));
     visual.run_until_parked();
     let displayed = main(&mut visual);
-    let detail = visual.debug_bounds("clip-view-toggle-row").unwrap();
-    assert!(displayed.size.height >= px(23.));
+    let detail = visual.debug_bounds("clip-view").unwrap();
+    assert!(displayed.size.height >= px(22.));
     assert!(displayed.bottom() <= detail.top());
     let from = edge(&mut visual);
     drag(&mut visual, from, from + point(px(0.), px(10.)));
     let next = main(&mut visual);
     assert_eq!(
         next.size.height,
-        (displayed.size.height - px(10.)).max(px(23.))
+        px(((f32::from(displayed.size.height) - 10.) / 22.)
+            .round()
+            .max(1.)
+            * 22.)
     );
     assert_eq!(next.bottom(), displayed.bottom());
     editor.read_with(&visual, |v, _| assert_eq!(v.worker_requests_pending, 0));

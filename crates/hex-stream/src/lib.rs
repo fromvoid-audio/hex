@@ -3,8 +3,8 @@
 //! endpoints.
 //!
 //! # Dependencies
-//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-storage closed
-//! automation readers and rtrb ownership queues.
+//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-warp's
+//! bounded pitch/granular renderers, hex-storage closed automation readers and rtrb ownership queues.
 //!
 //! # Does not own
 //! Does not edit projects, own CPAL or decode/hash on callback. Only the joining control owner
@@ -14,17 +14,61 @@
 #![allow(clippy::vec_box)]
 
 mod footprint;
+mod granular;
+mod granular_bank;
+pub use granular_bank::{
+    GranularBankAllowance, GranularBankData, GranularBankError, GranularBankRefusal,
+    GranularWorkerBank,
+};
+mod granular_control;
+pub use granular_control::{
+    GranularWorkerAllowance, GranularWorkerControl, GranularWorkerData, GranularWorkerStopped,
+};
+mod granular_checkpoint_cache;
+mod granular_page;
+mod granular_seek;
+mod granular_source;
+mod granular_worker;
+pub use granular_checkpoint_cache::{
+    CheckpointCacheError, CheckpointRecord, VerifiedGranularCheckpointCache,
+};
+pub use granular_page::{
+    CompletedGranularPage, GranularPageError, GranularPageProgress, VerifiedGranularPages,
+};
+pub use granular_seek::{
+    GranularSeekProgress, MAX_GRANULAR_PREROLL_FRAMES, MAX_GRANULAR_SEEK_STEPS,
+    VerifiedGranularCursor,
+};
+pub use granular_source::{
+    GranularSourceBuffers, GranularSourceError, GranularSourcePreparation,
+    GranularSourcePreparationLimits, VerifiedGranularSource,
+};
+pub use granular_worker::{
+    GranularWorkerError, GranularWorkerExit, GranularWorkerExitReason, GranularWorkerKey,
+    GranularWorkerOutcome, GranularWorkerQueues, GranularWorkerRequest, GranularWorkerResult,
+    GranularWorkerSeek, run_granular_worker,
+};
+mod reference;
 pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
+pub use granular::{
+    VerifiedGranularBuffers, VerifiedGranularStepError, advance_verified_granular_on_control,
+    scan_verified_granular_region_on_control,
+};
+pub use reference::{VerifiedReferenceChannel, scan_reference_channel_on_control};
 mod endpoint;
 mod runtime;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod types;
 mod worker;
+pub use worker::granular::GranularRuntimeData;
 
 pub use endpoint::EndpointStats;
 pub use hex_engine::{StreamPageExtent, StreamResourceExtent};
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
     AudioStreamStorageSummary, CatalogLease, ConstructorPageLoan, ConstructorStreamDomain,
+    CurrentQuantumRefusal, CurrentQuantumReservation, GranularStreamPreparationAllowance,
     OpaqueStreamCost, OpaqueStreamHandleGroup, PagePoolReport, PendingStreamDomain,
     PreparedRolePromotion, PreparedStreamDisposal, ProtectedStreamPages, ProtectionRole,
     ReadinessArtifact, ReadinessProgress, ReadinessRefusal, ReadinessStamp, ShutdownError,

@@ -29,7 +29,7 @@ impl From<AudioBatchMemberFailure> for DisplayError {
             message: format!(
                 "audio batch refused at file {} · {}: {}",
                 failure.member,
-                failure.path.display(),
+                hex_session::service::text::verbatim(failure.path.display()),
                 failure.explanation
             ),
             batch_member: Some(failure),
@@ -142,7 +142,7 @@ impl gpui::Render for RecoveryTooltip {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use std::path::PathBuf;

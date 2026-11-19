@@ -257,3 +257,37 @@ fn directed_finite_and_grouped_native_origins_quote_and_render_the_actual_output
         }
     }
 }
+
+#[test]
+fn native_constructor_group_track_routes_resident_pcm_and_releases_custody() {
+    let (mut editor, _, media) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let Created::Track(group) = editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::Gain {
+            track: group,
+            gain: 0.5,
+        })
+        .unwrap();
+    let expected = semantic(editor.project(), &media, 0);
+    let (mut cell, _, _) = candidate(editor.project(), &media);
+    let owner = cell.owner_on_control().unwrap();
+    owner
+        .test_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(0)))
+        .unwrap();
+    let mut actual = vec![[0.0; 2]; 256];
+    for block in actual.chunks_mut(31) {
+        owner.test_render(block).unwrap();
+    }
+    assert_eq!(actual, expected);
+    cell.cleanup_on_control().unwrap();
+    assert!(!cell.failed_incomplete());
+}

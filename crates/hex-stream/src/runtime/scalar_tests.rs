@@ -397,6 +397,27 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
             .scalar_page(metadata.key(), 0)
             .is_some()
     );
+    let current = [audio_extents[0], extents[0]];
+    #[cfg(feature = "allocation-probe")]
+    let mut reserved = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        reserved = Some(loan.reserve_current_quantum(&current));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    #[cfg(feature = "allocation-probe")]
+    let reservation = reserved.unwrap().ok().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let reservation = loan.reserve_current_quantum(&current).ok().unwrap();
     assert_eq!(
         loan.submit_resources(
             ProtectionRole::Transition,
@@ -414,6 +435,32 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
         Err(ReadinessRefusal::Capacity)
     );
     assert!(loan.is_resource_protected(ProtectionRole::Active, active_stamp, &audio_extents));
+    assert!(loan.release_current_quantum(&reservation));
+    let partial_extents = [
+        StreamResourceExtent {
+            source: audio_key.into(),
+            page_index: 1,
+            start: 0,
+            end: 8,
+        },
+        extents[0],
+    ];
+    #[cfg(feature = "allocation-probe")]
+    let mut partial_result = None;
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(|| {
+        partial_result = Some(loan.reserve_resident_current_quantum(&partial_extents));
+    });
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocations);
+    #[cfg(feature = "allocation-probe")]
+    let (partial, complete) = partial_result.unwrap().unwrap();
+    #[cfg(not(feature = "allocation-probe"))]
+    let (partial, complete) = loan
+        .reserve_resident_current_quantum(&partial_extents)
+        .unwrap();
+    assert!(!complete);
+    assert!(loan.release_current_quantum(&partial));
     assert!(loan.promote_resources_to_active(ProtectionRole::Candidate, stamp, &extents));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
@@ -489,10 +536,238 @@ fn assert_zero(observed: allocation_counter::AllocationInfo) {
 }
 
 #[test]
+fn shutdown_with_full_return_queue_reclaims_held_pages_and_worker_job() {
+    let (_draft, scalar) = definition(false, 256);
+    let scalar_key = scalar.metadata().key();
+    let (_wav, audio) = audio_definition();
+    let audio_key = audio.key;
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (publication_tx, publication_rx) = mpsc::sync_channel(3);
+    let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+    let (_quantum_tx, quantum_rx) = mpsc::sync_channel(1);
+    let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
+        entered: entered_tx,
+        release: release_rx,
+        publications: publication_tx,
+        scalar_steps: Some((steps_tx, quantum_rx)),
+    };
+    let mut config = StreamConfig::with_pool_pages(5);
+    config.return_capacity = 1;
+    let (mut runtime, _) = StreamRuntime::new_factory_with_scalar_sources(
+        config,
+        vec![audio],
+        vec![scalar],
+        false,
+        Some(hooks),
+        #[cfg(feature = "test-support")]
+        None,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (control, mut pages) = runtime.split().ok().unwrap();
+    for index in 0..3 {
+        pages.request_page(audio_key, index);
+    }
+    release_tx.send(()).unwrap();
+    control.wake_worker();
+    for _ in 0..3 {
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+    }
+    #[cfg(feature = "allocation-probe")]
+    let measured = allocation_counter::measure(|| assert_eq!(pages.pump_ready(3), 3));
+    #[cfg(not(feature = "allocation-probe"))]
+    assert_eq!(pages.pump_ready(3), 3);
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.count_current,
+            measured.bytes_total,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    for index in 0..3 {
+        let page = pages.page(audio_key, index).unwrap();
+        let start = index as usize * hex_engine::STREAM_PAGE_FRAMES;
+        assert_eq!(
+            page.frames.len(),
+            (16_001 - start).min(hex_engine::STREAM_PAGE_FRAMES)
+        );
+        for (offset, frame) in page.frames.iter().enumerate() {
+            let sample = (start + offset) as f32 / 32768.0;
+            assert_eq!(*frame, [sample, -sample]);
+        }
+    }
+    pages.request_scalar_page(scalar_key, 0);
+    control.wake_worker();
+    assert_eq!(
+        steps_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        scalar_key
+    );
+    // The worker is blocked before its first scalar quantum. Shutdown returns
+    // three cached pages through a one-page ring, then signals Stop; no worker
+    // can drain the ring before the bounded held-return slots have custody.
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 5);
+    assert_eq!(report.cached_pages_returned, 3);
+    assert_eq!(report.held_return_pages_reclaimed, 2);
+    assert_eq!(report.queued_pages_reclaimed, 0);
+    assert_eq!(report.worker_pages_reclaimed, 3);
+}
+
+#[test]
+fn full_return_queue_recovers_and_serves_new_pcm() {
+    let (_draft, scalar) = definition(false, 256);
+    let scalar_key = scalar.metadata().key();
+    let (_wav, audio) = audio_definition();
+    let audio_key = audio.key;
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (publication_tx, publication_rx) = mpsc::sync_channel(8);
+    let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+    let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
+    let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
+        entered: entered_tx,
+        release: release_rx,
+        publications: publication_tx,
+        scalar_steps: Some((steps_tx, quantum_rx)),
+    };
+    let mut config = StreamConfig::with_pool_pages(5);
+    config.return_capacity = 1;
+    let (mut runtime, _) = StreamRuntime::new_factory_with_scalar_sources(
+        config,
+        vec![audio],
+        vec![scalar],
+        false,
+        Some(hooks),
+        #[cfg(feature = "test-support")]
+        None,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (control, mut pages) = runtime.split().ok().unwrap();
+    for index in 0..3 {
+        pages.request_page(audio_key, index);
+    }
+    release_tx.send(()).unwrap();
+    control.wake_worker();
+    for _ in 0..3 {
+        publication_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    assert_eq!(pages.pump_ready(3), 3);
+    pages.request_scalar_page(scalar_key, 0);
+    control.wake_worker();
+    assert_eq!(
+        steps_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        scalar_key
+    );
+
+    // The worker cannot drain the one-slot ring while paused. Reclaiming all
+    // three cache pages therefore exercises both the ring and held returns.
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocation_counter::measure(|| {
+        pages.endpoint.reclaim_for_missing(4, 4)
+    }));
+    #[cfg(not(feature = "allocation-probe"))]
+    pages.endpoint.reclaim_for_missing(4, 4);
+    for index in 0..3 {
+        assert!(pages.page(audio_key, index).is_none());
+    }
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocation_counter::measure(|| {
+        pages.request_page(audio_key, 3)
+    }));
+    #[cfg(not(feature = "allocation-probe"))]
+    pages.request_page(audio_key, 3);
+    quantum_tx.send(()).unwrap();
+    control.wake_worker();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if steps_rx.try_recv().is_ok() {
+            quantum_tx.send(()).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_zero(allocation_counter::measure(|| {
+            pages.pump_ready(5);
+        }));
+        #[cfg(not(feature = "allocation-probe"))]
+        pages.pump_ready(5);
+        if pages.page(audio_key, 3).is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "PCM did not resume");
+        std::thread::yield_now();
+    }
+    let page = pages.page(audio_key, 3).unwrap();
+    assert_eq!(page.frames.len(), 16001 - 3 * 4096);
+    for (offset, frame) in page.frames.iter().enumerate() {
+        let sample = (3 * 4096 + offset) as f32 / 32768.0;
+        assert_eq!(*frame, [sample, -sample]);
+    }
+    // With one scalar page and page 3 occupying the two previously free
+    // buffers, these requests require returned cache buffers to circulate.
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocation_counter::measure(|| {
+        pages.request_page(audio_key, 0);
+        pages.request_page(audio_key, 1);
+    }));
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        pages.request_page(audio_key, 0);
+        pages.request_page(audio_key, 1);
+    }
+    control.wake_worker();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if steps_rx.try_recv().is_ok() {
+            quantum_tx.send(()).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_zero(allocation_counter::measure(|| {
+            pages.pump_ready(5);
+        }));
+        #[cfg(not(feature = "allocation-probe"))]
+        pages.pump_ready(5);
+        if pages.page(audio_key, 0).is_some() && pages.page(audio_key, 1).is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "returned pages did not circulate"
+        );
+        control.wake_worker();
+        std::thread::yield_now();
+    }
+    for index in 0..2 {
+        let page = pages.page(audio_key, index).unwrap();
+        assert_eq!(page.frames.len(), 4096);
+        for (offset, frame) in page.frames.iter().enumerate() {
+            let sample = (index as usize * 4096 + offset) as f32 / 32768.0;
+            assert_eq!(*frame, [sample, -sample]);
+        }
+    }
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 5);
+}
+
+#[test]
 fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_job() {
-    let (_first_file, first) = definition(false, 2048);
+    // Four dense quanta are enough to hold this fairness boundary; the
+    // larger 2,048-event page is checked independently above.
+    let (_first_file, first) = definition(false, 256);
     let first_key = first.metadata().key();
-    let (_second_file, second) = definition(false, 2048);
+    let (_second_file, second) = definition(false, 256);
     let second_key = ScalarSourceKey::new(7, 2, 1).unwrap();
     let second = ScalarSourceDefinition::new(second_key, second.source, second.projection).unwrap();
     let (_wav, audio) = audio_definition();
@@ -503,6 +778,7 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
     let (steps_tx, steps_rx) = mpsc::sync_channel(1);
     let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
     let hooks = crate::worker::TestWorkerHooks {
+        read_gate: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,
@@ -514,6 +790,8 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
         vec![first, second],
         false,
         Some(hooks),
+        #[cfg(feature = "test-support")]
+        None,
     )
     .unwrap();
     runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
@@ -538,10 +816,14 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
         first_key
     );
     pages.pump_ready(4);
-    assert!(
-        pages.page(audio_key, 0).is_some(),
-        "PCM must progress while the first dense scalar job is gated pending"
-    );
+    let page = pages
+        .page(audio_key, 0)
+        .expect("PCM must progress while the first dense scalar job is gated pending");
+    assert_eq!(page.frames.len(), 4096);
+    for (index, actual) in page.frames.iter().enumerate() {
+        let sample = index as f32 / 32768.0;
+        assert_eq!(*actual, [sample, -sample], "PCM frame {index}");
+    }
     assert!(
         pages.scalar_page(first_key, 0).is_none(),
         "partial scalar page must not publish"

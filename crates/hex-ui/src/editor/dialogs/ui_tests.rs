@@ -79,7 +79,7 @@ fn pump(
     cx: &mut TestAppContext,
     done: impl Fn(&EditorView) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -413,7 +413,7 @@ fn saved_destination(
 ) -> (std::path::PathBuf, std::sync::Arc<hex_project::Project>) {
     use hex_session::service::{Event, Request};
     fn receive(service: &Service) -> Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
@@ -532,6 +532,9 @@ fn one_open_save_as_completes_original_selection_only_after_save_success(cx: &mu
         "pending Save As cannot create a second Open"
     );
     cx.simulate_new_path_selection(|_| Some(current_path.clone()));
+    let current_path = current_path
+        .with_extension("")
+        .join("preserved-current.hex");
     visual.run_until_parked();
     pump(&editor, cx, |view| {
         settled(view) && view.project_generation == generation + 1
@@ -635,6 +638,7 @@ fn one_open_cancel_save_as_clears_intent_so_later_save_does_not_open(cx: &mut Te
         "cancel restores usable keyboard/action focus"
     );
     cx.simulate_new_path_selection(|_| Some(later.clone()));
+    let later = later.with_extension("").join("later.hex");
     visual.run_until_parked();
     pump(&editor, cx, |view| {
         settled(view) && view.state.as_ref().unwrap().document_path.as_ref() == Some(&later)
@@ -971,12 +975,10 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
-            assert!(
-                view.close_prompt_open,
-                "close must reach its normal unsaved-work prompt"
-            );
+            assert!(view.automation_close_preflight.frozen());
         });
     });
+    super::super::close::wait_for_close_prompt(&editor, cx);
     cx.simulate_prompt_answer("cancel");
     visual.run_until_parked();
     visual.dispatch_action(NewProject);
@@ -1026,7 +1028,7 @@ fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
     // Receive the real restart and restoration completions explicitly. This
     // older source's separate restart-counter finding belongs to Source6;
     // a zero pending count alone must not masquerade as restoration proof.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let mut restored = false;
     while !restored {
         if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
@@ -1232,12 +1234,17 @@ fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestApp
             );
         });
         // A duplicate/late save terminal cannot run the captured New again.
-        editor.update(cx, |view, _| {
-            view.complete_open_save(true, saved_revision);
-            view.complete_open_save(false, saved_revision);
+        editor.update(cx, |view, cx| {
+            view.complete_open_save(true, saved_revision, cx);
+            view.complete_open_save(false, saved_revision, cx);
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.project_generation, generation + 1);
         });
+        let path = if named {
+            path
+        } else {
+            path.with_extension("").join("preserved.hex")
+        };
         select_open(&mut visual, cx, path);
         assert!(!cx.has_pending_prompt());
         pump(&editor, cx, |view| {
@@ -1302,7 +1309,7 @@ fn one_new_cancelled_or_failed_save_aborts_continuation_before_a_later_save(
             assert_eq!(view.state.as_ref().unwrap().project, before.project);
             assert!(!view.project_open.busy());
         });
-        assert!(saved.is_file());
+        assert!(saved.with_extension("").join("later.hex").is_file());
     }
 }
 

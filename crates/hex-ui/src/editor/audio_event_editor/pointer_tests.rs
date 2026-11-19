@@ -94,12 +94,16 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
             point(event.right() - px(2.), event.center().y),
             CursorStyle::ResizeRightBracket,
         ),
+        "gain" => (
+            visual.debug_bounds("audio-event-gain-1").unwrap().center(),
+            CursorStyle::ResizeUpDown,
+        ),
         "fade" => (
             visual
                 .debug_bounds("audio-event-fade-out-top-1")
                 .unwrap()
                 .center(),
-            CursorStyle::ResizeLeftRight,
+            CursorStyle::Arrow,
         ),
         _ => unreachable!(),
     };
@@ -126,8 +130,9 @@ fn fixture(cx: &mut TestAppContext, kind: &str) -> Fixture {
 #[gpui::test]
 fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppContext) {
     for kind in [
-        "select", "move", "range", "leading", "trailing", "fade", "start",
+        "select", "move", "range", "leading", "trailing", "fade", "gain", "start",
     ] {
+        let cx = &mut cx.new_app();
         let Fixture {
             _files,
             mut visual,
@@ -137,7 +142,14 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
             outside,
             cursor,
         } = fixture(cx, kind);
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(
+            down,
+            MouseButton::Left,
+            Modifiers {
+                alt: kind == "gain",
+                ..Modifiers::default()
+            },
+        );
         editor.read_with(&visual, |v, _| {
             let gesture = v
                 .audio_event_editor
@@ -149,11 +161,12 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
                     (kind, gesture.kind),
                     ("start", Kind::PlayStart { .. })
                         | ("select", Kind::Select)
-                        | ("move", Kind::Move(_))
-                        | ("range", Kind::RangeMove { .. })
+                        | ("move", Kind::Move(_) | Kind::FreeMove { .. })
+                        | ("range", Kind::RangeMove { .. } | Kind::FreeRangeMove { .. })
                         | ("leading", Kind::Leading(_))
                         | ("trailing", Kind::Trailing(_))
                         | ("fade", Kind::Fade(_))
+                        | ("gain", Kind::Gain { .. })
                 ),
                 "wrong fixture kind={kind}"
             );
@@ -215,8 +228,10 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
 }
 #[gpui::test]
 fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppContext) {
-    for kind in ["leading", "fade", "start"] {
+    for kind in ["leading", "fade", "gain", "start"] {
         for loss in ["button", "focus", "generation", "hide", "escape", "invalid"] {
+            // Each case registers its own bindings and keeps only its own window.
+            let cx = &mut cx.new_app();
             let Fixture {
                 _files,
                 mut visual,

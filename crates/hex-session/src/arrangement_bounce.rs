@@ -9,12 +9,15 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 mod console;
+pub(crate) mod streamed;
+pub use streamed::{StreamedBounceRequest, StreamedBouncer};
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn isolated(
     project: &Project,
     target: &BounceTarget,
     item: &BounceTrack,
+    in_place: bool,
 ) -> Result<Project, String> {
     let mut snapshot = project.snapshot();
     let selected_track_id = item.track.value();
@@ -37,7 +40,65 @@ pub(crate) fn isolated(
     let selected_is_receiver =
         selected_source.is_some_and(|source| source.receiver == Some(selected_track_id));
 
-    if target.is_audio_group() {
+    if let BounceTarget::MergedRange(range) = target {
+        let range = project
+            .merged_bounce_range(range)
+            .map_err(|e| e.to_string())?;
+        let selected: std::collections::BTreeSet<_> =
+            range.tracks().iter().map(|id| id.value()).collect();
+        snapshot.tracks.retain(|track| selected.contains(&track.id));
+        snapshot.sidechains.retain(|route| {
+            snapshot
+                .tracks
+                .iter()
+                .any(|track| track.devices.iter().any(|device| device.id == route.device))
+        });
+        for track in &mut snapshot.tracks {
+            if track
+                .parent_group
+                .is_some_and(|parent| !selected.contains(&parent))
+            {
+                track.parent_group = None;
+            }
+            // The output has one unity mixer, so these tracks' own gain,
+            // pan, automation and mutes are part of the printed mix.
+            track.sends.clear();
+            track.soloed = false;
+        }
+    } else if matches!(target, BounceTarget::Range(_) | BounceTarget::Track(_))
+        && project
+            .track(item.track)
+            .is_some_and(hex_project::Track::is_group)
+    {
+        let members = project
+            .group_bounce_tracks(item.track)
+            .map_err(|e| e.to_string())?;
+        let ids: std::collections::BTreeSet<_> =
+            members.iter().map(|track| track.id().value()).collect();
+        let effects: std::collections::BTreeSet<_> = members
+            .iter()
+            .flat_map(|track| track.devices())
+            .map(|device| device.id().value())
+            .collect();
+        snapshot.tracks.retain(|track| ids.contains(&track.id));
+        snapshot
+            .sidechains
+            .retain(|route| effects.contains(&route.device));
+        for track in &mut snapshot.tracks {
+            track.sends.clear();
+            if track.id == selected_track_id {
+                // The descendants mix through their ordinary routes. Only
+                // the selected post-device bus is connected to offline Main.
+                track.parent_group = None;
+                track.gain = 1.0;
+                track.balance = 0.0;
+                track.muted = false;
+                track.soloed = false;
+                track.gain_envelope.clear();
+                track.gain_touch_spans.clear();
+            }
+        }
+    } else if target.is_audio_group() {
         let selected: std::collections::BTreeSet<_> =
             item.clips.iter().map(|id| id.value()).collect();
         // Keep the group hierarchy valid, but remove every non-source signal.
@@ -96,7 +157,22 @@ pub(crate) fn isolated(
                 _ => std::collections::BTreeSet::new(),
             })
             .ok_or("bounce track changed")?;
+        let has_selected_midi = item
+            .clips
+            .iter()
+            .any(|clip| selected_midi.contains(&clip.value()));
+        // For a range, earlier notes may still be sounding at its start. Keep
+        // the selected track's MIDI for causal preroll, excluding its peers.
+        let render_contributor = !selected_is_receiver
+            && selected_source_instrument_id.is_some()
+            && match target {
+                BounceTarget::Clips(_) => !in_place && has_selected_midi,
+                BounceTarget::Range(_) => !in_place && !selected_midi.is_empty(),
+                BounceTarget::Track(_) => in_place && !selected_midi.is_empty(),
+                _ => false,
+            };
         if !selected_is_receiver
+            && !render_contributor
             && (item
                 .clips
                 .iter()
@@ -111,8 +187,15 @@ pub(crate) fn isolated(
             );
         }
 
-        let retain_contributors =
-            !console_source && selected_is_receiver && selected_source_instrument_id.is_some();
+        // Clip and range bounces print only the selected track's input to
+        // the shared runtime, not the other tracks' mixed signal.
+        let retain_contributors = !console_source
+            && selected_is_receiver
+            && selected_source_instrument_id.is_some()
+            // A whole-track receiver bounce prints only its own input; linked
+            // tracks continue through the retained live source after adoption.
+            && !matches!(target, BounceTarget::Track(_))
+            && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)));
         snapshot.tracks.retain(|track| {
             track.id == selected_track_id
                 || (retain_contributors
@@ -148,6 +231,21 @@ pub(crate) fn isolated(
                 }
             }
         }
+        if render_contributor {
+            // The copied graph gets its own receiver; the canonical source and
+            // live graph retain their original receiver and state.
+            let source = snapshot
+                .native_sources
+                .iter_mut()
+                .find(|source| {
+                    source
+                        .devices
+                        .get(source.instrument_index)
+                        .is_some_and(|device| Some(device.id) == selected_source_instrument_id)
+                })
+                .ok_or("bounce source changed")?;
+            source.receiver = Some(selected_track_id);
+        }
         for (index, track) in snapshot.tracks.iter_mut().enumerate() {
             if index == track_index {
                 track.gain = 1.0;
@@ -157,7 +255,7 @@ pub(crate) fn isolated(
                 track.gain_envelope.clear();
                 track.gain_touch_spans.clear();
                 track.sends.clear();
-                if !selected_is_receiver {
+                if !selected_is_receiver && !render_contributor {
                     let audio_clips = track.audio_clips_mut().map_err(|e| e.to_string())?.clone();
                     track.instrument = None;
                     track.instrument_position = None;
@@ -209,6 +307,26 @@ pub(crate) fn isolated(
             source.receiver = None;
         }
     }
+    // The isolated copy can drop a retained receiver or strip its instrument.
+    // Keep the role only when its original receiver and source still match;
+    // rebinding a temporary contributor never transfers the retained role.
+    snapshot.retained_source_paths.retain(|id| {
+        snapshot
+            .tracks
+            .iter()
+            .find(|track| track.id == *id)
+            .is_some_and(|track| {
+                track.instrument.as_ref().is_some_and(|instrument| {
+                    snapshot.native_sources.iter().any(|source| {
+                        source.receiver == Some(*id)
+                            && source
+                                .devices
+                                .get(source.instrument_index)
+                                .is_some_and(|device| device.id == instrument.id)
+                    })
+                })
+            })
+    });
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();
     snapshot.main_devices.clear();
@@ -218,7 +336,16 @@ pub(crate) fn isolated(
     snapshot.loop_region = None;
     snapshot.master_gain = 1.0;
     snapshot.retain_clip_aliases_after_projection();
-    Project::from_snapshot(snapshot).map_err(|e| e.to_string())
+    snapshot.retain_automatic_track_names_after_projection();
+    // Snapshots exclude runtime availability; offline clips stay silent here too.
+    let isolated = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
+    let offline: Vec<_> = project
+        .offline_assets()
+        .filter(|id| isolated.asset(*id).is_some())
+        .collect();
+    isolated
+        .with_offline_assets(offline)
+        .map_err(|e| e.to_string())
 }
 
 impl Session {
@@ -233,6 +360,7 @@ impl Session {
         mut render: impl FnMut(
             &Path,
             R,
+            &Project,
             &BounceTrack,
             bool,
             &hex_export::ExportControl,
@@ -291,7 +419,7 @@ impl Session {
                     .ok_or("bounce including tail allowance exceeds its frame budget")?;
                 let retained = prepared
                     .iter()
-                    .map(|p: &PreparedImport| p.waveform.source_frames as u64)
+                    .map(|p: &PreparedImport| p.waveform.source_frames() as u64)
                     .sum::<u64>();
                 if self
                     .resident_frames
@@ -307,7 +435,7 @@ impl Session {
                 {
                     return Err("bounce exceeds resident frame limit".into());
                 }
-                let source = isolated(self.project(), &target, item)?;
+                let source = isolated(self.project(), &target, item, in_place)?;
                 let revision = prepare(
                     self,
                     &source,
@@ -315,7 +443,7 @@ impl Session {
                         .checked_add(retained)
                         .ok_or("bounce allowance overflows")?,
                 )?;
-                let frames = render(path, revision, item, tails, control)?;
+                let frames = render(path, revision, &source, item, tails, control)?;
                 published.push(path.clone());
                 let decoded = hex_media::decode_wav_file(
                     path,
@@ -350,10 +478,12 @@ impl Session {
 
     /// Reserved complete media adoption. The caller's last preparation hook
     /// rechecks cancellation and seals/enqueues only as its last fallible action.
+    #[allow(clippy::too_many_arguments)] // One captured adoption intent per field.
     pub(crate) fn adopt_arrangement_bounce_using<T>(
         &mut self,
         target: BounceTarget,
         in_place: bool,
+        adoption: hex_project::BounceAdoption,
         files: Vec<BounceFile>,
         prepared: Vec<PreparedImport>,
         previous: Option<&hex_engine::PreparedRevision>,
@@ -374,7 +504,7 @@ impl Session {
         let mut total_bytes = self.resident_waveform_bytes;
         for (member, file) in prepared.into_iter().zip(&files) {
             if member.audio.sample_rate() != self.project().sample_rate()
-                || member.waveform.source_frames as u64 != file.frames
+                || member.waveform.source_frames() as u64 != file.frames
                 || member.path != file.path
             {
                 return Err(SessionError::Invalid(
@@ -414,6 +544,7 @@ impl Session {
                 audio: member.audio,
                 waveform: Arc::new(member.waveform),
                 frames: file.frames,
+                file_identity: member.file_identity,
             });
         }
         let mut media = self.media_bank();
@@ -434,6 +565,7 @@ impl Session {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
             },
             |candidate| {
@@ -489,6 +621,50 @@ impl Session {
         control: &hex_export::ExportControl,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_arrangement_adopting(
+            target,
+            in_place,
+            hex_project::BounceAdoption::NewTracks,
+            directory,
+            control,
+            previous,
+        )
+    }
+
+    /// As [`Self::bounce_arrangement`] with an explicit new-track adoption:
+    /// optionally muting the sources or landing at a clip drop, in the same
+    /// adoption edit and Undo step.
+    pub fn bounce_arrangement_adopting(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        adoption: hex_project::BounceAdoption,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_arrangement_adopting_with(
+            target, in_place, adoption, directory, control, previous, None,
+        )
+    }
+
+    /// As [`Self::bounce_arrangement_adopting`]; items with file-backed sources
+    /// render through `streamed`, the host's offline page provider. Without one
+    /// they refuse explicitly before adoption.
+    #[allow(clippy::too_many_arguments)] // The adopting contract plus one host capability.
+    pub fn bounce_arrangement_adopting_with(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        adoption: hex_project::BounceAdoption,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+        streamed: Option<StreamedBouncer>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.project()
+            .validate_bounce_adoption(&target, in_place, adoption)
+            .map_err(|e| e.to_string())?;
         let captured = target.clone();
         self.bounce_arrangement_using(
             target,
@@ -507,27 +683,31 @@ impl Session {
                     &session.audio_transforms,
                     &waveforms,
                 )
-                .map(Arc::new)
+                .map(|prepared| {
+                    streamed::BounceRevision::capture(Arc::new(prepared), &session.verified_sources)
+                })
                 .map_err(|e| e.to_string())
             },
-            |path, revision, item, tails, control| {
-                hex_export::render_arrangement_bounce_new(
+            |path, revision, project, item, tails, control| {
+                streamed::render(
                     path,
                     revision,
+                    Some(project),
                     None,
                     item.start,
                     item.end - item.start,
                     tails,
                     control,
+                    streamed,
+                    None,
                 )
-                .map(|r| r.frames)
-                .map_err(|e| e.to_string())
             },
             |session, prepared, files| {
                 session
                     .adopt_arrangement_bounce_using(
                         captured,
                         in_place,
+                        adoption,
                         files,
                         prepared,
                         previous,

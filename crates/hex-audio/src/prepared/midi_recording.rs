@@ -31,7 +31,10 @@ impl Callback {
         if self.status.closing.load(Acquire) {
             return Some(AbortReason::Cancelled);
         }
-        if self.status.device_fault.load(Acquire) || self.status.render_fault.load(Acquire) {
+        if self.status.device_fault.load(Acquire)
+            || self.status.render_fault.load(Acquire)
+            || target.transport_epoch <= self.status.last_output_fault_epoch.load(Acquire)
+        {
             return Some(AbortReason::OutputFailed);
         }
         if self.output_transport.is_some() {
@@ -160,13 +163,23 @@ impl Callback {
                         .arm_midi_capture(target.capture, &self.status.keyboard_activation)
                         .map_err(|_| AbortReason::InputChanged)?;
                 }
-                Ok(MidiCaptureClock {
-                    content_frame: active.playback.position(),
-                    performance_frame: active.playback.performance_frame(),
-                })
+                Ok((
+                    MidiCaptureClock {
+                        content_frame: active.playback.position(),
+                        performance_frame: active.playback.performance_frame(),
+                    },
+                    active
+                        .playback
+                        .main_output_latency_frames()
+                        .ok_or(AbortReason::InvalidClock)?,
+                ))
             });
         match result {
-            Ok(clock) => self.midi_recording.stage(clock, frames),
+            Ok((clock, latency)) => {
+                if !self.midi_recording.stage(clock, frames, latency) {
+                    self.invalidate_midi_recording(AbortReason::InvalidClock);
+                }
+            }
             Err(reason) => self.invalidate_midi_recording(reason),
         }
     }

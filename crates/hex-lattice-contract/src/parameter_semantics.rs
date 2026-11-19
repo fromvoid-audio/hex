@@ -14,7 +14,7 @@ macro_rules! semantic_enum {
 semantic_enum!(ParameterAccess {ReadWrite=>"read/write",ReadOnly=>"read-only"});
 semantic_enum!(ParameterNormalization {Unspecified=>"undeclared",Linear=>"linear",PositiveLogarithmic=>"positive logarithmic",Discrete=>"discrete"});
 semantic_enum!(ParameterAutomation {Undeclared=>"undeclared",Unsupported=>"unsupported",DeviceArrangementEnvelope=>"device arrangement envelope"});
-semantic_enum!(ParameterModulation {Undeclared=>"undeclared",Unsupported=>"unsupported"});
+semantic_enum!(ParameterModulation {Undeclared=>"undeclared",Unsupported=>"unsupported",SampleRate=>"sample rate"});
 semantic_enum!(ParameterSmoothing {Unspecified=>"undeclared",None=>"none",DeviceManaged=>"device managed"});
 semantic_enum!(ParameterChangeImpact {Unspecified=>"undeclared",ValueOnly=>"value only",Structural=>"structural"});
 #[derive(Clone, Copy, Debug, PartialEq)]

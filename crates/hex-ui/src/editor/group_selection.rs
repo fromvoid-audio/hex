@@ -25,6 +25,9 @@ impl EditorView {
             .time_selection
             .is_some_and(|range| range.anchor_frame != range.end_frame)
         {
+            if self.time_selection_project_scope && self.create_section_in_selected_gap() {
+                return;
+            }
             let Some(range) = self.normalized_time_selection() else {
                 self.error = Some("time selection no longer belongs to current tracks".into());
                 return;
@@ -37,6 +40,7 @@ impl EditorView {
                 project_generation: self.project_generation,
                 revision,
                 range,
+                create_if_empty: !self.time_selection_project_scope,
             }) {
                 self.retire_group_selection();
             }
@@ -44,6 +48,12 @@ impl EditorView {
         }
         let clips = self.selected_clip_ids();
         if clips.len() < 2 {
+            // A section span is the only grouping selection: merge it rather
+            // than dropping `g` when the stricter section-focus test fails.
+            if !self.merge_section_span_selection() {
+                self.error =
+                    Some("select two or more clips, sections or a time range to group".into());
+            }
             return;
         }
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
@@ -174,8 +184,11 @@ impl EditorView {
                 .iter()
                 .rev()
                 .find_map(|(result, before)| {
-                    let was_present = old.project.clip(*result).is_some();
-                    let present = project.clip(*result).is_some();
+                    let has_clip = |project: &hex_project::Project| {
+                        project.clip(*result).is_some() || project.midi_clip(*result).is_some()
+                    };
+                    let was_present = has_clip(&old.project);
+                    let present = has_clip(project);
                     if was_present
                         && !present
                         && self.selected_clip == Some(*result)
@@ -188,7 +201,10 @@ impl EditorView {
                         let track = project
                             .tracks()
                             .iter()
-                            .find(|t| t.clips().iter().any(|c| c.id() == *result))?
+                            .find(|t| {
+                                t.clips().iter().any(|c| c.id() == *result)
+                                    || t.midi_clips().iter().any(|c| c.id() == *result)
+                            })?
                             .id();
                         let mut after = before.clone();
                         after.track = Some(track);

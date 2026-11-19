@@ -173,3 +173,93 @@ fn streamed_source_metadata_rejects_wrong_conversion_duration() {
         .is_err()
     );
 }
+
+#[test]
+fn timed_transport_borrowed_pages_match_position_oracle_and_request_missing_data() {
+    use hex_engine::{
+        PlaybackCommand, TimedTransportCommand, TimedTransportError, playback::Playback,
+    };
+    let actions = [
+        (0, PlaybackCommand::PlayFrom(3)),
+        (4, PlaybackCommand::Seek(7)),
+        (8, PlaybackCommand::Stop),
+        (10, PlaybackCommand::PlayFrom(3)),
+    ];
+    for block in [1, 7, 32] {
+        let (streamed, key, pcm) = project(true, false);
+        let mut playback = Playback::new(streamed);
+        let mut pages = Pages {
+            key,
+            data: pcm.clone(),
+            requested: Vec::new(),
+            missing: false,
+        };
+        let mut actual = [[0.0; 2]; 16];
+        let mut next = 0;
+        for (index, part) in actual.chunks_mut(block).enumerate() {
+            let start = index * block;
+            let end = start + part.len();
+            let mut commands = Vec::new();
+            while let Some(&(at, command)) = actions.get(next) {
+                if at >= end {
+                    break;
+                }
+                commands.push(TimedTransportCommand {
+                    offset: at - start,
+                    command,
+                });
+                next += 1;
+            }
+            playback
+                .render_with_timed_transport_and_pages(part, &commands, &mut pages)
+                .unwrap();
+        }
+        let mut expected = [[0.0; 2]; 16];
+        for (target, source) in (4093..4101).chain(0..2).chain(4093..4099).enumerate() {
+            if !(8..10).contains(&target) {
+                expected[target] = [pcm[source][0] * 0.5, pcm[source][1] * 0.5];
+            }
+        }
+        assert_eq!(actual, expected, "block={block}");
+        assert_eq!(next, actions.len());
+        assert!(pages.requested.is_empty());
+
+        let (streamed, key, pcm) = project(true, false);
+        let mut playback = Playback::new(streamed);
+        let mut missing = Pages {
+            key,
+            data: pcm,
+            requested: Vec::new(),
+            missing: true,
+        };
+        let mut output = [[9.0; 2]; 16];
+        let bad = [TimedTransportCommand {
+            offset: 17,
+            command: PlaybackCommand::Play,
+        }];
+        assert_eq!(
+            playback.render_with_timed_transport_and_pages(&mut output, &bad, &mut missing),
+            Err(TimedTransportError::InvalidOffset { index: 0 })
+        );
+        assert_eq!(output, [[9.0; 2]; 16]);
+        assert!(missing.requested.is_empty());
+        assert_eq!(playback.position(), 0);
+        let commands: Vec<_> = actions
+            .iter()
+            .map(|&(offset, command)| TimedTransportCommand { offset, command })
+            .collect();
+        playback
+            .render_with_timed_transport_and_pages(&mut output, &commands, &mut missing)
+            .unwrap();
+        assert_eq!(output, [[0.0; 2]; 16]);
+        assert!(missing.requested.contains(&(key, 0)));
+        assert!(missing.requested.contains(&(key, 1)));
+        assert!(
+            missing
+                .requested
+                .iter()
+                .all(|(requested, _)| *requested == key)
+        );
+        assert_eq!(playback.position(), 9);
+    }
+}

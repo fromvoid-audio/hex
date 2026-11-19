@@ -6,18 +6,21 @@ use hex_session::service::{Event, Service};
 use std::time::Duration;
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -29,7 +32,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -88,14 +94,14 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
                     view.state = Some(event.state);
                     view.selected_clip = Some(clip); // Time range must beat whole MIDI duplication.
                     view.time_selection = Some(TimeSelection {
-                        anchor_track: audio,
-                        end_track: if scope == 0 { audio } else { midi },
+                        anchor_track: Some(audio),
+                        end_track: Some(if scope == 0 { audio } else { midi }),
                         anchor_frame: 12_000,
                         end_frame: 72_000,
                     });
                     view.time_selection_project_scope = scope == 2;
                     view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
-                        track: audio,
+                        track: Some(audio),
                         frame: 12_000,
                         generation: view.project_generation,
                         pulse_color: 0,
@@ -230,8 +236,8 @@ fn command_d_refuses_overflow_and_pending_time_edits(cx: &mut TestAppContext) {
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
                 view.time_selection = Some(TimeSelection {
-                    anchor_track: audio,
-                    end_track: audio,
+                    anchor_track: Some(audio),
+                    end_track: Some(audio),
                     anchor_frame: if pending { 12_000 } else { u64::MAX - 1 },
                     end_frame: if pending { 24_000 } else { u64::MAX },
                 });

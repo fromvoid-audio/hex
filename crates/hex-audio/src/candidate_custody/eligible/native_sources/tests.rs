@@ -63,7 +63,14 @@ pub(crate) fn input_for(
             output_channels: 2,
             limits: native::Limits {
                 startup: Duration::from_secs(3),
-                exchange: Duration::from_secs(1),
+                // This isolated held-worker driver observes the callback fault
+                // before cleanup. Shorten only its eventual native I/O timeout;
+                // it still requires the unresponsive child to be reaped.
+                exchange: if std::env::var_os("HEX_AUDIO_HELD_WORKER_DRIVER").is_some() {
+                    Duration::from_millis(400)
+                } else {
+                    Duration::from_secs(1)
+                },
                 retirement: Duration::from_secs(3),
             },
         },
@@ -910,8 +917,8 @@ fn native_source_controls_refuse_the_retiring_original_root() {
 #[test]
 fn native_pool_reserves_handles_before_allocating_and_keeps_them_while_vacant() {
     let per_source = resources::PoolResources::new(1).unwrap();
-    assert_eq!(per_source.per_source.shared_groups, 11);
-    assert_eq!(per_source.per_source.shared_handle_bound, 30);
+    assert_eq!(per_source.per_source.shared_groups, 12);
+    assert_eq!(per_source.per_source.shared_handle_bound, 33);
     assert_eq!(
         per_source.per_source.source.inventory_node_lifetime_bound,
         4
@@ -1051,4 +1058,43 @@ pub(crate) fn original_worker_published_blocks(
         Owner::Loaned(control) => Some(control.test_published_blocks()),
         _ => None,
     }
+}
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn original_worker_transport_live(
+    root: &CandidateRoot,
+    binding: Binding,
+) -> Option<bool> {
+    let work = lock(&root.0.eligible.work);
+    let bank = lock(&root.0.eligible.bank);
+    let index = bank.sources.index(binding)?;
+    match work.sources.cells[index].owner.as_ref()? {
+        Owner::Loaned(control) => Some(control.transport_is_live_on_control()),
+        _ => None,
+    }
+}
+
+#[test]
+fn endpoint_return_reservation_orders_decisions_without_delaying_return_requests() {
+    let signal = EndpointSignal::new();
+    let mut fence = signal.reserve().unwrap();
+    assert!(signal.reserve().is_none());
+    std::thread::scope(|scope| {
+        scope.spawn(|| signal.request_return()).join().unwrap();
+    });
+    assert!(!fence.is_live());
+    assert!(!fence.try_order_before_return());
+    drop(fence);
+    assert!(signal.load(Ordering::Acquire));
+    assert!(signal.reserve().is_none());
+
+    let signal = EndpointSignal::new();
+    let mut fence = signal.reserve().unwrap();
+    assert!(fence.try_order_before_return());
+    assert!(!fence.try_order_before_return());
+    signal.request_return();
+    assert!(!fence.is_live());
+    drop(fence);
+    assert!(signal.load(Ordering::Acquire));
+    assert!(signal.reserve().is_none());
 }

@@ -10,6 +10,7 @@ pub(super) struct PairDrag {
     key: GestureKey,
     origin_y: f32,
     mode: PairMode,
+    touch: super::super::eq_automation::DragTouch,
 }
 
 #[derive(Clone, Copy)]
@@ -21,6 +22,7 @@ enum PairMode {
 
 pub(super) fn paired_event(
     view: &mut EditorView,
+    cx: &Context<EditorView>,
     device: DeviceId,
     node: Node,
     event: ResponseGraphEvent,
@@ -77,13 +79,20 @@ pub(super) fn paired_event(
             key: snapshot.key,
             origin_y: event.position[1],
             mode,
+            touch: super::super::eq_automation::DragTouch::new(
+                event.position,
+                view.device_panel
+                    .eq_panels
+                    .get(&device)
+                    .and_then(|panel| panel.entity.read(cx).plot_bounds()),
+            ),
         };
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.pair_drag = Some(plan);
         }
         return;
     }
-    let Some(plan) = view
+    let Some(mut plan) = view
         .device_panel
         .eq_panels
         .get(&device)
@@ -129,7 +138,9 @@ pub(super) fn paired_event(
             PairMode::Q => q_from_y(event.position[1]),
             // Use displacement from the pressed node, rather than mapping its
             // gain coordinate to an unrelated absolute Q at the drag threshold.
-            PairMode::OptionQ => option_q(plan.node.q, event.position[1] - plan.origin_y),
+            PairMode::OptionQ => {
+                group_move::option_q(plan.node.q, event.position[1] - plan.origin_y)
+            }
         }),
     };
     let result = if event.phase == ResponseGraphPhase::Commit {
@@ -143,6 +154,18 @@ pub(super) fn paired_event(
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
     } else {
+        if let Some(target) = plan.touch.moved(
+            event.position,
+            (!matches!(plan.mode, PairMode::OptionQ)).then_some(plan.first),
+            plan.second,
+        ) {
+            view.remember_automation_parameter(device, target);
+        }
+        if event.phase == ResponseGraphPhase::Change
+            && let Some(panel) = view.device_panel.eq_panels.get_mut(&device)
+        {
+            panel.pair_drag = Some(plan);
+        }
         for (parameter, value) in [(plan.first, values.first), (plan.second, values.second)] {
             view.device_panel
                 .pending_values
@@ -151,8 +174,148 @@ pub(super) fn paired_event(
     }
 }
 
-fn option_q(initial: f32, displacement: f32) -> f32 {
-    (initial * ((18.0_f32 / 0.1).ln() * displacement).exp()).clamp(0.1, 18.0)
+/// One grouped-node drag: every node keeps its press-time position plus the
+/// pointer delta. Frequency and the vertical field (gain, or Q for cut/notch)
+/// travel in one keyed parameter-snapshot gesture, so one Undo reverts it.
+#[derive(Clone)]
+pub(in crate::editor::device_panel) struct GroupDrag {
+    key: GestureKey,
+    origin: [f32; 2],
+    nodes: Vec<(Node, [f32; 2])>,
+    grabbed: NodeId,
+    touch: super::super::eq_automation::DragTouch,
+}
+
+fn group_snapshot(
+    nodes: &[(Node, [f32; 2])],
+    delta: [f32; 2],
+    rate: u32,
+) -> Result<hex_lattice_contract::DeviceParameterSnapshot, &'static str> {
+    if nodes.len() > group_move::MAX_GROUP_NODES {
+        return Err("eq group move is limited to 32 nodes");
+    }
+    let mut entries = Vec::with_capacity(nodes.len() * 2);
+    for (node, origin) in nodes {
+        let (frequency_hz, vertical) = group_move::values(node.kind, *origin, delta, rate);
+        let (field, value) = match vertical {
+            group_move::Vertical::Q(value) => (NodeParameter::Q, value),
+            group_move::Vertical::Gain(value) => (NodeParameter::Gain, value),
+        };
+        let frequency = node
+            .id
+            .parameter(NodeParameter::Frequency)
+            .map_err(|_| "eq group node is invalid")?;
+        let second = node
+            .id
+            .parameter(field)
+            .map_err(|_| "eq group node is invalid")?;
+        entries.push((frequency, ParameterValue::Float(frequency_hz)));
+        entries.push((second, ParameterValue::Float(value)));
+    }
+    hex_lattice_contract::DeviceParameterSnapshot::new(&entries)
+        .map_err(|_| "eq group move is limited to 32 nodes")
+}
+
+pub(super) fn group_event(
+    view: &mut EditorView,
+    cx: &Context<EditorView>,
+    device: DeviceId,
+    node: Node,
+    group: &[NodeId],
+    event: ResponseGraphEvent,
+) {
+    let rate = view
+        .state
+        .as_ref()
+        .map_or(48_000, |state| state.project.sample_rate());
+    if event.phase == ResponseGraphPhase::Begin {
+        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+            panel.group_drag = None;
+        }
+        if view.device_gesture.snapshot().is_some() {
+            view.device_panel.message = Some("wait for the current device edit, then retry".into());
+            return;
+        }
+        let Some(state) = current(view, device).and_then(|state| EqState::decode(&state).ok())
+        else {
+            return;
+        };
+        let nodes: Vec<_> = group
+            .iter()
+            .filter_map(|id| state.node(*id).ok().copied())
+            .map(|node| (node, node_position(&node, rate)))
+            .collect();
+        let result = group_snapshot(&nodes, [0.0, 0.0], rate).and_then(|initial| {
+            view.device_gesture
+                .begin_snapshot(view.project_generation, device, initial)
+        });
+        match result {
+            Ok(key) => {
+                if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                    panel.group_drag = Some(GroupDrag {
+                        key,
+                        origin: event.position,
+                        nodes,
+                        grabbed: node.id,
+                        touch: super::super::eq_automation::DragTouch::new(
+                            event.position,
+                            panel.entity.read(cx).plot_bounds(),
+                        ),
+                    });
+                }
+            }
+            Err(error) => view.device_panel.message = Some(error.into()),
+        }
+        return;
+    }
+    let Some(mut plan) = view
+        .device_panel
+        .eq_panels
+        .get_mut(&device)
+        .and_then(|panel| panel.group_drag.take())
+    else {
+        return;
+    };
+    let owned = view.device_gesture.snapshot().is_some_and(|snapshot| {
+        snapshot.key == plan.key
+            && snapshot.key.generation == view.project_generation
+            && snapshot.target == GestureTarget::DeviceParameterSnapshot { device }
+    }) && !view.device_gesture.has_pending_terminal();
+    if !owned || node.id != plan.grabbed {
+        return;
+    }
+    let delta = [
+        event.position[0] - plan.origin[0],
+        event.position[1] - plan.origin[1],
+    ];
+    let result = match event.phase {
+        ResponseGraphPhase::Cancel => view.cancel_device_gesture(),
+        ResponseGraphPhase::Commit => group_snapshot(&plan.nodes, delta, rate)
+            .and_then(|values| view.device_gesture.finish_snapshot(values)),
+        ResponseGraphPhase::Change => group_snapshot(&plan.nodes, delta, rate)
+            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ())),
+        _ => Ok(()),
+    };
+    if let Err(error) = result {
+        view.device_panel.message = Some(error.into());
+    } else if matches!(
+        event.phase,
+        ResponseGraphPhase::Change | ResponseGraphPhase::Commit
+    ) && let Ok(frequency) = node.id.parameter(NodeParameter::Frequency)
+        && let Ok(vertical) = node.id.parameter(if group_move::edits_q(node.kind) {
+            NodeParameter::Q
+        } else {
+            NodeParameter::Gain
+        })
+        && let Some(target) = plan.touch.moved(event.position, Some(frequency), vertical)
+    {
+        view.remember_automation_parameter(device, target);
+    }
+    if event.phase == ResponseGraphPhase::Change
+        && let Some(panel) = view.device_panel.eq_panels.get_mut(&device)
+    {
+        panel.group_drag = Some(plan);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -315,7 +478,7 @@ pub(super) fn scroll_event_core(
         return;
     }
     let delta = event.steps.saturating_sub(scroll.last_steps);
-    scroll.value = (i64::from(scroll.value) + i64::from(delta)).clamp(0, 3) as u32;
+    scroll.value = slope::advance(scroll.value, delta);
     scroll.last_steps = event.steps;
     let value = ParameterValue::Choice(scroll.value);
     let result = if event.phase == Phase::Commit {
@@ -345,16 +508,31 @@ pub(super) fn scroll_event_core(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
-    fn option_displacement_keeps_initial_q_and_bounds_without_gain_coordinate_jump() {
-        for initial in [0.1, 0.707, 1.0, 18.0] {
-            assert_eq!(option_q(initial, 0.0), initial);
-            assert_eq!(option_q(initial, -2.0), 0.1);
-            assert_eq!(option_q(initial, 2.0), 18.0);
-            assert!(option_q(initial, 0.1) >= initial);
-        }
+    fn grouped_node_limit_matches_the_host_snapshot_capacity() {
+        assert_eq!(
+            group_move::MAX_GROUP_NODES * 2,
+            hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES
+        );
+        let mut nodes: Vec<_> = (1..=32)
+            .map(|raw| {
+                (
+                    Node::new(NodeId::new(raw).unwrap(), 1_000.0, 0.0, 0).unwrap(),
+                    [0.5, 0.5],
+                )
+            })
+            .collect();
+        assert!(group_snapshot(&nodes, [0.0, 0.0], 48_000).is_ok());
+        nodes.push((
+            Node::new(NodeId::new(33).unwrap(), 1_000.0, 0.0, 0).unwrap(),
+            [0.5, 0.5],
+        ));
+        assert_eq!(
+            group_snapshot(&nodes, [0.0, 0.0], 48_000).unwrap_err(),
+            "eq group move is limited to 32 nodes"
+        );
     }
 }

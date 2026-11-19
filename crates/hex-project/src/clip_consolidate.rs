@@ -2,6 +2,12 @@
 //! materialized through the canonical MIDI playback law, never by adding raw
 //! authored onsets. Unselected occupancy in the outer span is a refusal: grouping
 //! must not invoke the placement owner's destructive overlap replacement.
+//!
+//! Activation policy: the grouped container is always active, and each
+//! source's deactivation moves into its material (inactive MIDI notes, inactive
+//! audio events). Grouping therefore never makes a deactivated clip audible, and
+//! the container stays editable as one active clip. The container takes its name
+//! and flavor from the earliest selected clip.
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiClip, MidiClipGain,
     MidiClipVolume, MidiClipVolumePoint, MidiSource, NoteId, Project,
@@ -77,6 +83,12 @@ fn group(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
+    // Use the largest scalar, keeping each scaled curve within its 0..=4 domain.
+    let merged_gain = clips
+        .iter()
+        .map(|clip| clip.volume().clip_gain())
+        .max_by_key(|gain| gain.millidb())
+        .ok_or(Invalid("no midi clips selected"))?;
     let start = match range {
         Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
         None => first.start().raw(),
@@ -104,7 +116,24 @@ fn group(
             .filter(|n| *n <= MAX_NOTES)
             .ok_or(Invalid("grouped midi note expansion exceeds project limit"))
     })?;
-    let removed: usize = clips.iter().map(|c| c.notes().len()).sum();
+    // Shared notes remain in the project budget until their last placement
+    // is consumed, including peers on other tracks or in the Console.
+    let retained_sources: BTreeSet<_> = project
+        .aliases
+        .members
+        .iter()
+        .filter_map(|(clip, source)| (!selected.contains(clip)).then_some(*source))
+        .collect();
+    let mut removed_sources = BTreeSet::new();
+    let removed: usize = clips
+        .iter()
+        .filter(|clip| {
+            project.clip_alias(clip.id()).is_none_or(|source| {
+                !retained_sources.contains(&source) && removed_sources.insert(source)
+            })
+        })
+        .map(|clip| clip.notes().len())
+        .sum();
     if crate::midi::note_count(project)
         .checked_sub(removed)
         .and_then(|n| n.checked_add(count))
@@ -117,7 +146,9 @@ fn group(
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve grouped midi notes"))?;
     let mut points = Vec::new();
-    let has_volume = clips.iter().any(|clip| !clip.volume().points().is_empty());
+    let has_volume = clips
+        .iter()
+        .any(|clip| !clip.volume().points().is_empty() || clip.volume().clip_gain() != merged_gain);
     for clip in &clips {
         let offset = clip.start().raw() - start;
         let playback = clip.source_playback()?;
@@ -153,7 +184,15 @@ fn group(
                 MidiClipVolumePoint::linear(clip.length(), MidiClipGain::UNITY),
             ]);
         }
-        for mut point in local {
+        let scale = f64::from(clip.volume().clip_gain().linear()) / f64::from(merged_gain.linear());
+        let last = local.len() - 1;
+        for (index, mut point) in local.into_iter().enumerate() {
+            point.incoming = MidiClipGain::new(point.incoming.linear() * scale)?;
+            point.value = MidiClipGain::new(point.value.linear() * scale)?;
+            // The right side of the source's exclusive end is inaudible.
+            if index == last {
+                point.value = point.incoming;
+            }
             point.beat = BeatTime::from_raw(
                 offset
                     .checked_add(point.beat.raw())
@@ -164,6 +203,10 @@ fn group(
                 if previous.beat == point.beat {
                     previous.value = point.value;
                     continue;
+                }
+                // Hold the outgoing level across silence and jump at the next start.
+                if index == 0 {
+                    point.incoming = previous.value;
                 }
             }
             if points.len() == crate::MAX_MIDI_VOLUME_POINTS_PER_CLIP {
@@ -184,7 +227,7 @@ fn group(
         id: ClipId(0),
         start: BeatTime::from_raw(start),
         length,
-        volume: MidiClipVolume::new(points, length)?,
+        volume: MidiClipVolume::new(points, length)?.with_clip_gain(merged_gain),
         source: Arc::new(MidiSource::defaults(length)),
     };
     // Preserve unrelated material exactly; the canonical occupancy validator
@@ -200,8 +243,7 @@ fn group(
     Arc::make_mut(&mut merged.source).notes = notes;
     let result = merged.id;
     project.track_mut(track)?.content.midi_clips.push(merged);
-    project.validate_arrangement_occupancy()?;
-    Project::from_snapshot(project.snapshot())?;
+    validate_grouped_placements(project)?;
     Ok(Created::Clip(result))
 }
 
@@ -310,6 +352,7 @@ fn audio(
                     .map_err(|_| Invalid("could not reserve grouped audio events"))?;
                 events.push(AudioEvent {
                     active: event.active && clip.active(),
+                    gain: event.gain,
                     fade: event.fade,
                     source,
                     id: events.len() as u64 + 1,
@@ -342,6 +385,7 @@ fn audio(
                 .map_err(|_| Invalid("could not reserve grouped audio events"))?;
             events.push(AudioEvent {
                 active: clip.active(),
+                gain: crate::ClipGain::UNITY,
                 fade: None,
                 source: id,
                 id: events.len() as u64 + 1,
@@ -381,9 +425,17 @@ fn audio(
         .audio_clips
         .retain(|c| !selected.contains(&c.id()));
     row.content.audio_clips.push(merged);
+    validate_grouped_placements(project)?;
+    Ok(Created::Clip(result))
+}
+
+fn validate_grouped_placements(project: &mut Project) -> Result<(), Invalid> {
+    // The retained audio roots own content, while alias membership names live
+    // placements. Reconcile the consumed IDs before validating the snapshot.
+    crate::clip_alias_commands::prune(project);
     project.validate_arrangement_occupancy()?;
     Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(result))
+    Ok(())
 }
 
 pub(crate) fn event_range(
@@ -481,6 +533,7 @@ pub(crate) fn event_range(
 pub(crate) fn time_range(
     project: &mut Project,
     range: &crate::TimeRange,
+    create_if_empty: bool,
 ) -> Result<Created, Invalid> {
     range.validate(project)?;
     let left = project.tempo_map().frame_to_beat(range.start())?;
@@ -553,6 +606,35 @@ pub(crate) fn time_range(
                 result = Some(Created::Clip(*id));
             }
             _ => result = Some(group(&mut candidate, ids, Some(range))?),
+        }
+    }
+    if result.is_none() && create_if_empty {
+        let length = BeatTime::from_raw(right.raw() - left.raw());
+        // Reuse the ordinary blank MIDI clip on hybrid lanes. Validate its
+        // actual beat-to-frame projection before allowing placement to cut any
+        // adjacent content, even when frame/beat conversion rounds an edge.
+        let start = project.tempo_map().beat_to_frame(left)?;
+        let end = project.tempo_map().beat_to_frame(right)?;
+        for &track in range.tracks() {
+            let row = project
+                .track(track)
+                .ok_or(Invalid("selected track no longer exists"))?;
+            if row.is_group() {
+                continue;
+            }
+            if row.clips().iter().any(|clip| {
+                clip.start() < end && clip.start().saturating_add(clip.duration()) > start
+            }) || row.midi_clips().iter().any(|clip| {
+                clip.start() < right
+                    && clip.start().raw().saturating_add(clip.length().raw()) > left.raw()
+            }) {
+                return Err(Invalid("selected time range overlaps a clip"));
+            }
+            result = Some(candidate.apply(crate::Command::PlaceMidiClip {
+                track,
+                start: left,
+                length,
+            })?);
         }
     }
     let result = result.ok_or(Invalid("selected time range contains no clips"))?;

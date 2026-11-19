@@ -90,8 +90,8 @@ fn track_header_dispatch_latency(cx: &mut TestAppContext) {
     });
 }
 
-fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+pub(super) fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
@@ -110,6 +110,14 @@ pub(super) fn live_tracks(
     count: usize,
     notes: bool,
 ) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
+    live_tracks_with_notes(cx, count, if notes { 8 } else { 0 })
+}
+
+pub(super) fn live_tracks_with_notes(
+    cx: &mut TestAppContext,
+    count: usize,
+    notes: u8,
+) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
     use hex_session::service::{Request, Service};
     cx.update(super::bind_editor_keys);
     let service = Service::new(48000, 32, 8000000).unwrap();
@@ -121,7 +129,7 @@ pub(super) fn live_tracks(
             }))
             .unwrap();
         state = next(&service).state;
-        if notes {
+        if notes != 0 {
             let track = state.project.tracks().last().unwrap().id();
             service
                 .submit(Request::Edit(Command::PlaceMidiClip {
@@ -134,7 +142,7 @@ pub(super) fn live_tracks(
             let Some(Created::Clip(clip)) = event.created else {
                 panic!("clip")
             };
-            for pitch in 60..68 {
+            for pitch in 60..60 + notes {
                 service
                     .submit(Request::Edit(Command::AddMidiNote {
                         clip,
@@ -178,6 +186,415 @@ pub(super) fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<Edit
     });
     visual.run_until_parked();
 }
+#[gpui::test]
+fn dropping_on_folded_group_reparents_and_keeps_target_until_ack(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..1]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let (group, before) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.tracks().iter().find(|t| t.is_group()).unwrap().id(),
+            project.snapshot(),
+        )
+    });
+    let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let from = bounds(&mut visual, ids[2]).center();
+    let target = bounds(&mut visual, group).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("track-group-drop-target").is_some(),
+        "pending target must remain painted"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    receive(&mut visual, &editor);
+    assert!(visual.debug_bounds("track-group-drop-target").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[2])
+                .unwrap()
+                .parent_group(),
+            Some(group)
+        );
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    // A directly adjacent root can enter an empty group at the same flat boundary.
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveTrack(ids[0]))))
+    });
+    receive(&mut visual, &editor);
+    let from = bounds(&mut visual, ids[1]).center();
+    let target = bounds(&mut visual, group).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[1])
+                .unwrap()
+                .parent_group(),
+            Some(group)
+        );
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[ids[1]]).unwrap(),
+            name: "nested".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let nested = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group() && track.parent_group() == Some(group))
+            .unwrap()
+            .id()
+    });
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let from = bounds(&mut visual, ids[2]).center();
+    let target = bounds(&mut visual, nested).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[2])
+                .unwrap()
+                .parent_group(),
+            Some(nested)
+        )
+    });
+}
+
+#[gpui::test]
+fn group_bottom_drag_distinguishes_append_from_the_outside_gap(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+
+    let (mut visual, editor, ids) = live_fixture(cx);
+    let [first, last, following, dragged] = ids.as_slice() else {
+        panic!("four tracks")
+    };
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[*first, *last]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let (group, original) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (project.tracks()[0].id(), project.snapshot())
+    });
+    let header = |visual: &mut VisualTestContext, id: TrackId| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-track-header-{}", id.value()).into_boxed_str(),
+            ))
+            .unwrap()
+    };
+    let modifiers = Modifiers::default();
+    for parent in [None, Some(group)] {
+        let from = bounds(&mut visual, *dragged).center();
+        let last_header = header(&mut visual, *last);
+        let boundary = header(&mut visual, *following).origin.y;
+        let outside = point(from.x, boundary);
+        let inside = point(from.x, boundary - px(4.0));
+        visual.simulate_mouse_down(from, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(outside, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        let outside_line = visual.debug_bounds("track-insertion-line").unwrap();
+        assert!(
+            (outside_line.origin.y + outside_line.size.height / 2.0 - boundary).abs() <= px(1.0)
+        );
+        assert!(
+            visual
+                .debug_bounds("track-group-end-insertion-line")
+                .is_none()
+        );
+
+        visual.simulate_mouse_move(inside, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("track-insertion-line").is_none());
+        let inside_line = visual
+            .debug_bounds("track-group-end-insertion-line")
+            .unwrap();
+        assert!((inside_line.origin.y + inside_line.size.height - boundary).abs() <= px(1.0));
+        assert!(
+            (inside_line.origin.x
+                - last_header.origin.x
+                - px(super::track_hierarchy_indent::RAIL_WIDTH))
+            .abs()
+                <= px(1.0)
+        );
+        assert!(
+            (inside_line.origin.x + inside_line.size.width
+                - last_header.origin.x
+                - last_header.size.width)
+                .abs()
+                <= px(1.0)
+        );
+
+        let (release, selector, painted) = if parent.is_some() {
+            (inside, "track-group-end-insertion-line", inside_line)
+        } else {
+            visual.simulate_mouse_move(outside, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            (outside, "track-insertion-line", outside_line)
+        };
+        visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(painted));
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+        });
+        receive(&mut visual, &editor);
+        assert!(visual.debug_bounds(selector).is_none());
+        let placed = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let order: Vec<_> = project.tracks().iter().map(|track| track.id()).collect();
+            assert_eq!(order, [group, *first, *last, *dragged, *following]);
+            assert_eq!(project.track(*dragged).unwrap().parent_group(), parent);
+            project.snapshot()
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+        receive(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+        });
+        if parent.is_some() {
+            editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+            receive(&mut visual, &editor);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), placed);
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn group_drop_refusal_keeps_target_until_terminal_installation(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..1]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let group = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap()
+            .id()
+    });
+    // Let the worker advance without delivering its new revision to this view.
+    editor.update(&mut visual, |view, _| {
+        view.service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "other".into(),
+            }))
+            .unwrap();
+        assert!(next(&view.service).error.is_none());
+    });
+    let from = bounds(&mut visual, ids[1]).center();
+    let target = bounds(&mut visual, group).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let highlight = visual.debug_bounds("track-group-drop-target").unwrap();
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = editor.update(&mut visual, |view, _| next(&view.service));
+    assert!(terminal.request_complete && terminal.error.is_some());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("track-group-drop-target"),
+            Some(highlight)
+        );
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.track_reorder_active());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[1])
+                .unwrap()
+                .parent_group(),
+            None
+        );
+    });
+}
+
+#[gpui::test]
+fn group_drag_never_paints_its_own_subtree_as_a_destination(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..2]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let (group, before, can_undo, can_redo) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state
+                .project
+                .tracks()
+                .iter()
+                .find(|track| track.is_group())
+                .unwrap()
+                .id(),
+            state.project.snapshot(),
+            state.can_undo,
+            state.can_redo,
+        )
+    });
+    let from = bounds(&mut visual, group).center();
+    let child = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[1].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let to = point(from.x, child.origin.y + px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("track-insertion-line").is_none(),
+        "cannot move a group into its own descendant"
+    );
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.snapshot(), before);
+        assert_eq!((state.can_undo, state.can_redo), (can_undo, can_redo));
+        assert!(!view.track_reorder_active());
+    });
+    // The boundary directly after the complete subtree is also a no-op.
+    let from = bounds(&mut visual, group).center();
+    let sibling = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let unchanged = point(from.x, sibling.origin.y + px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(unchanged, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_none());
+    visual.simulate_mouse_up(unchanged, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+
+    // Folding hides children, but must not prevent a real subtree move.
+    let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let from = bounds(&mut visual, group).center();
+    let sibling = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let after = point(from.x, sibling.origin.y + sibling.size.height - px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(after, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_some());
+    visual.simulate_mouse_up(after, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project
+                .tracks()
+                .iter()
+                .map(|track| track.id())
+                .collect::<Vec<_>>(),
+            [ids[2], group, ids[0], ids[1]]
+        );
+        assert_eq!(project.track(ids[0]).unwrap().parent_group(), Some(group));
+        assert_eq!(project.track(ids[1]).unwrap().parent_group(), Some(group));
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
 #[gpui::test]
 fn pointer_commits_first_middle_last_and_one_undo(cx: &mut TestAppContext) {
     for (source, target, below, expected) in [

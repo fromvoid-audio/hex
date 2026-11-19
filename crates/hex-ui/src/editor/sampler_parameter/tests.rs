@@ -2,6 +2,227 @@ use super::*;
 use gpui::{TestAppContext, VisualTestContext};
 use hex_project::{Command, Created, Editor, Project};
 
+pub(in crate::editor) fn sampler_text(view: &EditorView, cx: &gpui::App) -> String {
+    view.sampler_parameter
+        .controls
+        .get(&SamplerParameter::AttackMs)
+        .unwrap()
+        .entity
+        .read(cx)
+        .display_text()
+        .to_owned()
+}
+
+fn numeric_sampler_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    VisualTestContext,
+    gpui::Entity<EditorView>,
+    TrackId,
+    hex_project::DeviceId,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let mut authored = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = authored
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Asset(asset) = authored
+        .execute(Command::AddAsset {
+            path: "original.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let state =
+        hex_engine::native_device_resources::current_sampler_fixture::one_shot_state(4, asset)
+            .unwrap();
+    let Created::Device(device) = authored
+        .execute(Command::InsertInstrument { track, state })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let Created::Clip(clip) = authored
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        authored.project().clone(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(window, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.device_panel.owner = Some(device_panel::DevicePanelOwner::Track(track));
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    (visual, editor, track, device)
+}
+
+#[gpui::test]
+fn unrelated_edit_preserves_sampler_numeric_text_and_valid_commit(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(position, gpui::Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.update(&mut visual, |view, cx| {
+        let control = view
+            .sampler_parameter
+            .controls
+            .get(&SamplerParameter::AttackMs)
+            .unwrap();
+        assert!(control.edit_state.is_editing());
+        assert_eq!(control.entity.read(cx).display_text(), "invalid");
+        assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(!view.enqueue(Request::GainLane {
+            project_generation: generation,
+            revision,
+            track,
+            edit: hex_session::service::GainLaneEdit::Clear,
+        }));
+        assert!(!view.enqueue(Request::ImportToTrack {
+            path: "other.wav".into(),
+            track,
+            start: 0,
+        }));
+        let asset = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .id();
+        assert!(!view.enqueue(Request::RelinkMedia([(asset, "other.wav".into())].into(),)));
+        assert!(!view.enqueue(Request::EditArrangementSection {
+            project_generation: generation,
+            revision,
+            command: Command::AddArrangementSection {
+                name: "section".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::ONE,
+            },
+        }));
+        view.duplicate_selected();
+        assert!(!view.duplicate_intent.is_pending());
+        let control = view
+            .sampler_parameter
+            .controls
+            .get(&SamplerParameter::AttackMs)
+            .unwrap();
+        assert_eq!(control.entity.read(cx).display_text(), "invalid");
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("100");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.sampler_parameter.pending.is_some());
+        assert_eq!(view.worker_requests_pending, 1);
+    });
+}
+
+#[gpui::test]
+fn clipboard_edits_refuse_while_copy_and_sampler_text_remain_available(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(position, gpui::Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    editor.update(&mut visual, |view, cx| {
+        let generation = view.project_generation;
+        let revision = view.state.as_ref().unwrap().revision;
+        let range = hex_project::TimeRange::new(vec![track], 0, 1_024).unwrap();
+        for request in [
+            Request::CutTimeRange(range.clone()),
+            Request::TrackClipboard {
+                project_generation: generation,
+                revision,
+                action: hex_session::service::TrackClipboardAction::Cut(
+                    hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                ),
+            },
+            Request::DeviceClipboard {
+                project_generation: generation,
+                revision,
+                action: hex_session::service::DeviceClipboardAction::Cut {
+                    owner: hex_project::DeviceChainOwner::Track(track),
+                    selected: hex_project::DeviceSelectionIds::new(&[device]).unwrap(),
+                },
+            },
+        ] {
+            assert!(!view.enqueue(request));
+        }
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.enqueue(Request::CopyTimeRange(range)));
+        assert_eq!(view.worker_requests_pending, 1);
+        assert_eq!(sampler_text(view, cx), "invalid");
+    });
+}
+
+#[gpui::test]
+fn unrelated_edit_refuses_during_sampler_drag_and_release_commits(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_down(
+        position,
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    let moved = position - gpui::point(gpui::px(0.0), gpui::px(12.0));
+    visual.simulate_mouse_move(
+        moved,
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.sampler_parameter
+                .controls
+                .get(&SamplerParameter::AttackMs)
+                .unwrap()
+                .gesture
+                .is_some()
+        );
+        assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+    visual.simulate_mouse_up(moved, gpui::MouseButton::Left, gpui::Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.sampler_parameter.pending.is_some());
+        assert_eq!(view.worker_requests_pending, 1);
+    });
+}
+
 #[gpui::test]
 fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut TestAppContext) {
     let mut authored = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
@@ -160,7 +381,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
             let target = Target {
                 generation: 2,
                 revision: 7,
-                track,
+                owner: hex_session::service::SamplerParameterOwner::Track(track),
                 device,
                 parameter: SamplerParameter::StartFrame,
             };
@@ -232,7 +453,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                 );
                 assert_eq!(
                     panel.size.height,
-                    gpui::px(213.0),
+                    gpui::px(super::super::device_panel::DEVICE_PANEL_HEIGHT),
                     "device panel remains fixed height"
                 );
                 let region = visual.debug_bounds("sampler-source-active-region").unwrap();
@@ -299,7 +520,7 @@ pub(in crate::editor) fn pending_request(
         request_id: pending.id,
         project_generation: target.generation,
         revision: target.revision,
-        track: target.track,
+        owner: target.owner,
         device: target.device,
         parameter: target.parameter,
         value: pending.value?,
@@ -316,4 +537,90 @@ pub(in crate::editor) fn rendered_control_value(
         .controls
         .get(&parameter)
         .map(|control| control.entity.read(cx).value())
+}
+
+#[gpui::test]
+fn scalar_sampler_preview_survives_repaints_until_matching_terminal(cx: &mut TestAppContext) {
+    let (mut visual, editor, track, device) = numeric_sampler_fixture(cx);
+    let selector = Box::leak(format!("sampler-attack-{}-value", device.value()).into_boxed_str());
+    let position = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(position, gpui::Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("100");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let pending = pending_request(view).expect("pending sampler edit");
+            assert_eq!(
+                pending.owner,
+                hex_session::service::SamplerParameterOwner::Track(track)
+            );
+            assert_eq!(pending.value, 100.0);
+            assert_eq!(
+                rendered_control_value(view, SamplerParameter::AttackMs, cx),
+                Some(100.0)
+            );
+        });
+    }
+    editor.update(&mut visual, |view, _| {
+        let pending = pending_request(view).unwrap();
+        view.finish_sampler_parameter(Some(pending.request_id + 1));
+        assert!(view.sampler_parameter_pending());
+        let old = view.state.as_ref().unwrap();
+        let mut event = super::super::arrangement_main_track_ui_test::completed_event(old);
+        let installed = Arc::get_mut(&mut event.state).unwrap();
+        let current = installed.project.device(device).unwrap().state();
+        let patched = hex_engine::patch_sampler_parameter_on_control(
+            SamplerParameter::AttackMs,
+            current,
+            100.0,
+        )
+        .unwrap();
+        let mut model = Editor::new((*installed.project).clone(), 16).unwrap();
+        model
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: patched,
+            })
+            .unwrap();
+        installed.project = Arc::new(model.project().clone());
+        event.sampler_edit_complete = Some(pending.request_id);
+        view.receive(event);
+        assert!(!view.sampler_parameter_pending());
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            rendered_control_value(view, SamplerParameter::AttackMs, cx),
+            Some(100.0)
+        );
+        assert_eq!(
+            hex_engine::sampler_parameter_value_on_control(
+                SamplerParameter::AttackMs,
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state()
+            )
+            .unwrap(),
+            100.0
+        );
+    });
+}
+
+pub(in crate::editor) fn control_editing(
+    view: &EditorView,
+    parameter: SamplerParameter,
+    cx: &gpui::App,
+) -> bool {
+    view.sampler_parameter
+        .controls
+        .get(&parameter)
+        .is_some_and(|control| control.entity.read(cx).is_editing())
 }

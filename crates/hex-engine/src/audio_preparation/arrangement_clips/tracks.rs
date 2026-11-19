@@ -17,6 +17,8 @@ pub struct ArrangementTrackCapacity {
     pub row_bytes: usize,
     pub destination_scratch_bytes: usize,
     pub clip_bytes: usize,
+    /// Backing of each track's prepared clip index (one entry per clip).
+    pub clip_index_bytes: usize,
     pub send_bytes: usize,
     pub gain_bytes: usize,
     pub pair_bytes: usize,
@@ -35,6 +37,7 @@ impl ArrangementTrackCapacity {
             self.row_bytes,
             self.destination_scratch_bytes,
             self.clip_bytes,
+            self.clip_index_bytes,
             self.send_bytes,
             self.gain_bytes,
             self.pair_bytes,
@@ -74,6 +77,7 @@ struct Row {
     mix: Option<PreparedTrackMix>,
     source_mix: Option<PreparedTrackMix>,
     clips: Vec<Clip>,
+    clip_index: Vec<crate::clip_index::ClipIndexEntry>,
     pairs: Vec<ClipDestination>,
     sends: Vec<CompiledSend>,
     gain: GainCopyCustody,
@@ -180,8 +184,9 @@ impl TrackAssembly {
                 .midi_bytes
                 .checked_add(r.sampler.backing_bytes(r.actual(root)?)?)
                 .ok_or(AudioStorageError::Overflow)?;
-            let (clips, sends, gain) = if let Some(t) = r.actual(root)? {
+            let (clips, clip_index, sends, gain) = if let Some(t) = r.actual(root)? {
                 if r.clips.capacity() != 0
+                    || r.clip_index.capacity() != 0
                     || r.sends.capacity() != 0
                     || r.prepared_gain.is_some()
                     || r.bare_meter.is_some()
@@ -189,13 +194,17 @@ impl TrackAssembly {
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }
-                (&t.clips, &t.sends, t.gain_envelope.as_ref())
+                (&t.clips, &t.clip_index, &t.sends, t.gain_envelope.as_ref())
             } else {
-                (&r.clips, &r.sends, r.prepared_gain.as_ref())
+                (&r.clips, &r.clip_index, &r.sends, r.prepared_gain.as_ref())
             };
             c.clip_bytes = c
                 .clip_bytes
                 .checked_add(backing(clips)?)
+                .ok_or(AudioStorageError::Overflow)?;
+            c.clip_index_bytes = c
+                .clip_index_bytes
+                .checked_add(backing(clip_index)?)
                 .ok_or(AudioStorageError::Overflow)?;
             c.send_bytes = c
                 .send_bytes
@@ -351,6 +360,7 @@ impl TrackAssembly {
                     || r.root_index.is_some()
                     || r.track.is_some()
                     || !r.clips.is_empty()
+                    || !r.clip_index.is_empty()
                     || !r.pairs.is_empty()
                     || !r.sends.is_empty()
                     || r.meter.is_some()
@@ -387,7 +397,7 @@ impl TrackAssembly {
         self.active = wanted;
         reserve(&mut self.destinations, pairs.len(), &mut self.growth)?;
         self.destinations.resize(pairs.len(), false);
-        let solo = project.tracks().iter().any(|t| t.soloed());
+        let solo = crate::TrackSoloSelection::prepare(project);
         // Reserve ALL target backing before any gain fill or owned constructor.
         for (ordinal, (r, t)) in self.rows.iter_mut().zip(project.tracks()).enumerate() {
             r.ordinal = ordinal;
@@ -400,20 +410,26 @@ impl TrackAssembly {
                 .and_then(|source| source.receiver())
                 .and_then(|id| project.tracks().iter().position(|track| track.id() == id));
             r.source_audio_receiver = t.receives_source_audio();
-            r.source_input_enabled = !t.muted() && (!solo || t.soloed());
+            r.source_input_enabled =
+                !t.muted() && (!solo.any || solo.selected(ordinal).map_err(invalid)?);
             r.audio_content_enabled = r.source_input_enabled;
             r.meter_disposal = Disposal::Unstarted;
             r.chain_disposal = Disposal::Unstarted;
             r.mix = Some(
-                PreparedTrackMix::new(t.gain(), t.balance(), crate::effective_track_mute(t, solo))
-                    .map_err(invalid)?,
+                PreparedTrackMix::new(
+                    t.gain(),
+                    t.balance(),
+                    solo.muted(ordinal, t).map_err(invalid)?,
+                )
+                .map_err(invalid)?,
             );
             r.source_mix = r.mix;
             reserve(&mut r.clips, t.clips().len(), &mut self.growth)?;
+            reserve(&mut r.clip_index, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.pairs, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.sends, t.sends().len(), &mut self.growth)?;
             let neutral =
-                PreparedTrackMix::new(1.0, t.balance(), crate::effective_track_mute(t, solo))
+                PreparedTrackMix::new(1.0, t.balance(), solo.muted(ordinal, t).map_err(invalid)?)
                     .map_err(invalid)?;
             r.gain
                 .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())
@@ -458,11 +474,11 @@ impl TrackAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (r, t) in self.rows.iter_mut().zip(project.tracks()) {
-            if let Some((metadata, contexts)) = samplers {
-                if let Some(config) = metadata.configuration(t.id()) {
-                    let _ = (config, contexts); // compile only after workspace admission
-                    r.source_mix = Some(PreparedTrackMix::identity());
-                }
+            if let Some((metadata, contexts)) = samplers
+                && let Some(config) = metadata.configuration(t.id())
+            {
+                let _ = (config, contexts); // compile only after workspace admission
+                r.source_mix = Some(PreparedTrackMix::identity());
             }
             r.gain
                 .fill(t.gain_envelope(), project.tempo_map())
@@ -474,6 +490,7 @@ impl TrackAssembly {
                 project.sample_rate(),
                 effects,
                 native_input,
+                Some(project),
             )?);
             self.growth = self
                 .growth
@@ -494,14 +511,14 @@ impl TrackAssembly {
                 .ok_or(AudioStorageError::UnsupportedConstructor)?;
         }
         #[cfg(test)]
-        if self.mismatch {
-            if let Some(plan) = self.rows.first_mut().and_then(|r| r.pairs.first_mut()) {
-                plan.origin.handle = plan
-                    .origin
-                    .handle
-                    .checked_add(1)
-                    .ok_or(AudioStorageError::Overflow)?;
-            }
+        if self.mismatch
+            && let Some(plan) = self.rows.first_mut().and_then(|r| r.pairs.first_mut())
+        {
+            plan.origin.handle = plan
+                .origin
+                .handle
+                .checked_add(1)
+                .ok_or(AudioStorageError::Overflow)?;
         }
         Ok(())
     }
@@ -537,6 +554,8 @@ impl TrackAssembly {
                 || r.track.is_some()
                 || !r.clips.is_empty()
                 || r.clips.capacity() < r.pairs.len()
+                || !r.clip_index.is_empty()
+                || r.clip_index.capacity() < r.pairs.len()
                 || r.prepared_gain.is_some()
                 || r.bare_meter.is_some()
                 || r.bare_chain.is_some()
@@ -597,6 +616,10 @@ impl TrackAssembly {
                 });
                 p.transferred = true;
             }
+            // Preflight proved the capacity, so this writes without growing.
+            crate::clip_index::fill(&r.clips, Clip::index_bounds, &mut r.clip_index)
+                .map_err(|_| AudioStorageError::Capacity)?;
+            let has_streamed_clips = r.clips.iter().any(Clip::is_streamed);
             // Only fixed moves after the batch preflight. No public constructors
             // which allocate replacement/default owners or consume owning errors.
             if let (Some(meter), Some(chain), Some(mix), Some(source_mix)) = (
@@ -613,10 +636,13 @@ impl TrackAssembly {
                     source_input_enabled: r.source_input_enabled,
                     audio_content_enabled: r.audio_content_enabled,
                     clips: mem::take(&mut r.clips),
+                    clip_index: mem::take(&mut r.clip_index),
+                    has_streamed_clips,
                     mix,
                     source_mix,
                     gain_envelope: r.prepared_gain.take(),
                     instrument: None,
+                    foreign_instrument: None,
                     instrument_position: 0,
                     ordered_prefix: None,
                     ordered_suffix: None,
@@ -665,14 +691,15 @@ impl TrackAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
-        if let Some(t) = r.track.as_mut() {
-            if r.sampler.present() {
-                r.sampler.restore(t)?;
-            }
+        if let Some(t) = r.track.as_mut()
+            && r.sampler.present()
+        {
+            r.sampler.restore(t)?;
         }
         if let Some(t) = &r.track {
             if r.installed_ordinal != Some(r.ordinal)
                 || r.clips.capacity() != 0
+                || r.clip_index.capacity() != 0
                 || r.sends.capacity() != 0
                 || r.prepared_gain.is_some()
                 || r.bare_meter.is_some()
@@ -723,10 +750,13 @@ impl TrackAssembly {
                 source_input_enabled: _,
                 audio_content_enabled: _,
                 clips,
+                clip_index,
+                has_streamed_clips: _,
                 mix: _,
                 source_mix: _,
                 gain_envelope,
                 instrument: _,
+                foreign_instrument: _,
                 instrument_position: _,
                 ordered_prefix: _,
                 ordered_suffix: _,
@@ -747,6 +777,7 @@ impl TrackAssembly {
             }) = r.track.take()
             {
                 r.clips = clips;
+                r.clip_index = clip_index;
                 r.prepared_gain = gain_envelope;
                 r.bare_chain = Some(device_chain);
                 r.sends = sends;
@@ -794,6 +825,7 @@ impl TrackAssembly {
         r.gain.clear_on_control();
         r.sampler.dispose();
         r.sends.clear();
+        r.clip_index.clear();
         r.pairs.clear();
         r.id = None;
         r.mix = None;
@@ -814,6 +846,7 @@ impl TrackAssembly {
                 r.track.is_some()
                     || r.id.is_some()
                     || !r.clips.is_empty()
+                    || !r.clip_index.is_empty()
                     || !r.pairs.is_empty()
                     || r.meter.is_some()
                     || r.chain.is_some()
@@ -880,7 +913,12 @@ impl TrackAssembly {
                     }
                     _ => false,
                 };
-                if !matches {
+                let packed = clip
+                    .metadata
+                    .as_deref()
+                    .and_then(|m| m.sparse.as_ref())
+                    .map(|map| map.packed_len());
+                if !matches || packed != slot.sparse_frames {
                     return Err(AudioStorageError::SourceMismatch);
                 }
             }
@@ -1026,6 +1064,7 @@ impl TrackAssembly {
                 mix: _,
                 source_mix: _,
                 clips,
+                clip_index,
                 pairs,
                 sends,
                 gain,
@@ -1046,6 +1085,7 @@ impl TrackAssembly {
             } = r;
             effects.visit_metadata(l)?;
             l.vec(clips)?;
+            l.vec(clip_index)?;
             l.vec(pairs)?;
             l.vec(sends)?;
             gain.visit_audio_storage(l)?;
@@ -1063,10 +1103,13 @@ impl TrackAssembly {
                     source_input_enabled: _,
                     audio_content_enabled: _,
                     clips,
+                    clip_index,
+                    has_streamed_clips: _,
                     mix: _,
                     source_mix: _,
                     gain_envelope,
                     instrument,
+                    foreign_instrument,
                     instrument_position: _,
                     ordered_prefix: _,
                     ordered_suffix: _,
@@ -1087,12 +1130,14 @@ impl TrackAssembly {
                 } = t;
                 if (!sampler.present() && (instrument.is_some() || *mutable_instrument))
                     || instrument_state.is_some()
+                    || foreign_instrument.is_some()
                     || (!sampler.present() && *mutable_looping_source)
                     || midi_source_index.is_some()
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }
                 l.vec(clips)?;
+                l.vec(clip_index)?;
                 l.vec(sends)?;
                 if let Some(gain) = gain_envelope {
                     gain.visit_audio_storage(l)?;

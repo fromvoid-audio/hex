@@ -7,6 +7,16 @@ impl AudioViewProjection<'_> {
     /// their first sample/beat quantum; an exhausted once read has no cursor.
     /// This metadata query neither prepares audio nor transfers source custody.
     pub fn play_start_position(&self) -> Result<Option<u64>, Invalid> {
+        if self.cycle != self.audible {
+            return if self.phase < self.audible && self.count > 0 {
+                self.view_start
+                    .checked_add(self.phase)
+                    .map(Some)
+                    .ok_or(Invalid("audio play start overflow"))
+            } else {
+                Ok(None)
+            };
+        }
         if self.count == 0 {
             return Ok(None);
         }
@@ -71,6 +81,22 @@ impl AudioViewProjection<'_> {
             return Ok(None);
         }
         let elapsed = self.elapsed_at_frame(frame)?;
+        if self.cycle != self.audible {
+            let phase = (u128::from(self.phase) + u128::from(elapsed)) % u128::from(self.cycle);
+            return if phase < u128::from(self.audible) {
+                self.view_start
+                    .checked_add(
+                        u64::try_from(phase)
+                            .map_err(|_| Invalid("audio playback phase overflow"))?,
+                    )
+                    .map(Some)
+                    .ok_or(Invalid("audio playback root position overflow"))
+            } else {
+                Ok(None)
+            };
+        }
+        let leading = u64::try_from(self.first_read - self.start)
+            .map_err(|_| Invalid("audio leading extent exceeds placement"))?;
         let audible_start = if self.has_subframe_intro() {
             self.occurrence(0)?.elapsed_start
         } else {
@@ -88,6 +114,13 @@ impl AudioViewProjection<'_> {
                     return Ok(None);
                 }
                 read
+            }
+            None if leading > 0 => {
+                let occurrence = self.occurrence(0)?;
+                if !(occurrence.destination_start..occurrence.destination_end).contains(&frame) {
+                    return Ok(None);
+                }
+                elapsed.saturating_sub(leading)
             }
             None => elapsed.max(audible_start),
         };
@@ -151,8 +184,23 @@ impl AudioViewProjection<'_> {
         if range.start > range.end {
             return Err(Invalid("audio selection range is reversed"));
         }
-        let first = range.start.max(self.placed_frames.0);
-        let last = range.end.min(self.placed_frames.1);
+        if self.cycle != self.audible {
+            let first = range.start.max(self.placed_frames.0);
+            let last = range.end.min(self.placed_frames.1);
+            if first >= last {
+                return Ok([None, None]);
+            }
+            return self
+                .gapped_root_ranges(first - self.placed_frames.0, last - self.placed_frames.0);
+        }
+        let (read_start, read_end) = if self.first_read != self.start {
+            let read = self.occurrence(0)?;
+            (read.destination_start, read.destination_end)
+        } else {
+            self.placed_frames
+        };
+        let first = range.start.max(read_start);
+        let last = range.end.min(read_end);
         if first >= last || self.count == 0 {
             return Ok([None, None]);
         }
@@ -244,10 +292,10 @@ impl AudioViewProjection<'_> {
             } else {
                 frame
             };
-            Ok(raw.clamp(self.start, self.end))
+            Ok(raw.clamp(self.first_read, self.end))
         };
         let elapsed = |frame| -> Result<u128, Invalid> {
-            u128::try_from(position(frame)? - self.start)
+            u128::try_from(position(frame)? - self.first_read)
                 .map_err(|_| Invalid("audio selection clock overflow"))
         };
         let start = u128::from(self.phase) + elapsed(first)?.max(u128::from(audible_start));
@@ -263,6 +311,41 @@ impl AudioViewProjection<'_> {
             .is_some_and(|placement| placement.mode == AudioViewMode::Repeat)
             .then_some((self.view_start, source_end));
         crate::source_ranges::source_ranges(start, end, self.view_start, source_end, looping)
+    }
+}
+
+impl AudioViewProjection<'_> {
+    // Frame-clock, forward-only gaps have a bounded periodic source union.
+    fn gapped_root_ranges(
+        &self,
+        first: u64,
+        last: u64,
+    ) -> Result<[Option<Range<u64>>; 2], Invalid> {
+        let period = u128::from(self.cycle);
+        let span = u128::from(last - first);
+        let audible = u128::from(self.audible);
+        let root = u128::from(self.view_start);
+        let make = |start: u128, end: u128| -> Result<Option<Range<u64>>, Invalid> {
+            if start >= end {
+                return Ok(None);
+            }
+            Ok(Some(
+                u64::try_from(root + start).map_err(|_| Invalid("audio selection overflow"))?
+                    ..u64::try_from(root + end).map_err(|_| Invalid("audio selection overflow"))?,
+            ))
+        };
+        if span >= period {
+            return Ok([make(0, audible)?, None]);
+        }
+        let start = (u128::from(self.phase) + u128::from(first)) % period;
+        let end = start + span;
+        let after_wrap = make(0, end.saturating_sub(period).min(audible))?;
+        let before_wrap = make(start.min(audible), end.min(period).min(audible))?;
+        match (after_wrap, before_wrap) {
+            (Some(a), Some(b)) if a.end >= b.start => Ok([Some(a.start..a.end.max(b.end)), None]),
+            (Some(a), b) => Ok([Some(a), b]),
+            (None, b) => Ok([b, None]),
+        }
     }
 }
 
@@ -366,6 +449,7 @@ mod tests {
             base_placement: edit.placement,
             base_start_delta: 0,
             window: crate::ContentWindow::new(0, 100, true).unwrap(),
+            read_resampler: crate::WarpResampler::default(),
         });
         edit.view_start = 0;
         edit.view_end = 100;
@@ -567,6 +651,50 @@ mod tests {
                 .unwrap(),
             [None, None]
         );
+        let gate = current.beat_to_frame(b(19)).unwrap();
+        let extended = clip.with_musical_leading_silence(gate, &current).unwrap();
+        extended
+            .audio_edit()
+            .unwrap()
+            .validate(&extended, &current, 192_000)
+            .unwrap();
+        let leading = AudioViewProjection::new(&extended, &current).unwrap();
+        assert_eq!(
+            leading.outer_frame_bounds(),
+            (gate, clip.start + clip.duration)
+        );
+        let old = projection.occurrence(0).unwrap();
+        let new = leading.occurrence(0).unwrap();
+        assert_eq!(
+            new,
+            AudioViewOccurrence {
+                elapsed_start: new.elapsed_start,
+                elapsed_end: old.elapsed_end + new.elapsed_start,
+                ..old
+            }
+        );
+        let gate = current.beat_to_frame(b(16)).unwrap();
+        let trimmed =
+            super::super::commands::trim_view(&clip, crate::TrimEdge::Left, gate, &current)
+                .unwrap();
+        trimmed
+            .audio_edit()
+            .unwrap()
+            .validate(&trimmed, &current, 192_000)
+            .unwrap();
+        let view = AudioViewProjection::new(&trimmed, &current).unwrap();
+        let read = view.occurrence(0).unwrap();
+        assert_eq!(
+            view.outer_frame_bounds(),
+            (gate, clip.start + clip.duration)
+        );
+        assert_eq!(
+            read.destination_start,
+            old.destination_start - old.root_start
+        );
+        assert_eq!(read.destination_end, old.destination_end);
+        assert_eq!(read.root_origin, old.root_origin);
+        assert_eq!(read.root_start, 0);
         edit.placement_end_offset = 1;
         clip.edit = Some(Arc::new(edit.clone()));
         assert!(

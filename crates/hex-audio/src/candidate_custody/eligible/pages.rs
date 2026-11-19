@@ -61,6 +61,17 @@ impl DomainEnvelope {
     pub(crate) fn return_requested(&self) -> bool {
         self.inner.signal.return_requested.load(Ordering::Acquire)
     }
+
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_page_loan(
+        &mut self,
+        token: AudioCandidateDomainToken,
+    ) -> Option<&mut hex_stream::ConstructorPageLoan> {
+        if self.inner.token != token {
+            return None;
+        }
+        self.inner.loan.as_mut()
+    }
 }
 impl Custody {
     pub(in crate::candidate_custody) fn endpoint_installed(

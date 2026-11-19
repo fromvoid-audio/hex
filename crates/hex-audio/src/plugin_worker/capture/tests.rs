@@ -2,6 +2,9 @@
 use super::*;
 use crate::plugin_worker::native_tests::original_instance;
 use std::{fs, path::PathBuf, process::Command};
+mod controller;
+mod editor_pcm;
+mod parameter_change;
 mod stopped;
 
 fn fixture_child(fault: u32, name: &str) -> bool {
@@ -42,8 +45,237 @@ fn fixture_child(fault: u32, name: &str) -> bool {
     );
     true
 }
+#[test]
+fn helper_refusal_completes_only_its_operation_and_frees_the_mailbox() {
+    let mut slot = Slot {
+        ordinal: 4,
+        phase: Phase::Requested,
+        ..Slot::default()
+    };
+    assert!(slot.take_terminal().is_none(), "requested is still pending");
+    // A stale ordinal never completes the current operation.
+    assert!(
+        slot.complete(3, Err(StateCaptureRefusal::StillChanging))
+            .is_err()
+    );
+    slot.complete(4, Err(StateCaptureRefusal::StillChanging))
+        .unwrap();
+    assert!(matches!(
+        slot.take_terminal(),
+        Some(Err(StateCaptureRefusal::StillChanging))
+    ));
+    assert!(slot.phase == Phase::Idle);
+    assert!(
+        slot.take_terminal().is_none(),
+        "a terminal is consumed once"
+    );
+    // The freed mailbox admits the next operation and carries real bytes.
+    slot.ordinal = 5;
+    slot.phase = Phase::Requested;
+    let payload = NativeDeviceState::new(
+        hex_plugin_state::TYPE_ID,
+        hex_plugin_state::STATE_VERSION,
+        vec![9; 150_545],
+    )
+    .unwrap();
+    let original = payload.clone();
+    slot.complete(5, Ok(payload)).unwrap();
+    let Some(Ok(captured)) = slot.take_terminal() else {
+        panic!("captured bytes")
+    };
+    assert_eq!(captured, original);
+    assert!(captured.shares_payload_storage_with(&original));
+    // Completing an idle slot is a protocol fault.
+    assert!(slot.complete(5, Ok(original)).is_err());
+}
+
 fn trace_path() -> PathBuf {
     PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap())
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_worker_returns_its_admitted_editor_batch_once() {
+    use hex_plugin_host::protocol::ParameterEditKind;
+    const NAME: &str =
+        "plugin_worker::capture::tests::stopped_worker_returns_its_admitted_editor_batch_once";
+    if fixture_child(147, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, _other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    assert!(owner.poll_stopped_edits_on_control(true).is_err());
+    other.revoke_on_control();
+    let other_until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match other.poll_stopped_edits_on_control(true) {
+            Err("native stopped edit read was not admitted") => break,
+            Err("native preparation is busy" | "native edit observation is busy") => {}
+            _ => panic!("another worker must not provide the source's receipt"),
+        }
+        assert!(Instant::now() < other_until);
+        thread::yield_now();
+    }
+    assert!(other.retire_on_control().unwrap().failure.is_none());
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        if fs::read(trace_path())
+            .ok()
+            .is_some_and(|trace| trace.get(..4) == Some(&25_i32.to_le_bytes()))
+        {
+            break;
+        }
+        assert!(Instant::now() < until, "SDK editor burst did not complete");
+        thread::yield_now();
+    }
+    let mut prior = Vec::new();
+    loop {
+        match owner.poll_recovery_edits_on_control(true) {
+            Ok(Some(batch)) => prior.extend_from_slice(batch.edits.as_slice()),
+            Ok(None) | Err("native edit observation is busy") => {}
+            Err(reason) => panic!("editor read admission failed: {reason}"),
+        }
+        loop {
+            let slot = owner.reaper.completed.capture.lock().unwrap();
+            if let Some(batch) = slot.edits_result.as_ref() {
+                if batch
+                    .edits
+                    .as_slice()
+                    .iter()
+                    .any(|edit| edit.kind == ParameterEditKind::End)
+                {
+                    break;
+                }
+                drop(slot);
+                if let Some(batch) = owner.poll_recovery_edits_on_control(true).unwrap() {
+                    prior.extend_from_slice(batch.edits.as_slice());
+                }
+                break;
+            }
+            drop(slot);
+            assert!(Instant::now() < until, "editor read did not complete");
+            thread::yield_now();
+        }
+        if owner
+            .reaper
+            .completed
+            .capture
+            .lock()
+            .unwrap()
+            .edits_result
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "nonempty editor read was not admitted"
+        );
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    let completed = Arc::clone(&owner.reaper.completed);
+    let mailbox = completed.capture.lock().unwrap();
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native edit observation is busy")
+    ));
+    drop(mailbox);
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(false),
+        Err("native edit observation mode differs")
+    ));
+    while !owner.reaper.is_finished() {
+        assert!(Instant::now() < until, "original worker did not stop");
+        thread::yield_now();
+    }
+    owner.reaper.join_on_control().unwrap();
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure after editor receipt",
+    ));
+    let batch = loop {
+        match owner.poll_stopped_edits_on_control(true) {
+            Ok(crate::plugin_worker::StoppedEditProgress::Completed(batch)) => break batch,
+            Ok(crate::plugin_worker::StoppedEditProgress::Pending)
+            | Err("native preparation is busy" | "native edit observation is busy") => {}
+            Err(reason) => panic!("admitted editor read was not recovered: {reason}"),
+        }
+        assert!(
+            Instant::now() < until,
+            "admitted editor read did not complete"
+        );
+        thread::yield_now();
+    };
+    prior.extend_from_slice(batch.edits.as_slice());
+    assert_eq!(prior.len(), 3);
+    assert_eq!(prior[0].kind, ParameterEditKind::Begin);
+    assert_eq!(prior[0].sequence, 1);
+    assert_eq!(prior[2].kind, ParameterEditKind::End);
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    assert!(owner.poll_stopped_edits_on_control(true).is_err());
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_worker_reports_failed_admitted_edit_read() {
+    const NAME: &str =
+        "plugin_worker::capture::tests::stopped_worker_reports_failed_admitted_edit_read";
+    if fixture_child(140, NAME) {
+        return;
+    }
+    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    callback
+        .stage(&[[0.5, -0.25]; 8], &[], &mut output)
+        .unwrap();
+    callback.finish(true).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&27_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until, "SDK processing gate did not engage");
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .poll_recovery_edits_on_control(true)
+            .unwrap()
+            .is_none()
+    );
+    let completed = Arc::clone(&owner.reaper.completed);
+    let mailbox = completed.capture.lock().unwrap();
+    owner.revoke_on_control();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"release",
+    )
+    .unwrap();
+    while !owner.reaper.is_finished() {
+        assert!(Instant::now() < until, "original worker did not stop");
+        thread::yield_now();
+    }
+    owner.reaper.join_on_control().unwrap();
+    assert!(mailbox.edits_pending && mailbox.edits_result.is_none());
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure before editor read",
+    ));
+    drop(mailbox);
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native stopped edit worker failed")
+    ));
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native stopped edit read was not admitted")
+    ));
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
 }
 
 #[test]
@@ -148,6 +380,46 @@ fn actual_worker_edit_receipts_preserve_gestures_and_revoke_with_source() {
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
 }
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_idle_editor_poll_applies_a_burst_without_advancing_audio() {
+    const NAME: &str = "plugin_worker::capture::tests::actual_idle_editor_poll_applies_a_burst_without_advancing_audio";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit editor burst while transport is idle",
+    )
+    .unwrap();
+    let mut edits = Vec::new();
+    let until = Instant::now() + Duration::from_secs(2);
+    while edits.len() < 14 {
+        match owner.poll_recovery_edits_on_control(true) {
+            Ok(Some(batch)) => edits.extend_from_slice(batch.edits.as_slice()),
+            Ok(None) | Err("native edit observation is busy") => {}
+            Err(error) => panic!("idle editor poll failed: {error}"),
+        }
+        assert!(Instant::now() < until, "idle editor burst must drain");
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 14);
+    assert!(edits.iter().all(|edit| edit.first_frame == 0));
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    let request = begin(&mut owner);
+    let captured = complete(&mut owner, &request);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
 fn wait_held() {
     let until = Instant::now() + Duration::from_secs(2);
     loop {
@@ -208,6 +480,7 @@ fn complete(owner: &mut NativeWorker, request: &NativeWorkerCapture) -> NativeDe
         match owner.poll_state_capture_on_control(request).unwrap() {
             NativeWorkerCaptureProgress::Captured(state) => return state,
             NativeWorkerCaptureProgress::Failed => panic!("capture failed"),
+            NativeWorkerCaptureProgress::Refused(refusal) => panic!("capture refused: {refusal}"),
             NativeWorkerCaptureProgress::Pending => {
                 assert!(Instant::now() < until);
                 thread::yield_now();
@@ -274,30 +547,6 @@ fn actual_worker_capture_preserves_pair_storage_and_exact_operation() {
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert!(other.retire_on_control().unwrap().native.status.success());
     assert!(owner.begin_state_capture_on_control().is_err());
-}
-
-#[test]
-#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_worker_capture_projection_failure_releases_exact_operation() {
-    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
-    let first = begin(&mut owner);
-    let until = Instant::now() + Duration::from_secs(2);
-    loop {
-        match owner.poll_state_capture_using(&first, |_| Err("fixture allocation refusal")) {
-            Ok(NativeWorkerCaptureProgress::Pending) => {
-                assert!(Instant::now() < until);
-                thread::yield_now();
-            }
-            Err("fixture allocation refusal") => break,
-            result => panic!("unexpected capture result: {result:?}"),
-        }
-    }
-    refused(&mut owner, &first);
-    let next = begin(&mut owner);
-    complete(&mut owner, &next);
-    callback_block(&owner, &mut callback, 0);
-    let retired = owner.retire_on_control().unwrap();
-    assert!(retired.failure.is_none() && retired.native.status.success());
 }
 
 #[test]
@@ -397,10 +646,17 @@ fn actual_worker_capture_failure_retains_original_error_and_native_reap() {
                 thread::yield_now();
             }
             NativeWorkerCaptureProgress::Captured(_) => panic!("SDK refusal cannot produce state"),
+            NativeWorkerCaptureProgress::Refused(refusal) => {
+                panic!("SDK refusal is not a helper refusal: {refusal}")
+            }
         }
     }
     let retired = owner.retire_on_control().unwrap();
     assert!(matches!(retired.failure, Some(Error::Worker(6))));
+    let diagnostic = owner.take_failure_diagnostic_on_control().unwrap();
+    assert!(diagnostic.contains("exchange=control bundle=\"processing.vst3\""));
+    assert!(diagnostic.contains("worker code 6"));
+    assert!(owner.take_failure_diagnostic_on_control().is_none());
     assert!(!retired.native.status.success() && retired.native.terminal.is_none());
     assert!(owner.owns_callback(&callback));
 }

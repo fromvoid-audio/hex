@@ -2,12 +2,12 @@
 use super::*;
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
 use hex_project::BeatTime;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 pub(in crate::editor) fn hold(
     editor: &Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Some(event) = editor.update(&mut *visual, |v, _| v.service.try_event().ok()) {
             return event;
@@ -130,7 +130,7 @@ fn check_midi_loop_keys(cx: &mut TestAppContext, console: bool) {
     assert!(reopened.midi_source(clip).unwrap().looping());
 }
 #[gpui::test]
-fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &mut TestAppContext) {
+fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut TestAppContext) {
     let (files, handle, editor) = clip_drag_ui_test::upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1280.0), px(800.0)));
@@ -184,7 +184,7 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
         let r = c.audio_event_root();
         assert_eq!(
             (c.start(), c.duration()),
-            (before.start(), before.duration())
+            (before.start() + selected.0, selected.1 - selected.0)
         );
         assert_eq!((r.view_start, r.view_end), selected);
         assert_eq!(r.domain, before.audio_event_root().domain);
@@ -244,10 +244,7 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
         let r = c.audio_event_root();
         assert!(r.view_start > selected.0);
         assert_eq!(r.view_end, selected.1);
-        assert_eq!(
-            (c.start(), c.duration()),
-            (before.start(), before.duration())
-        );
+        assert_eq!((c.start(), c.duration()), (48_000, 24_000));
     });
     // Expanding the opposite marker stays inside the same retained-source view.
     let end = visual.debug_bounds("audio-loop-end").unwrap().center();

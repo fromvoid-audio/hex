@@ -201,6 +201,7 @@ fn retained_root_nesting_has_a_bounded_depth() {
             next_id: 2,
             events: vec![AudioEvent {
                 active: true,
+                gain: crate::ClipGain::UNITY,
                 source: 1,
                 id: 1,
                 start: 0,
@@ -1547,4 +1548,132 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             assert_eq!(calls, 1);
         }
     }
+}
+
+#[test]
+fn all_midi_group_moves_by_exact_beats_at_non_integer_frame_tempo() {
+    let mut editor = Editor::new(Project::new(44_100).unwrap(), 8).unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: crate::Tempo::new(123_000_000).unwrap(),
+        })
+        .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack { name: "m".into() })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let four = BeatTime::from_quarters(4).unwrap();
+    let mut clips = Vec::new();
+    for start in [BeatTime::ZERO, four] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start,
+                length: four,
+            })
+            .unwrap()
+        else {
+            panic!("midi")
+        };
+        clips.push(clip);
+    }
+    let one = BeatTime::ONE;
+    let position = ClipGroupPosition::Midi(one);
+    let source = std::sync::Arc::new(editor.project().clone());
+    let mut captured = crate::ClipGroupMovePreview::capture(&source, &clips, clips[0]).unwrap();
+    captured.update(&source, track, position).unwrap();
+    assert_capture_matches_plan(
+        captured.previews(),
+        &source
+            .preview_clip_group_move(&clips, clips[0], track, position)
+            .unwrap(),
+    );
+    editor
+        .execute(Command::MoveClipsWithOverwrite {
+            clips: clips.clone(),
+            anchor: clips[0],
+            track,
+            position,
+            copy: false,
+        })
+        .unwrap();
+    let project = editor.project();
+    let (first, second) = (
+        project.midi_clip(clips[0]).unwrap(),
+        project.midi_clip(clips[1]).unwrap(),
+    );
+    assert_eq!(first.start(), one);
+    assert_eq!(second.start(), BeatTime::from_quarters(5).unwrap());
+    assert_eq!(first.length(), four);
+    assert_eq!(second.length(), four);
+}
+
+#[test]
+fn destination_alias_group_keeps_members_and_relative_placement() {
+    let mut f = fixture();
+    let before = f.editor.project().snapshot();
+    let Created::Clips { first, last } = f
+        .editor
+        .execute(Command::DuplicateAliasClipsAt {
+            clips: vec![f.audio, f.midi],
+            anchor: f.audio,
+            track: f.tracks[0],
+            position: ClipGroupPosition::Audio(288_000),
+        })
+        .unwrap()
+    else {
+        panic!("alias group")
+    };
+    assert_ne!(first, last);
+    assert!(f.editor.project().clip(f.audio).is_some());
+    assert!(f.editor.project().midi_clip(f.midi).is_some());
+    let copied_audio = f
+        .editor
+        .project()
+        .track(f.tracks[0])
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|clip| clip.id() != f.audio)
+        .unwrap();
+    let copied_midi = f
+        .editor
+        .project()
+        .track(f.tracks[1])
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.id() != f.midi)
+        .unwrap();
+    assert_eq!(copied_audio.start(), 288_000);
+    let project = f.editor.project();
+    assert_eq!(
+        project
+            .tempo_map()
+            .beat_to_frame(copied_midi.start())
+            .unwrap(),
+        project
+            .tempo_map()
+            .beat_to_frame(project.midi_clip(f.midi).unwrap().start())
+            .unwrap()
+            + 240_000,
+    );
+    assert_eq!(
+        f.editor.project().clip_alias(copied_audio.id()),
+        f.editor.project().clip_alias(f.audio)
+    );
+    assert_eq!(
+        f.editor.project().clip_alias(copied_midi.id()),
+        f.editor.project().clip_alias(f.midi)
+    );
+    let after = f.editor.project().snapshot();
+    let mut expected = before;
+    expected.next_id = after.next_id;
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), expected);
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), after);
 }

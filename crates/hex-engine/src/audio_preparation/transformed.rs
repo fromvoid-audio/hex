@@ -2,15 +2,199 @@
 //! grants native ownership: its finite PCM is copied into a fresh constructor
 //! receipt, retained in the slot, then aliased to the exact graph destination.
 use super::*;
-use crate::{audio_transform::GroupSource, compile::PreparedAudioSourceRef};
+use crate::{
+    audio_transform::{GroupSource, sparse_group_plan},
+    compile::PreparedAudioSourceRef,
+};
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
+
+/// A plain reverse changes the read direction of a verified raw region.
+/// Both the caller quote and native source selection require the same region.
+pub(crate) fn streamed_reverse_region(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+) -> Option<(u64, u64)> {
+    let (offset, length) = clip.audio_edit()?.plain_reversed_source(clip)?;
+    let asset = project.asset(clip.asset())?;
+    (raw.key().is_raw()
+        && raw.key().asset() == asset.id()
+        && raw.project_rate() == project.sample_rate()
+        && raw.playback_frames() == asset.playback_frames()
+        && raw.source_rate() == asset.source_sample_rate()
+        && raw.source_frames() == asset.source_frames()
+        && raw.conversion_version() == asset.conversion_version()
+        && offset.checked_add(length)? <= raw.playback_frames())
+    .then_some((offset, length))
+}
+
+pub(crate) fn matching_streamed_pitch(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+    pitched: &crate::StreamedSourceMetadata,
+) -> bool {
+    let Some(asset) = project.asset(clip.asset()) else {
+        return false;
+    };
+    let Some(edit) = clip.audio_edit() else {
+        return false;
+    };
+    raw.key().is_raw()
+        && raw.key().asset() == asset.id()
+        && raw.project_rate() == project.sample_rate()
+        && raw.playback_frames() == asset.playback_frames()
+        && raw.source_rate() == asset.source_sample_rate()
+        && raw.source_frames() == asset.source_frames()
+        && raw.conversion_version() == asset.conversion_version()
+        && edit.is_plain_pitch_capture(clip)
+        && clip.source_length() == asset.playback_frames()
+        && raw
+            .with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)
+            .is_ok_and(|expected| expected == *pitched)
+}
+
+/// Match the same canonical map and verified source used by semantic compilation.
+pub(crate) fn matching_streamed_repitch(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+    derived: &crate::StreamedSourceMetadata,
+) -> bool {
+    let Some(asset) = project.asset(clip.asset()) else {
+        return false;
+    };
+    let Some(edit) = clip.audio_edit() else {
+        return false;
+    };
+    if derived.key().repitch_identity().is_none()
+        || !raw.key().is_raw()
+        || raw.key().asset() != asset.id()
+        || raw.project_rate() != project.sample_rate()
+        || raw.playback_frames() != asset.playback_frames()
+        || raw.source_rate() != asset.source_sample_rate()
+        || raw.source_frames() != asset.source_frames()
+        || raw.conversion_version() != asset.conversion_version()
+    {
+        return false;
+    }
+    crate::audio_transform::streamed_repitch_map(
+        edit,
+        project.tempo_map(),
+        raw.playback_frames(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .and_then(|(map, law)| raw.with_repitch(&map, law))
+    .is_ok_and(|expected| expected == *derived)
+}
+
+pub(super) fn repitch_source_index(
+    project: &hex_project::Project,
+    bank: &OwnedAudioInputs,
+    clip: &hex_project::Clip,
+) -> Option<usize> {
+    let raw = bank.sources.iter().find_map(|(asset, source)| {
+        if *asset != clip.asset() {
+            return None;
+        }
+        match &source.kind {
+            SourceKind::Streamed(metadata) if metadata.key().is_raw() => Some(metadata),
+            _ => None,
+        }
+    })?;
+    bank.sources.iter().position(|(asset, source)| *asset == clip.asset()
+        && matches!(&source.kind, SourceKind::Streamed(derived) if matching_streamed_repitch(project, clip, raw, derived)))
+}
+
+/// Match the same canonical map and verified source used by semantic compilation.
+pub(crate) fn matching_streamed_granular(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    raw: &crate::StreamedSourceMetadata,
+    derived: &crate::StreamedSourceMetadata,
+) -> bool {
+    let Some(asset) = project.asset(clip.asset()) else {
+        return false;
+    };
+    let Some(edit) = clip.audio_edit() else {
+        return false;
+    };
+    if derived.key().granular_identity().is_none()
+        || !raw.key().is_raw()
+        || raw.key().asset() != asset.id()
+        || raw.project_rate() != project.sample_rate()
+        || raw.playback_frames() != asset.playback_frames()
+        || raw.source_rate() != asset.source_sample_rate()
+        || raw.source_frames() != asset.source_frames()
+        || raw.conversion_version() != asset.conversion_version()
+    {
+        return false;
+    }
+    crate::audio_transform::streamed_granular_root(
+        raw,
+        edit,
+        project.tempo_map(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .is_ok_and(|root| root.metadata() == derived)
+}
+
+pub(super) fn granular_source_index(
+    project: &hex_project::Project,
+    bank: &OwnedAudioInputs,
+    clip: &hex_project::Clip,
+) -> Option<usize> {
+    let raw = bank.sources.iter().find_map(|(asset, source)| {
+        if *asset != clip.asset() {
+            return None;
+        }
+        match &source.kind {
+            SourceKind::Streamed(metadata) if metadata.key().is_raw() => Some(metadata),
+            _ => None,
+        }
+    })?;
+    bank.sources.iter().position(|(asset, source)| *asset == clip.asset()
+        && matches!(&source.kind, SourceKind::Streamed(derived) if matching_streamed_granular(project, clip, raw, derived)))
+}
+
+pub(super) fn pitched_source_index(
+    project: &hex_project::Project,
+    bank: &OwnedAudioInputs,
+    clip: &hex_project::Clip,
+) -> Option<usize> {
+    if !clip
+        .audio_edit()
+        .is_some_and(|edit| edit.is_plain_pitch_capture(clip))
+    {
+        return None;
+    }
+    let raw = bank.sources.iter().find_map(|(asset, source)| {
+        if *asset != clip.asset() {
+            return None;
+        }
+        match &source.kind {
+            SourceKind::Streamed(metadata) if metadata.key().is_raw() => Some(metadata),
+            _ => None,
+        }
+    })?;
+    bank.sources.iter().position(|(asset, source)| {
+        *asset == clip.asset()
+            && matches!(&source.kind, SourceKind::Streamed(pitch)
+                if matching_streamed_pitch(project, clip, raw, pitch))
+    })
+}
+
+pub(super) fn requires_transformed_origin(clip: &hex_project::Clip) -> bool {
+    clip.audio_edit()
+        .is_some_and(|edit| !edit.is_long_inactive_warp_root(clip.duration()))
+}
 
 pub(crate) fn transformed_count(project: &hex_project::Project) -> usize {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
-        .filter(|clip| clip.audio_edit().is_some())
+        .filter(|clip| requires_transformed_origin(clip))
         .count()
 }
 
@@ -57,16 +241,22 @@ fn root_work(
 fn clip_quote(
     clip: &hex_project::Clip,
     tempo: &hex_project::TempoMap,
-) -> Result<(u64, u64), AudioStorageError> {
+) -> Result<(u64, u64, usize), AudioStorageError> {
     let Some(edit) = clip.audio_edit() else {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     };
+    if edit.is_long_inactive_warp_root(clip.duration()) {
+        return Ok((0, 0, 0));
+    }
     let grouped = edit
         .domain
         .events
         .as_ref()
         .filter(|events| !events.sources.is_empty());
-    let frames = if grouped.is_some() || edit.placement.is_some() || edit.content_view.is_some() {
+    let sparse = sparse_group_plan(clip).map_err(invalid)?;
+    let frames = if let Some((_, frames, _)) = sparse {
+        u64::try_from(frames).map_err(|_| AudioStorageError::Overflow)?
+    } else if grouped.is_some() || edit.placement.is_some() || edit.content_view.is_some() {
         clip.duration()
     } else {
         edit.projected_domain(tempo).map_err(invalid)?.1
@@ -75,7 +265,11 @@ fn clip_quote(
         return Err(AudioStorageError::Capacity);
     }
     let work = if grouped.is_some() {
-        let mut work = edit.domain.clock.length();
+        let mut work = if sparse.is_some() {
+            frames
+        } else {
+            edit.domain.clock.length()
+        };
         for root in clip.retained_audio_roots() {
             work = work
                 .checked_add(root_work(&root.clip, &root.tempo)?)
@@ -83,7 +277,7 @@ fn clip_quote(
                 .filter(|frames| *frames <= MAX_AUDIO_DOMAIN_FRAMES)
                 .ok_or(AudioStorageError::Capacity)?;
         }
-        work.checked_add(clip.duration())
+        work.checked_add(if sparse.is_some() { 0 } else { clip.duration() })
             .ok_or(AudioStorageError::Overflow)?
     } else {
         root_work(clip, tempo)?
@@ -97,18 +291,35 @@ fn clip_quote(
     if work > MAX_AUDIO_DOMAIN_FRAMES * 2 {
         return Err(AudioStorageError::Capacity);
     }
-    Ok((frames, work))
+    let layout_bytes = if let Some((_, _, spans)) = sparse {
+        crate::SparseFrameMap::allocation_bytes(spans).ok_or(AudioStorageError::UnknownStorage)?
+    } else {
+        0
+    };
+    Ok((frames, work, layout_bytes))
 }
 
 pub(crate) fn prepared_pcm_frames(
     project: &hex_project::Project,
+) -> Result<u64, AudioStorageError> {
+    prepared_pcm_frames_for(project, &|_| false)
+}
+
+pub(crate) fn prepared_pcm_frames_for(
+    project: &hex_project::Project,
+    streamed_origin: &impl Fn(&hex_project::Clip) -> bool,
 ) -> Result<u64, AudioStorageError> {
     project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
         .try_fold(0u64, |n, clip| {
-            n.checked_add(clip_quote(clip, project.tempo_map())?.0)
+            let frames = if streamed_origin(clip) {
+                0
+            } else {
+                clip_quote(clip, project.tempo_map())?.0
+            };
+            n.checked_add(frames)
                 .filter(|frames| {
                     *frames
                         <= (crate::audio_transform::MAX_RETAINED_DERIVED_BYTES
@@ -126,11 +337,30 @@ pub(crate) fn prepared_pcm_frames(
 pub(crate) fn transformed_audio_quote(
     project: &hex_project::Project,
 ) -> Result<(usize, usize), AudioStorageError> {
-    prepared_pcm_frames(project)?;
+    transformed_audio_quote_for(project, &|_| false)
+}
+
+pub(crate) fn transformed_audio_quote_for(
+    project: &hex_project::Project,
+    streamed_origin: &impl Fn(&hex_project::Clip) -> bool,
+) -> Result<(usize, usize), AudioStorageError> {
+    prepared_pcm_frames_for(project, streamed_origin)?;
     let mut retained = 0usize;
     let mut workspace = 0usize;
     for clip in project.tracks().iter().flat_map(|track| track.clips()) {
-        let (frames, work) = clip_quote(clip, project.tempo_map())?;
+        if streamed_origin(clip) {
+            if clip
+                .audio_edit()
+                .is_some_and(|edit| edit.domain.warp_enabled)
+            {
+                workspace = workspace.max(
+                    crate::audio_transform::native_metadata_workspace_bytes()
+                        .ok_or(AudioStorageError::Overflow)?,
+                );
+            }
+            continue;
+        }
+        let (frames, work, layout_bytes) = clip_quote(clip, project.tempo_map())?;
         if frames == 0 {
             continue;
         }
@@ -143,6 +373,7 @@ pub(crate) fn transformed_audio_quote(
                     .declared_bytes()
                     .ok_or(AudioStorageError::Overflow)?,
             )
+            .and_then(|n| n.checked_add(layout_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         workspace = workspace.max(
             workspace_for_frames(work)?
@@ -230,7 +461,7 @@ pub(super) fn validate_sources(
         {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if clip.audio_edit().is_some() && !matches!(source.kind, SourceKind::Resident(_)) {
+        if requires_transformed_origin(clip) && !matches!(source.kind, SourceKind::Resident(_)) {
             return Err(AudioStorageError::UnsupportedGraph);
         }
     }
@@ -288,7 +519,11 @@ pub(super) fn construct_origin(
             };
             sources.push(GroupSource { root, asset, audio });
         }
-        Some(transforms.compile_group(clip, &sources).map_err(invalid)?)
+        Some(
+            transforms
+                .compile_arrangement_group(clip, &sources)
+                .map_err(invalid)?,
+        )
     } else {
         let asset = project
             .asset(clip.asset())
@@ -317,6 +552,20 @@ pub(super) fn construct_origin(
             return Err(AudioStorageError::SourceMismatch);
         }
     }
+    let layout = compiled
+        .as_mut()
+        .and_then(|clip| clip.metadata.as_mut())
+        .and_then(|metadata| metadata.sparse.take());
+    if layout.as_ref().map(|map| map.packed_len()) != slot.sparse_frames {
+        return Err(AudioStorageError::SourceMismatch);
+    }
+    if let Some(layout) = &layout {
+        let (_, _, reserved) = clip_quote(clip, project.tempo_map())?;
+        if layout.retained_bytes().is_none_or(|bytes| bytes > reserved) {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+    }
+    slot.sparse = layout;
     let mut frames = Vec::new();
     let length = compiled
         .as_ref()

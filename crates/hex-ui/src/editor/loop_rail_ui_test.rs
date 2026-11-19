@@ -21,13 +21,16 @@ fn loop_editor_with_tracks(
     cx.update(super::bind_editor_keys);
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     fn next(service: &Service) -> Event {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "next: hang guard expired"
+            );
             thread::sleep(Duration::from_millis(1));
         }
     }
@@ -152,14 +155,14 @@ fn loop_rail_paint_previews_then_commits_adaptive_grid_range_disabled(cx: &mut T
     let rail = visual
         .debug_bounds("arrangement-loop-rail")
         .expect("loop rail");
-    let overview = visual
-        .debug_bounds("arrangement-overview-map")
-        .expect("overview timeline");
+    let map = visual
+        .debug_bounds("main-arrangement-map")
+        .expect("bottom Main miniature");
     let ruler = visual
         .debug_bounds("timeline-ruler")
         .expect("ruler timeline");
-    assert_eq!(rail.origin.x, overview.origin.x);
-    assert_eq!(rail.size.width, overview.size.width);
+    assert_eq!(rail.origin.x, map.origin.x);
+    assert_eq!(rail.size.width, map.size.width);
     assert_eq!(rail.origin.x, ruler.origin.x);
 
     let start = rail_point(&mut visual, 0.25);
@@ -262,7 +265,18 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
             "lane selection stays idle"
         );
     });
-    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    let prior_range = visual.debug_bounds("loop-rail-range").expect("held range");
+    let prior_builds = editor.read_with(&visual, |view, _| view.track_row_builds);
+    let vertical = outside + point(px(0.), px(18.));
+    visual.simulate_mouse_move(vertical, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("loop-rail-range"), Some(prior_range));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.loop_rail_gesture.is_some());
+        assert!(view.time_selection_gesture.is_none());
+        assert_eq!(view.track_row_builds, prior_builds);
+    });
+    visual.simulate_mouse_up(vertical, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 384_000, false)));
 }
@@ -275,6 +289,16 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        Some(
+            gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Muted
+            )))
+            .alpha(0.62)
+            .into()
+        )
+    );
     let midpoint = rail_point(&mut visual, 0.25);
     let command = Modifiers {
         platform: true,
@@ -285,6 +309,17 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((48_000, 192_000, true)));
 
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        Some(
+            gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Text
+            )))
+            .alpha(0.94)
+            .into()
+        )
+    );
     let start = rail_point(&mut visual, 0.125);
     visual.simulate_mouse_move(start, None, Modifiers::default());
     visual.run_until_parked();
@@ -317,7 +352,17 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, false)));
-    assert!(visual.debug_bounds("loop-rail-range").is_some());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("loop-rail-range"),
+        Some(
+            gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                crate::theme::PaletteRole::Muted
+            )))
+            .alpha(0.62)
+            .into()
+        )
+    );
 }
 
 #[gpui::test]
@@ -424,8 +469,8 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
             });
             let first = view.state.as_ref().unwrap().project.tracks()[0].id();
             view.time_selection = Some(super::time_selection::TimeSelection {
-                anchor_track: first,
-                end_track: first,
+                anchor_track: Some(first),
+                end_track: Some(first),
                 anchor_frame: 111,
                 end_frame: 222,
             });
@@ -565,8 +610,8 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
         let state = view.state.as_ref().unwrap().clone();
         let first = state.project.tracks()[0].id();
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: first,
-            end_track: first,
+            anchor_track: Some(first),
+            end_track: Some(first),
             anchor_frame: 111,
             end_frame: 222,
         });

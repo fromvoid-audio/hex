@@ -253,7 +253,8 @@ fn first_paint_preserves_all_64_held_or_released_analytic_voices_and_undo_stays_
                 next.try_inherit_state_from(&mut old),
                 Ok(SessionHandoffReport {
                     cancelled_pending: [None; MAX_TRACKS],
-                    cancelled_pending_len: 0
+                    cancelled_pending_len: 0,
+                    running_audio_restart: false,
                 })
             );
             assert_eq!(
@@ -605,6 +606,105 @@ fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_
 
 #[path = "harmonic_tests/cue.rs"]
 mod cue;
+
+#[test]
+fn clip_gain_handoff_keeps_active_native_voice_in_both_domains() {
+    for session in [false, true] {
+        let original = fixture(1, 8 << 32);
+        let clip = if session {
+            prepared(&original, None).session().midi_clips()[0].id
+        } else {
+            original.tracks()[0].midi_clips()[0].id()
+        };
+        let mut old = start(&original, session);
+        let mut oracle = start(&original, session);
+        old.render(&mut [[0.0; 2]; 128]).unwrap();
+        oracle.render(&mut [[0.0; 2]; 128]).unwrap();
+        let gain = hex_project::ClipGain::new(-6_000).unwrap();
+        let mut editor = Editor::new(original, 8).unwrap();
+        editor
+            .execute(Command::SetMidiClipGain { clip, gain })
+            .unwrap();
+        let mut next =
+            SessionPlayback::new(prepared(editor.project(), Some(old.revision.session()))).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        let mut actual = [[0.0; 2]; 128];
+        let mut expected = actual;
+        next.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert!(expected.iter().flatten().any(|v| v.abs() > 1e-4));
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel] * gain.linear()).abs() < 1e-6,
+                    "session={session} frame={index} channel={channel}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_occurrence_gain_accepts_clip_and_curve_product_in_both_domains() {
+    use hex_project::{ClipGain, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    for session in [false, true] {
+        let render = |mode: u8| {
+            let mut editor = Editor::new(fixture(1, 8 << 32), 8).unwrap();
+            let clip = if session {
+                prepared(editor.project(), None).session().midi_clips()[0].id
+            } else {
+                editor.project().tracks()[0].midi_clips()[0].id()
+            };
+            if mode == 2 {
+                let length = editor.project().midi_source(clip).unwrap().source_length();
+                editor
+                    .execute(Command::ReplaceMidiClipVolume {
+                        clip,
+                        volume: MidiClipVolume::new(
+                            vec![MidiClipVolumePoint::linear(
+                                BeatTime::ZERO,
+                                MidiClipGain::new(4.0).unwrap(),
+                            )],
+                            length,
+                        )
+                        .unwrap(),
+                    })
+                    .unwrap();
+            }
+            if mode != 0 {
+                editor
+                    .execute(Command::SetMidiClipGain {
+                        clip,
+                        gain: ClipGain::new(24_000).unwrap(),
+                    })
+                    .unwrap();
+            }
+            let mut playback = start(editor.project(), session);
+            let mut output = [[0.0; 2]; 256];
+            for block in output.chunks_mut(17) {
+                playback.render(block).unwrap();
+            }
+            output
+        };
+        let unity = render(0);
+        assert!(unity.iter().flatten().any(|v| v.abs() > 1.0e-4));
+        for mode in [1, 2] {
+            let gained = render(mode);
+            let multiplier = f64::from(ClipGain::new(24_000).unwrap().linear())
+                * if mode == 2 { 4.0 } else { 1.0 };
+            for (index, (actual, reference)) in gained.iter().zip(unity).enumerate() {
+                for channel in 0..2 {
+                    assert!(
+                        (f64::from(actual[channel]) - f64::from(reference[channel]) * multiplier)
+                            .abs()
+                            < 1.0e-5,
+                        "session={session} frame={index} channel={channel}"
+                    );
+                }
+            }
+        }
+    }
+}
 
 #[test]
 fn first_harmonic_edit_preserves_live_clip_volume_ramp_in_arrangement_and_console() {

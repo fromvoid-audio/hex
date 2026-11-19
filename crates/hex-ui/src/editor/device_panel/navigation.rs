@@ -13,7 +13,7 @@ pub(in crate::editor) struct Navigation {
     identity: Option<(u64, DevicePanelOwner)>,
     mode: Option<super::super::EditorMode>,
     overview_bounds: Option<Bounds<Pixels>>,
-    toggle_bounds: Option<Bounds<Pixels>>,
+    pub(in crate::editor) detail_controls_bounds: Option<Bounds<Pixels>>,
 }
 
 struct Gesture {
@@ -137,7 +137,7 @@ pub(in crate::editor) fn bottom_bar(
             Some(DevicePanelOwner::Main) => {
                 cards.extend(state.project.main_devices().iter().map(|device| {
                     (
-                        device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                        device_card_width(view, NativeDeviceClass::Effect, device),
                         device.id(),
                     )
                 }))
@@ -153,10 +153,7 @@ pub(in crate::editor) fn bottom_bar(
                                 (device, NativeDeviceClass::Effect)
                             }
                         };
-                        cards.push((
-                            device_card_width(class, device.state().type_id()),
-                            device.id(),
-                        ));
+                        cards.push((device_card_width(view, class, device), device.id()));
                     }
                 }
             }
@@ -169,12 +166,13 @@ pub(in crate::editor) fn bottom_bar(
                 {
                     cards.extend(track.devices().iter().map(|device| {
                         (
-                            device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                            device_card_width(view, NativeDeviceClass::Effect, device),
                             device.id(),
                         )
                     }));
                 }
             }
+            Some(DevicePanelOwner::Source(_)) => {}
             None => {}
         }
     }
@@ -184,9 +182,9 @@ pub(in crate::editor) fn bottom_bar(
     let overview = div()
         .id("device-chain-overview")
         .debug_selector(|| "device-chain-overview".into())
-        .w(px(154.0))
+        .flex_1()
+        .min_w(px(24.0))
         .h(px(16.0))
-        .flex_shrink_0()
         .relative()
         .bg(rgb(theme::color(theme::PaletteRole::Background)))
         .cursor(gpui::CursorStyle::PointingHand)
@@ -273,6 +271,9 @@ pub(in crate::editor) fn bottom_bar(
                         if !phase.capture() || !open || !bounds.contains(&event.position) {
                             return;
                         }
+                        if super::picker_is_open(entity.read(cx)) {
+                            return;
+                        }
                         let delta = event.delta.pixel_delta(px(24.0));
                         wheel_entity.update(cx, |view, _| {
                             let navigation = &view.device_panel.navigation;
@@ -286,78 +287,21 @@ pub(in crate::editor) fn bottom_bar(
             )
             .size_full(),
         );
-    let measure_entity = cx.entity();
+    let trim = open
+        .then(|| super::render_automation_trim(view, cx))
+        .flatten();
+    let controls = view.clip_detail_controls(cx);
     div()
         .id("device-chain-bottom-bar")
         .relative()
         .flex()
         .items_center()
         .gap(px(4.0))
-        .flex_shrink_0()
+        .w(px(270.0))
+        .min_w(px(160.0))
+        .children(trim)
         .child(overview)
-        .child(
-            div()
-                .id("device-panel-bottom-toggle")
-                .debug_selector(|| "device-panel-bottom-toggle".into())
-                .size(px(18.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .text_color(rgb(theme::color(if open {
-                    theme::PaletteRole::Primary
-                } else {
-                    theme::PaletteRole::Muted
-                })))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::super::transport::MiniTooltip {
-                        kind: crate::tooltips::Kind::Identification,
-                        description: if open {
-                            "hide device panel"
-                        } else {
-                            "show device panel"
-                        }
-                        .into(),
-                    })
-                    .into()
-                })
-                .child(theme::text(if open { "⌄" } else { "⌃" }))
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    if open {
-                        if !finalize_controls(view, cx) {
-                            cx.notify();
-                            return;
-                        }
-                        view.clip_view_open = false;
-                    } else {
-                        view.cancel_midi_note_gesture();
-                        view.device_panel_active = true;
-                        view.clip_view_open = true;
-                    }
-                    view.device_panel.navigation.cancel();
-                    view.focus.focus(window);
-                    if let Some(audio) = view.audio.as_mut() {
-                        let _ = audio.control.audition_cancel();
-                    }
-                    clear_eq8_audition_gesture_flags(view);
-                    cx.notify();
-                })),
-        )
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, _, cx| {
-                    measure_entity.update(cx, |view, _| {
-                        view.device_panel.navigation.toggle_bounds = Some(Bounds::new(
-                            point(bounds.right() - px(18.0), bounds.center().y - px(9.0)),
-                            size(px(18.0), px(18.0)),
-                        ));
-                    });
-                },
-            )
-            .absolute()
-            .size_full(),
-        )
+        .child(controls)
 }
 
 /// Root capture runs before numeric fields' outside-down/blur handlers.
@@ -367,7 +311,7 @@ pub(in crate::editor) fn capture_pointer_down(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
-    if view.context_menu.is_some() || view.theme_settings.open {
+    if view.context_menu.is_some() || view.theme_settings.open || super::picker_is_open(view) {
         return;
     }
     let open = view.clip_view_open && view.device_panel_active;
@@ -376,7 +320,7 @@ pub(in crate::editor) fn capture_pointer_down(
         && view
             .device_panel
             .navigation
-            .toggle_bounds
+            .detail_controls_bounds
             .is_some_and(|bounds| bounds.contains(&event.position))
         && !finalize_controls(view, cx)
     {

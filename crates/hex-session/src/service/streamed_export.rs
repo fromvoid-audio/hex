@@ -3,8 +3,11 @@ use super::*;
 
 /// Stateless host capability, invoked only on the existing offline export worker.
 /// It owns independent verification/page preparation through ordinary export and
-/// must drop/join every resource before returning. This grants no native admission.
-pub type StreamedExporter = fn(&StreamedExportRequest<'_>) -> Result<ExportReport, String>;
+/// must drop/join every resource before returning. Publisher failures retain
+/// their structured recovery paths. An adapter must consume any private
+/// processor through `take_foreign` and render with it or refuse before file
+/// publication. This grants no native admission.
+pub type StreamedExporter = fn(&StreamedExportRequest<'_>) -> Result<ExportReport, ExportFailure>;
 
 pub(super) struct StreamedExportJob {
     pub(super) source: Arc<CanonicalAudioSourceSnapshot>,
@@ -40,6 +43,7 @@ impl StreamedExportJob {
 /// A compiled authoring alias may retain older media keys: use its actual source
 /// metadata rather than relabeling it with document/editor counters.
 pub struct StreamedExportRequest<'a> {
+    pub(super) foreign: std::cell::RefCell<Option<&'a mut dyn hex_export::ForeignBounceRenderer>>,
     pub(super) source: &'a CanonicalAudioSourceSnapshot,
     pub(super) prepared: &'a Arc<PreparedRevision>,
     pub(super) resources: Option<&'a hex_engine::native_device_resources::PreparedDeviceResources>,
@@ -47,10 +51,16 @@ pub struct StreamedExportRequest<'a> {
     pub(super) start: u64,
     pub(super) frames: u64,
     pub(super) signal: &'a hex_export::ExportSignal,
+    pub(super) format: hex_export::ExportFormat,
     pub(super) control: &'a hex_export::ExportControl,
     pub(super) publication: &'a hex_export::Publication,
 }
-impl StreamedExportRequest<'_> {
+impl<'a> StreamedExportRequest<'a> {
+    /// Transfer the job's private processor borrow once to the synchronous
+    /// export adapter. Its owner remains in the worker until rendering ends.
+    pub fn take_foreign(&self) -> Option<&'a mut (dyn hex_export::ForeignBounceRenderer + 'a)> {
+        self.foreign.borrow_mut().take()
+    }
     pub fn source(&self) -> &CanonicalAudioSourceSnapshot {
         self.source
     }
@@ -75,6 +85,10 @@ impl StreamedExportRequest<'_> {
     }
     pub fn signal(&self) -> &hex_export::ExportSignal {
         self.signal
+    }
+    /// Sample format of the file or of every stem file in the batch.
+    pub fn format(&self) -> hex_export::ExportFormat {
+        self.format
     }
     pub fn control(&self) -> &hex_export::ExportControl {
         self.control

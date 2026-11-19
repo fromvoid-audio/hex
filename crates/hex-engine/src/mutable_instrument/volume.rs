@@ -15,6 +15,7 @@ pub(crate) type VolumeLookup<'a> = dyn FnMut(
         MutableOccurrenceSignature,
         u64,
         usize,
+        bool,
     ) -> Result<Option<VolumeSlice>, MutableInstrumentRuntimeError>
     + 'a;
 impl VolumeSlice {
@@ -60,7 +61,8 @@ impl VolumeSlice {
             .ramp
             .gain_at(end)
             .map_err(|_| MutableInstrumentRuntimeError::InvalidSourceSpan)?;
-        if !last.is_finite() || !(0.0..=4.0).contains(&last) {
+        if !last.is_finite() || !(0.0..=hex_lattice::MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&last)
+        {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
         Ok((
@@ -80,12 +82,14 @@ impl GainBatch {
         &self.values[..self.len]
     }
 }
+#[allow(clippy::too_many_arguments)] // Borrowed segment owners and distinct source/performance clocks.
 pub(super) fn gains_for_segment(
     pair: &NativeInstrumentRuntimePair,
     proofs: &mut [MutableOccurrence],
-    live: &[Option<super::live::LiveOccurrence>],
+    live: &mut [Option<super::live::LiveOccurrence>],
     events: &[NativeInstrumentEvent],
     start: u64,
+    source_age: Option<u64>,
     frames: usize,
     mut lookup: Option<&mut VolumeLookup<'_>>,
 ) -> Result<Option<GainBatch>, MutableInstrumentRuntimeError> {
@@ -93,7 +97,11 @@ pub(super) fn gains_for_segment(
         || (lookup.is_none()
             && proofs
                 .iter()
-                .all(|p| p.gain_at_end_bits == 1.0_f64.to_bits()))
+                .all(|p| p.gain_at_end_bits == 1.0_f64.to_bits() && p.contributor_fade.is_none())
+            && live
+                .iter()
+                .flatten()
+                .all(|voice| voice.contributor_fade.is_none()))
     {
         return Ok(None);
     }
@@ -108,11 +116,19 @@ pub(super) fn gains_for_segment(
         .active_occurrence_ids(&mut ids)
         .map_err(map_runtime_error)?;
     let mut included = [false; MAX_MUTABLE_OCCURRENCE_PROOFS];
+    let mut included_live = [false; MAX_MUTABLE_OCCURRENCE_PROOFS];
     let mut mark = |id| -> Result<(), MutableInstrumentRuntimeError> {
         match proofs.binary_search_by_key(&id, |p| p.id) {
             Ok(index) => included[index] = true,
-            Err(_) if live.iter().flatten().any(|voice| voice.id == id) => {}
-            Err(_) => return Err(MutableInstrumentRuntimeError::InvalidSourceSpan),
+            Err(_) => {
+                let index = live
+                    .iter()
+                    .position(|voice| voice.is_some_and(|voice| voice.id == id))
+                    .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+                *included_live
+                    .get_mut(index)
+                    .ok_or(MutableInstrumentRuntimeError::OccurrenceCapacity)? = true;
+            }
         }
         Ok(())
     };
@@ -148,11 +164,16 @@ pub(super) fn gains_for_segment(
             None
         } else {
             match lookup.as_mut() {
-                Some(f) => f(proof.signature, start, frames)?,
+                Some(f) => f(
+                    proof.signature,
+                    start,
+                    frames,
+                    proof.contributor_fade.is_some(),
+                )?,
                 None => None,
             }
         };
-        let gain = if let Some(slice) = slice {
+        let mut gain = if let Some(slice) = slice {
             let (gain, last, terminal) = slice.gain(proof.id, frames)?;
             proof.gain_at_end_bits = last;
             proof.gain_frozen |= terminal;
@@ -163,9 +184,72 @@ pub(super) fn gains_for_segment(
             NativeInstrumentOccurrenceGain::new(proof.id, last, last, frames as u64, 0)
                 .map_err(map_runtime_error)?
         };
+        if let Some(fade) = proof.contributor_fade {
+            let age = source_age.ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+            let offset = age
+                .checked_sub(fade.start_age)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+            if offset < fade.frames {
+                gain = gain
+                    .with_attenuation(
+                        f64::from_bits(fade.start_bits),
+                        if fade.muted { 0.0 } else { 1.0 },
+                        fade.frames,
+                        offset,
+                    )
+                    .map_err(map_runtime_error)?;
+                if !fade.muted && offset.saturating_add(frames as u64) >= fade.frames {
+                    proof.contributor_fade = None;
+                }
+            } else if fade.muted {
+                gain = gain
+                    .with_attenuation(0.0, 0.0, frames as u64, 0)
+                    .map_err(map_runtime_error)?;
+            } else {
+                proof.contributor_fade = None;
+            }
+        }
         result.values[result.len] = gain;
         result.len += 1;
     }
+    for (voice, included) in live.iter_mut().zip(included_live) {
+        let Some(voice) = voice.as_mut().filter(|_| included) else {
+            continue;
+        };
+        let Some(fade) = voice.contributor_fade else {
+            continue;
+        };
+        let age = source_age.ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+        let offset = age
+            .checked_sub(fade.start_age)
+            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+        let gain = NativeInstrumentOccurrenceGain::new(voice.id, 1.0, 1.0, frames as u64, 0)
+            .map_err(map_runtime_error)?;
+        let gain = if offset < fade.frames {
+            gain.with_attenuation(
+                f64::from_bits(fade.start_bits),
+                if fade.muted { 0.0 } else { 1.0 },
+                fade.frames,
+                offset,
+            )
+            .map_err(map_runtime_error)?
+        } else if fade.muted {
+            gain.with_attenuation(0.0, 0.0, frames as u64, 0)
+                .map_err(map_runtime_error)?
+        } else {
+            voice.contributor_fade = None;
+            continue;
+        };
+        if !fade.muted && offset.saturating_add(frames as u64) >= fade.frames {
+            voice.contributor_fade = None;
+        }
+        *result
+            .values
+            .get_mut(result.len)
+            .ok_or(MutableInstrumentRuntimeError::OccurrenceCapacity)? = gain;
+        result.len += 1;
+    }
+    result.values[..result.len].sort_unstable_by_key(|gain| gain.occurrence_id());
     Ok((result.len != 0).then_some(result))
 }
 
@@ -207,7 +291,13 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn has_volume_gain(&self) -> bool {
         self.scratch
             .iter()
-            .any(|p| p.gain_at_end_bits != 1.0_f64.to_bits())
+            .any(|p| p.gain_at_end_bits != 1.0_f64.to_bits() || p.contributor_fade.is_some())
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
     }
 
     #[allow(clippy::too_many_arguments)] // Existing segment plus borrowed checked volume owner.
@@ -223,6 +313,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_volume_scope(
             Some(track),
@@ -234,7 +325,8 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             resources,
-            lookup,
+            Some(lookup),
+            automation,
         )
     }
 
@@ -249,6 +341,7 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         self.process_volume_scope(
             None,
@@ -260,12 +353,13 @@ impl MutableInstrumentTrackRuntime {
             events,
             clock,
             resources,
-            lookup,
+            Some(lookup),
+            automation,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn process_volume_scope(
+    pub(super) fn process_volume_scope(
         &mut self,
         track: Option<TrackId>,
         performance_start: u64,
@@ -276,8 +370,25 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
-        lookup: &mut VolumeLookup<'_>,
+        mut lookup: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        let source_end = source_start
+            .checked_add(
+                u64::try_from(frames.len())
+                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?,
+            )
+            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+        if onsets.has_contributor_fade_in
+            && onsets.iter().any(|onset| {
+                onset.contributor_fade_in
+                    && track.is_none_or(|track| onset.key.track == track)
+                    && onset.source_start > source_start
+                    && onset.source_start < source_end
+            })
+        {
+            return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+        }
         let mut offset = 0;
         while offset < frames.len() {
             let performance = performance_start
@@ -287,6 +398,30 @@ impl MutableInstrumentTrackRuntime {
                 .checked_add(offset as u64)
                 .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
             let mut count = frames.len() - offset;
+            if let Some(age) = self.live.as_ref().map(|live| live.scratch_age) {
+                for fade in self
+                    .scratch
+                    .iter()
+                    .filter_map(|proof| proof.contributor_fade)
+                    .chain(self.live.iter().flat_map(|live| {
+                        live.scratch
+                            .iter()
+                            .flatten()
+                            .filter_map(|voice| voice.contributor_fade)
+                    }))
+                {
+                    let elapsed = age
+                        .checked_sub(fade.start_age)
+                        .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                    if elapsed < fade.frames {
+                        count =
+                            count.min(usize::try_from(fade.frames - elapsed).unwrap_or(usize::MAX));
+                    }
+                }
+            }
+            if automation.is_some() {
+                count = count.min(hex_lattice::MAX_INSTRUMENT_AUTOMATION_FRAMES);
+            }
             // Positive progress, at most one iteration per requested frame.
             // Split at an onset so every new voice's original ramp covers the
             // complete borrowed host segment, without extrapolated endpoints.
@@ -299,17 +434,39 @@ impl MutableInstrumentTrackRuntime {
                 let delta = onset.source_start - source;
                 if delta > 0 {
                     count = count.min(usize::try_from(delta).unwrap_or(usize::MAX));
-                } else if let Some(slice) =
-                    lookup(MutableOccurrenceSignature::new(onset), performance, count)?
-                {
-                    count = count.min(slice.remaining(count)?);
+                } else {
+                    if onset.contributor_fade_in {
+                        let fade = ContributorFadeIn::new(self.sample_rate)
+                            .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+                        count = count.min(
+                            usize::try_from(fade.frames())
+                                .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?,
+                        );
+                    }
+                    if let Some(lookup) = lookup.as_mut()
+                        && let Some(slice) = lookup(
+                            MutableOccurrenceSignature::new(onset),
+                            performance,
+                            count,
+                            false,
+                        )?
+                    {
+                        count = count.min(slice.remaining(count)?);
+                    }
                 }
             }
             for proof in &self.scratch {
                 if proof.gain_frozen {
                     continue;
                 }
-                if let Some(slice) = lookup(proof.signature, performance, count)? {
+                if let Some(lookup) = lookup.as_mut()
+                    && let Some(slice) = lookup(
+                        proof.signature,
+                        performance,
+                        count,
+                        proof.contributor_fade.is_some(),
+                    )?
+                {
                     count = count.min(slice.remaining(count)?);
                 }
             }
@@ -317,6 +474,8 @@ impl MutableInstrumentTrackRuntime {
                 return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
             }
             let shifted = clock.map(|clock| OffsetClock { clock, offset });
+            let shifted_values =
+                automation.map(|values| automation::OffsetValues { values, offset });
             self.process_segment_inner(
                 track,
                 performance,
@@ -327,7 +486,10 @@ impl MutableInstrumentTrackRuntime {
                 events,
                 shifted.as_ref().map(|c| c as &dyn NativeInstrumentClock),
                 resources,
-                Some(lookup),
+                lookup.as_deref_mut(),
+                shifted_values
+                    .as_ref()
+                    .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
             )?;
             offset += count;
         }

@@ -1,0 +1,79 @@
+{
+  "purpose": "measure desktop single-test startup after relinking and with a reusable guarded target",
+  "date": "2026-11-12",
+  "source_commit": "539cc15c616d1960af75d13a753a7f058d61ae37",
+  "comparison_base": "fd8faacdbc0a9e3d12179ecfa269d037046d5029",
+  "hardware": "Apple M5 Pro, macOS 26.6.2 (25G83), arm64",
+  "configuration": "debug test binary, allocation-probe feature, installed dependencies, shared machine",
+  "test": "native_audio::tests::resident_file_metadata::native_control_binds_actual_verified_file_to_ordinary_catalog_metadata",
+  "test_binary_sha256_after_guarded_runs": "cdee28e4791617873334b7588ea4a46feae4eb040e427d54d676239d6faf57b9",
+  "guarded_command": "python3 scripts/local-ci.py --profile edit --base fd8faacdbc0a9e3d12179ecfa269d037046d5029 --source 539cc15c616d1960af75d13a753a7f058d61ae37 --package hex-desktop --features allocation-probe --test-filter native_control_binds_actual_verified_file_to_ordinary_catalog_metadata",
+  "guarded_first_run": {
+    "test_step_seconds": 53.908743,
+    "reported_cargo_build_seconds": 52.13,
+    "reported_test_body_seconds": 0.05,
+    "remaining_post_build_seconds": 1.778743,
+    "cache_action": "source-or-compiler-handoff",
+    "local_summary": "artifacts/local-ci/20261112T161837Z-3c6fb7ec/summary.json"
+  },
+  "guarded_warm_run": {
+    "test_step_seconds": 0.507012,
+    "reported_cargo_build_seconds": 0.33,
+    "reported_test_body_seconds": 0.1,
+    "remaining_post_build_seconds": 0.177012,
+    "cache_action": "reuse",
+    "local_summary": "artifacts/local-ci/20261112T162129Z-f5660110/summary.json"
+  },
+  "direct_process_seconds": {
+    "method": "five sequential subprocess.run calls using a previously run test binary; monotonic wall-clock, no cargo, successful exit and one passing test required",
+    "test_list": [
+      0.02,
+      0.006,
+      0.006,
+      0.006,
+      0.006
+    ],
+    "metadata_test": [
+      0.114,
+      0.047,
+      0.047,
+      0.046,
+      0.047
+    ],
+    "mixed_reopen_test": [
+      0.19,
+      0.156,
+      0.135,
+      0.149,
+      0.137
+    ]
+  },
+  "raw_cargo_observations": {
+    "method": "three sequential raw cargo test invocations; monotonic elapsed time at output lines and process exit",
+    "build_finished_to_exit_seconds": [
+      1.237,
+      1.227,
+      1.267
+    ],
+    "run_announced_to_harness_start_seconds": [
+      1.154,
+      1.152,
+      1.191
+    ],
+    "verbose_log": "artifacts/local-ci/issue-7656/raw-cargo-verbose.log",
+    "observed_dirty_inputs": [
+      "crates/hex-ui/.hex-build-identity-refresh is intentionally absent",
+      "/Users/portalsurfer/.cargo/config is absent; unguarded hex-stream construction conservatively refreshes"
+    ]
+  },
+  "interpretation": "The measured warm guarded test meets the one-second target. Raw Cargo conservatively rebuilds for both source-identity and configuration freshness; do not bypass those checks. A freshly linked 119 MB ad-hoc linker-signed binary had about 1.15 seconds between Cargo announcing it and the test harness starting. The cause inside macOS is unproven; this is not a measured device or audio latency. Build durations are excluded from post-build comparisons. The guarded runner results are edit feedback, not merge or release qualification.",
+  "fresh_link_listing_probe": {
+    "method": "raw cargo test --no-run, then three sequential direct test-binary --list invocations with DYLD_PRINT_STATISTICS=1; monotonic wall-clock",
+    "seconds": [
+      0.947,
+      0.009,
+      0.008
+    ],
+    "dyld_statistics": "no diagnostic output was emitted; no loader mechanism established"
+  }
+}

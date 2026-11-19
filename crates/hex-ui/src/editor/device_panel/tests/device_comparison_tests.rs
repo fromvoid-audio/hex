@@ -218,9 +218,9 @@ fn compressor_generic_ab_return_mix_banks_copy_and_persistence(cx: &mut TestAppC
     compressor_banks_roundtrip(cx, true);
 }
 
-struct Directory(std::path::PathBuf);
+pub(super) struct Directory(pub(super) std::path::PathBuf);
 impl Directory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "hex-device-ab-ui-{}-{}",
@@ -231,7 +231,7 @@ impl Directory {
         std::fs::create_dir(path.join("samples")).unwrap();
         Self(path)
     }
-    fn window(
+    pub(super) fn window(
         &self,
         cx: &mut TestAppContext,
         service: Service,
@@ -791,7 +791,7 @@ fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
             format!("eq-response-{}", device.value()).into_boxed_str(),
         ))
         .unwrap();
-    visual.simulate_click(graph.center(), Modifiers::default());
+    eq_ui_tests::eq_double_click(&mut visual, graph.center());
     pump_until(&editor, cx, settled);
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
     visual.simulate_keystrokes("p");
@@ -916,6 +916,8 @@ fn device_comparison_review_dismiss_nonselected_menu_keeps_p_on_target(cx: &mut 
 fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     cx: &mut TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     use crate::editor::arrangement_seek::{PendingSeek, SeekIntent, SeekStage};
     use hex_audio::prepared::PublicationPolicy;
     use std::sync::atomic::Ordering::Acquire;
@@ -930,7 +932,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
         )
         .unwrap(),
     );
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
@@ -969,7 +971,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
-            section: None,
+            kind: crate::editor::arrangement_seek::SeekKind::Fresh,
             recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
@@ -1173,9 +1175,24 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
             PublicationPolicy::InheritRuntime,
         )
         .unwrap();
+    // The changed static matrix ramps over `rate.div_ceil(200)` frames
+    // (240 at 48 kHz, Pulse #4101), so the first block is still in transit.
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     oracle.render(&mut expected).unwrap();
+    assert!(
+        actual
+            .iter()
+            .flatten()
+            .zip(expected.iter().flatten())
+            .any(|(a, e)| (a - e * 0.25).abs() > 1e-6),
+        "the gain edit ramps instead of stepping"
+    );
+    for _ in 0..2 {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+    }
     for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
         assert!((a - e * 0.25).abs() < 1e-6);
     }
@@ -1206,7 +1223,8 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
     callback.render(&mut actual).unwrap();
     oracle.render(&mut expected).unwrap();
     assert_eq!(control.status.applied_revision.load(Acquire), applied);
-    assert_eq!(control.status.position.load(Acquire), 512);
+    // Two extra 128-frame blocks let the gain edit's matrix ramp settle.
+    assert_eq!(control.status.position.load(Acquire), 768);
     for (a, e) in actual.iter().flatten().zip(expected.iter().flatten()) {
         assert!((a - e * 0.25).abs() < 1e-6);
     }
@@ -1238,6 +1256,8 @@ fn device_comparison_metadata_recovery_error_preserves_real_pending_and_applied_
 }
 
 fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     use crate::editor::audio_admission::{AdmissionState, ProjectRevision};
     use std::sync::atomic::Ordering::Acquire;
     let directory = Directory::new();
@@ -1291,7 +1311,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         .prepared_revision()
         .unwrap()
         .clone();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
@@ -1338,6 +1358,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         );
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
+                clip_preview_identity: None,
                 worker_requires_preroll: None,
                 observation: None,
                 audio_revision,

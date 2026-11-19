@@ -63,6 +63,18 @@ impl ActivePublication {
     }
 }
 impl RuntimeRef<'_> {
+    pub(super) fn project_sample_sources_supported(
+        &self,
+        layout: &crate::sample_recording::Layout,
+    ) -> bool {
+        match self {
+            Self::Legacy(p) => p.project_sample_sources_supported(&layout.tracks, &layout.returns),
+            Self::Eligible(p) => {
+                p.project_sample_sources_supported(&layout.tracks, &layout.returns)
+            }
+        }
+    }
+
     pub(super) fn project_output_supported(&self, tracks: &[u64]) -> bool {
         match self {
             Self::Legacy(p) => p.project_output_supported(tracks),
@@ -76,11 +88,39 @@ impl RuntimeRef<'_> {
                 position: p.position(),
                 performance_frame: p.performance_frame(),
                 playing: p.playing(),
+                arrangement_loop_state: p.arrangement_loop_state(),
                 metronome_enabled: p.metronome_enabled(),
                 session_capability: p.session_capability_status(),
                 sampler_console: false,
                 route_state_generation: p.session_route_state_generation(),
                 route_count: p.session_route_count(),
+                main_output_latency_frames: p.main_output_latency_frames(),
+                content_loop: p.automation_capture_loop(),
+            }),
+        }
+    }
+    pub(super) fn transport(
+        &self,
+    ) -> Option<(
+        u64,
+        u64,
+        bool,
+        Option<hex_engine::session_playback::ArrangementLoopState>,
+    )> {
+        match self {
+            Self::Legacy(playback) => Some((
+                playback.position(),
+                playback.performance_frame(),
+                playback.playing(),
+                playback.arrangement_loop_state(),
+            )),
+            Self::Eligible(runtime) => runtime.status().map(|status| {
+                (
+                    status.position,
+                    status.performance_frame,
+                    status.playing,
+                    status.arrangement_loop_state,
+                )
             }),
         }
     }
@@ -89,6 +129,10 @@ impl RuntimeRef<'_> {
             Self::Legacy(p) => p.sample_rate(),
             Self::Eligible(p) => p.sample_rate().unwrap_or(0),
         }
+    }
+    pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
+        self.status()
+            .map(|status| status.main_output_latency_frames)
     }
     pub(super) fn position(&self) -> u64 {
         self.status().map_or(0, |s| s.position)
@@ -101,6 +145,18 @@ impl RuntimeRef<'_> {
     }
     pub(super) fn metronome_enabled(&self) -> bool {
         self.status().is_some_and(|s| s.metronome_enabled)
+    }
+    /// Audible-playhead facts: Main output latency and the enabled content
+    /// loop as half-open `(start, end)` frames.
+    pub(super) fn audible_timing(&self) -> (u32, Option<(u64, u64)>) {
+        self.status().map_or((0, None), |s| {
+            (
+                s.main_output_latency_frames,
+                s.content_loop
+                    .filter(|region| region.enabled())
+                    .map(|region| (region.start(), region.end())),
+            )
+        })
     }
     pub(super) fn session_capability_status(&self) -> SessionCapabilityStatus {
         self.status()
@@ -216,6 +272,12 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.invalidate_native_parameter_input(),
         }
     }
+    pub(super) fn finish_native_parameter_input(&mut self) {
+        match self {
+            Self::Legacy(p) => p.finish_native_parameter_input(),
+            Self::Eligible(p) => p.finish_native_parameter_input(),
+        }
+    }
     pub(super) fn take_native_parameter_application(
         &mut self,
     ) -> Option<hex_engine::NativeParameterApplication> {
@@ -226,6 +288,11 @@ impl RuntimeMut<'_> {
     }
     pub(super) fn position(&self) -> u64 {
         self.read().position()
+    }
+    pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
+        self.read()
+            .status()
+            .map(|status| status.main_output_latency_frames)
     }
     pub(super) fn arm_midi_capture(
         &mut self,
@@ -271,6 +338,36 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.apply_action(action),
         }
     }
+    /// Pause/Stop while playing fade out before applying (Pulse #4138).
+    pub(super) fn try_apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), hex_engine::PlaybackActionError> {
+        match self {
+            Self::Legacy(p) => p.try_apply_declicked_action(action),
+            Self::Eligible(p) => p.apply_declicked_action(action),
+        }
+    }
+    pub(super) fn finish_transport_fade(&mut self) {
+        match self {
+            Self::Legacy(p) => p.finish_transport_fade(),
+            Self::Eligible(p) => p.finish_transport_fade(),
+        }
+    }
+    pub(super) fn pending_transport_fade(&self) -> Option<PlaybackAction> {
+        match self {
+            Self::Legacy(p) => p.pending_transport_fade(),
+            Self::Eligible(p) => p.pending_transport_fade(),
+        }
+    }
+    pub(super) fn take_transport_fade_failure(
+        &mut self,
+    ) -> Option<hex_engine::PlaybackActionRejection> {
+        match self {
+            Self::Legacy(p) => p.take_transport_fade_failure(),
+            Self::Eligible(p) => p.take_transport_fade_failure(),
+        }
+    }
     pub(super) fn apply_priority_stop(
         &mut self,
         clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
@@ -308,6 +405,29 @@ impl RuntimeMut<'_> {
             (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
         }
     }
+    pub(super) fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [Frame],
+        track: hex_engine::OutputCaptureId,
+        input: &[Frame],
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
+    ) -> Result<(), Invalid> {
+        let hex_engine::OutputCaptureId::Track(track) = track else {
+            return Err(Invalid("input monitor target must be a track"));
+        };
+        let mut refuse = hex_lattice::RefuseForeign;
+        let foreign = foreign.unwrap_or(&mut refuse);
+        match self {
+            Self::Legacy(p) => p.render_with_live_track_audio(
+                output, track, input, None, observer, project, foreign,
+            ),
+            Self::Eligible(p) => p.render_with_live_track_audio(
+                output, track, input, None, observer, project, foreign,
+            ),
+        }
+    }
     pub(super) fn clear_gain_recording_override(&mut self) {
         match self {
             Self::Legacy(p) => p.clear_gain_recording_override(),
@@ -324,6 +444,24 @@ impl RuntimeMut<'_> {
         match self {
             Self::Legacy(p) => p.set_gain_recording_override(track, gain),
             Self::Eligible(p) => p.set_gain_recording_override(track, gain),
+        }
+    }
+    /// Apply one desired input without clearing a still-active override.
+    pub(super) fn set_gain_recording_input(
+        &mut self,
+        input: Option<(u64, f32)>,
+    ) -> Result<(), Invalid> {
+        match input {
+            Some((track, gain)) => self.set_gain_recording_override(track, gain),
+            None => {
+                match self {
+                    Self::Legacy(p) => p.release_gain_recording_override(),
+                    Self::Eligible(p) => {
+                        let _ = p.release_gain_recording_override();
+                    }
+                }
+                Ok(())
+            }
         }
     }
     pub(super) fn select_processor_audition(

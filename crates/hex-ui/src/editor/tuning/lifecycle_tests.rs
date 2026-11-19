@@ -25,7 +25,7 @@ fn scratch() -> Scratch {
     Scratch(path)
 }
 fn next(editor: &Entity<EditorView>, cx: &TestAppContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match editor.read_with(cx, |view, _| view.service.try_event()) {
             Ok(event) => return event,
@@ -87,7 +87,7 @@ fn preview(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     });
 }
 fn settle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -156,13 +156,21 @@ fn review_lifecycle_close_and_quit_confirm_acknowledged_uncommitted_tuning(
                 } else {
                     assert!(!view.request_window_close(window, cx));
                 }
-                assert!(view.close_prompt_open);
+                assert!(view.automation_close_preflight.frozen());
                 assert!(view.tuning.client.has_pending_terminal());
             });
         })
         .unwrap();
+        super::super::close::wait_for_close_prompt(&editor, cx);
         assert!(cx.has_pending_prompt());
         cx.simulate_prompt_answer("cancel");
+        cx.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(state.unsaved);
+            assert_eq!(state.project.tuning(), tuning(333.0));
+            assert!(!view.close_prompt_open);
+        });
     }
 }
 #[gpui::test]
@@ -318,6 +326,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 600.0,
+                gesture: None,
             },
             cx,
         );
@@ -332,6 +341,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 1800.0,
+                gesture: None,
             },
             cx,
         );
@@ -495,7 +505,7 @@ fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppConte
             })
         })
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while !input.is_cancelled() {
         assert!(Instant::now() < deadline, "worker did not refuse audition");
         std::thread::sleep(Duration::from_millis(2));

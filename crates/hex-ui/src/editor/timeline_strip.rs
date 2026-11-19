@@ -86,7 +86,7 @@ pub(super) fn loop_range(
     let first = start.clamp(0.0, 1.0);
     let last = end.clamp(0.0, 1.0);
     let color = theme::color(if enabled {
-        theme::PaletteRole::Primary
+        theme::PaletteRole::Text
     } else {
         theme::PaletteRole::Muted
     });
@@ -121,4 +121,25 @@ pub(super) fn loop_range(
         }
     }
     Some(rail)
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    use super::{loop_range, ruler_tick};
+
+    #[test]
+    fn malformed_and_invisible_shared_strip_geometry_paints_no_false_boundary() {
+        for (start, end) in [
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+            (0.8, 0.2),
+            (-2.0, -0.1),
+            (1.1, 2.0),
+        ] {
+            assert!(loop_range(start, end, true, ["start", "end"]).is_none());
+        }
+        for position in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            assert!(ruler_tick(position, "authored", false, false, false).is_none());
+        }
+    }
 }

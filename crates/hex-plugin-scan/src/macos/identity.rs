@@ -1,20 +1,22 @@
 //! Bounded filesystem snapshots for explicitly trusted factory discovery.
 //! Hashes identify bytes, not authenticity or protection from malicious races.
 use super::{
-    macho::{self, Image, Role},
+    macho::{self, Image},
     validation::Error as ValidationError,
 };
-use crate::{MAX_BINARY, hash};
+use crate::{digest_hex, hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
+    os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
 };
 
 pub const MAX_PATH_BYTES: usize = 4096;
 pub const MAX_INFO_BYTES: u64 = 64 * 1024;
+const EXECUTABLE_READ_BYTES: usize = 64 * 1024;
 
 /// Successful selected-module revalidation uses a returned canonical path
 /// and one checked relative path, or just the executable path. File payload
@@ -179,13 +181,84 @@ fn canonical_bundle_path(path: &Path) -> Result<PathBuf, ValidationError> {
 }
 
 pub(super) fn hash_matches(bytes: &[u8], expected: &str) -> bool {
+    digest_matches(Sha256::digest(bytes).into(), expected)
+}
+
+fn digest_matches(digest: [u8; 32], expected: &str) -> bool {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut actual = [0_u8; 64];
-    for (index, byte) in Sha256::digest(bytes).iter().enumerate() {
+    for (index, byte) in digest.into_iter().enumerate() {
         actual[index * 2] = HEX[usize::from(byte >> 4)];
         actual[index * 2 + 1] = HEX[usize::from(byte & 15)];
     }
     expected.as_bytes() == actual
+}
+
+/// Check a regular executable's Mach-O framing and hash the complete file using
+/// fixed scratch. Stop at the opened length even if a writer keeps appending.
+fn module_identity(path: &Path) -> Result<(Image, [u8; 32]), ValidationError> {
+    let path_metadata = || {
+        fs::symlink_metadata(path).map_err(|source| ValidationError::Io {
+            context: "executable metadata failed",
+            source,
+        })
+    };
+    let before = path_metadata()?;
+    if !before.is_file() {
+        return Err("nonregular or linked executable".into());
+    }
+    let mut file = fs::File::open(path).map_err(|source| ValidationError::Io {
+        context: "executable open failed",
+        source,
+    })?;
+    let opened_metadata = |file: &fs::File| {
+        file.metadata().map_err(|source| ValidationError::Io {
+            context: "opened executable metadata failed",
+            source,
+        })
+    };
+    if !same_executable(&before, &opened_metadata(&file)?) {
+        return Err("executable changed while opening".into());
+    }
+    let image = macho::inspect_file(&file, before.len())?;
+    let digest = hash_executable(&mut file, before.len())?;
+    if !same_executable(&before, &opened_metadata(&file)?)
+        || !same_executable(&before, &path_metadata()?)
+    {
+        return Err("executable changed during validation".into());
+    }
+    Ok((image, digest))
+}
+
+fn same_executable(before: &fs::Metadata, current: &fs::Metadata) -> bool {
+    current.is_file()
+        && before.dev() == current.dev()
+        && before.ino() == current.ino()
+        && before.len() == current.len()
+        && (before.mtime(), before.mtime_nsec()) == (current.mtime(), current.mtime_nsec())
+        && (before.ctime(), before.ctime_nsec()) == (current.ctime(), current.ctime_nsec())
+}
+
+fn hash_executable(mut file: impl Read, mut remaining: u64) -> Result<[u8; 32], ValidationError> {
+    let mut digest = Sha256::new();
+    let mut block = [0; EXECUTABLE_READ_BYTES];
+    let read_error = |source| ValidationError::Io {
+        context: "executable read failed",
+        source,
+    };
+    while remaining > 0 {
+        let count = remaining.min(block.len() as u64) as usize;
+        file.read_exact(&mut block[..count]).map_err(read_error)?;
+        digest.update(&block[..count]);
+        remaining -= count as u64;
+    }
+    match file.read_exact(&mut block[..1]) {
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Ok(digest.finalize().into())
+        }
+        Ok(()) => Err("executable grew during validation".into()),
+        Err(error) => Err(read_error(error)),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,11 +299,11 @@ impl Bundle {
             return Err("native bundle executable location refused".into());
         }
         let path = relative_file(&self.canonical_path, executable)?;
-        let bytes = read_file(&path, MAX_BINARY)?;
+        let (image, digest) = module_identity(&path)?;
         Ok(Executable {
             relative_path: executable.to_owned(),
-            sha256: hash(&bytes),
-            image: macho::inspect(&bytes, Role::Module)?,
+            sha256: digest_hex(digest),
+            image,
         })
     }
 
@@ -240,9 +313,8 @@ impl Bundle {
             return Err("native bundle executable location refused".into());
         }
         let path = relative_file(&self.canonical_path, &expected.relative_path)?;
-        let bytes = read_file(&path, MAX_BINARY)?;
-        let image = macho::inspect(&bytes, Role::Module)?;
-        if image != expected.image || !hash_matches(&bytes, &expected.sha256) {
+        let (image, digest) = module_identity(&path)?;
+        if image != expected.image || !digest_matches(digest, &expected.sha256) {
             return Err("selected executable changed".into());
         }
         Ok(())
@@ -264,7 +336,9 @@ impl Bundle {
         let module = relative_path_capacity(&self.canonical_path, &executable.relative_path)?;
         Some(SourceRevalidationStorageBound {
             data_bytes: info.max(module),
-            file_data_bytes: usize::try_from(MAX_BINARY).ok()?,
+            file_data_bytes: usize::try_from(MAX_INFO_BYTES)
+                .ok()?
+                .max(EXECUTABLE_READ_BYTES),
             file_reader_lifetime_bound: 1,
             canonicalization_lifetime_bound: 1,
         })
@@ -282,6 +356,7 @@ pub struct Executable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_BINARY;
 
     struct Directory(PathBuf);
     impl Directory {
@@ -448,7 +523,7 @@ mod tests {
         let selected = bundle.admit("Contents/MacOS/fixture").unwrap();
         let bound = bundle.revalidation_storage_bound(&selected).unwrap();
         assert!(bound.data_bytes >= MAX_PATH_BYTES);
-        assert_eq!(bound.file_data_bytes, MAX_BINARY as usize);
+        assert_eq!(bound.file_data_bytes, 64 * 1024);
         bundle.executable_unchanged(&selected).unwrap();
         let path = relative_file(&bundle.canonical_path, &selected.relative_path).unwrap();
         assert_eq!(
@@ -482,6 +557,45 @@ mod tests {
                 .to_string()
                 .contains("unsupported mach-o container")
         );
+    }
+
+    #[test]
+    fn modules_above_the_helper_cap_keep_complete_identity() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let directory = Directory::new();
+        let root = directory.0.join("large.vst3");
+        fs::create_dir_all(root.join("Contents/MacOS")).unwrap();
+        fs::write(root.join("Contents/Info.plist"), b"original info").unwrap();
+        let relative = "Contents/MacOS/fixture";
+        let path = root.join(relative);
+        let mut file = fs::File::create(&path).unwrap();
+        for word in [0xfeed_facf_u32, 0x0100_000c, 0, 8, 1, 8, 0, 0, 0, 8] {
+            file.write_all(&word.to_le_bytes()).unwrap();
+        }
+        file.set_len(MAX_BINARY + 1).unwrap();
+
+        let bundle = Bundle::inspect(&root).unwrap();
+        let admitted = bundle.admit(relative).unwrap();
+        assert_eq!(admitted.image, Image::ThinArm64);
+        assert_eq!(
+            admitted.sha256,
+            "a7ccfe023d597d6466118938338738b3b9fa2a6de6ba2ddf4eff00cefdb1002b"
+        );
+        bundle.executable_unchanged(&admitted).unwrap();
+
+        file.seek(SeekFrom::Start(MAX_BINARY)).unwrap();
+        file.write_all(&[1]).unwrap();
+        assert!(matches!(
+            bundle.executable_unchanged(&admitted),
+            Err(ValidationError::Invalid("selected executable changed"))
+        ));
+    }
+
+    #[test]
+    fn executable_hash_refuses_growth_and_truncation() {
+        assert!(hash_executable(&b"ab"[..], 1).is_err());
+        assert!(hash_executable(&b"a"[..], 2).is_err());
     }
 
     #[test]

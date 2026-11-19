@@ -359,6 +359,24 @@ impl TestAppContext {
     pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
         self.test_platform.pending_save_options()
     }
+    /// Hex patch: deliver an OS termination request (Dock Quit, logout,
+    /// restart) to the app's [`App::on_should_quit`] handler. Returns true when
+    /// the app deferred its answer; false means it would terminate immediately.
+    pub fn simulate_should_quit(&self) -> bool {
+        self.test_platform.simulate_should_quit()
+    }
+
+    /// Hex patch: whether a simulated termination request awaits its reply.
+    pub fn quit_request_pending(&self) -> bool {
+        self.test_platform.quit_request_pending()
+    }
+
+    /// Hex patch: every [`App::reply_to_quit`] answer to a pending simulated
+    /// request, in order (`true` terminates, `false` cancels).
+    pub fn quit_replies(&self) -> Vec<bool> {
+        self.test_platform.quit_replies()
+    }
+
     /// Complete the injected Open request with a platform error, without a panel.
     pub fn simulate_paths_error(&self, message: &str) {
         self.test_platform.simulate_paths_error(message);
@@ -731,6 +749,17 @@ impl<V> Entity<V> {
 use derive_more::{Deref, DerefMut};
 
 use super::{Context, Entity};
+/// One tessellated path triangle in a completed test scene, including its replay mask.
+/// This is geometry evidence, not antialiased framebuffer readback.
+pub struct RenderedPathTriangle {
+    /// Actual completed path fill.
+    pub color: crate::Background,
+    /// Content/replay mask in physical scene coordinates.
+    pub mask: crate::Bounds<crate::ScaledPixels>,
+    /// The three tessellated positions in physical scene coordinates.
+    pub vertices: [crate::Point<crate::ScaledPixels>; 3],
+}
+
 #[derive(Deref, DerefMut, Clone)]
 /// A VisualTestContext is the test-equivalent of a `Window` and `App`. It allows you to
 /// run window-specific test code. It can be dereferenced to a `TextAppContext`.
@@ -743,6 +772,41 @@ pub struct VisualTestContext {
 }
 
 impl VisualTestContext {
+    /// Read path meshes whose complete bounds match the selected element.
+    /// Reads the completed scene, including retained replay, without drawing a frame.
+    pub fn rendered_path_triangles(&mut self, selector: &'static str) -> Vec<RenderedPathTriangle> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let bounds = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .paths
+                .iter()
+                .filter(|path| path.bounds == bounds)
+                .flat_map(|path| {
+                    path.vertices
+                        .chunks_exact(3)
+                        .map(move |vertices| RenderedPathTriangle {
+                            color: path.color,
+                            mask: path.content_mask.bounds,
+                            vertices: [
+                                vertices[0].xy_position,
+                                vertices[1].xy_position,
+                                vertices[2].xy_position,
+                            ],
+                        })
+                })
+                .collect()
+        })
+    }
+    /// Consult the display callback's retained-scene policy after real test input.
+    pub fn should_present_drawn_scene(&mut self, required: bool, keepalive: bool) -> bool {
+        self.update(|window, _| window.should_present_drawn_scene(required, keepalive))
+    }
+
     /// Returns the cursor request selected by the current rendered hitbox.
     /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
     pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -764,6 +828,39 @@ impl VisualTestContext {
                 .rev()
                 .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
                 .map(|quad| quad.background)
+        })
+    }
+
+    /// Return monochrome sprite colors intersecting an element in the completed scene.
+    /// This observes SVG painting, not a native framebuffer or cursor.
+    pub fn rendered_monochrome_colors(&mut self, selector: &'static str) -> Vec<crate::Hsla> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.monochrome_sprites.iter()
+                .filter(|sprite| sprite.bounds.intersects(&scaled))
+                .map(|sprite| sprite.color)
+                .collect()
+        })
+    }
+
+    /// Bounds of bottom-to-top monochrome sprites in a rendered element.
+    pub fn rendered_vertical_glyph_bounds(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<Bounds<crate::ScaledPixels>> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let bounds = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.monochrome_sprites.iter()
+                .filter(|sprite| sprite.transformation.rotation_scale == [[0.0, 1.0], [-1.0, 0.0]])
+                .map(|sprite| sprite.painted_bounds())
+                .filter(|glyph| glyph.intersects(&bounds))
+                .collect()
         })
     }
 
