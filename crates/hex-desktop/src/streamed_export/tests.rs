@@ -659,6 +659,83 @@ fn history_seek_case(mode: Option<hex_project::WarpMode>) {
         )
         .unwrap(),
     );
+    for section in [
+        None,
+        Some(hex_project::LoopRegion::new(512, 4096, true).unwrap()),
+    ] {
+        let mut on_pcm = None;
+        for note_chase in [hex_engine::NoteChase::On, hex_engine::NoteChase::Off] {
+            let mut oracle = if let Some(region) = section {
+                SessionPlayback::prepare_section_arrangement_preroll_with_note_chase(
+                    Arc::clone(&oracle_revision), Some(&resources), region, 0, note_chase, &cancelled,
+                )
+            } else {
+                SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources_and_note_chase(
+                    Arc::clone(&oracle_revision), &resources, 512, 0, true, note_chase, &cancelled,
+                )
+            }.unwrap();
+            let mut expected = [[0.0; 2]; 193];
+            oracle.render(&mut expected).unwrap();
+            let spec = ArrangementSeekSpec {
+                note_chase,
+                mode: section.map_or(
+                    ArrangementSeekMode::Interactive,
+                    ArrangementSeekMode::SectionLoop,
+                ),
+                generation: 7,
+                revision: 17,
+                prepared_revision: Arc::clone(&revision),
+                destination_frame: 512,
+                work_budget_frames: 0,
+                start_playing: true,
+            };
+            let mut actual = prepare_file_seek_runtime(
+                &spec,
+                &resources,
+                hex_engine::AudioSourceContext {
+                    project_generation: 7,
+                    editor_revision: 17,
+                },
+                |_| Ok(&file),
+                &[],
+                &granular_requirements,
+                &cancelled,
+            )
+            .unwrap();
+            let mut pages = VerifiedPages::capture_files(
+                &revision,
+                |_| Ok(&file),
+                &[],
+                DerivedCapture::Captured(&granular_requirements),
+                None,
+                StreamConfig::with_pool_pages(3),
+                &cancelled,
+            )
+            .unwrap();
+            let count = hex_engine::PreparedPrerollPages::prepare_chunk(
+                &mut pages, &actual, 193, &cancelled,
+            )
+            .unwrap();
+            assert_eq!(count, 193);
+            let mut rendered = [[0.0; 2]; 193];
+            actual.render_with_pages(&mut rendered, &mut pages).unwrap();
+            hex_engine::PreparedPrerollPages::complete_chunk(&mut pages).unwrap();
+            pages.finish_pages(&cancelled).unwrap();
+            assert_eq!(
+                rendered, expected,
+                "ordinary page seek policy={note_chase:?}, section={section:?}"
+            );
+            if note_chase == hex_engine::NoteChase::On {
+                on_pcm = Some(rendered);
+            } else {
+                assert_ne!(
+                    on_pcm.unwrap(),
+                    rendered,
+                    "held Operator note makes the policy observable"
+                );
+            }
+        }
+    }
     for (destination, playing) in [(512, true), (24_004, false)] {
         let mut oracle =
             SessionPlayback::new_with_device_resources(Arc::clone(&oracle_revision), &resources)
@@ -672,6 +749,7 @@ fn history_seek_case(mode: Option<hex_project::WarpMode>) {
         let mut expected = [[0.0; 2]; 193];
         oracle.render(&mut expected).unwrap();
         let spec = ArrangementSeekSpec {
+            note_chase: hex_engine::NoteChase::On,
             mode: ArrangementSeekMode::HistoryPreservingInteractive,
             generation: 7,
             revision: 17,
@@ -723,6 +801,7 @@ fn history_seek_case(mode: Option<hex_project::WarpMode>) {
     }
 
     let spec = ArrangementSeekSpec {
+        note_chase: hex_engine::NoteChase::On,
         mode: ArrangementSeekMode::HistoryPreservingInteractive,
         generation: 7,
         revision: 17,
@@ -736,6 +815,30 @@ fn history_seek_case(mode: Option<hex_project::WarpMode>) {
         editor_revision: 17,
     };
     let resolutions = std::cell::Cell::new(0);
+    let contradictory = ArrangementSeekSpec {
+        note_chase: hex_engine::NoteChase::Off,
+        ..spec.clone()
+    };
+    assert!(
+        prepare_file_seek_runtime(
+            &contradictory,
+            &resources,
+            context,
+            |_| {
+                resolutions.set(resolutions.get() + 1);
+                Ok(&file)
+            },
+            &[],
+            &[],
+            &cancelled,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        resolutions.get(),
+        0,
+        "contradictory history policy refuses before resolving files"
+    );
     assert!(
         prepare_file_seek_runtime(
             &spec,

@@ -473,6 +473,9 @@ impl PreparedOwnedProcessorRuntime for Factory {
     fn reserved_bypass_latency_frames(&self) -> Option<u32> {
         Some(self.config.latency())
     }
+    fn supports_power_off(&self) -> bool {
+        true
+    }
     fn parameter_modulation_semantics(
         &self,
         id: hex_lattice_contract::ParameterId,

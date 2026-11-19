@@ -53,10 +53,24 @@ fn outgoing_device_fade_refuses_its_failed_read_before_touching_current_pcm() {
 }
 
 #[cfg(feature = "stream-test-support")]
+#[test]
+fn outgoing_device_fade_releases_publication_admission_on_priority_stop() {
+    check_outgoing_cold_file(ColdFile::PriorityStop);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn outgoing_device_fade_yields_to_the_admitted_quantized_launch() {
+    check_outgoing_cold_file(ColdFile::SessionLaunch);
+}
+
+#[cfg(feature = "stream-test-support")]
 enum ColdFile {
     Spare,
     Full,
     FailedRead,
+    PriorityStop,
+    SessionLaunch,
 }
 
 #[cfg(feature = "stream-test-support")]
@@ -74,6 +88,7 @@ fn check_outgoing_cold_file(case: ColdFile) {
     };
     let project = super::readiness::project_with_frames(u64::from(first_frames));
     let first_asset = project.assets().next().unwrap().id();
+    let first_track = project.tracks()[0].id();
     let mut editor = Editor::new(project, 8).unwrap();
     let Created::Asset(next_asset) = editor
         .execute(Command::AddAsset {
@@ -104,6 +119,30 @@ fn check_outgoing_cold_file(case: ColdFile) {
             looping: false,
         })
         .unwrap();
+    let launch_clip = matches!(case, ColdFile::SessionLaunch).then(|| {
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "launch".into(),
+            })
+            .unwrap()
+        else {
+            panic!("launch scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track: first_track,
+                scene,
+                name: "next".into(),
+                asset: next_asset,
+                source_start: 0,
+                source_end: 512,
+            })
+            .unwrap()
+        else {
+            panic!("launch clip");
+        };
+        clip
+    });
     let first = stream_fixture::Wav::with_frames(first_frames);
     let next = stream_fixture::Wav::with_samples(512, |_| 4_096);
     let definitions = vec![
@@ -130,6 +169,17 @@ fn check_outgoing_cold_file(case: ColdFile) {
         .collect();
     let mut owner =
         stream_fixture::owner_sources(editor.project(), metadata.clone(), Some(context));
+    let independent_context = AudioSourceContext {
+        editor_revision: 9,
+        ..context
+    };
+    let independent = matches!(case, ColdFile::PriorityStop).then(|| {
+        stream_fixture::owner_sources(
+            editor.project(),
+            metadata.clone(),
+            Some(independent_context),
+        )
+    });
     let (mut control, mut data, errors, mut retirement) = anchored();
     let mut limits = reservation(&mut owner);
     if full_cache {
@@ -200,6 +250,7 @@ fn check_outgoing_cold_file(case: ColdFile) {
     control.command(PlaybackCommand::Play).unwrap();
 
     let failed = std::cell::Cell::new(false);
+    let launch_has_candidate = std::cell::Cell::new(false);
     let mut run = |project_fade: bool, render: bool| {
         let mut output = [[0.0; 2]; 16];
         let mut held = false;
@@ -233,6 +284,16 @@ fn check_outgoing_cold_file(case: ColdFile) {
                 if render {
                     callback.render(&mut output).unwrap();
                 }
+                if launch_clip.is_some() {
+                    let loan = callback
+                        .domain_pages
+                        .iter_mut()
+                        .flatten()
+                        .find_map(|pages| pages.test_page_loan(domain))
+                        .unwrap();
+                    launch_has_candidate
+                        .set(!loan.test_role_is_idle(hex_stream::ProtectionRole::Candidate));
+                }
             });
         });
         assert_eq!(
@@ -251,6 +312,7 @@ fn check_outgoing_cold_file(case: ColdFile) {
         assert!(Instant::now() < deadline, "predecessor did not play");
         std::thread::yield_now();
     }
+    let mut independent_ticket = None;
     let installed = if full_cache {
         let source = control.status.applied_audio_source().unwrap();
         let edit_context = AudioSourceContext {
@@ -304,6 +366,90 @@ fn check_outgoing_cold_file(case: ColdFile) {
         assert_eq!(control.status.position.load(Acquire), before + 32);
         assert_eq!(control.status.applied_audio_source(), Some(source));
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        if let Some(independent) = independent {
+            let identity = independent.identity();
+            let refused = control
+                .stage_eligible_audio_candidate(
+                    independent,
+                    vec![domain],
+                    PublicationPolicy::InheritRuntime,
+                    independent_context.project_generation,
+                )
+                .err()
+                .expect("a second publication displaced the waiting fade");
+            assert_eq!(refused.reason, "playback publication already pending");
+            assert_eq!(refused.owner.identity(), identity);
+            assert_eq!(refused.domains, [domain]);
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+
+            control.stop();
+            assert_eq!(run(false, true).1, [[0.0; 2]; 16]);
+            assert_eq!(control.status.position.load(Acquire), 0);
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(control.status.applied_audio_source(), Some(source));
+            assert_eq!(
+                receipt.state(),
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+            );
+            assert!(!control.status.publication_pending.load(Acquire));
+
+            let ticket = control
+                .stage_eligible_audio_candidate(
+                    refused.owner,
+                    refused.domains,
+                    PublicationPolicy::InheritRuntime,
+                    independent_context.project_generation,
+                )
+                .unwrap_or_else(|error| panic!("{}", error.reason));
+            assert_eq!(run(false, true).1, [[0.0; 2]; 16]);
+            assert_eq!(
+                control.status.applied_audio_source(),
+                Some(AppliedAudioSource {
+                    context: independent_context,
+                    audio_revision: control.status.submitted_revision.load(Acquire),
+                    output_identity: source.output_identity,
+                })
+            );
+            independent_ticket = Some(ticket);
+        }
+        let launch = launch_clip.map(|clip| {
+            let launch = control
+                .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: hex_engine::LaunchQuantization::ThirtySecond,
+                })
+                .unwrap();
+            let position = control.status.performance_frame.load(Acquire);
+            assert_eq!(run(false, true).1, [[0.25; 2]; 16]);
+            assert_eq!(
+                control.status.performance_frame.load(Acquire),
+                position + 16
+            );
+            assert_eq!(control.status.applied_audio_source(), Some(source));
+            assert_eq!(
+                receipt.state(),
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+            );
+            assert_eq!(
+                control.status.stream_scheduled_command.load(Acquire),
+                launch
+            );
+            assert_eq!(control.status.stream_activated_command.load(Acquire), 0);
+            assert!(
+                launch_has_candidate.get(),
+                "launch did not reserve Candidate"
+            );
+
+            let mut routes = [SessionRouteEntry::default(); 2];
+            let snapshot = control.status.session_routes(&mut routes).unwrap();
+            assert_eq!(snapshot.audio_revision, source.audio_revision);
+            let pending = routes[..snapshot.count]
+                .iter()
+                .find_map(|route| route.pending)
+                .unwrap();
+            assert!(pending.performance_frame > position + 16);
+            (launch, pending.performance_frame)
+        });
         release.send(()).unwrap();
         if fail_read {
             while !failed.get() {
@@ -324,7 +470,25 @@ fn check_outgoing_cold_file(case: ColdFile) {
                 receipt.state(),
                 PublicationReceiptState::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
             );
-        } else {
+        } else if let Some((ticket, due)) = launch {
+            loop {
+                let before = control.status.performance_frame.load(Acquire);
+                let pcm = run(false, true).1;
+                if control.status.stream_activated_command.load(Acquire) == ticket {
+                    let offset = usize::try_from(due - before).unwrap();
+                    assert!(offset < pcm.len());
+                    assert_eq!(pcm[offset..], [[0.125; 2]; 16][offset..]);
+                    assert_eq!(control.status.applied_audio_source(), Some(source));
+                    break;
+                }
+                assert!(control.status.performance_frame.load(Acquire) <= due);
+                assert!(
+                    Instant::now() < deadline,
+                    "scheduled launch did not activate"
+                );
+                std::thread::yield_now();
+            }
+        } else if independent_ticket.is_none() {
             while matches!(
                 receipt.state(),
                 PublicationReceiptState::Pending | PublicationReceiptState::Applying
@@ -382,6 +546,9 @@ fn check_outgoing_cold_file(case: ColdFile) {
     drop(recover(&mut control, &ticket));
     if let Some(staged) = installed {
         drop(recover(&mut control, &staged));
+    }
+    if let Some(independent) = independent_ticket {
+        drop(recover(&mut control, &independent));
     }
     drop(control);
     finish(&mut retirement);

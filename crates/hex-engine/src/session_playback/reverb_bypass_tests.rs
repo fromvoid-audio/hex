@@ -1,4 +1,4 @@
-//! Real routed room histories use one bounded host bypass transition.
+//! Routed Reverb power fades the old room and restarts from clean history.
 use super::*;
 use hex_devices::reverb::{REVERB_DEFINITION as DEFINITION, parameter as p};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -13,9 +13,27 @@ fn render(playback: &mut SessionPlayback, frames: usize, block: usize) -> Vec<Fr
 }
 
 #[test]
-fn reverb_bypass_track_return_main_matches_single_wet_history_and_dry_reference() {
+fn reverb_power_track_return_main_matches_wet_dry_and_fresh_room_references() {
     for location in 0..3 {
-        let mut snapshot = project(0.5, 0, 8 << 32).snapshot();
+        let mut input = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { asset, .. } = input
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "room input".into(),
+                path: "memory/room-input.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 8192,
+                playback_frames: 8192,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("Reverb reference input");
+        };
+        let media = BTreeMap::from([(
+            asset,
+            crate::Audio::new(48_000, vec![[0.25, -0.125]; 8192]).unwrap(),
+        )]);
+        let mut snapshot = input.project().snapshot();
         let id = snapshot.next_id;
         snapshot.next_id += 2;
         let mut state = DEFINITION.default_state().unwrap();
@@ -61,8 +79,7 @@ fn reverb_bypass_track_return_main_matches_single_wet_history_and_dry_reference(
         let table = Arc::new(hex_devices::SineTable::new());
         let make = |project: &Project, previous: Option<&PreparedSessionInventory>| {
             SessionPlayback::new(Arc::new(
-                PreparedRevision::prepare(project, &BTreeMap::new(), Arc::clone(&table), previous)
-                    .unwrap(),
+                PreparedRevision::prepare(project, &media, Arc::clone(&table), previous).unwrap(),
             ))
             .unwrap()
         };
@@ -82,6 +99,10 @@ fn reverb_bypass_track_return_main_matches_single_wet_history_and_dry_reference(
                 editor
                     .execute(Command::ToggleDeviceBypass { device })
                     .unwrap();
+                wet = make(&source, None);
+                wet.apply(SessionPlaybackCommand::Seek(candidate.arrangement_frame()))
+                    .unwrap();
+                wet.apply(SessionPlaybackCommand::Play).unwrap();
             }
             let mut next = make(editor.project(), Some(candidate.revision.session()));
             next.try_inherit_state_from(&mut candidate).unwrap();

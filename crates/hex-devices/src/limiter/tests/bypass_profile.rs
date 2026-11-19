@@ -1,11 +1,10 @@
-//! CPU comparison of the same DSP with its previous host bypass capability
-//! disabled versus reserved alignment. This is a microbenchmark, not a deadline.
+//! Compare the same reserved dry path with the Limiter warm and powered off.
 use super::*;
 use hex_lattice::{NativeRuntimeChain, PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix};
 use std::{hint::black_box, time::Instant};
 
-struct PreviousCapability(Arc<dyn PreparedOwnedProcessorRuntime>);
-impl PreparedOwnedProcessorRuntime for PreviousCapability {
+struct WarmAligned(Arc<dyn PreparedOwnedProcessorRuntime>);
+impl PreparedOwnedProcessorRuntime for WarmAligned {
     fn runtime_version(&self) -> u32 {
         self.0.runtime_version()
     }
@@ -14,6 +13,9 @@ impl PreparedOwnedProcessorRuntime for PreviousCapability {
     }
     fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
         self.0.create_runtime()
+    }
+    fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+        self.0.reserved_bypass_latency_frames()
     }
     fn output_tail(&self) -> hex_lattice::OutputTail {
         self.0.output_tail()
@@ -39,12 +41,13 @@ fn reserved_bypass_cpu_comparison() {
             ],
         ),
     ] {
-        for aligned in [false, true] {
+        for powered_off in [false, true] {
             let provider = factory(48_000, &changes);
-            let provider = if aligned {
+            let provider = if powered_off {
+                assert!(provider.supports_power_off());
                 provider
             } else {
-                Arc::new(PreviousCapability(provider))
+                Arc::new(WarmAligned(provider))
             };
             let state = state(&changes);
             let mut chain = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
@@ -80,7 +83,7 @@ fn reserved_bypass_cpu_comparison() {
             }
             times.sort_unstable();
             println!(
-                "{label} aligned={aligned} 48k/128,512warmup+2048measured mean={}ns p50={}ns p99={}ns max={}ns",
+                "{label} powered_off={powered_off} 48k/128,512warmup+2048measured mean={}ns p50={}ns p99={}ns max={}ns",
                 times.iter().sum::<u128>() / times.len() as u128,
                 times[1024],
                 times[2027],

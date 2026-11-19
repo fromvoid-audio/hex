@@ -281,6 +281,15 @@ pub(super) fn render_return_effect(
         })),
     );
     let rendered = match &device_view {
+        _ if view.device_panel.collapsed.contains(&id) => fold::frame(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Effect,
+            device_view.as_ref().ok(),
+            leading,
+            actions,
+        ),
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
             hex_widgets::device_frame_with_modulators(

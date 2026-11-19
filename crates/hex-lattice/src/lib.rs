@@ -243,6 +243,13 @@ pub trait PreparedNativeProcessor: Send + Sync {
     fn supports_smoothed_bypass(&self) -> bool {
         false
     }
+    /// Opt into authored power-off for a zero-latency, smoothed effect. Once
+    /// the off ramp commits, the host resets both runtime twins in place and
+    /// skips their block transactions until the stage turns on. Reset must
+    /// be bounded, allocation-free, and restore fresh DSP and control history.
+    fn supports_power_off(&self) -> bool {
+        false
+    }
     /// Opt in to host-aligned bypass for an exact, fixed latency from 1 to
     /// 16 frames. The host keeps untrimmed dry history and continues ordinary
     /// wet processing and automation while bypassed. A bypass edit changes
@@ -1252,11 +1259,13 @@ pub struct NativeInsertTransition {
     position: usize,
 }
 
-/// The exact stage on a retiring predecessor that may ramp from wet to dry.
+/// The exact stage on a retiring predecessor. A committed powered-off stage
+/// already passes dry and needs no provisional bypass.
 #[derive(Clone, Copy)]
 pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
+    already_powered_off: bool,
 }
 
 impl NativeRemovalTransition {
@@ -1454,16 +1463,23 @@ impl NativeRuntimeChain {
                         PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
                         PreparedProcessorFactory::Foreign(_) => false,
                     });
-            let supports_power_off = supports_smoothed_bypass
-                && latency == Some(0)
-                && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
-                    if value.supports_power_off());
             let reserved_frames = instance
                 .definition
                 .as_ref()
                 .map(PreparedProcessorFactory::reserved_bypass_frames)
                 .transpose()?
                 .flatten();
+            let zero_latency_smoothing = supports_smoothed_bypass && latency == Some(0);
+            let supports_power_off = match &instance.definition {
+                Some(PreparedProcessorFactory::Legacy(value)) => {
+                    zero_latency_smoothing && value.supports_power_off()
+                }
+                Some(PreparedProcessorFactory::Owned(value)) => {
+                    (zero_latency_smoothing || reserved_frames.is_some())
+                        && value.supports_power_off()
+                }
+                Some(PreparedProcessorFactory::Foreign(_)) | None => false,
+            };
             let (committed_aligned_dry, scratch_aligned_dry) = if let Some(frames) = reserved_frames
             {
                 (
@@ -2603,9 +2619,11 @@ impl NativeRuntimeChain {
         previous: &Self,
         continuation: Option<&ForeignConfigurationContinuation<'_>>,
     ) -> Option<NativeInsertTransition> {
-        let position = self.extra_native_stage_from(previous, |old, current| {
-            Self::entry_configuration_matches(old, current, continuation)
-        })?;
+        let position = self.extra_native_stage_from(
+            previous,
+            |added| !added.bypassed,
+            |old, current| Self::entry_configuration_matches(old, current, continuation),
+        )?;
         self.can_inherit_from(previous)
             .then_some(NativeInsertTransition { position })
     }
@@ -2616,18 +2634,25 @@ impl NativeRuntimeChain {
         &self,
         previous: &Self,
     ) -> Option<NativeRemovalTransition> {
-        let position = previous.extra_native_stage_from(self, |current, old| {
-            Self::entry_configuration_matches(old, current, None)
-        })?;
+        let position = previous.extra_native_stage_from(
+            self,
+            |removed| !removed.bypassed || removed.powered_off(removed.committed_bypass_ramp),
+            |current, old| Self::entry_configuration_matches(old, current, None),
+        )?;
         let removed = previous.entries.get(position)?;
         let identity = ProcessorInstanceIdentity::new(removed.owner, removed.device_id).ok()?;
         self.can_inherit_from(previous)
-            .then_some(NativeRemovalTransition { position, identity })
+            .then_some(NativeRemovalTransition {
+                position,
+                identity,
+                already_powered_off: removed.powered_off(removed.committed_bypass_ramp),
+            })
     }
 
     fn extra_native_stage_from(
         &self,
         shorter: &Self,
+        accepts_extra: impl Fn(&RuntimeEntry) -> bool,
         compatible: impl Fn(&RuntimeEntry, &RuntimeEntry) -> bool,
     ) -> Option<usize> {
         if shorter.len().checked_add(1) != Some(self.len()) {
@@ -2645,7 +2670,7 @@ impl NativeRuntimeChain {
             .iter()
             .take(position)
             .chain(self.entries.iter().skip(position + 1));
-        (!extra.bypassed
+        (accepts_extra(extra)
             && extra.algorithmic_latency_frames == Some(0)
             && extra.supports_smoothed_bypass
             && matches!(
@@ -2663,23 +2688,32 @@ impl NativeRuntimeChain {
     /// Start a proved removal on its predecessor. Only the affected stage's
     /// wet/dry mix changes. Its DSP stays owned by the predecessor.
     pub fn begin_native_removal(&mut self, transition: NativeRemovalTransition) -> bool {
-        self.set_native_removal_bypass(transition, true)
+        if transition.already_powered_off {
+            self.native_removal_ready(transition)
+        } else {
+            self.set_native_removal_bypass(transition, true)
+        }
     }
 
     /// Restore the same stage if the pending edit is cancelled or refused.
     pub fn cancel_native_removal(&mut self, transition: NativeRemovalTransition) {
-        self.set_native_removal_bypass(transition, false);
+        if !transition.already_powered_off {
+            self.set_native_removal_bypass(transition, false);
+        }
     }
 
-    /// Commit of the rendered bypass ramp is the terminal, independent of the
-    /// number or size of callback blocks used to render it.
+    /// A committed power-off or a completed removal ramp is the terminal.
     pub fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
         self.entries.get(transition.position).is_some_and(|entry| {
             entry.owner == transition.identity.owner()
                 && entry.device_id == transition.identity.device_id()
-                && entry.removal_bypassing
-                && entry.bypassed
-                && !entry.committed_bypass_ramp.is_active()
+                && if transition.already_powered_off {
+                    entry.powered_off(entry.committed_bypass_ramp)
+                } else {
+                    entry.removal_bypassing
+                        && entry.bypassed
+                        && !entry.committed_bypass_ramp.is_active()
+                }
         })
     }
 
@@ -2838,12 +2872,20 @@ impl NativeRuntimeChain {
                             _ => false,
                         } =>
                 {
-                    bypass_ramp::BypassRamp::inherited(
+                    let ramp = bypass_ramp::BypassRamp::inherited(
                         old.committed_bypass_ramp,
                         old.bypassed,
                         entry.bypassed,
                         entry.sample_rate,
-                    )
+                    );
+                    if entry.supports_power_off
+                        && !entry.bypassed
+                        && old.powered_off(old.committed_bypass_ramp)
+                    {
+                        ramp.with_dry_lead(entry.algorithmic_latency_frames.unwrap_or(0))
+                    } else {
+                        ramp
+                    }
                 }
                 _ => bypass_ramp::BypassRamp::INACTIVE,
             };
@@ -3651,9 +3693,12 @@ impl NativeRuntimeChain {
         external: Option<NativeExternalAutomation<'_>>,
     ) -> Result<(), DeviceContractError> {
         let aligned = entry.scratch_aligned_dry.is_some();
-        let aligned_bypass = aligned && entry.bypassed;
+        let aligned_bypass =
+            aligned && entry.bypassed && (!entry.supports_power_off || entry.removal_bypassing);
         if !entry.scratch_bypass_ramp.is_active() && !aligned_bypass {
-            if let Some(history) = &mut entry.scratch_aligned_dry {
+            if !entry.powered_off(entry.scratch_bypass_ramp)
+                && let Some(history) = &mut entry.scratch_aligned_dry
+            {
                 for &frame in frames.iter() {
                     history.advance(frame);
                 }
@@ -3674,7 +3719,7 @@ impl NativeRuntimeChain {
         while (aligned_bypass || entry.scratch_bypass_ramp.is_active()) && offset < frames.len() {
             const CHUNK: usize = 64;
             let mut count = (frames.len() - offset).min(CHUNK);
-            if !aligned {
+            if !aligned || entry.supports_power_off && !aligned_bypass {
                 count = count.min(entry.scratch_bypass_ramp.remaining());
             }
             let end = offset + count;
@@ -3733,7 +3778,9 @@ impl NativeRuntimeChain {
         if offset == frames.len() {
             return Ok(());
         }
-        if let Some(history) = &mut entry.scratch_aligned_dry {
+        if !entry.powered_off(entry.scratch_bypass_ramp)
+            && let Some(history) = &mut entry.scratch_aligned_dry
+        {
             for &frame in &frames[offset..] {
                 history.advance(frame);
             }
@@ -3806,6 +3853,13 @@ impl NativeRuntimeChain {
         if entry.powered_off(entry.scratch_bypass_ramp) {
             if entry.metering {
                 entry.meter.observe_input(frames);
+            }
+            if let Some(history) = &mut entry.scratch_aligned_dry {
+                for frame in frames.iter_mut() {
+                    *frame = history.advance(*frame);
+                }
+            }
+            if entry.metering {
                 entry.meter.observe_output(frames);
             }
             return Ok(());

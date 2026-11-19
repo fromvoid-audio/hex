@@ -78,6 +78,7 @@ fn post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation
     let fence = capture_arrangement_fence(&control, &project, active).unwrap();
     let service = Service::new(48_000, 8, 1 << 20).unwrap();
     let intent = SeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         kind: SeekKind::Fresh,
         recovery_generation: None,
         destination_frame: 768,
@@ -143,6 +144,7 @@ fn stateful_seek_beyond_the_linear_replay_ceiling_installs_at_its_destination() 
     // About 11:39 at 48 kHz, past the 8_388_608-frame linear export replay budget.
     let destination = hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES * 4 + 37;
     let intent = SeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         kind: SeekKind::Fresh,
         recovery_generation: None,
         destination_frame: destination,
@@ -272,6 +274,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("admission-time route fence");
 
     let intent = SeekIntent {
+        note_chase: hex_engine::NoteChase::Off,
         kind: SeekKind::Section(hex_session::arrangement_seek::SectionLaunch {
             region: hex_project::LoopRegion::new(256, 512, true).unwrap(),
             quantization: hex_engine::LaunchQuantization::Quarter,
@@ -285,6 +288,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         device_preview_identity: None,
     };
     let mut pending = PendingSeek::from_intent(1, &intent, fence);
+    assert_eq!(pending.intent().note_chase, hex_engine::NoteChase::Off);
     let worker_intent = SeekIntent {
         kind: SeekKind::Fresh,
         prepared_revision: None,
@@ -305,7 +309,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("admit seek worker request");
     pending.request_id = request_id;
     let deadline = crate::test_wait::hang_deadline();
-    let result = loop {
+    let mut result = loop {
         if let Some(result) = service.try_arrangement_seek_result() {
             break result;
         }
@@ -315,6 +319,10 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         );
         thread::yield_now();
     };
+    assert!(pending.matches_result(&result));
+    result.note_chase = hex_engine::NoteChase::On;
+    assert!(!pending.matches_result(&result));
+    result.note_chase = hex_engine::NoteChase::Off;
     assert!(pending.matches_result(&result));
     let playback = result.result.expect("prepared stateful playback");
     pending.stage = SeekStage::CandidateReady;
@@ -328,6 +336,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
                 quantization: hex_engine::LaunchQuantization::Half,
             }),
             destination_frame: 512,
+            note_chase: hex_engine::NoteChase::On,
             ..intent.clone()
         },
     );
@@ -414,6 +423,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         hex_engine::LaunchQuantization::EighthTriplet
     );
     let latest_spec = latest.spec().unwrap();
+    assert_eq!(latest_spec.note_chase, hex_engine::NoteChase::Off);
     assert_eq!(
         latest_spec.mode,
         ArrangementSeekMode::SectionLoop(hex_project::LoopRegion::new(768, 1024, true).unwrap())
@@ -494,6 +504,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         )
         .expect("publish conditional seek candidate");
     let intent = SeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         kind: SeekKind::Fresh,
         recovery_generation: None,
         destination_frame: 256,
