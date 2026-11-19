@@ -563,6 +563,7 @@ impl From<serde_json::Error> for StorageError {
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     use schema::long_granular::{self, LongWarpSchema};
+    refuse_unsupported_fade_clocks(project)?;
     if long_granular::contains(project, LongWarpSchema::Inactive) {
         return long_granular::encode(project, LongWarpSchema::Inactive);
     }
@@ -694,7 +695,24 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
 }
 
+/// Check before a feature wrapper can remove unsupported metadata from its base.
+fn refuse_unsupported_fade_clocks(project: &Project) -> Result<(), StorageError> {
+    for clip in project.tracks().iter().flat_map(|track| track.clips()) {
+        for clip in std::iter::once(clip).chain(clip.retained_audio_roots().map(|root| &root.clip))
+        {
+            if let Some(edit) = clip.audio_edit() {
+                edit.domain
+                    .fade_clock
+                    .require_supported()
+                    .map_err(|error| StorageError::Invalid(error.0))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    refuse_unsupported_fade_clocks(project)?;
     if !project.arrangement_locators().is_empty() {
         return Err(StorageError::Invalid(
             "older schema cannot save arrangement locators",
