@@ -116,7 +116,7 @@ impl EditorView {
                 .on_mouse_down(
                     gpui::MouseButton::Right,
                     cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                        view.open_history_playback_menu(event.position, window, cx);
+                        view.open_playback_options_menu(event.position, window, cx);
                         cx.stop_propagation();
                     }),
                 ),

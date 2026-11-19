@@ -26,7 +26,7 @@ impl NoteChaseAction {
 }
 
 impl EditorView {
-    pub(super) fn open_history_playback_menu(
+    pub(super) fn open_playback_options_menu(
         &mut self,
         position: Point<Pixels>,
         window: &mut Window,

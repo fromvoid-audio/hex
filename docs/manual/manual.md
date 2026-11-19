@@ -22,8 +22,8 @@ search, dialog or device editor can handle the same key differently.
 space starts from the beginning of the time selection, or from the arrange edit
 cursor when there is no time selection. effects start with fresh tails. right-click
 the play button to open playback options. **note chase** is on by default and
-is remembered between launches. when on, normal arrangement starts, seeks and
-section launches retrigger midi notes whose gates cross the destination, keeping
+is remembered between launches. when on, normal arrangement starts, seeks during
+playback and section launches retrigger midi notes whose gates cross the destination, keeping
 their original note-off times. when off, they play only note starts at or after
 the destination. normal session clip and scene launches use the same choice for
 notes crossing the clip's initial source window; later loop occurrences still play.

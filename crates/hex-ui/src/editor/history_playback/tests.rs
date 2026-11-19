@@ -487,3 +487,69 @@ fn playback_option_revalidates_stale_and_disabled_actions_and_surfaces_load_erro
         assert!(view.playback_settings.preferences.note_chase);
     });
 }
+
+#[gpui::test]
+fn saved_play_menu_toggle_controls_held_midi_on_the_next_arrangement_start(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = crate::editor::worker_ui_fixture::open_with_section_support(
+        cx,
+        feedback_commands(),
+        false,
+        true,
+    );
+    let editor = fixture.editor.clone();
+    cx.update(crate::editor::bind_editor_keys);
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    let frame = 512;
+    editor.update(&mut visual, |view, cx| {
+        view.play_start_at_beginning = false;
+        view.edit_cursor = Some(EditCursor {
+            track: None,
+            frame,
+            generation: view.project_generation,
+            pulse_color: 0xffffff,
+            pulse_started: Instant::now(),
+        });
+        cx.notify();
+    });
+    for enabled in [false, true] {
+        open_play_menu(&mut visual);
+        visual.simulate_keystrokes("down enter");
+        wait_for_save(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let saved =
+                hex_preferences::load_playback_preferences(&view.playback_settings.path).unwrap();
+            assert_eq!(saved.note_chase, enabled);
+            assert_eq!(view.playback_settings.preferences.note_chase, enabled);
+            assert!(!view.audio_status().unwrap().playing.load(Acquire));
+        });
+
+        visual.simulate_keystrokes("space");
+        let mut frames = [[0.0; 2]; 512];
+        for block in frames.chunks_exact_mut(64) {
+            fixture.backend.render(block).unwrap();
+        }
+        editor.read_with(&visual, |view, _| {
+            let status = view.audio_status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert_eq!(status.position.load(Acquire), frame + frames.len() as u64);
+        });
+        assert_eq!(
+            frames.iter().flatten().any(|sample| sample.abs() > 1.0e-6),
+            enabled
+        );
+
+        if !enabled {
+            visual.simulate_keystrokes("space");
+            for block in frames.chunks_exact_mut(64) {
+                fixture.backend.render(block).unwrap();
+            }
+            editor.update(&mut visual, |view, cx| {
+                view.tick(cx);
+                assert!(!view.audio_status().unwrap().playing.load(Acquire));
+            });
+        }
+    }
+    fixture.finish(cx);
+}
