@@ -48,23 +48,7 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Clip, Invalid> {
-        if let Some((offset, _, _)) = sparse_group_plan(clip)?
-            && let Some(edit) = clip.audio_edit()
-            && let Some(events) = &edit.domain.events
-            && let Some(layout) =
-                crate::SparseFrameMap::for_events(edit.domain.clock.length(), &events.events)?
-        {
-            let audio = self.prepare_group_audio(clip, sources, true, Some(&layout))?;
-            return Ok(Clip::sparse_region(
-                audio,
-                Arc::new(layout),
-                clip.start(),
-                clip.duration(),
-                offset,
-            )?
-            .with_gain(clip.gain()));
-        }
-        self.compile_group(clip, sources)
+        self.compile_group_playback(clip, sources, true)
     }
 
     pub(crate) fn compile_group(
@@ -72,23 +56,72 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Clip, Invalid> {
+        self.compile_group_playback(clip, sources, false)
+    }
+
+    fn compile_group_playback(
+        &self,
+        clip: &hex_project::Clip,
+        sources: &[GroupSource<'_>],
+        sparse: bool,
+    ) -> Result<Clip, Invalid> {
+        let edit = clip
+            .audio_edit()
+            .ok_or(Invalid("grouped audio edit missing"))?;
+        let fade = clip
+            .projected_outer_fade(group_tempo(edit)?)?
+            .map(|projection| projection.frame_playback_envelope())
+            .transpose()?;
+        self.compile_group_with_outer_fade(clip, sources, edit, fade, sparse)
+    }
+
+    /// The group instance fade belongs to destination playback. Even sparse
+    /// output keeps its occupied-source packing and the original child fades.
+    pub(super) fn compile_group_with_outer_fade(
+        &self,
+        clip: &hex_project::Clip,
+        sources: &[GroupSource<'_>],
+        edit: &AudioClipEdit,
+        fade: Option<hex_project::ClipFade>,
+        sparse: bool,
+    ) -> Result<Clip, Invalid> {
+        if fade.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
+            return Err(Invalid("grouped fade differs from its processing clock"));
+        }
+        let tempo = group_tempo(edit)?;
+        let processing = super::processing_root::unfaded_outer_edit(edit, tempo)?;
+        let edit = processing.as_ref();
+        let finish = |compiled: Clip| match fade {
+            Some(fade) => compiled.with_fade(fade),
+            None => Ok(compiled),
+        };
+        if sparse
+            && let Some((offset, _, _)) = sparse_group_plan(clip)?
+            && let Some(events) = &edit.domain.events
+            && let Some(layout) =
+                crate::SparseFrameMap::for_events(edit.domain.clock.length(), &events.events)?
+        {
+            let audio = self.prepare_group_audio(clip, sources, edit, true, Some(&layout))?;
+            return Clip::sparse_region(
+                audio,
+                Arc::new(layout),
+                clip.start(),
+                clip.duration(),
+                offset,
+            )
+            .and_then(|compiled| finish(compiled.with_gain(clip.gain())));
+        }
         // A loop-shaped frame placement plays the shared composite root, so
         // split or duplicated copies of the group add no outer PCM.
-        if let Some(edit) = clip.audio_edit()
-            && edit.content_view.is_none()
-            && let Some(anchor) = edit
-                .domain
-                .events
-                .as_ref()
-                .and_then(|events| events.sources.first())
+        if edit.content_view.is_none()
             && let Some(shape) =
-                super::view::root_loop(clip, edit, &AudioViewProjection::new(clip, &anchor.tempo)?)?
+                super::view::root_loop(clip, edit, &AudioViewProjection::new(clip, tempo)?)?
         {
-            let root = self.prepare_group_audio(clip, sources, true, None)?;
-            return super::view::looped_clip(root, clip, shape);
+            let root = self.prepare_group_audio(clip, sources, edit, true, None)?;
+            return super::view::looped_clip(root, clip, shape).and_then(finish);
         }
-        let audio = self.prepare_group_audio(clip, sources, false, None)?;
-        super::view::placed_clip(audio, clip)
+        let audio = self.prepare_group_audio(clip, sources, edit, false, None)?;
+        super::view::placed_clip(audio, clip).and_then(finish)
     }
 
     /// The full composite processing domain, before finite crop/repeat and
@@ -98,22 +131,24 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Audio, Invalid> {
-        self.prepare_group_audio(clip, sources, true, None)
+        let edit = clip
+            .audio_edit()
+            .ok_or(Invalid("grouped audio edit missing"))?;
+        let processing = super::processing_root::unfaded_outer_edit(edit, group_tempo(edit)?)?;
+        self.prepare_group_audio(clip, sources, processing.as_ref(), true, None)
     }
 
     fn prepare_group_audio(
         &self,
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
+        edit: &AudioClipEdit,
         root_only: bool,
         packing: Option<&crate::SparseFrameMap>,
     ) -> Result<Audio, Invalid> {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let edit = clip
-            .audio_edit()
-            .ok_or(Invalid("grouped audio edit missing"))?;
         let events = edit
             .domain
             .events
@@ -413,6 +448,15 @@ impl AudioTransformPreparation {
         })?;
         Ok(audio)
     }
+}
+
+fn group_tempo(edit: &AudioClipEdit) -> Result<&hex_project::TempoMap, Invalid> {
+    edit.domain
+        .events
+        .as_ref()
+        .and_then(|events| events.sources.first())
+        .map(|root| root.tempo.as_ref())
+        .ok_or(Invalid("grouped audio source missing"))
 }
 
 /// The composite root depends on the frame domain (events, sources, fade) and its
