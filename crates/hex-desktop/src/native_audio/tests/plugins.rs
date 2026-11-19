@@ -2276,7 +2276,19 @@ fn confirmed_vst3_insert_keeps_the_prepared_worker_and_output() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() {
-    use hex_session::device_gesture::{ParameterId, ParameterValue};
+    held_vst3_preparation_accepts_eq_change(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn resident_vst3_insertion_waits_for_the_eq_gesture_and_keeps_its_endpoint() {
+    held_vst3_preparation_accepts_eq_change(true);
+}
+
+fn held_vst3_preparation_accepts_eq_change(through_gesture: bool) {
+    use hex_session::device_gesture::{
+        GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
+    };
 
     let _native = native_fixture();
     let files = Files::new();
@@ -2325,11 +2337,50 @@ fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() 
     h.run(Request::InsertPluginEffect(request.clone()));
     facts.recv_timeout(Duration::from_secs(2)).unwrap();
     let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
-    let edited = h.run(Request::SetDeviceParameter {
-        device,
-        parameter: ParameterId::from_static(202),
-        value: ParameterValue::Float(0.5),
-    });
+    let parameter = ParameterId::from_static(202);
+    let value = ParameterValue::Float(0.5);
+    let mut applied = applied;
+    let edited = if through_gesture {
+        let key = GestureKey {
+            generation: request.context.project_generation,
+            token: 1,
+        };
+        let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter { device, parameter },
+        }));
+        assert!(begin.gesture_ack.unwrap().accepted);
+        let change = h.run(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value,
+        }));
+        assert!(change.gesture_ack.unwrap().accepted);
+        assert_eq!(change.state.project, before.state.project);
+        assert!(change.plugin_effect_complete.is_empty());
+        (applied, _) = h.applied(applied);
+
+        resume.send(()).unwrap();
+        let during = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 7 });
+        assert_eq!(during.active_device_gesture.unwrap().key, key);
+        assert!(during.plugin_effect_complete.is_empty());
+        assert!(!h.plugin_progress.lock().unwrap().facts_attempt_from_session);
+        let terminal = h.run(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 2,
+            manual_edit: true,
+            value,
+        }));
+        assert!(terminal.gesture_ack.unwrap().accepted);
+        assert!(terminal.active_device_gesture.is_none());
+        terminal
+    } else {
+        h.run(Request::SetDeviceParameter {
+            device,
+            parameter,
+            value,
+        })
+    };
     assert!(edited.plugin_effect_complete.is_empty());
     assert_eq!(edited.state.revision, before.state.revision + 1);
     let (_, metadata) = h.applied(applied);
@@ -2348,7 +2399,9 @@ fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() 
         settled[63],
     );
 
-    resume.send(()).unwrap();
+    if !through_gesture {
+        resume.send(()).unwrap();
+    }
     let mut installed = None;
     wait(|| {
         h.pump();
