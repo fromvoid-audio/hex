@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{Clip, ClipFade, Invalid, TempoMap};
 mod crop;
-pub(super) use crop::retain_crop_context;
+pub(crate) use crop::retain_outer_fade_crop_context;
 
 /// Clip-context outer fade projection. Source repetition, slip and reflection
 /// never restart or reverse this envelope. Gain samples use project frames;

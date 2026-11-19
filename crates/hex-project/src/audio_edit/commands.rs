@@ -136,7 +136,7 @@ pub(crate) fn trim_view(
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
     let mut result = trim_view_source(clip, edge, frame, tempo)?;
-    super::outer_fade::retain_crop_context(clip, &mut result, tempo)?;
+    retain_outer_fade_crop_context(clip, &mut result, tempo)?;
     Ok(result)
 }
 
@@ -158,7 +158,7 @@ fn trim_view_source(
                     .is_none_or(|p| p.mode != AudioViewMode::Repeat)
         }) {
             if edit.placement.is_some_and(|p| p.mode.leading_ticks() > 0) {
-                return clip.with_musical_leading_silence(frame, tempo);
+                return clip.with_musical_leading_silence_source(frame, tempo);
             }
             let projection = AudioViewProjection::new(clip, tempo)?;
             if projection.occurrence_count() > 0 {
@@ -176,7 +176,7 @@ fn trim_view_source(
                     } else {
                         trim_retained_view(clip, edge, first, tempo)?
                     };
-                    return rewound.with_musical_leading_silence(frame, tempo);
+                    return rewound.with_musical_leading_silence_source(frame, tempo);
                 }
             }
         }

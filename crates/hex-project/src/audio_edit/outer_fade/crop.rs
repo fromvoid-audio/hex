@@ -4,7 +4,7 @@ use super::{AudioClipFadeClock, AudioDomainClock};
 use crate::{Clip, ClipFade, Invalid, TempoMap};
 use std::sync::Arc;
 
-pub(in crate::audio_edit) fn retain_crop_context(
+pub(crate) fn retain_outer_fade_crop_context(
     original: &Clip,
     result: &mut Clip,
     tempo: &TempoMap,
