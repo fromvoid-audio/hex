@@ -54,6 +54,7 @@ impl AudioPreparationCustody {
             looping: _,
             reversed: _,
             fade: _,
+            reserve_fade: _,
             owner,
             prepared_origin,
             sparse_frames: _,
