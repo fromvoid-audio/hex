@@ -907,6 +907,11 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+double-click a device title to collapse its body or expand it again. with a
+device header focused, press **-** to collapse the selected devices and **+**
+to expand them. collapsed devices keep their header controls and continue
+processing audio.
+
 select one or more effects in a device chain and press **d** to duplicate them
 after the selection. the copies keep their settings and become the selection.
 press **cmd-z** to undo the duplication.
