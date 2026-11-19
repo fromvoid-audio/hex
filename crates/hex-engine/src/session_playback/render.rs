@@ -1154,7 +1154,7 @@ impl SessionPlayback {
         let mut resident_source_index = 0;
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
-        let mut resident_analytic_eligible = [false; MAX_TRACKS];
+        let mut resident_instrument_eligible = [false; MAX_TRACKS];
         let mut aligned = [false; MAX_TRACKS];
         let mut passthrough = [compensated::ResidentRoute::Scalar; MAX_TRACKS];
         let mut stamps = [None; 256];
@@ -1246,12 +1246,38 @@ impl SessionPlayback {
                 if count == 0 {
                     return Err(SessionPlaybackError::ArithmeticOverflow);
                 }
+                // Leave the first frame of a wrapped pass with the scalar
+                // renderer, which may chase a note that began before the loop.
+                let mutable_loop_pass = (count > 1
+                    && self.revision.session().has_mutable_instruments()
+                    && observer.is_none()
+                    && capture.is_none()
+                    && pages.is_none()
+                    && sources.is_none()
+                    && scalar.is_none()
+                    && live_audio.is_none()
+                    && self.interactive_start_frame.is_none()
+                    && (arrangement_loop_pass == 0
+                        || region.is_none_or(|region| arrangement_frame != region.start()))
+                    && self.release_scratch.is_empty()
+                    && self
+                        .native_parameter_state
+                        .as_deref()
+                        .is_none_or(|state| state.processing.is_none())
+                    && self
+                        .compensation
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.graph.independent_main_routes()))
+                .then_some(arrangement_loop_pass);
                 self.prepare_resident_sources(
-                    performance_frame,
-                    arrangement_frame,
-                    count,
+                    compensated::ResidentSourceWindow {
+                        performance_frame,
+                        arrangement_frame,
+                        frames: count,
+                        mutable_loop_pass,
+                    },
                     &mut resident_source_eligible,
-                    &mut resident_analytic_eligible,
+                    &mut resident_instrument_eligible,
                     live_audio.map(|input| input.track),
                 )?;
                 projected_history = if observer.is_none() && scalar.is_none() {
@@ -1408,7 +1434,7 @@ impl SessionPlayback {
                     use_resident_sources.then(|| compensated::BatchedSources {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
-                        analytic: &resident_analytic_eligible,
+                        instrument: &resident_instrument_eligible,
                         stamps: projected_history.map(|_| &stamps[..resident_source_end]),
                         aligned: &aligned,
                         passthrough: &passthrough,
