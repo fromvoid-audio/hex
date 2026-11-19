@@ -2062,3 +2062,58 @@ fn middle_drag_pans_source_and_releases_on_view_change(cx: &mut TestAppContext) 
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.1);
     });
 }
+
+#[gpui::test]
+fn event_fade_shading_survives_idle_selection_and_viewport_repaints(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    hex_project::AudioEventFade::new(
+                        0,
+                        hex_project::ClipFade::new(96_000, 0, 48_000, 24_000).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            },
+        })
+        .unwrap();
+    let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        model.project().clone(),
+        std::sync::Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    let shade: gpui::Background = gpui::rgba(crate::theme::CLIP_FADE_SHADE).into();
+    for start in [0, 12_000] {
+        for selected in [true, false] {
+            editor.update(&mut visual, |v, cx| {
+                v.selected_track = Some(track);
+                v.selected_clip = Some(clip);
+                v.clip_view_open = true;
+                v.device_panel_active = false;
+                v.audio_event_editor.source_view = false;
+                v.audio_event_editor.selected = selected.then_some(1);
+                v.audio_event_editor.fade_hover = None;
+                v.audio_event_editor.fade_key_held = false;
+                v.audio_event_editor.viewport = Some(Viewport {
+                    start,
+                    length: 48_000,
+                });
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let paths = visual.rendered_path_triangles("audio-event-fade-shade-1");
+            assert!(visual.debug_bounds("audio-event-fade-shade-1").is_some());
+            assert!(
+                start != 0 || paths.iter().any(|path| path.color == shade),
+                "event fade shade missing at start={start}, selected={selected}"
+            );
+        }
+    }
+}
