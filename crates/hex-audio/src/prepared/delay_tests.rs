@@ -421,10 +421,22 @@ fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
     control.publish(graph(editor.project())).unwrap();
     let mut output = [[0.0; 2]; 127];
     block(&mut callback, &mut output);
-    for destination in [0, 12_000, 12_000, 23_000, 48_000_000] {
-        control
-            .command(PlaybackCommand::PlayFrom(destination))
-            .unwrap();
+    for (destination, note_chase, expected_audible) in [
+        (0, hex_engine::NoteChase::On, true),
+        (12_000, hex_engine::NoteChase::Off, false),
+        (12_000, hex_engine::NoteChase::On, true),
+        (23_000, hex_engine::NoteChase::Off, false),
+        (23_000, hex_engine::NoteChase::On, true),
+        (48_000_000, hex_engine::NoteChase::On, false),
+    ] {
+        let command = match note_chase {
+            hex_engine::NoteChase::On => PlaybackCommand::PlayFrom(destination),
+            hex_engine::NoteChase::Off => PlaybackCommand::PlayFromWithNoteChase {
+                frame: destination,
+                note_chase,
+            },
+        };
+        control.command(command).unwrap();
         // Includes actual command consumption, voice/effect reset, held-note
         // chase and rendering, with all construction outside the probe.
         block(&mut callback, &mut output);
@@ -435,7 +447,7 @@ fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
             block(&mut callback, &mut output);
             audible |= output.iter().flatten().any(|v| v.abs() > 1e-6);
         }
-        assert_eq!(audible, destination < 24_000);
+        assert_eq!(audible, expected_audible);
         control.command(PlaybackCommand::Pause).unwrap();
         let paused = control.status.position.load(Acquire);
         block(&mut callback, &mut output);
@@ -446,7 +458,7 @@ fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
         assert!(output.iter().flatten().all(|sample| sample.is_finite()));
         assert_eq!(
             output.iter().flatten().any(|sample| sample.abs() > 1e-6),
-            destination < 24_000,
+            expected_audible,
             "active notes keep their bounded release/delay tail; an after-song start stays silent",
         );
     }

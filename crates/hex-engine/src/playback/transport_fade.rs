@@ -53,8 +53,11 @@ pub(crate) fn fades_out(action: PlaybackAction) -> bool {
 pub(crate) fn seeks(action: PlaybackAction) -> bool {
     matches!(
         action,
-        PlaybackAction::Transport(PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_))
-            | PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(_))
+        PlaybackAction::Transport(
+            PlaybackCommand::Seek(_)
+                | PlaybackCommand::PlayFrom(_)
+                | PlaybackCommand::PlayFromWithNoteChase { .. }
+        ) | PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(_))
     )
 }
 
@@ -86,6 +89,10 @@ enum Pending {
     Seek(u64),
     SessionSeek(u64),
     PlayFrom(u64),
+    PlayFromWithNoteChase {
+        frame: u64,
+        note_chase: super::NoteChase,
+    },
 }
 
 impl Pending {
@@ -104,6 +111,10 @@ impl Pending {
             PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => {
                 Some(Self::PlayFrom(frame))
             }
+            PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+                frame,
+                note_chase,
+            }) => Some(Self::PlayFromWithNoteChase { frame, note_chase }),
             _ => None,
         }
     }
@@ -119,6 +130,12 @@ impl Pending {
                 PlaybackAction::Session(crate::SessionPlaybackCommand::Seek(frame))
             }
             Self::PlayFrom(frame) => PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)),
+            Self::PlayFromWithNoteChase { frame, note_chase } => {
+                PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+                    frame,
+                    note_chase,
+                })
+            }
         }
     }
 }

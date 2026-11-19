@@ -216,6 +216,7 @@ impl SessionPlayback {
         self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.interactive_start_frame = None;
+        self.interactive_onset_floor = None;
         self.pending_shared_chase = None;
         self.pending_shared_live = None;
         self.historical_floor = None;
@@ -314,6 +315,17 @@ impl SessionPlayback {
     /// No song-prefix replay, runtime construction or allocation occurs here.
     /// Strict Seek and control-side exact-history preroll retain their own laws.
     pub(crate) fn play_from(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        self.play_from_with_note_chase(frame, crate::NoteChase::On)
+    }
+
+    /// Capture a normal interactive start's note policy. Ordinary handoffs
+    /// retain its admission; source cues and exact-history keep their own laws.
+    pub(crate) fn play_from_with_note_chase(
+        &mut self,
+        frame: u64,
+        note_chase: crate::NoteChase,
+    ) -> Result<(), SessionPlaybackError> {
+        self.admits_note_chase(note_chase)?;
         if self.stopped_input.is_some() {
             return Err(SessionPlaybackError::InvalidCommand);
         }
@@ -323,16 +335,50 @@ impl SessionPlayback {
             return self.apply(SessionPlaybackCommand::Play);
         }
         let beat = self.play_from_coordinates(frame)?;
+        // Capture the original rounded frame's complete canonical beat bucket
+        // before mutating transport. A later tempo edit can collapse distinct
+        // old frames into one candidate frame, but cannot change this admission.
+        let interactive_onset_floor = if note_chase == crate::NoteChase::Off {
+            let next = frame
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let timing = base_timing_for(self.revision.session(), self.periodic_tempo_at(frame));
+            Some(crate::midi_compile::InteractiveOnsetFloor {
+                onset_raw: timing
+                    .beat_lower_bound_for_frame(frame)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+                after_start_frame_raw: timing
+                    .beat_lower_bound_for_frame(next)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+            })
+        } else {
+            None
+        };
         let generation = self.route_state_generation;
         self.install_seek(frame, beat);
         if self.route_state_generation == generation {
             self.advance_route_state_generation();
         }
-        self.interactive_start_frame = Some(frame);
+        self.interactive_start_frame = (note_chase == crate::NoteChase::On).then_some(frame);
+        self.interactive_onset_floor = interactive_onset_floor;
         self.clear_gain_recording_override();
         self.invalidate_native_parameter_input();
         self.candidate_admission_open = false;
         self.playing = true;
+        Ok(())
+    }
+
+    pub(crate) fn admits_note_chase(
+        &self,
+        note_chase: crate::NoteChase,
+    ) -> Result<(), SessionPlaybackError> {
+        if note_chase == crate::NoteChase::Off
+            && (self.linear_arrangement_export || self.revision.requires_control_sampler_sources())
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "note chase off requires ordinary interactive playback",
+            ));
+        }
         Ok(())
     }
 
@@ -375,6 +421,7 @@ impl SessionPlayback {
         self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.interactive_start_frame = None;
+        self.interactive_onset_floor = None;
         self.pending_shared_chase = None;
         self.pending_shared_live = None;
         self.historical_floor = None;
@@ -965,6 +1012,7 @@ impl SessionPlayback {
                                 owner,
                                 moment.source_frame,
                                 moment.performance_frame,
+                                self.interactive_note_onset_floor(),
                             )?;
                         }
                     }
@@ -1017,6 +1065,7 @@ impl SessionPlayback {
         owner: RouteOwner,
         source_frame: u64,
         performance_frame: u64,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), SessionPlaybackError> {
         self.capture_outgoing_with_source_binding(
             index,
@@ -1024,6 +1073,7 @@ impl SessionPlayback {
             source_frame,
             performance_frame,
             false,
+            interactive_onset_floor,
         )
     }
 
@@ -1034,6 +1084,7 @@ impl SessionPlayback {
         source_frame: u64,
         performance_frame: u64,
         keep_current_source: bool,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         let source_origin = ReleaseSourceOrigin::capture(&self.revision, index);
@@ -1058,106 +1109,110 @@ impl SessionPlayback {
                 let mut failure = None;
                 let mut next_order = self.release_order_scratch;
                 track
-                    .for_each_active_midi_span(source_frame, |span, sampler| {
-                        // The transition boundary belongs to the incoming
-                        // owner. A note whose onset equals `source_frame` has
-                        // not rendered yet and must not be carried as an
-                        // outgoing tail.
-                        if span.start >= source_frame
-                            || is_suppressed_in(
-                                &self.suppression_scratch,
-                                self.routes[index].id,
-                                ContinuationKey {
-                                    clip: span.clip,
-                                    note: span.note,
-                                    iteration: span.iteration,
-                                },
-                                performance_frame,
-                            )
-                        {
-                            return;
-                        }
-                        let voice = match MidiReleaseVoice::from_finite_span(
-                            span.start,
-                            span.gate_end,
-                            span.end,
-                            if keep_current_source {
-                                sampler
-                            } else {
-                                sampler.detach(&self.analytic_continuations)
-                            },
-                            source_frame,
-                            performance_frame,
-                        ) {
-                            Ok(voice) => voice,
-                            Err(_) => {
-                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                    .for_each_active_midi_span(
+                        source_frame,
+                        interactive_onset_floor,
+                        |span, sampler| {
+                            // The transition boundary belongs to the incoming
+                            // owner. A note whose onset equals `source_frame` has
+                            // not rendered yet and must not be carried as an
+                            // outgoing tail.
+                            if span.start >= source_frame
+                                || is_suppressed_in(
+                                    &self.suppression_scratch,
+                                    self.routes[index].id,
+                                    ContinuationKey {
+                                        clip: span.clip,
+                                        note: span.note,
+                                        iteration: span.iteration,
+                                    },
+                                    performance_frame,
+                                )
+                            {
                                 return;
                             }
-                        };
-                        if let Some(voice) = voice {
-                            let Some(route) = self.routes.get(index) else {
-                                failure = Some(SessionPlaybackError::UnknownTrack);
-                                return;
-                            };
-                            let clip_gain = match super::clip_gain::arrangement(
-                                track,
-                                self.revision.session().timing(),
-                                span.clip,
+                            let voice = match MidiReleaseVoice::from_finite_span(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                if keep_current_source {
+                                    sampler
+                                } else {
+                                    sampler.detach(&self.analytic_continuations)
+                                },
                                 source_frame,
+                                performance_frame,
                             ) {
-                                Ok((gain, _)) => gain,
-                                Err(error) => {
-                                    failure = Some(error);
+                                Ok(voice) => voice,
+                                Err(_) => {
+                                    failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                     return;
                                 }
                             };
-                            if let Err(error) = append_release(
-                                &mut self.release_scratch,
-                                self.release_capacity,
-                                &mut next_order,
-                                ReleaseEntry {
-                                    source_origin,
-                                    timeline: ReleaseTimeline::Arrangement,
-                                    monitor_offset: 0,
-                                    location: match ReleaseLocation::new(audio_index, None) {
-                                        Ok(location) => location,
-                                        Err(error) => {
-                                            failure = Some(error);
-                                            return;
-                                        }
-                                    },
-                                    track_id: route.id,
-                                    order: 0,
-                                    mix: gain_recording::effective_mix(
-                                        audio_track,
-                                        source_frame,
-                                        self.revision.gain_recording_track(),
-                                        self.live_gain.audible(),
-                                    ),
-                                    continuation: keep_current_source.then_some(
-                                        SessionContinuation {
-                                            key: ContinuationKey {
-                                                clip: span.clip,
-                                                note: span.note,
-                                                iteration: span.iteration,
-                                            },
-                                            onset_beat: span.onset_beat,
-                                            gate_end_beat: span.gate_end_beat,
-                                            pitch: span.pitch,
-                                            channel: span.channel,
-                                            velocity: span.velocity,
+                            if let Some(voice) = voice {
+                                let Some(route) = self.routes.get(index) else {
+                                    failure = Some(SessionPlaybackError::UnknownTrack);
+                                    return;
+                                };
+                                let clip_gain = match super::clip_gain::arrangement(
+                                    track,
+                                    self.revision.session().timing(),
+                                    span.clip,
+                                    source_frame,
+                                ) {
+                                    Ok((gain, _)) => gain,
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        return;
+                                    }
+                                };
+                                if let Err(error) = append_release(
+                                    &mut self.release_scratch,
+                                    self.release_capacity,
+                                    &mut next_order,
+                                    ReleaseEntry {
+                                        source_origin,
+                                        timeline: ReleaseTimeline::Arrangement,
+                                        monitor_offset: 0,
+                                        location: match ReleaseLocation::new(audio_index, None) {
+                                            Ok(location) => location,
+                                            Err(error) => {
+                                                failure = Some(error);
+                                                return;
+                                            }
                                         },
-                                    ),
-                                    inline_tuning_owned: false,
-                                    clip_gain,
-                                    voice,
-                                },
-                            ) {
-                                failure = Some(error);
+                                        track_id: route.id,
+                                        order: 0,
+                                        mix: gain_recording::effective_mix(
+                                            audio_track,
+                                            source_frame,
+                                            self.revision.gain_recording_track(),
+                                            self.live_gain.audible(),
+                                        ),
+                                        continuation: keep_current_source.then_some(
+                                            SessionContinuation {
+                                                key: ContinuationKey {
+                                                    clip: span.clip,
+                                                    note: span.note,
+                                                    iteration: span.iteration,
+                                                },
+                                                onset_beat: span.onset_beat,
+                                                gate_end_beat: span.gate_end_beat,
+                                                pitch: span.pitch,
+                                                channel: span.channel,
+                                                velocity: span.velocity,
+                                            },
+                                        ),
+                                        inline_tuning_owned: false,
+                                        clip_gain,
+                                        voice,
+                                    },
+                                ) {
+                                    failure = Some(error);
+                                }
                             }
-                        }
-                    })
+                        },
+                    )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 self.release_order_scratch = next_order;
                 if let Some(error) = failure {

@@ -259,6 +259,7 @@ pub const RENDER_QUERY_FRAMES: u64 = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CompiledNoteSpan {
+    pub(crate) starts_inside_gate: bool,
     pub(crate) start: u64,
     pub(crate) gate_end: u64,
     pub(crate) end: u64,
@@ -534,7 +535,7 @@ fn compile_instrument_track_with_empty_bank(
              onset_beat,
              off_beat,
              playable,
-             _starts_inside_gate| {
+             starts_inside_gate| {
                 if let Some((ordinals, samples)) = preview.as_mut()
                     && ordinals.get(samples.len()).copied() == Some(emitted)
                 {
@@ -576,6 +577,7 @@ fn compile_instrument_track_with_empty_bank(
                         )
                     };
                     spans.push(CompiledNoteSpan {
+                        starts_inside_gate,
                         start,
                         gate_end,
                         end,
@@ -636,6 +638,31 @@ trait DensitySpan {
     fn start(&self) -> u64;
     fn gate_end(&self) -> u64;
     fn end(&self) -> u64;
+}
+
+/// Canonical beat bucket captured by one interactive no-chase action. Both
+/// bounds are retained across tempo changes, including the beat-domain sentinel;
+/// rounding them back into a candidate's frames would lose onset identity.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InteractiveOnsetFloor {
+    pub(crate) onset_raw: u128,
+    pub(crate) after_start_frame_raw: u128,
+}
+
+impl CompiledNoteSpan {
+    /// One explicit interactive start excludes historical onsets and a gate
+    /// synthetically clipped exactly to that destination. Later clip onsets
+    /// and later loop occurrences retain their existing playback law.
+    pub(crate) fn admitted_at_interactive_start(
+        &self,
+        floor: Option<InteractiveOnsetFloor>,
+    ) -> bool {
+        floor.is_none_or(|floor| {
+            let onset = u128::from(self.onset_beat.raw());
+            onset >= floor.onset_raw
+                && (!self.starts_inside_gate || onset >= floor.after_start_frame_raw)
+        })
+    }
 }
 
 impl DensitySpan for CompiledNoteSpan {

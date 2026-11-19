@@ -52,6 +52,15 @@ impl std::fmt::Display for StreamQuantumProjectionError {
 }
 impl std::error::Error for StreamQuantumProjectionError {}
 
+/// Whether one ordinary interactive destination retriggers notes already held there.
+/// This option belongs to the action, not a graph, export or structural edit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NoteChase {
+    #[default]
+    On,
+    Off,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
@@ -62,6 +71,12 @@ pub enum PlaybackCommand {
     /// A cursor at/after the enabled loop end continues linearly beyond it;
     /// a cursor before the end enters/wraps the loop without changing its bounds.
     PlayFrom(u64),
+    /// The same interactive discontinuity with an explicit, captured note policy.
+    /// Existing `PlayFrom` callers retain their default-on behavior.
+    PlayFromWithNoteChase {
+        frame: u64,
+        note_chase: NoteChase,
+    },
     Pause,
     Stop,
     /// Absolute content cursor; loop participation resumes only before its end.
@@ -1909,6 +1924,7 @@ impl Playback {
 
     /// Apply immediately. A pending declicked Pause/Stop completes first.
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        self.admit_note_chase_action(action)?;
         self.release_device_insert_cut();
         self.complete_transport_fade();
         self.apply_now(action)
@@ -1924,6 +1940,7 @@ impl Playback {
         &mut self,
         action: PlaybackAction,
     ) -> Result<(), PlaybackActionError> {
+        self.admit_note_chase_action(action)?;
         self.release_device_insert_cut();
         self.complete_transport_fade();
         if (transport_fade::fades_out(action) || transport_fade::seeks(action)) && self.playing() {
@@ -2024,8 +2041,39 @@ impl Playback {
         self.transport_fade.take_completion()
     }
 
+    fn admit_note_chase_action(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        if let PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+            note_chase: NoteChase::Off,
+            ..
+        }) = action
+        {
+            if let Some(runtime) = self.session_runtime.as_deref() {
+                runtime
+                    .admits_note_chase(NoteChase::Off)
+                    .map_err(PlaybackActionError::Session)?;
+            } else if self
+                .project
+                .tracks()
+                .iter()
+                .any(crate::Track::has_instrument_source)
+                || self
+                    .prepared_revision
+                    .as_ref()
+                    .is_some_and(|revision| revision.requires_control_sampler_sources())
+            {
+                return Err(PlaybackActionError::SessionNotPrepared);
+            }
+            // Audio-only Arrangement fallback has no MIDI occurrences to
+            // chase; the ordinary start remains valid without Session support.
+        }
+        Ok(())
+    }
+
     fn admit_declicked_stop(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
-        if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action {
+        if let PlaybackAction::Transport(
+            PlaybackCommand::PlayFrom(frame) | PlaybackCommand::PlayFromWithNoteChase { frame, .. },
+        ) = action
+        {
             return match self.session_runtime.as_deref() {
                 Some(runtime) => runtime
                     .admits_play_from(frame)
@@ -2101,6 +2149,7 @@ impl Playback {
                         | PlaybackCommand::Pause
                         | PlaybackCommand::Seek(_)
                         | PlaybackCommand::PlayFrom(_)
+                        | PlaybackCommand::PlayFromWithNoteChase { .. }
                 ) | PlaybackAction::Session(
                     crate::SessionPlaybackCommand::Stop
                         | crate::SessionPlaybackCommand::Pause
@@ -2141,7 +2190,10 @@ impl Playback {
         if matches!(
             action,
             PlaybackAction::Transport(
-                PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+                PlaybackCommand::Stop
+                    | PlaybackCommand::Seek(_)
+                    | PlaybackCommand::PlayFrom(_)
+                    | PlaybackCommand::PlayFromWithNoteChase { .. }
             ) | PlaybackAction::Session(
                 crate::SessionPlaybackCommand::Stop | crate::SessionPlaybackCommand::Seek(_)
             )
@@ -2178,6 +2230,11 @@ impl Playback {
                                 .play_from(frame)
                                 .map_err(PlaybackActionError::Session);
                         }
+                        PlaybackCommand::PlayFromWithNoteChase { frame, note_chase } => {
+                            return runtime
+                                .play_from_with_note_chase(frame, note_chase)
+                                .map_err(PlaybackActionError::Session);
+                        }
                         PlaybackCommand::Pause => crate::SessionPlaybackCommand::Pause,
                         PlaybackCommand::Stop => crate::SessionPlaybackCommand::Stop,
                         PlaybackCommand::Seek(frame) => crate::SessionPlaybackCommand::Seek(frame),
@@ -2186,7 +2243,8 @@ impl Playback {
                 } else {
                     match command {
                         PlaybackCommand::Play => self.playing = true,
-                        PlaybackCommand::PlayFrom(frame) => {
+                        PlaybackCommand::PlayFrom(frame)
+                        | PlaybackCommand::PlayFromWithNoteChase { frame, .. } => {
                             if let Some(runtime) = self.linear_runtime.as_mut() {
                                 runtime.reset();
                             }
@@ -3840,7 +3898,7 @@ fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
         }
         let mut active = false;
         if track
-            .for_each_active_midi_span(previous.position, |_, _| active = true)
+            .for_each_active_midi_span(previous.position, None, |_, _| active = true)
             .is_err()
             || active
         {
