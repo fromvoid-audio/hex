@@ -3548,3 +3548,32 @@ fn distinct_transforms_share_one_bounded_source_charge_across_edits() {
         64_000
     );
 }
+
+#[test]
+fn unsupported_outer_fade_is_refused_before_preparation_cache_lookup() {
+    let (mut editor, id, media) = fixture(false);
+    editor
+        .execute(Command::SetAudioClipPitch {
+            clip: id,
+            cents: 100,
+        })
+        .unwrap();
+    let clip = editor.project().clip(id).unwrap();
+    let asset = editor.project().asset(clip.asset()).unwrap();
+    let context = AudioTransformPreparation::default();
+    let edit = clip.audio_edit().unwrap();
+    context
+        .prepare_audio(editor.project(), edit, asset, &media[&clip.asset()])
+        .unwrap();
+    let before = context.cache_hits();
+    let mut unsupported = edit.clone();
+    Arc::make_mut(&mut unsupported.domain).fade_clock = hex_project::AudioClipFadeClock::Outer;
+    assert_eq!(
+        context
+            .prepare_audio(editor.project(), &unsupported, asset, &media[&clip.asset()])
+            .unwrap_err()
+            .0,
+        "outer clip fades are not supported yet"
+    );
+    assert_eq!(context.cache_hits(), before);
+}

@@ -830,6 +830,10 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: &Audio,
     ) -> Result<Audio, Invalid> {
+        edit.domain
+            .fade_clock
+            .require_supported()
+            .map_err(|error| Invalid(error.0))?;
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
