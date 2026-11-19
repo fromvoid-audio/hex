@@ -20,6 +20,11 @@
 mod budget;
 mod content;
 mod events;
+mod frame_fade_preview;
+pub use frame_fade_preview::{
+    FrameFadeCoverage, FrameFadeEvent, FrameFadeOverrides, FrameFadePreview, FrameFadeRange,
+    FrameFadeSample,
+};
 mod granular_requirements;
 mod group;
 pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
