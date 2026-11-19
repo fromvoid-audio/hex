@@ -314,13 +314,25 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
         held_waveform
     );
 
-    visual.simulate_keystrokes("cmd-z");
+    editor.update(&mut visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
+        assert!(view.enqueue(Request::Undo));
+    });
     pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.clip(clip).unwrap().retained_fade(), fade);
+    });
     assert_eq!(
         painted_clip_waveform_outline(&editor, &mut visual, clip),
         original_waveform
     );
     editor.update(&mut visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
         assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
             clip,
             fade: ClipFade::neutral(fade.span()).unwrap(),
