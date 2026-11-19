@@ -16,8 +16,8 @@ use super::{EditorView, midi::NoteField};
 use crate::theme;
 use geometry::{beat_at_x, beat_label, source_beat_label};
 use gpui::{
-    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollWheelEvent, Window,
-    canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    Bounds, Context, Corners, Div, Edges, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ScrollWheelEvent, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
 };
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
@@ -34,6 +34,7 @@ fn gesture_bounds_from(bounds: Bounds<gpui::Pixels>) -> [f32; 4] {
 const MIDI_TOOLBAR_HEIGHT: f32 = 28.0;
 const PANEL_TOP_BORDER: f32 = 1.0;
 const NOTE_GRID_BORDER: f32 = 1.0;
+const NOTE_CORNER_RADIUS: f32 = 1.5;
 
 impl EditorView {
     fn piano_panel_height(&self) -> f32 {
@@ -398,20 +399,36 @@ impl EditorView {
                         ));
                     }
                 }
-                let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {
+                let quad_bounds = |x: f32, y: f32, w: f32, h: f32| {
                     let left = x.max(0.0);
                     let top = y.max(0.0);
                     let right = (x + w).min(width);
                     let bottom = (y + h).min(height);
-                    if right > left && bottom > top {
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(bounds.origin.x + px(left), bounds.origin.y + px(top)),
-                                size(px(right - left), px(bottom - top)),
-                            ),
-                            rgb(color),
-                        ));
+                    (right > left && bottom > top).then(|| {
+                        Bounds::new(
+                            point(bounds.origin.x + px(left), bounds.origin.y + px(top)),
+                            size(px(right - left), px(bottom - top)),
+                        )
+                    })
+                };
+                let quad = |window: &mut Window, x, y, w, h, color| {
+                    if let Some(bounds) = quad_bounds(x, y, w, h) {
+                        window.paint_quad(fill(bounds, rgb(color)));
                     }
+                };
+                let note_quad = |x, y, w, h, (leading, trailing), color: gpui::Hsla| {
+                    let bounds = quad_bounds(x, y, w, h)?;
+                    // Clipping a note at the view edge reveals its body.
+                    let left = px(if leading { NOTE_CORNER_RADIUS } else { 0.0 });
+                    let right = px(if trailing { NOTE_CORNER_RADIUS } else { 0.0 });
+                    let corners = Corners {
+                        top_left: left,
+                        bottom_left: left,
+                        top_right: right,
+                        bottom_right: right,
+                    }
+                    .clamp_radii_for_quad_size(bounds.size);
+                    Some(fill(bounds, color).corner_radii(corners))
                 };
                 for (row, note) in pitch.coverage().rev().enumerate() {
                     let Some(top) = pitch.note_top(note) else {
@@ -419,6 +436,7 @@ impl EditorView {
                     };
                     let y = top.max(0.0) * height;
                     quad(
+                        window,
                         0.0,
                         y,
                         width,
@@ -445,6 +463,7 @@ impl EditorView {
                         let x = (raw.saturating_sub(beat_start) as f64 / raw_span as f64) as f32
                             * width;
                         quad(
+                            window,
                             x,
                             0.0,
                             1.0,
@@ -496,28 +515,23 @@ impl EditorView {
                     };
                     let (y, note_height) = note_band(note.y);
                     let w = right - x;
-                    quad(
-                        x,
-                        y,
-                        w,
-                        note_height,
-                        theme::color(if note.active {
-                            theme::PaletteRole::Secondary
-                        } else {
-                            theme::PaletteRole::Muted
-                        }),
-                    );
-                    let border = theme::color(theme::PaletteRole::Background);
-                    let edge_height = 1.0_f32.min(note_height);
-                    quad(x, y, w, edge_height, border);
-                    quad(x, y + note_height - edge_height, w, edge_height, border);
-                    if w >= 3.0 {
-                        if note.leading_edge_visible {
-                            quad(x, y, 1.0, note_height, border);
-                        }
-                        if note.trailing_edge_visible {
-                            quad(right - 1.0, y, 1.0, note_height, border);
-                        }
+                    let color = rgb(theme::color(if note.active {
+                        theme::PaletteRole::Secondary
+                    } else {
+                        theme::PaletteRole::Muted
+                    }));
+                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                    if let Some(body) = note_quad(x, y, w, note_height, ends, color.into()) {
+                        let stroke = px(1.0_f32.min(note_height));
+                        window.paint_quad(
+                            body.border_widths(Edges {
+                                top: stroke,
+                                bottom: stroke,
+                                left: px(if w >= 3.0 && ends.0 { 1.0 } else { 0.0 }),
+                                right: px(if w >= 3.0 && ends.1 { 1.0 } else { 0.0 }),
+                            })
+                            .border_color(rgb(theme::color(theme::PaletteRole::Background))),
+                        );
                     }
                 }
                 for id in draw_selected.iter().copied() {
@@ -547,39 +561,26 @@ impl EditorView {
                     };
                     let (y, note_height) = note_band(note.y);
                     let w = right - x;
-                    quad(
-                        x,
-                        y,
-                        w,
-                        note_height,
-                        theme::color(if note.active {
-                            theme::PaletteRole::Primary
+                    let color = rgb(theme::color(if note.active {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    }));
+                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                    if let Some(body) = note_quad(x, y, w, note_height, ends, color.into()) {
+                        let accent = px(if draw_primary == Some(id) {
+                            2.0_f32.min(note_height)
                         } else {
-                            theme::PaletteRole::Muted
-                        }),
-                    );
-                    if draw_primary == Some(id) {
-                        let accent = 2.0_f32.min(note_height);
-                        let color = theme::color(theme::PaletteRole::Text);
-                        quad(x, y, w, accent, color);
-                        quad(x, y + note_height - accent, w, accent, color);
-                    }
-                    if w >= 3.0 && note.leading_edge_visible {
-                        quad(
-                            x,
-                            y,
-                            1.0,
-                            note_height,
-                            theme::color(theme::PaletteRole::Text),
-                        );
-                    }
-                    if w >= 3.0 && note.trailing_edge_visible {
-                        quad(
-                            x + w - 1.0,
-                            y,
-                            1.0,
-                            note_height,
-                            theme::color(theme::PaletteRole::Text),
+                            0.0
+                        });
+                        window.paint_quad(
+                            body.border_widths(Edges {
+                                top: accent,
+                                bottom: accent,
+                                left: px(if w >= 3.0 && ends.0 { 1.0 } else { 0.0 }),
+                                right: px(if w >= 3.0 && ends.1 { 1.0 } else { 0.0 }),
+                            })
+                            .border_color(rgb(theme::color(theme::PaletteRole::Text))),
                         );
                     }
                 }
@@ -603,13 +604,18 @@ impl EditorView {
                         let x = rect.x * width;
                         let right = (rect.x + rect.width) * width;
                         let (y, note_height) = note_band(rect.y);
-                        quad(
-                            x,
-                            y,
-                            right - x,
-                            note_height,
-                            theme::color(theme::PaletteRole::Primary),
+                        let start = i128::from(note.start.raw());
+                        let end = start + i128::from(note.duration.raw());
+                        let ends = (
+                            start >= beat_start,
+                            end <= beat_start + i128::from(raw_span),
                         );
+                        let color = rgb(theme::color(theme::PaletteRole::Primary));
+                        if let Some(body) =
+                            note_quad(x, y, right - x, note_height, ends, color.into())
+                        {
+                            window.paint_quad(body);
+                        }
                     }
                 }
                 if let Some((id, item, prefix)) = draw_preview
@@ -617,17 +623,18 @@ impl EditorView {
                     && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
                 {
                     let (y, note_height) = note_band(note.y);
-                    quad(
-                        x,
-                        y,
-                        right - x,
-                        note_height,
-                        theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                    let color = rgb(theme::color(
+                        if canvas_scene.note(id).is_some_and(|n| !n.active) {
                             theme::PaletteRole::Muted
                         } else {
                             theme::PaletteRole::Primary
-                        }),
-                    );
+                        },
+                    ));
+                    if let Some(body) = note_quad(x, y, right - x, note_height, ends, color.into())
+                    {
+                        window.paint_quad(body);
+                    }
                 }
 
                 if let Some((originals, gesture)) = &draw_group {
@@ -660,17 +667,17 @@ impl EditorView {
                         };
                         if let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) {
                             let (y, note_height) = note_band(note.y);
-                            quad(
-                                x,
-                                y,
-                                right - x,
-                                note_height,
-                                theme::color(if original.active {
-                                    theme::PaletteRole::Primary
-                                } else {
-                                    theme::PaletteRole::Muted
-                                }),
-                            );
+                            let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                            let color = rgb(theme::color(if original.active {
+                                theme::PaletteRole::Primary
+                            } else {
+                                theme::PaletteRole::Muted
+                            }));
+                            if let Some(body) =
+                                note_quad(x, y, right - x, note_height, ends, color.into())
+                            {
+                                window.paint_quad(body);
+                            }
                         }
                     }
                 }
@@ -681,32 +688,30 @@ impl EditorView {
                     && let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
                 {
                     let (top, note_height) = note_band(note.y);
-                    let color = theme::color(theme::PaletteRole::SecondaryText);
-                    let edge_height = 1.0_f32.min(note_height);
-                    quad(left, top, right - left, edge_height, color);
-                    quad(
-                        left,
-                        top + note_height - edge_height,
-                        right - left,
-                        edge_height,
-                        color,
-                    );
-                    quad(left, top, 1.0, note_height, color);
-                    quad(right - 1.0, top, 1.0, note_height, color);
-                    let edge = match target.kind {
-                        midi_drag::HitKind::Move => None,
-                        midi_drag::HitKind::ResizeLeading => Some(left),
-                        midi_drag::HitKind::ResizeTrailing => {
-                            Some(right - 3.0_f32.min(right - left))
-                        }
-                    };
-                    if let Some(edge) = edge {
-                        quad(
-                            edge,
-                            top,
-                            3.0_f32.min(right - left),
-                            note_height,
-                            theme::color(theme::PaletteRole::SecondaryText),
+                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                    let w = right - left;
+                    if let Some(outline) =
+                        note_quad(left, top, w, note_height, ends, gpui::transparent_black())
+                    {
+                        let stroke = px(1.0_f32.min(note_height));
+                        let handle = px(3.0_f32.min(w));
+                        window.paint_quad(
+                            outline
+                                .border_widths(Edges {
+                                    top: stroke,
+                                    bottom: stroke,
+                                    left: if target.kind == midi_drag::HitKind::ResizeLeading {
+                                        handle
+                                    } else {
+                                        px(1.0)
+                                    },
+                                    right: if target.kind == midi_drag::HitKind::ResizeTrailing {
+                                        handle
+                                    } else {
+                                        px(1.0)
+                                    },
+                                })
+                                .border_color(rgb(theme::color(theme::PaletteRole::SecondaryText))),
                         );
                     }
                 }
@@ -716,6 +721,7 @@ impl EditorView {
                     let width = (first[0] - last[0]).abs();
                     let height = (first[1] - last[1]).abs();
                     quad(
+                        window,
                         left,
                         top,
                         width.max(1.0),
@@ -723,6 +729,7 @@ impl EditorView {
                         theme::color(theme::PaletteRole::Primary),
                     );
                     quad(
+                        window,
                         left,
                         top + height,
                         width.max(1.0),
@@ -730,6 +737,7 @@ impl EditorView {
                         theme::color(theme::PaletteRole::Primary),
                     );
                     quad(
+                        window,
                         left,
                         top,
                         1.0,
@@ -737,6 +745,7 @@ impl EditorView {
                         theme::color(theme::PaletteRole::Primary),
                     );
                     quad(
+                        window,
                         left + width,
                         top,
                         1.0,
@@ -761,6 +770,7 @@ impl EditorView {
                     let right = ((last - beat_start) as f64 / raw_span as f64) as f32 * width;
                     let y = (row_top + row_bottom) * 0.5 * height;
                     quad(
+                        window,
                         left,
                         y - 1.0,
                         right - left,
@@ -776,9 +786,17 @@ impl EditorView {
                 {
                     let x =
                         (marker.saturating_sub(beat_start) as f64 / raw_span as f64) as f32 * width;
-                    quad(x, 0.0, 1.0, height, theme::color(theme::PaletteRole::Text));
+                    quad(
+                        window,
+                        x,
+                        0.0,
+                        1.0,
+                        height,
+                        theme::color(theme::PaletteRole::Text),
+                    );
                     let cap_left = (x - 3.0).max(0.0);
                     quad(
+                        window,
                         cap_left,
                         0.0,
                         7.0_f32.min(width - cap_left),
@@ -793,6 +811,7 @@ impl EditorView {
                 {
                     let x = ((playhead - beat_start) as f64 / raw_span as f64) as f32 * width;
                     quad(
+                        window,
                         x,
                         0.0,
                         1.0,
