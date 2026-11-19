@@ -400,10 +400,9 @@ pub(in crate::editor) fn view(
                     None,
                     ink,
                 );
-                element = element.child(
-                    waveform::clip_waveform_activity(body, waveform_active)
-                        .debug_selector(move || format!("audio-event-waveform-{event_id}")),
-                );
+                let waveform = waveform::clip_waveform_activity(body, waveform_active)
+                    .debug_selector(move || format!("audio-event-waveform-{event_id}"));
+                element = element.child(waveform);
             }
         }
         element = element.child(
