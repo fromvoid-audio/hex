@@ -36,7 +36,7 @@ pub struct PreparedDirectedEventRead {
 }
 
 impl PreparedDirectedEventRead {
-    pub(crate) fn admit(
+    pub(in crate::audio_transform) fn admit(
         base: Range<u64>,
         crop: Range<u64>,
         destination_start: u64,
@@ -64,7 +64,7 @@ impl PreparedDirectedEventRead {
         })
     }
 
-    pub(crate) fn record(
+    pub(in crate::audio_transform) fn record(
         &mut self,
         full: Range<u64>,
         map: hex_warp::TimeMap,
@@ -89,7 +89,7 @@ impl PreparedDirectedEventRead {
         Some(())
     }
 
-    pub(crate) fn finish(&mut self) {
+    pub(in crate::audio_transform) fn finish(&mut self) {
         if self.reversed {
             self.spans.reverse();
         }
