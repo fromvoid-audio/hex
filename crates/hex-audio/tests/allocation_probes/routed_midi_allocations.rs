@@ -2,7 +2,7 @@
 use hex_audio::prepared;
 use hex_engine::{
     LaunchQuantization, PlaybackCommand, PreparedRevision, SessionPlaybackCommand, SineTable,
-    playback::Playback,
+    playback::{Playback, PlaybackAction},
 };
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
@@ -30,6 +30,7 @@ fn compensated_mutable_arrangement_matches_scalar_gates_without_callback_allocat
     let operator = hex_devices::operator_state::OPERATOR_METADATA
         .default_state()
         .unwrap();
+    let operator_type = operator.type_id();
     let Created::Track(instrument) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "operator".into(),
@@ -100,41 +101,73 @@ fn compensated_mutable_arrangement_matches_scalar_gates_without_callback_allocat
         asset,
         hex_engine::Audio::new(RATE, vec![[0.01, -0.01]; 1_250]).unwrap(),
     )]);
-    let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
-            .unwrap(),
-    );
-    assert_eq!(revision.arrangement().main_latency_frames(), 72);
-    let mut reference = hex_engine::SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    reference.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut expected = [[0.0; 2]; 2_048];
-    for frame in expected.chunks_mut(1) {
-        reference.render(frame).unwrap();
+    let device = editor
+        .project()
+        .track(instrument)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let prepare = || {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    for command in [PlaybackCommand::Play, PlaybackCommand::PlayFrom(181)] {
+        let reference = prepare();
+        let expected_meter =
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&reference).unwrap();
+        let mut reference = Playback::try_from_prepared_with_session(reference).unwrap();
+        reference.set_device_metering(true);
+        reference
+            .try_apply_declicked_action(PlaybackAction::Transport(command))
+            .unwrap();
+        let mut expected = [[0.0; 2]; 2_048];
+        for frame in expected.chunks_mut(1) {
+            reference.render(frame).unwrap();
+        }
+        // The opposing audio channels cannot produce this audible mono sum.
+        assert!(
+            expected[200..500]
+                .iter()
+                .any(|frame| (frame[0] + frame[1]).abs() > 0.01)
+        );
+        let revision = prepare();
+        assert_eq!(revision.arrangement().main_latency_frames(), 72);
+        let meter = hex_engine::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+        control
+            .publish(Playback::try_from_prepared_with_session(revision).unwrap())
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        control.command(command).unwrap();
+        let mut actual = [[0.0; 2]; 2_048];
+        for block in actual.chunks_mut(257) {
+            measured(|| {
+                callback.begin_block();
+                callback.render(block).unwrap();
+                callback.finish_gain_recording_quantum(true);
+            });
+        }
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+        let expected_peaks = expected_meter
+            .meter(device.value(), operator_type)
+            .unwrap()
+            .take_peaks();
+        assert_eq!(expected_peaks.input, 0.0);
+        assert!(expected_peaks.output.iter().all(|&peak| peak > 0.0));
+        assert_eq!(
+            meter
+                .meter(device.value(), operator_type)
+                .unwrap()
+                .take_peaks(),
+            expected_peaks,
+        );
+        control.stop();
+        control.reclaim();
     }
-    // The opposing audio-channel fixture cannot produce this audible mono sum.
-    assert!(
-        expected[200..500]
-            .iter()
-            .any(|frame| (frame[0] + frame[1]).abs() > 0.01)
-    );
-    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
-    control
-        .publish(Playback::try_from_prepared_with_session(revision).unwrap())
-        .unwrap_or_else(|error| panic!("{}", error.reason));
-    control.command(PlaybackCommand::Play).unwrap();
-    let mut actual = [[0.0; 2]; 2_048];
-    for block in actual.chunks_mut(257) {
-        measured(|| {
-            callback.begin_block();
-            callback.render(block).unwrap();
-            callback.finish_gain_recording_quantum(true);
-        });
-    }
-    for (actual, expected) in actual.into_iter().zip(expected) {
-        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
-    }
-    control.stop();
-    control.reclaim();
 }
 
 #[test]
