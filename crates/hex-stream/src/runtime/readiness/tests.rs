@@ -374,32 +374,32 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
     };
     assert!(matches!(
         loan.reserve_resident_current_quantum(&[extent(0), extent(0)]),
-        Err(CurrentQuantumRefusal::InvalidExtents)
+        Err(RenderPageRefusal::InvalidExtents)
     ));
     assert!(matches!(
         loan.reserve_resident_current_quantum(&[StreamResourceExtent {
             end: hex_engine::STREAM_PAGE_FRAMES + 1,
             ..extent(0)
         }]),
-        Err(CurrentQuantumRefusal::InvalidExtents)
+        Err(RenderPageRefusal::InvalidExtents)
     ));
     assert!(matches!(
         loan.reserve_resident_current_quantum(&[extent(0), extent(1), extent(2), extent(3)]),
-        Err(CurrentQuantumRefusal::InvalidExtents)
+        Err(RenderPageRefusal::InvalidExtents)
     ));
     let pending = stamp(&owner, 1);
     loan.submit_resources(ProtectionRole::Transition, pending, &[extent(3)])
         .unwrap();
     assert!(matches!(
         loan.reserve_resident_current_quantum(&[extent(0), extent(1), extent(2)]),
-        Err(CurrentQuantumRefusal::Capacity)
+        Err(RenderPageRefusal::Capacity)
     ));
     // Even if page 4 arrives, the full span cannot coexist with the pending
     // Transition page in this three-page cache.
     let oversized = [extent(0), extent(1), extent(4)];
     assert!(matches!(
         loan.reserve_current_quantum(&oversized),
-        Err(CurrentQuantumRefusal::Capacity)
+        Err(RenderPageRefusal::Capacity)
     ));
     assert!(loan.cancel(ProtectionRole::Transition, pending.request_epoch));
     let current = [extent(0), extent(1), extent(4)];
@@ -436,7 +436,7 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
     );
     assert!(matches!(
         loan.reserve_current_quantum(&current),
-        Err(CurrentQuantumRefusal::Busy)
+        Err(RenderPageRefusal::Busy)
     ));
     let candidate = stamp(&owner, 2);
     let demand = [extent(3)];
@@ -475,10 +475,10 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
     let mut released = false;
     #[cfg(feature = "allocation-probe")]
     let allocations = allocation_counter::measure(|| {
-        released = loan.release_current_quantum(&token);
+        released = loan.release_render_pages(&token);
     });
     #[cfg(not(feature = "allocation-probe"))]
-    let released = loan.release_current_quantum(&token);
+    let released = loan.release_render_pages(&token);
     #[cfg(feature = "allocation-probe")]
     assert_eq!(
         (
@@ -490,22 +490,22 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
         (0, 0, 0, 0)
     );
     assert!(released);
-    assert!(!loan.release_current_quantum(&token));
+    assert!(!loan.release_render_pages(&token));
     let (second, complete) = loan
         .reserve_resident_current_quantum(&[extent(0)])
         .ok()
         .unwrap();
     assert!(complete);
     assert!(
-        !loan.release_current_quantum(&token),
+        !loan.release_render_pages(&token),
         "stale token must not clear a new reservation"
     );
     assert!(loan.cancel_current_quantum());
-    assert!(!loan.release_current_quantum(&second));
+    assert!(!loan.release_render_pages(&second));
     assert!(!loan.cancel_current_quantum());
     assert!(matches!(
         loan.reserve_current_quantum(&[extent(4)]),
-        Err(CurrentQuantumRefusal::NotResident)
+        Err(RenderPageRefusal::NotResident)
     ));
     assert_eq!(
         loan.submit_resources(ProtectionRole::Transition, transition, &[extent(2)]),
@@ -525,6 +525,103 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
     assert!(loan.acknowledge_resources(ProtectionRole::Transition, transition, &[extent(2)]));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    owner.dispose_on_control().unwrap();
+}
+
+#[test]
+fn outgoing_fade_and_current_window_share_capacity_but_release_independently() {
+    let Some(mut owner) = artifact() else { return };
+    let (_wav, control, pages, key) = pair_with_frames(None, 24_000);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    for index in 0..3 {
+        loan.pages.request_page(key, index);
+        while loan.pages.page(key, index).is_none() {
+            loan.pages.pump_ready(4);
+            assert!(std::time::Instant::now() < deadline, "cache warmup stalled");
+            std::thread::yield_now();
+        }
+    }
+    let extent = |page_index| StreamResourceExtent {
+        source: key.into(),
+        page_index,
+        start: 0,
+        end: 8,
+    };
+    let candidate = stamp(&owner, 1);
+    let mut retained_fade = None;
+    let mut exercise = || {
+        assert!(matches!(
+            loan.reserve_outgoing_fade(&[extent(0), extent(3)]),
+            Err(RenderPageRefusal::NotResident)
+        ));
+        let fade = loan.reserve_outgoing_fade(&[extent(0), extent(1)]).unwrap();
+        let current = loan
+            .reserve_current_quantum(&[extent(1), extent(2)])
+            .unwrap();
+        assert_eq!(
+            loan.submit_resources(ProtectionRole::Candidate, candidate, &[extent(3)]),
+            Err(ReadinessRefusal::Capacity)
+        );
+        loan.pages.endpoint.reclaim_for_missing(1, 1);
+        assert!((0..3).all(|index| loan.pages.page(key, index).is_some()));
+        assert!(loan.release_render_pages(&current));
+        loan.pages.endpoint.reclaim_for_missing(1, 1);
+        assert!(loan.pages.page(key, 0).is_some());
+        assert!(loan.pages.page(key, 1).is_some());
+        assert!(loan.pages.page(key, 2).is_none());
+
+        let current = loan.reserve_current_quantum(&[extent(0)]).unwrap();
+        assert!(loan.release_render_pages(&fade));
+        assert!(!loan.release_render_pages(&fade));
+        loan.pages.endpoint.reclaim_for_missing(2, 2);
+        assert!(loan.pages.page(key, 0).is_some());
+        assert!(loan.pages.page(key, 1).is_none());
+        assert!(loan.release_render_pages(&current));
+        retained_fade = Some(loan.reserve_outgoing_fade(&[extent(0)]).unwrap());
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let allocations = allocation_counter::measure(&mut exercise);
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    exercise();
+
+    let mut returned = Some(loan);
+    assert!(matches!(
+        domain.return_pages_on_control(&mut returned),
+        Err(AudioStreamStorageError::UnresolvedObligations)
+    ));
+    assert!(
+        returned
+            .as_mut()
+            .unwrap()
+            .release_render_pages(&retained_fade.unwrap())
+    );
+    domain.return_pages_on_control(&mut returned).unwrap();
     let report = finish(&mut domain);
     assert!(report.accounting_complete && report.worker_joined);
     owner.dispose_on_control().unwrap();
@@ -554,18 +651,18 @@ fn current_quantum_tokens_cannot_release_another_domain() {
     let mut loan_b = b.loan_pages_on_control().unwrap();
     let token_a = loan_a.reserve_current_quantum(&[]).ok().unwrap();
     let token_b = loan_b.reserve_current_quantum(&[]).ok().unwrap();
-    assert!(!loan_a.release_current_quantum(&token_b));
-    assert!(!loan_b.release_current_quantum(&token_a));
+    assert!(!loan_a.release_render_pages(&token_b));
+    assert!(!loan_b.release_render_pages(&token_a));
     assert!(matches!(
         loan_a.reserve_current_quantum(&[]),
-        Err(CurrentQuantumRefusal::Busy)
+        Err(RenderPageRefusal::Busy)
     ));
     assert!(matches!(
         loan_b.reserve_current_quantum(&[]),
-        Err(CurrentQuantumRefusal::Busy)
+        Err(RenderPageRefusal::Busy)
     ));
-    assert!(loan_a.release_current_quantum(&token_a));
-    assert!(loan_b.release_current_quantum(&token_b));
+    assert!(loan_a.release_render_pages(&token_a));
+    assert!(loan_b.release_render_pages(&token_b));
     a.return_pages_on_control(&mut Some(loan_a)).unwrap();
     b.return_pages_on_control(&mut Some(loan_b)).unwrap();
     assert!(finish(&mut a).accounting_complete);

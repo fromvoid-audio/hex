@@ -26,9 +26,9 @@ pub use storage::{
 };
 mod readiness;
 pub use readiness::{
-    ConstructorPageLoan, CurrentQuantumRefusal, CurrentQuantumReservation, PreparedRolePromotion,
-    ProtectedStreamPages, ProtectionRole, ReadinessArtifact, ReadinessProgress, ReadinessRefusal,
-    ReadinessStamp, StreamReadinessReservation,
+    ConstructorPageLoan, PreparedRolePromotion, ProtectedStreamPages, ProtectionRole,
+    ReadinessArtifact, ReadinessProgress, ReadinessRefusal, ReadinessStamp, RenderPageRefusal,
+    RenderPageReservation, StreamReadinessReservation,
 };
 mod native_custody;
 pub use native_custody::{
