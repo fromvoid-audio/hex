@@ -697,24 +697,54 @@ impl Endpoint {
         }
     }
 
-    /// Service one exact fade lookahead without evicting any page. A full
-    /// cache or another in-flight request leaves the work to normal demand.
-    pub(crate) fn prewarm_fade_extent(&mut self, extent: crate::StreamResourceExtent) -> bool {
-        if self.cache_count >= self.max_cached_pages {
-            return false;
-        }
+    /// Service one exact lookahead. The complete current window must be pinned
+    /// before a caller offers additional retained extents to make one vacancy.
+    pub(crate) fn prewarm_fade_extent(
+        &mut self,
+        extent: crate::StreamResourceExtent,
+        retained: Option<&[&[crate::StreamResourceExtent]]>,
+    ) -> bool {
         let key = ResourcePageKey {
             source: extent.source,
             page_index: extent.page_index,
         };
-        if self.prefetch_key == Some(key)
-            && self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
+        let ready = self.prefetch_key == Some(key)
+            && self.ready_rx.peek().is_ok_and(|page| page.key == Some(key));
+        if (!ready && self.pending_count != 0)
+            || (self.cache_count >= self.max_cached_pages
+                && retained.is_none_or(|extents| !self.reclaim_fade_victim(extents)))
         {
+            return false;
+        }
+        if ready {
             self.pump_ready(1);
             return self.has_extent(extent);
         }
         self.prefetch(key);
         false
+    }
+
+    fn reclaim_fade_victim(&mut self, retained: &[&[crate::StreamResourceExtent]]) -> bool {
+        let mask = self.cache.len() - 1;
+        let victim = (0..self.cache.len())
+            .map(|offset| (self.eviction_cursor + offset) & mask)
+            .find(|&index| {
+                matches!(&self.cache[index], CacheSlot::Occupied { page, pinned: 0 }
+                if page.key.is_some_and(|key| {
+                    !retained.iter().any(|extents| extents.binary_search_by_key(
+                        &(key.source, key.page_index),
+                        |extent| (extent.source, extent.page_index),
+                    ).is_ok())
+                }))
+            });
+        let Some(index) = victim else { return false };
+        let Some((page, _)) = self.cache_remove(index) else {
+            return false;
+        };
+        self.eviction_cursor = (index + 1) & mask;
+        self.return_buffer(page);
+        self.flush_held_returns();
+        true
     }
 
     fn unpinned_victim_except(&self, keep: ResourcePageKey) -> Option<usize> {
@@ -1157,14 +1187,14 @@ mod tests {
         };
         assert!(test.endpoint.insert_ready(page(key(0))));
         test.endpoint.replace_protection(1, &[extent(0)]);
-        assert!(!test.endpoint.prewarm_fade_extent(extent(1)));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(1), None));
         assert_eq!(test.requests.pop().unwrap().0, key(1).into());
         assert!(test.ready.push(page(key(1))).is_ok());
-        assert!(!test.endpoint.prewarm_fade_extent(extent(2)));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(2), None));
         assert!(!test.endpoint.has_extent(extent(1)));
         assert!(test.requests.pop().is_err());
-        assert!(test.endpoint.prewarm_fade_extent(extent(1)));
-        assert!(!test.endpoint.prewarm_fade_extent(extent(2)));
+        assert!(test.endpoint.prewarm_fade_extent(extent(1), None));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(2), None));
         assert!(test.endpoint.has_extent(extent(0)));
         assert!(test.requests.pop().is_err());
         test.endpoint.reclaim_for_missing(1, 1);
@@ -1172,6 +1202,47 @@ mod tests {
         assert!(
             !test.endpoint.has_extent(extent(1)),
             "unclaimed lookahead stays evictable"
+        );
+    }
+
+    #[test]
+    fn full_cache_fade_lookahead_preserves_pins_and_other_wanted_extents() {
+        let mut test = endpoint(5, 4, 4);
+        let source = source();
+        let key = |page_index| PageKey { source, page_index };
+        let extent = |page_index| crate::StreamResourceExtent {
+            source: source.into(),
+            page_index,
+            start: 0,
+            end: 1,
+        };
+        for index in 0..4 {
+            assert!(test.endpoint.insert_ready(page(key(index))));
+        }
+        test.endpoint
+            .replace_protection(RENDER_HOLD_PIN, &[extent(0)]);
+        test.endpoint.replace_protection(2, &[extent(1)]);
+        let projected = [extent(2), extent(4)];
+        let pending = [extent(3)];
+        assert!(
+            !test
+                .endpoint
+                .prewarm_fade_extent(extent(4), Some(&[&projected, &pending]))
+        );
+        assert!(test.requests.pop().is_err());
+        assert!((0..4).all(|index| test.endpoint.has_extent(extent(index))));
+        assert!(
+            !test
+                .endpoint
+                .prewarm_fade_extent(extent(4), Some(&[&projected]))
+        );
+        assert_eq!(test.requests.pop().unwrap().0, key(4).into());
+        assert!((0..3).all(|index| test.endpoint.has_extent(extent(index))));
+        assert!(!test.endpoint.has_extent(extent(3)));
+        assert!(test.ready.push(page(key(4))).is_ok());
+        assert!(
+            test.endpoint
+                .prewarm_fade_extent(extent(4), Some(&[&projected]))
         );
     }
 

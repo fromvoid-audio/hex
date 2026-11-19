@@ -1482,6 +1482,7 @@ pub struct Callback {
     yield_stream_successor_once: bool,
     current_quantum_pins: Option<crate::candidate_custody::QuantumPins>,
     device_insert_fade_pins: Option<crate::candidate_custody::QuantumPins>,
+    cold_device_fade: Option<device_insert_consent::ColdDeviceFade>,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -1668,6 +1669,7 @@ pub(crate) fn channel_with_interface(
             yield_stream_successor_once: false,
             current_quantum_pins: None,
             device_insert_fade_pins: None,
+            cold_device_fade: None,
             stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -3504,6 +3506,7 @@ impl Callback {
         self.flush_stream_outcomes();
     }
     fn begin_block_inner(&mut self) {
+        self.cold_device_fade = None;
         self.transport_setup_open = false;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
@@ -5699,6 +5702,9 @@ impl Callback {
                 .end(crate::sample_recording::End::UnsupportedOutput);
         } else {
             self.sample_recording.begin(output.len());
+        }
+        if !yield_successor {
+            self.prewarm_cold_device_fade(output.len());
         }
         // A ready streamed section can install above, before any frames
         // render. Only that transition replaces the original block start.

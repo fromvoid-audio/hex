@@ -101,6 +101,10 @@ impl Callback {
             })?;
         let Some(pins) = pins else {
             next.cancel_stream_readiness(&mut self.domain_pages);
+            self.cold_device_fade = Some(super::device_insert_consent::ColdDeviceFade {
+                revision: next.revision(),
+                frames: fade as usize,
+            });
             return Ok(false);
         };
         self.device_insert_fade_pins = Some(pins);
