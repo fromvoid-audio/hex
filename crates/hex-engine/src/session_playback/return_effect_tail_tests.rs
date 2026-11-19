@@ -1,4 +1,4 @@
-use super::return_effect_tails::{ReturnEffectTail, ReturnEffectTailPlan};
+use super::return_effect_tails::{DeviceEditTailPolicy, ReturnEffectTail, ReturnEffectTailPlan};
 use super::*;
 use hex_lattice::{
     NativeProcessorRuntime, NativeRuntimeChain, OutputTail, PreparedNativeProcessor,
@@ -1236,6 +1236,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut bytes,
             &mut entries,
             None,
+            DeviceEditTailPolicy::Preserve,
         )
         .is_ok()
     );
@@ -1258,6 +1259,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut bytes,
             &mut entries,
             None,
+            DeviceEditTailPolicy::Preserve,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1277,6 +1279,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut bytes,
             &mut entries,
             None,
+            DeviceEditTailPolicy::Preserve,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1296,6 +1299,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut bytes,
             &mut entries,
             None,
+            DeviceEditTailPolicy::Preserve,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
