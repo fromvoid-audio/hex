@@ -100,12 +100,8 @@ impl Deadline {
             })?;
             self.admitted = false;
             ACTIVE_TRANSPORTS.fetch_sub(1, AcqRel);
-            qos_threads::set_current_thread(qos_threads::Qos::High).map_err(|error| {
-                Error::IoAt(
-                    "native transport QoS restoration",
-                    std::io::Error::from_raw_os_error(error.errno()),
-                )
-            })?;
+            // A successful Mach restore is sufficient. macOS can refuse a
+            // later pthread QoS request on a manually scheduled thread.
         }
         Ok(())
     }
