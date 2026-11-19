@@ -34,7 +34,7 @@ fn gesture_bounds_from(bounds: Bounds<gpui::Pixels>) -> [f32; 4] {
 const MIDI_TOOLBAR_HEIGHT: f32 = 28.0;
 const PANEL_TOP_BORDER: f32 = 1.0;
 const NOTE_GRID_BORDER: f32 = 1.0;
-const NOTE_CORNER_RADIUS: f32 = 1.5;
+const NOTE_CORNER_RADIUS: f32 = 2.5;
 
 impl EditorView {
     fn piano_panel_height(&self) -> f32 {
