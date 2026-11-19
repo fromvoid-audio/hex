@@ -23,8 +23,12 @@ impl FrameFadePreview<'_> {
             return Ok(Some(FrameFadeCoverage::default()));
         }
         let clip_end = self.clip.start() + self.clip.duration();
-        let first = range.start.max(self.clip.start());
-        let last = range.end.min(clip_end);
+        let mut first = range.start.max(self.clip.start());
+        let mut last = range.end.min(clip_end);
+        if let Some(fade) = &self.directed_legacy {
+            first = first.max(fade.destination.start);
+            last = last.min(fade.destination.end);
+        }
         let mut silence = first != range.start || last != range.end;
         let roots = if first >= last {
             [None, None]
@@ -73,10 +77,10 @@ impl FrameFadePreview<'_> {
                 None,
             ]
         };
-        // Root unions can collapse several occurrences. The outer envelope
+        // Root unions can collapse several occurrences. The instance envelope
         // belongs to the column's destination midpoint, never any root phase.
         let gain = if first < last {
-            self.outer_gain(first + (last - first - 1) / 2)?
+            self.timeline_gain(first + (last - first - 1) / 2)?
         } else {
             None
         };

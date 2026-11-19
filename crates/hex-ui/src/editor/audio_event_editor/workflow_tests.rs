@@ -1349,10 +1349,18 @@ fn reversed_pitched_event_fade_keeps_both_waveforms_through_commit_and_history(
     event_fade_drag_across_waveform_views(cx, EventFadeFixture::ReversedPitched);
 }
 
+#[gpui::test]
+fn directed_legacy_pitched_event_fade_keeps_both_waveforms_through_commit_and_history(
+    cx: &mut TestAppContext,
+) {
+    event_fade_drag_across_waveform_views(cx, EventFadeFixture::ReversedPitchedLegacy);
+}
+
 enum EventFadeFixture {
     Original,
     Pitched,
     ReversedPitched,
+    ReversedPitchedLegacy,
 }
 
 fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: EventFadeFixture) {
@@ -1360,7 +1368,21 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
 
     let (files, mut visual, editor, clip) = open(cx);
     let pitched = !matches!(fixture, EventFadeFixture::Original);
-    let reversed = matches!(fixture, EventFadeFixture::ReversedPitched);
+    let reversed = matches!(
+        fixture,
+        EventFadeFixture::ReversedPitched | EventFadeFixture::ReversedPitchedLegacy
+    );
+    let legacy = matches!(fixture, EventFadeFixture::ReversedPitchedLegacy);
+    if legacy {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::SetClipFades {
+                clip,
+                fade_in: 97,
+                fade_out: 0,
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
     if pitched {
         editor.update(&mut visual, |view, _| {
             assert!(view.enqueue(Request::Edit(Command::SetAudioClipPitch {
@@ -1377,23 +1399,27 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
-            assert!(
-                view.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .clip(clip)
-                    .unwrap()
-                    .audio_edit()
-                    .unwrap()
-                    .content_view
-                    .unwrap()
-                    .window
-                    .reversed
-            );
+            let edit = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap();
+            assert!(edit.content_view.unwrap().window.reversed);
+            if legacy {
+                assert_eq!(
+                    edit.domain.fade_clock,
+                    hex_project::AudioClipFadeClock::LegacyRoot
+                );
+                assert_eq!(edit.domain.fade.fade_in(), 97);
+            }
         });
     }
-    let unfaded_pcm = editor.read_with(&visual, |view, _| render_accepted_event(view, clip));
+    let before_event_fade_pcm =
+        editor.read_with(&visual, |view, _| render_accepted_event(view, clip));
     let source = pitched.then(|| {
         editor.read_with(&visual, |view, _| {
             let source = view.state.as_ref().unwrap().audio_clip_waveforms[&clip]
@@ -1564,12 +1590,19 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
             }
         };
         assert_eq!(pcm[position(0)], [0.0; 2]);
+        if legacy {
+            assert_eq!(pcm[0], [0.0; 2]);
+        }
         let t = 1.0 / (count - 1) as f32;
         assert!(
-            (pcm[position(1)][0] - unfaded_pcm[position(1)][0] * t * t * (3.0 - 2.0 * t)).abs()
+            (pcm[position(1)][0] - before_event_fade_pcm[position(1)][0] * t * t * (3.0 - 2.0 * t))
+                .abs()
                 < 1e-7
         );
-        assert_eq!(pcm[position(count - 1)], unfaded_pcm[position(count - 1)]);
+        assert_eq!(
+            pcm[position(count - 1)],
+            before_event_fade_pcm[position(count - 1)]
+        );
     });
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
     visual.simulate_keystrokes("cmd-z");

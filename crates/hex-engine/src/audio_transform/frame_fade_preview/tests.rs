@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Audio, audio_transform::AudioTransformPreparation};
 use hex_project::{
-    AudioEventEdit, AudioEventFade, AudioViewResizeOperation, ClipFade, ClipGain, Command, Created,
-    Editor, FadeCurveLaw, Project,
+    AudioClipFadeClock, AudioEventEdit, AudioEventFade, AudioViewResizeOperation, ClipFade,
+    ClipGain, Command, Created, Editor, FadeCurveLaw, Project,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -163,7 +163,25 @@ fn processed_frame_repeat_reads(reversed: bool) {
 
 #[test]
 fn reversed_once_cropped_columns_keep_genuine_leading_silence() {
+    reversed_once_columns(false);
+}
+
+#[test]
+fn directed_legacy_once_envelope_intersects_both_silence_gates() {
+    reversed_once_columns(true);
+}
+
+fn reversed_once_columns(legacy_fade: bool) {
     let (mut editor, clip, media) = fixture(1_024, false);
+    if legacy_fade {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 491,
+                fade_out: 93,
+            })
+            .unwrap();
+    }
     for command in [
         Command::ResizeAudioClipView {
             clip,
@@ -184,6 +202,11 @@ fn reversed_once_cropped_columns_keep_genuine_leading_silence() {
     ] {
         editor.execute(command).unwrap();
     }
+    if legacy_fade {
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
+        assert!(!edit.domain.fade.is_neutral());
+    }
     assert_matches(&editor, clip, &media, &AudioTransformPreparation::default());
     let project = editor.project();
     let row = project.clip(clip).unwrap();
@@ -194,11 +217,23 @@ fn reversed_once_cropped_columns_keep_genuine_leading_silence() {
     )
     .unwrap()
     .unwrap();
-    for (range, expected, silence) in [
+    let common_columns = [
         (360..400, None, true),
         (360..440, Some(984..1_024), true),
         (420..460, Some(964..1_004), false),
-    ] {
+    ];
+    let trailing_columns = if legacy_fade {
+        [
+            (984..1_064, Some(400..440), true),
+            (1_100..1_200, None, true),
+        ]
+    } else {
+        [
+            (984..1_064, Some(360..440), false),
+            (1_100..1_200, Some(224..324), false),
+        ]
+    };
+    for (range, expected, silence) in common_columns.into_iter().chain(trailing_columns) {
         let mut source = None;
         let coverage = query
             .visit_timeline_ranges(range, &mut 2, |part| {
@@ -536,27 +571,42 @@ fn unsupported_processing_is_separate_from_supported_silence() {
 }
 
 #[test]
-fn directed_legacy_envelope_keeps_its_existing_display_path() {
-    let (mut editor, clip, _) = fixture(1_024, false);
-    editor
-        .execute(Command::SetClipFades {
+fn directed_legacy_repeat_keeps_forward_phase_and_reflects_the_event() {
+    let (mut editor, clip, media) = fixture(1_024, false);
+    for command in [
+        Command::SetClipFades {
             clip,
-            fade_in: 32,
-            fade_out: 64,
-        })
-        .unwrap();
-    editor.execute(Command::ReverseClips(vec![clip])).unwrap();
-    let project = editor.project();
-    let row = project.clip(clip).unwrap();
-    assert!(
-        FrameFadePreview::new(
-            row,
-            project.tempo_map(),
-            project.asset(row.asset()).unwrap()
-        )
-        .unwrap()
-        .is_none()
-    );
+            fade_in: 157,
+            fade_out: 205,
+        },
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    AudioEventFade::new(0, ClipFade::new(1_024, 0, 387, 49).unwrap()).unwrap(),
+                ),
+            },
+        },
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 2_317,
+            },
+        },
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::PlayStart { position: 139 },
+        },
+        Command::ReverseClips(vec![clip]),
+    ] {
+        editor.execute(command).unwrap();
+    }
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
+    assert!(!edit.domain.fade.is_neutral());
+    assert_eq!(edit.placement.unwrap().cycle_phase, 139);
+    assert_matches(&editor, clip, &media, &AudioTransformPreparation::default());
 }
 
 #[test]
