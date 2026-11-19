@@ -4,6 +4,7 @@
 #include "macos_state_stream.hpp"
 #include "macos_input_notes.hpp"
 #include "macos_parameters.hpp"
+#include "macos_editor_touch.hpp"
 #include "macos_parameter_page.hpp"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <array>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <poll.h>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -31,11 +33,22 @@ inline void number(Bytes& out,uint64_t value,size_t n) {
     for(size_t i=0;i<n;++i) out.push_back(static_cast<uint8_t>(value>>(i*8)));
 }
 // Clean EOF differs from a partial frame. Only the processing lane reads PCM.
-inline int read_exact(int fd,uint8_t* p,size_t n) {
+inline int read_exact(int fd,uint8_t* p,size_t n,bool frame_started=false) {
     size_t at=0;
     while(at<n) {
-        auto count=::read(fd,p+at,n-at);
+        // An incomplete frame must recheck EOF even if another observer has
+        // consumed a socket wakeup. Idle header reads remain blocking; this
+        // bounded poll only runs after a frame has begun and bytes are absent.
+        const bool incomplete=frame_started || at!=0;
+        auto count=incomplete ? ::recv(fd,p+at,n-at,MSG_DONTWAIT) : ::read(fd,p+at,n-at);
         if(count<0 && errno==EINTR) continue;
+        if(count<0 && incomplete && (errno==EAGAIN || errno==EWOULDBLOCK)) {
+            pollfd pending{fd,POLLIN,0};
+            const auto ready=::poll(&pending,1,10);
+            if(ready<0 && errno!=EINTR) return -1;
+            if(ready>0 && (pending.revents&(POLLERR|POLLNVAL))) return -1;
+            continue;
+        }
         if(count<0) return -1;
         if(!count) return at? -1:0;
         at+=static_cast<size_t>(count);
@@ -165,9 +178,15 @@ struct Presentation {
 struct PresentationPlan {
     std::optional<Presentation> known;
     bool allow_unknown=false;
+    uint8_t known_mode=1; // 1: both, 3: input only, 4: output only
 };
+inline bool known_presentation(uint64_t mode,uint32_t input,uint32_t output,PresentationPlan& result) {
+    if((mode!=1 && mode!=3 && mode!=4) || (mode==3 && output) || (mode==4 && input)) return false;
+    result.known=Presentation{input,output};result.known_mode=static_cast<uint8_t>(mode);return true;
+}
 // No SDK call occurs inside this parser. Unknown presentation is explicit and
-// carries no invented numeric values. All bounds/identity precede application.
+// carries no invented numeric facts. Mixed modes reserve the unknown word as
+// zero; the mode retains its unknown identity. All bounds/identity precede application.
 inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
     try {
         std::array<uint8_t,12> header{};
@@ -176,10 +195,13 @@ inline bool presentation(int fd,const Config& config,PresentationPlan& result) {
         Reader in{Bytes(static_cast<size_t>(size)),0};
         if(read_exact(fd,in.bytes.data(),in.bytes.size())!=1 || in.number(2)!=1) return false;
         for(auto id:config.binding) if(in.number(8)!=id) return false;
-        const auto mode=in.number(1);if(mode>2) return false;
+        const auto mode=in.number(1);if(mode>4) return false;
         result={};
         result.allow_unknown=mode==2;
-        if(mode==1) result.known=Presentation{static_cast<uint32_t>(in.number(4)),static_cast<uint32_t>(in.number(4))};
+        if(mode==1 || mode==3 || mode==4) {
+            const auto input=static_cast<uint32_t>(in.number(4)),output=static_cast<uint32_t>(in.number(4));
+            if(!known_presentation(mode,input,output,result)) return false;
+        }
         return in.at==in.bytes.size();
     } catch(const std::runtime_error&) { return false; }
 }
@@ -191,17 +213,31 @@ inline void sample(uint8_t* p,float value) {
 }
 struct Packet {
     static constexpr size_t timing_change_limit=7, timing_change_bytes=8+extended_timing_size;
+    static constexpr size_t editor_touch_bytes=24, editor_restore_bytes=24;
+    static constexpr size_t dense_header_bytes=8;
+    static constexpr uint64_t dense_parameter_bit=0x0800;
+    static constexpr uint64_t sdk_timing_bit=0x0400;
+    static constexpr size_t editor_target_bytes=16, editor_group_header_bytes=16;
+    static constexpr size_t editor_group_bytes=editor_group_header_bytes+
+        hex_instance::HOST_EDIT_COUNT*editor_target_bytes;
+    static constexpr uint64_t editor_touch_bit=0x2000, editor_group_touch_bit=0x1000;
     struct TimingChange { uint16_t offset=0; Steinberg::Vst::ProcessContext context{}; };
-    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes+dense_header_bytes+max_frames*8+editor_group_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
-    bool authored_parameters=false,manual_parameter=false;
+    bool authored_parameters=false,manual_parameter=false,dense_parameter=false,observe_sdk_timing=false;
+    uint64_t sdk_process_ns=0;
+    uint32_t dense_id=0,dense_steps=0;
+    std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
     size_t note_count=0;
     size_t parameter_count=0;
     size_t reply_parameter_count=0,timing_change_count=0;
     std::array<TimingChange,timing_change_limit> timing_changes{};
     std::optional<Steinberg::Vst::ProcessContext> context;
+    std::optional<hex_instance::EditorTouchPlanSet> editor_touch;
+    std::array<hex_instance::EditorRestoration,hex_instance::HOST_EDIT_COUNT> editor_restore{};
+    bool group_touch=false;
     uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false,release_gates=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
@@ -226,7 +262,18 @@ struct Packet {
         const auto wire_version=number(p+4,2);
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
-        const auto version=authored_parameters?(wire_version&~authored_bit):wire_version;
+        observe_sdk_timing=pcm && (wire_version&sdk_timing_bit);sdk_process_ns=0;
+        dense_parameter=pcm && (wire_version&dense_parameter_bit);
+        if(dense_parameter && !authored_parameters) return -1;
+        observe_editor_pcm=pcm && (wire_version&editor_pcm_bit);reply_editor_count=0;
+        const bool touch=pcm && (wire_version&editor_touch_bit);
+        group_touch=pcm && (wire_version&editor_group_touch_bit);
+        if((touch && group_touch) || ((touch || group_touch) && !observe_editor_pcm)) return -1;
+        editor_touch.reset();editor_restore={};
+        const auto version=wire_version&~((authored_parameters?authored_bit:0)|
+            (observe_editor_pcm?editor_pcm_bit:0)|(touch?editor_touch_bit:0)|
+            (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0)|
+            (observe_sdk_timing?sdk_timing_bit:0));
         release_gates=quiesce && version==2 && !config.inputs;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
@@ -248,7 +295,8 @@ struct Packet {
             (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
         const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
-        if(parameter_count>parameters.size() || (authored_parameters && !parameter_count)) return -1;
+        if(parameter_count>parameters.size() || (dense_parameter && !has_parameter_field) ||
+            (authored_parameters && !parameter_count && !dense_parameter)) return -1;
         timing_change_count=sliced_timing?p[12]:0;
         if(sliced_timing && (!timing_change_count || timing_change_count>timing_changes.size() || p[13]>1)) return -1;
         for(size_t n=sliced_timing?14:(resume?11:(has_parameter_field?12:10));n<16;++n) if(p[n]) return -1;
@@ -256,12 +304,12 @@ struct Packet {
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
             next_graph=number(p+48,8);next_epoch=number(p+56,8);
-            if(frames || p[10]>2 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
+            if(frames || p[10]>4 || next_graph<config.binding[2] || next_epoch<=config.binding[3]) return -1;
             resumed_presentation={};
             resumed_presentation.allow_unknown=p[10]==2;
-            if(p[10]==1) {
-                if(read_exact(fd,p+header_size,8)!=1) return -1;
-                resumed_presentation.known=Presentation{static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4))};
+            if(p[10]==1 || p[10]==3 || p[10]==4) {
+                if(read_exact(fd,p+header_size,8,true)!=1) return -1;
+                if(!known_presentation(p[10],static_cast<uint32_t>(number(p+header_size,4)),static_cast<uint32_t>(number(p+header_size+4,4)),resumed_presentation)) return -1;
             }
             return 4;
         }
@@ -269,7 +317,7 @@ struct Packet {
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
         if(page_start || page_poll) {
-            if(frames || read_exact(fd,p+header_size,287)!=1) return -1;
+            if(frames || read_exact(fd,p+header_size,287,true)!=1) return -1;
             capture_operation=number(p+header_size,8);
             parameter_query.first=static_cast<uint16_t>(number(p+header_size+8,2));
             parameter_query.revision=number(p+header_size+10,8);
@@ -281,20 +329,43 @@ struct Packet {
             return page_start?10:11;
         }
         if(flush) {
-            if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16)!=1) return -1;
+            if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16,true)!=1) return -1;
             capture_operation=number(p+header_size,8);
             return capture_operation && parse_parameters(p+header_size+8,1)?8:-1;
         }
         if(capture || live_start || live_poll || edit_query || reactivate) {
-            if(frames || read_exact(fd,p+header_size,8)!=1) return -1;
+            if(frames || read_exact(fd,p+header_size,8,true)!=1) return -1;
             capture_operation=number(p+header_size,8);return capture_operation?(reactivate?12:(edit_query?9:(live_start?6:(live_poll?7:5)))):-1;
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
         const size_t note_bytes=identified_notes?12:8;
         const size_t point_bytes=authored_parameters?20:16;
         const size_t clock_bytes=no_initial_context?0:(extended_timing?extended_timing_size:(timed?timing_size:0));
-        if(read_exact(fd,p+header_size,frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
-            timing_change_count*timing_change_bytes)!=1) return -1;
+        const size_t dense_bytes=dense_parameter?dense_header_bytes+static_cast<size_t>(frames)*8:0;
+        const auto payload_bytes=frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
+            timing_change_count*timing_change_bytes+dense_bytes;
+        const auto touch_bytes=group_touch?editor_group_bytes:(touch?editor_touch_bytes:0);
+        if(read_exact(fd,p+header_size,payload_bytes+touch_bytes,true)!=1) return -1;
+        if(touch_bytes) {
+            const auto* raw=p+header_size+payload_bytes;
+            hex_instance::EditorTouchPlanSet plan{};
+            plan.scope=number(raw,8);
+            plan.count=group_touch?raw[8]:1;
+            if(group_touch && (plan.count<2 || plan.count>plan.targets.size() || number(raw+9,7))) return -1;
+            const auto* targets=raw+(group_touch?editor_group_header_bytes:8);
+            for(size_t n=0;n<plan.count;++n) {
+                const auto* row=targets+n*editor_target_bytes;
+                auto& target=plan.targets[n];
+                target.parameter=static_cast<uint32_t>(number(row,4));
+                if(row[4]>1 || number(row+5,3)) return -1;
+                target.reading=row[4]!=0;
+                const auto bits=number(row+8,8);std::memcpy(&target.base,&bits,8);
+            }
+            if(group_touch && std::any_of(targets+plan.count*editor_target_bytes,raw+touch_bytes,
+                    [](uint8_t byte) {return byte!=0;})) return -1;
+            if(!plan.valid()) return -1;
+            editor_touch=plan;
+        }
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
         const auto* payload=p+header_size+frames*8;
         for (size_t n=0;n<note_count;++n) {
@@ -313,6 +384,20 @@ struct Packet {
         }
         const auto* points=payload+note_count*note_bytes;
         if(!parse_parameters(points,frames)) return -1;
+        if(dense_parameter) {
+            const auto* raw=p+header_size+payload_bytes-dense_bytes;
+            dense_id=static_cast<uint32_t>(number(raw,4));
+            dense_steps=static_cast<uint32_t>(number(raw+4,4));
+            if(dense_id>0x7FFFFFFFu || dense_steps>0x7FFFFFFFu) return -1;
+            for(size_t n=0;n<parameter_count;++n) if(parameters[n].id==dense_id) return -1;
+            if(editor_touch) for(size_t n=0;n<editor_touch->count;++n)
+                if(editor_touch->targets[n].parameter==dense_id) return -1;
+            for(size_t n=0;n<frames;++n) {
+                const auto bits=number(raw+dense_header_bytes+n*8,8);
+                auto& value=dense_values[n];std::memcpy(&value,&bits,8);
+                if(!std::isfinite(value) || value<0 || value>1) return -1;
+            }
+        }
         context.reset();
         if(!timed) return 1;
         const auto* clock=points+parameter_count*point_bytes;
@@ -414,12 +499,51 @@ struct Packet {
         }
         return true;
     }
+    // Optional PCM reply tail. Each record is one effective offset-zero
+    // input. The ordered receipt reader remains the only boundary owner.
+    static constexpr uint64_t editor_pcm_bit=0x4000;
+    static constexpr size_t editor_point_bytes=32;
+    bool observe_editor_pcm=false;
+    size_t reply_editor_count=0;
+    bool append_editor_perform(const hex_instance::EditEvent& edit) {
+        if(!observe_editor_pcm || reply_editor_count==hex_instance::HOST_EDIT_COUNT) return false;
+        const auto offset=header_size+frames*8+reply_parameter_count*16+reply_editor_count*editor_point_bytes;
+        if(offset+editor_point_bytes>bytes.size()) return false;
+        auto* point=bytes.data()+offset;
+        const auto put=[](uint8_t* out,uint64_t value,size_t count) {
+            for(size_t n=0;n<count;++n) out[n]=static_cast<uint8_t>(value>>(n*8));
+        };
+        uint64_t normalized=0;std::memcpy(&normalized,&edit.normalized,8);
+        put(point,edit.sequence,8);put(point+8,edit.gesture,8);put(point+16,normalized,8);
+        put(point+24,edit.id,4);put(point+28,0,4);
+        ++reply_editor_count;return true;
+    }
     bool write(int fd) {
-        bytes[4]=reply_parameter_count?2:1;bytes[5]=0;
+        bytes[4]=reply_parameter_count?2:1;
+        bytes[5]=static_cast<uint8_t>(((observe_editor_pcm?editor_pcm_bit:0)|
+            (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0))|
+            (observe_sdk_timing?sdk_timing_bit:0))>>8);
         bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
         bytes[10]=static_cast<uint8_t>(reply_parameter_count);
         std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
-        return write_exact(fd,bytes.data(),header_size+frames*8+reply_parameter_count*16);
+        bytes[12]=static_cast<uint8_t>(reply_editor_count);
+        auto size=header_size+frames*8+reply_parameter_count*16+reply_editor_count*editor_point_bytes;
+        const auto put=[](uint8_t* dst,uint64_t value,size_t count) {
+            for(size_t n=0;n<count;++n) dst[n]=static_cast<uint8_t>(value>>(n*8));
+        };
+        for(const auto& restored:editor_restore) {
+            if(!restored.sequence) break;
+            if(!editor_touch || (!group_touch && bytes[13]) || size+editor_restore_bytes>bytes.size()) return false;
+            auto* out=bytes.data()+size;
+            put(out,restored.sequence,8);put(out+8,restored.gesture,8);
+            put(out+16,restored.parameter,4);put(out+20,0,4);
+            ++bytes[13];size+=editor_restore_bytes;
+        }
+        if(observe_sdk_timing) {
+            if(size+8>bytes.size()) return false;
+            put(bytes.data()+size,sdk_process_ns,8);size+=8;
+        }
+        return write_exact(fd,bytes.data(),size);
     }
 };
 } // namespace hex_instance_wire

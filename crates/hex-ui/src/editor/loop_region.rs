@@ -1,8 +1,6 @@
 //! Loop controls dispatch canonical edits; DSP and validation belong to the engine/model.
 use super::{EditorMode, EditorView};
 use gpui::{Context, Window};
-use hex_project::Command;
-use hex_session::service::Request;
 
 impl EditorView {
     /// Plain L/W remain musical notes while typing is enabled and retain the
@@ -54,7 +52,7 @@ impl EditorView {
         let gates = self.loop_edit_gates();
         if gates.iter().any(|(_, active)| *active) {
             self.record_loop_refusal(cx, &gates, false);
-            self.error = Some("finish the current edit before changing the loop".into());
+            self.error = Some("finish the current edit before changing the scope".into());
             return;
         }
         if self
@@ -147,7 +145,7 @@ impl EditorView {
             && !self.arrangement_view_change_available(cx);
         if edit_blocked || section_view_blocked {
             self.record_loop_refusal(cx, &gates, section_view_blocked);
-            self.error = Some("finish the current edit before setting the loop".into());
+            self.error = Some("finish the current edit before setting the scope".into());
             return;
         }
         let existing = self.state.as_ref().and_then(|s| s.project.loop_region());
@@ -214,7 +212,7 @@ impl EditorView {
         let mut include = |clip_start: u64, clip_end: Option<u64>| {
             let clip_end = clip_end.ok_or("selected clip exceeds the timeline")?;
             if clip_start >= clip_end {
-                return Err("selected clip has an empty loop range");
+                return Err("selected clip has an empty scope");
             }
             start = start.min(clip_start);
             end = end.max(clip_end);
@@ -248,9 +246,5 @@ impl EditorView {
             return Err("selected clip no longer belongs to the arrangement");
         }
         Ok(Some((start, end)))
-    }
-
-    pub(super) fn toggle_loop(&mut self) {
-        self.enqueue(Request::Edit(Command::ToggleLoopRegion));
     }
 }

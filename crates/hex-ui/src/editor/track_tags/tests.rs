@@ -19,6 +19,15 @@ fn click(visual: &mut VisualTestContext, name: &'static str, modifiers: Modifier
     visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
     visual.run_until_parked();
 }
+fn choices(visual: &mut VisualTestContext, track: TrackId) {
+    let at = visual
+        .debug_bounds(selector("track-tag-first", track))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+}
 fn edit(visual: &mut VisualTestContext, view: &Entity<EditorView>, command: Command) {
     view.update(visual, |v, _| assert!(v.enqueue(Request::Edit(command))));
     receive(visual, view);
@@ -137,11 +146,7 @@ fn rendered_tag_selection_modifiers_overflow_and_filter_are_view_only(cx: &mut T
         },
     );
     view.read_with(&visual, |v, _| assert_eq!(v.selected_track_ids(), [ids[2]]));
-    click(
-        &mut visual,
-        selector("track-tag-more", ids[0]),
-        Modifiers::default(),
-    );
+    choices(&mut visual, ids[0]);
     choose(
         &mut visual,
         &view,
@@ -251,11 +256,7 @@ fn rendered_tag_text_commits_one_worker_edit_and_escape_and_invalid_input_are_sa
     });
     view.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
     receive(&mut visual, &view);
-    click(
-        &mut visual,
-        selector("track-tag-more", ids[0]),
-        Modifiers::default(),
-    );
+    choices(&mut visual, ids[0]);
     choose(&mut visual, &view, |action| {
         matches!(action, Action::Edit { .. })
     });
@@ -365,11 +366,7 @@ fn folded_matches_stay_selected_and_filter_applies_to_console_headers(cx: &mut T
     view.read_with(&visual, |v, _| {
         assert_eq!(v.arrangement_focus.projection.console_indices.len(), 3)
     });
-    click(
-        &mut visual,
-        selector("track-tag-more", ids[1]),
-        Modifiers::default(),
-    );
+    choices(&mut visual, ids[1]);
     choose(&mut visual, &view, |action| {
         matches!(action, Action::Edit { .. })
     });
@@ -444,11 +441,7 @@ fn invalid_tag_blur_retires_the_draft_without_committing_or_blocking_other_heade
             tags: tags(&["drums"]),
         },
     );
-    click(
-        &mut visual,
-        selector("track-tag-more", ids[0]),
-        Modifiers::default(),
-    );
+    choices(&mut visual, ids[0]);
     choose(&mut visual, &view, |action| {
         matches!(action, Action::Edit { .. })
     });
@@ -484,11 +477,7 @@ fn valid_tag_blur_commits_once_and_history_restores_the_original_assignment(
         },
     );
     let before = view.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
-    click(
-        &mut visual,
-        selector("track-tag-more", ids[0]),
-        Modifiers::default(),
-    );
+    choices(&mut visual, ids[0]);
     choose(&mut visual, &view, |action| {
         matches!(action, Action::Edit { .. })
     });
@@ -516,6 +505,58 @@ fn valid_tag_blur_commits_once_and_history_restores_the_original_assignment(
     });
     view.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     receive(&mut visual, &view);
+    view.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+}
+
+#[gpui::test]
+fn tag_dots_are_compact_equal_and_shared_by_arrangement_and_console(cx: &mut TestAppContext) {
+    let (mut visual, view, ids) = live_tracks(cx, 2, false);
+    for track in &ids {
+        edit(
+            &mut visual,
+            &view,
+            Command::SetTrackTags {
+                track: *track,
+                tags: tags(&["rhythm"]),
+            },
+        );
+    }
+    let before = view.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        view.update(&mut visual, |v, cx| {
+            v.mode = mode;
+            cx.notify();
+        });
+        for width in [880.0, 1440.0] {
+            visual.simulate_resize(gpui::size(px(width), px(800.0)));
+            visual.run_until_parked();
+            let mut color = None;
+            for track in &ids {
+                let circle = visual
+                    .debug_bounds(selector("track-tag-first", *track))
+                    .unwrap();
+                let dot = visual
+                    .debug_bounds(selector("track-tag-dot", *track))
+                    .unwrap();
+                assert_eq!(circle.size, gpui::size(px(16.0), px(16.0)));
+                assert_eq!(dot.size, gpui::size(px(10.0), px(10.0)));
+                assert_eq!(circle.center(), dot.center());
+                let fill = visual.rendered_background(selector("track-tag-dot", *track));
+                assert!(fill.is_some());
+                if let Some(previous) = color {
+                    assert_eq!(Some(previous), fill);
+                }
+                color = fill;
+                assert!(
+                    visual
+                        .debug_bounds(selector("track-tag-more", *track))
+                        .is_none()
+                );
+            }
+        }
+    }
     view.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, before)
     });

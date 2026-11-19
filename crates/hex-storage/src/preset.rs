@@ -1,5 +1,13 @@
 //! Independent native device preset envelope. Payload bytes are never interpreted
 //! here; native provider validation and prepared admission belong to the session.
+pub mod defaults;
+mod unit;
+
+pub use unit::{
+    MAX_UNIT_PRESET_BYTES, PresetContents, UNIT_PRESET_SCHEMA, decode_contents, encode_unit,
+    load_contents, save_unit_new,
+};
+
 use hex_lattice_contract::{
     DeviceTypeId, MAX_DEVICE_TYPE_ID_BYTES, MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceState,
 };
@@ -12,11 +20,12 @@ use std::{
 };
 
 pub const EXTENSION: &str = "hex-device-preset.json";
+const PRESET_FORMAT: &str = "hex-device-preset";
 // Compact JSON needs at most four bytes per payload byte (255 plus comma),
 // plus the bounded type id and a fixed envelope allowance. No state cap changes.
 pub const MAX_PRESET_BYTES: usize =
     8 * MAX_NATIVE_DEVICE_STATE_BYTES + 2 * MAX_DEVICE_TYPE_ID_BYTES + 512;
-/// Saved device preset schema. Supported on open:
+/// Saved state-only preset schema. Supported on open:
 /// - 1 (2b4acb829 until 5165e3053, 18 Oct 2026): the same envelope without
 ///   `comparison`; it opens with no A/B comparison.
 /// - 2 (current): `comparison` is required, `null` when there is none.
@@ -31,6 +40,15 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 pub enum DeviceClass {
     Instrument,
     Effect,
+}
+
+impl From<hex_project::DeviceUnitClass> for DeviceClass {
+    fn from(value: hex_project::DeviceUnitClass) -> Self {
+        match value {
+            hex_project::DeviceUnitClass::Instrument => Self::Instrument,
+            hex_project::DeviceUnitClass::Effect => Self::Effect,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,7 +191,7 @@ pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
         ));
     }
     let bytes = serde_json::to_vec(&Envelope {
-        format: "hex-device-preset".into(),
+        format: PRESET_FORMAT.into(),
         schema: PRESET_SCHEMA,
         class: preset.class,
         type_id: preset
@@ -202,12 +220,17 @@ pub fn decode(bytes: &[u8]) -> Result<Preset, Error> {
         return Err(Error::Invalid("device preset exceeds byte limit"));
     }
     let header: Header = serde_json::from_slice(bytes)?;
-    if header.format != "hex-device-preset" {
+    if header.format != PRESET_FORMAT {
         return Err(Error::Invalid("not a hex device preset file"));
     }
     let envelope: Envelope = match header.schema {
         1 => serde_json::from_slice::<EnvelopeV1>(bytes)?.into(),
         PRESET_SCHEMA => serde_json::from_slice(bytes)?,
+        UNIT_PRESET_SCHEMA => {
+            return Err(Error::Invalid(
+                "complete device preset requires a unit load",
+            ));
+        }
         _ => {
             return Err(Error::Invalid(
                 "device preset uses an unsupported schema · open it with a newer hex",
@@ -255,11 +278,15 @@ fn validate_state_sizes(
 }
 
 pub fn load(path: &Path) -> Result<Preset, Error> {
+    decode(&read_bounded(path, MAX_PRESET_BYTES)?)
+}
+
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     File::open(path)?
-        .take(MAX_PRESET_BYTES as u64 + 1)
+        .take(limit as u64 + 1)
         .read_to_end(&mut bytes)?;
-    decode(&bytes)
+    Ok(bytes)
 }
 
 struct Temporary(PathBuf);
@@ -272,6 +299,10 @@ impl Drop for Temporary {
 /// Atomically publish a complete create-new preset. Existing destinations are
 /// never overwritten, including collisions appearing during serialization.
 pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
+    publish_new(path, || encode(preset))
+}
+
+fn publish_new(path: &Path, encode: impl FnOnce() -> Result<Vec<u8>, Error>) -> Result<(), Error> {
     if path.file_name().is_none() {
         return Err(Error::Invalid("device preset target needs a filename"));
     }
@@ -286,11 +317,32 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let bytes = encode(preset)?;
+    let bytes = encode()?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let temporary = stage(parent, &bytes)?;
+    let published = crate::publication::publish_new(&temporary.0, path)?;
+    let cleanup_error = published
+        .staging_remains()
+        .then(|| fs::remove_file(&temporary.0).err())
+        .flatten();
+    #[cfg(unix)]
+    let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
+    #[cfg(not(unix))]
+    let sync_error = None;
+    if let Some(source) = cleanup_error.or(sync_error) {
+        return Err(Error::PublishedButNotDurable {
+            path: path.into(),
+            source,
+        });
+    }
+    Ok(())
+}
+
+/// A bounded same-directory staging file, fully written and synced before publication.
+fn stage(parent: &Path, bytes: &[u8]) -> Result<Temporary, Error> {
     let mut reserved = None;
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
@@ -311,25 +363,10 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
     let (temporary, mut file) = reserved.ok_or(Error::Invalid(
         "could not reserve device preset temporary file",
     ))?;
-    file.write_all(&bytes)?;
+    file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
-    let published = crate::publication::publish_new(&temporary.0, path)?;
-    let cleanup_error = published
-        .staging_remains()
-        .then(|| fs::remove_file(&temporary.0).err())
-        .flatten();
-    #[cfg(unix)]
-    let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
-    #[cfg(not(unix))]
-    let sync_error = None;
-    if let Some(source) = cleanup_error.or(sync_error) {
-        return Err(Error::PublishedButNotDurable {
-            path: path.into(),
-            source,
-        });
-    }
-    Ok(())
+    Ok(temporary)
 }
 
 #[cfg(test)]

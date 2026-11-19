@@ -1,4 +1,4 @@
-//! Delivery-confirmed native device input to the existing durable draft lane.
+//! Delivery-confirmed device input to the existing durable draft lane.
 //! The caller retains the original receipts until the whole batch is admitted.
 //! Scope and terminal come from the exact audio endpoint. This control bridge
 //! owns neither endpoint admission nor the canonical adoption of its draft.
@@ -13,15 +13,54 @@ use hex_storage::automation_draft::{
 };
 use std::path::{Path, PathBuf};
 
+mod group;
+mod vst3;
+pub use group::Vst3GroupCaptureTarget;
+pub use vst3::{Vst3ApplicationValue, Vst3CaptureTarget, Vst3ParameterApplication};
+
+pub(in crate::service) fn native_application_clock(
+    application: NativeParameterApplication,
+) -> DraftClock {
+    DraftClock {
+        performance_frame: application.performance_frame,
+        content_frame: application.arrangement_frame,
+        loop_pass: application.loop_pass,
+    }
+}
+
+enum Capture {
+    Native {
+        target: NativeParameterInputTarget,
+        // Allocated once on Session control; foreign takes do not carry this
+        // larger provider-normalization state inline.
+        capture: Box<NativeParameterCapture>,
+    },
+    Vst3 {
+        target: Vst3CaptureTarget,
+    },
+    Vst3Group {
+        target: Vst3GroupCaptureTarget,
+        latest: Option<super::GroupDraftEvent>,
+    },
+}
+
 pub struct DeviceDraftInput {
     input: DraftInput,
-    capture: NativeParameterCapture,
-    target: NativeParameterInputTarget,
+    capture: Capture,
     stamp: DraftProvenance,
     last_sequence: u64,
 }
 
 impl DeviceDraftInput {
+    #[cfg(feature = "recording-fault-test-support")]
+    pub(in crate::service) fn inject_next_append_failure(&mut self) -> Result<(), &'static str> {
+        self.input.inject_next_append_failure()
+    }
+    /// Borrow recovery identity without transferring draft or worker custody.
+    pub(in crate::service) fn path(&self) -> &Path {
+        self.input.path()
+    }
+
     /// Capture clock and provenance are from the live output that owns the
     /// armed gesture. Creating a draft confers no native input authority.
     pub fn start_on_control(
@@ -51,8 +90,10 @@ impl DeviceDraftInput {
         Ok((
             Self {
                 input,
-                capture,
-                target,
+                capture: Capture::Native {
+                    target,
+                    capture: Box::new(capture),
+                },
                 stamp,
                 last_sequence: 0,
             },
@@ -70,39 +111,21 @@ impl DeviceDraftInput {
         applications: &[(u64, NativeParameterApplication)],
     ) -> Result<Option<u64>, &'static str> {
         self.require_scope(target, stamp)?;
-        if !(1..=MAX_APPEND_EVENTS).contains(&applications.len()) {
-            return Err("native capture batch size is outside its bound");
-        }
-        let Some(mut batch) = self.input.reserve_batch()? else {
-            return Ok(None);
+        let Capture::Native { capture, .. } = &self.capture else {
+            return Err("native capture receipt scope differs from its draft");
         };
-        let mut last = self.last_sequence;
-        for &(sequence, application) in applications {
-            if sequence <= last {
-                return Err("native capture sequence did not advance");
-            }
-            let value = self
-                .capture
-                .value(application)
-                .map_err(|error| error.0)?
-                .ok_or("native capture application restored the lane")?;
-            batch
-                .push(AppliedEvent {
-                    sequence,
-                    performance_frame: application.performance_frame,
-                    content_frame: application.arrangement_frame,
-                    loop_pass: application.loop_pass,
-                    value,
-                })
-                .map_err(|_| "native capture batch size is outside its bound")?;
-            last = sequence;
-        }
-        let ticket = batch.submit().map_err(|error| match error {
-            DraftSubmitError::Refused(batch) => batch.reason(),
-            DraftSubmitError::InvalidReservation => "native capture reservation is unavailable",
-        })?;
-        self.last_sequence = last;
-        Ok(Some(ticket))
+        append_applications(
+            &mut self.input,
+            &mut self.last_sequence,
+            applications,
+            |application| {
+                let value = capture
+                    .value(application)
+                    .map_err(|error| error.0)?
+                    .ok_or("native capture application restored the lane")?;
+                Ok((native_application_clock(application), value))
+            },
+        )
     }
 
     /// A delivered Clear is the exclusive end of the touched range.
@@ -113,19 +136,20 @@ impl DeviceDraftInput {
         restoration: NativeParameterApplication,
     ) -> Result<(), &'static str> {
         self.require_scope(target, stamp)?;
-        if self
-            .capture
+        let Capture::Native { capture, .. } = &self.capture else {
+            return Err("native capture receipt scope differs from its draft");
+        };
+        if capture
             .value(restoration)
             .map_err(|error| error.0)?
             .is_some()
         {
             return Err("native capture terminal did not restore the lane");
         }
-        self.input.finish(DraftTerminal::Finished(DraftClock {
-            performance_frame: restoration.performance_frame,
-            content_frame: restoration.arrangement_frame,
-            loop_pass: restoration.loop_pass,
-        }))
+        self.input
+            .finish(DraftTerminal::Finished(native_application_clock(
+                restoration,
+            )))
     }
 
     pub fn abort_delivered(
@@ -155,9 +179,50 @@ impl DeviceDraftInput {
         target: NativeParameterInputTarget,
         stamp: DraftProvenance,
     ) -> Result<(), &'static str> {
-        if self.target != target || self.stamp != stamp {
+        if !matches!(&self.capture, Capture::Native {target: current,..} if *current==target)
+            || self.stamp != stamp
+        {
             return Err("native capture receipt scope differs from its draft");
         }
         Ok(())
     }
+}
+
+// One loan/sequence/submit protocol for both kinds. Validation occurs inside an
+// owned reservation; any error returns that loan without changing the watermark.
+fn append_applications<T: Copy>(
+    input: &mut DraftInput,
+    last_sequence: &mut u64,
+    applications: &[(u64, T)],
+    normalize: impl Fn(T) -> Result<(DraftClock, hex_project::AutomationValue), &'static str>,
+) -> Result<Option<u64>, &'static str> {
+    if !(1..=MAX_APPEND_EVENTS).contains(&applications.len()) {
+        return Err("device capture batch size is outside its bound");
+    }
+    let Some(mut batch) = input.reserve_batch()? else {
+        return Ok(None);
+    };
+    let mut last = *last_sequence;
+    for &(sequence, application) in applications {
+        if sequence <= last {
+            return Err("device capture sequence did not advance");
+        }
+        let (clock, value) = normalize(application)?;
+        batch
+            .push(AppliedEvent {
+                sequence,
+                performance_frame: clock.performance_frame,
+                content_frame: clock.content_frame,
+                loop_pass: clock.loop_pass,
+                value,
+            })
+            .map_err(|_| "device capture batch size is outside its bound")?;
+        last = sequence;
+    }
+    let ticket = batch.submit().map_err(|error| match error {
+        DraftSubmitError::Refused(batch) => batch.reason(),
+        DraftSubmitError::InvalidReservation => "device capture reservation is unavailable",
+    })?;
+    *last_sequence = last;
+    Ok(Some(ticket))
 }

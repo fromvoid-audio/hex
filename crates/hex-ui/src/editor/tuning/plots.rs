@@ -354,7 +354,7 @@ pub(super) fn lattice(view: &EditorView, _cx: &mut Context<EditorView>) -> Div {
         .size_full(),
     )
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]

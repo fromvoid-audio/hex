@@ -13,3 +13,5 @@ Each device has a nested-device widget at its right end. Nested devices remain f
 The external meter’s + inserts after the device; the nested insertion target inserts inside its child chain. Both also accept browser drag-and-drop. Clicking opens a simple modal listing available devices with a search bar. Search receives focus; arrows navigate, Enter or a result click inserts one device and closes the modal, and Escape closes without inserting. Focus returns to the new device’s controls.
 
 The context menu includes loading/saving presets and saving a default device state. A preset captures the full unit: parent settings, macros, modulators, mappings, nested chains, child settings and on/off states. Disk behavior and destructive replacement interactions must be defined and implemented separately from illustrative Frame menus.
+
+The [native host support inventory](native-device-host-status.md) records existing contracts, explicit placeholders and the remaining implementation paths. It does not redefine this product brief or claim native parity.

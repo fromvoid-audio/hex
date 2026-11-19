@@ -34,7 +34,7 @@ pub(super) fn seek_is_pending(ticket: Option<u64>, consumed: u64, queued: bool) 
     queued || ticket.is_some_and(|ticket| ticket > consumed)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::Viewport;
     use super::{pointer_to_frame, seek_is_pending};

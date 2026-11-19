@@ -44,6 +44,8 @@ pub struct WaveformChannel {
     envelope: Path<Pixels>,
     centerline: Option<Path<Pixels>>,
     zero_ranges: Option<Path<Pixels>>,
+    overrange: Option<Path<Pixels>>,
+    filled_envelope: bool,
 }
 impl WaveformChannel {
     /// Preserve flat/DC portions inside an otherwise filled envelope through
@@ -89,7 +91,7 @@ impl WaveformChannel {
         } else {
             None
         };
-        let path = if mode == WaveformEnvelopeMode::Filled && !upper.is_empty() {
+        let (path, filled_envelope) = if mode == WaveformEnvelopeMode::Filled && !upper.is_empty() {
             filled_band(upper, lower)
         } else if let Some(first) = upper.first().copied() {
             let mut path = PathBuilder::stroke(trace_width);
@@ -97,12 +99,12 @@ impl WaveformChannel {
             for point in upper.iter().skip(1) {
                 path.line_to(*point);
             }
-            path.build().ok()?
+            (path.build().ok()?, false)
         } else {
             if mode != WaveformEnvelopeMode::Trace {
                 return None;
             }
-            Path::new(centerline.as_ref()?.1)
+            (Path::new(centerline.as_ref()?.1), false)
         };
         let mut flat = PathBuilder::stroke(trace_width);
         let mut spans = 0;
@@ -122,7 +124,39 @@ impl WaveformChannel {
             } else {
                 None
             },
+            overrange: None,
+            filled_envelope,
         })
+    }
+
+    /// Add bounded horizontal markers supplied by the host's signal projection.
+    /// Empty input retains the original fast path and creates no marker path.
+    pub fn with_overrange_markers(
+        mut self,
+        spans: impl IntoIterator<Item = [Point<Pixels>; 2]>,
+        width: Pixels,
+    ) -> Option<Self> {
+        if !valid_width(width) {
+            return None;
+        }
+        let mut spans = spans.into_iter().peekable();
+        if spans.peek().is_none() {
+            return Some(self);
+        }
+        let mut path = PathBuilder::stroke(width);
+        let mut count = 0;
+        for span in spans {
+            if count == MAX_WAVEFORM_COLUMNS * 2 || !valid_span(span) {
+                return None;
+            }
+            count += 1;
+            path.move_to(span[0]);
+            path.line_to(span[1]);
+        }
+        if count > 0 {
+            self.overrange = Some(path.build().ok()?);
+        }
+        Some(self)
     }
 
     pub fn has_zero_range_trace(&self) -> bool {
@@ -151,7 +185,7 @@ fn band_triangles(
     }
 }
 
-fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Path<Pixels> {
+fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> (Path<Pixels>, bool) {
     let mut path = None;
     let solid = gpui::point(0.0, 1.0);
     band_triangles(upper, lower, |[a, b, c]| {
@@ -160,7 +194,8 @@ fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Path<Pixels>
         path.get_or_insert_with(|| Path::new(a))
             .push_triangle((a, b, c), (solid, solid, solid));
     });
-    path.unwrap_or_else(|| Path::new(Point::default()))
+    let filled = path.is_some();
+    (path.unwrap_or_else(|| Path::new(Point::default())), filled)
 }
 fn valid_point(point: Point<Pixels>) -> bool {
     f32::from(point.x).is_finite() && f32::from(point.y).is_finite()
@@ -241,6 +276,7 @@ pub struct WaveformColors {
     pub waveform: u32,
     pub inactive: u32,
     pub centerline: u32,
+    pub overrange: u32,
 }
 /// Actual paint bounds/scale and ancestor clip, supplied read-only to the host's
 /// existing cache lookup. Changing a mask need not invalidate cached geometry.
@@ -263,15 +299,54 @@ fn regions(emphasis: WaveformEmphasis, colors: WaveformColors) -> [(f64, f64, u3
         }
     }
 }
-fn paint_channels(geometry: &WaveformGeometry, color: u32, centerline: u32, window: &mut Window) {
+fn paint_channels_with_offset(
+    geometry: &WaveformGeometry,
+    offset: Point<Pixels>,
+    color: u32,
+    centerline: u32,
+    overrange: u32,
+    window: &mut Window,
+) {
+    if let Channels::Stereo(channels) = &geometry.channels {
+        let [upper, lower] = channels;
+        if [upper, lower].iter().all(|channel| {
+            channel.filled_envelope && channel.centerline.is_none() && channel.zero_ranges.is_none()
+        }) {
+            window.paint_disjoint_path_pair_with_offset(
+                [&upper.envelope, &lower.envelope],
+                offset,
+                rgb(color),
+            );
+            for channel in channels {
+                if let Some(path) = &channel.overrange {
+                    window.paint_path_with_offset(path, offset, rgb(overrange));
+                }
+            }
+            return;
+        }
+    }
     for channel in geometry.channels() {
-        if let Some(path) = &channel.centerline {
-            window.paint_path(path.clone(), rgb(centerline));
-        }
-        window.paint_path(channel.envelope.clone(), rgb(color));
-        if let Some(path) = &channel.zero_ranges {
-            window.paint_path(path.clone(), rgb(color));
-        }
+        paint_channel_with_offset(channel, offset, color, centerline, overrange, window);
+    }
+}
+
+fn paint_channel_with_offset(
+    channel: &WaveformChannel,
+    offset: Point<Pixels>,
+    color: u32,
+    centerline: u32,
+    overrange: u32,
+    window: &mut Window,
+) {
+    if let Some(path) = &channel.centerline {
+        window.paint_path_with_offset(path, offset, rgb(centerline));
+    }
+    window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
+    if let Some(path) = &channel.zero_ranges {
+        window.paint_path_with_offset(path, offset, rgb(color));
+    }
+    if let Some(path) = &channel.overrange {
+        window.paint_path_with_offset(path, offset, rgb(overrange));
     }
 }
 
@@ -281,6 +356,28 @@ fn paint_channels(geometry: &WaveformGeometry, color: u32, centerline: u32, wind
 /// Queries must use bounded prepared peak/geometry data, never PCM, decoding or I/O.
 pub fn waveform_plot<D>(
     prepare: impl FnOnce(WaveformViewport) -> Option<D> + 'static,
+    colors: WaveformColors,
+    emphasis: WaveformEmphasis,
+) -> Div
+where
+    D: Deref + 'static,
+    D::Target: AsRef<WaveformGeometry>,
+{
+    waveform_plot_with_offset(
+        move |viewport| prepare(viewport).map(|geometry| (geometry, gpui::point(px(0.0), px(0.0)))),
+        colors,
+        emphasis,
+    )
+}
+
+/// Paint retained waveform geometry translated by a logical-pixel offset.
+///
+/// The offset is applied during scene submission, before scale and clipping,
+/// so cached local paths can be reused at a new location without rebuilding or
+/// cloning their path meshes. The existing [`waveform_plot`] submits a zero
+/// offset and retains its original behavior.
+pub fn waveform_plot_with_offset<D>(
+    prepare: impl FnOnce(WaveformViewport) -> Option<(D, Point<Pixels>)> + 'static,
     colors: WaveformColors,
     emphasis: WaveformEmphasis,
 ) -> Div
@@ -305,18 +402,28 @@ where
                 {
                     return;
                 }
-                let Some(data) = prepare(WaveformViewport {
+                let Some((data, offset)) = prepare(WaveformViewport {
                     bounds,
                     scale,
                     mask: window.content_mask().bounds,
                 }) else {
                     return;
                 };
+                if !valid_point(offset) {
+                    return;
+                }
                 let geometry = data.deref().as_ref();
                 // Timeline geometry deliberately includes neighboring columns. Its
-                // existing ancestor mask, not another canvas-bound mask, crops them.
+                // current ancestor mask, not another canvas-bound mask, crops them.
                 if emphasis == WaveformEmphasis::Uniform {
-                    paint_channels(geometry, colors.waveform, colors.centerline, window);
+                    paint_channels_with_offset(
+                        geometry,
+                        offset,
+                        colors.waveform,
+                        colors.centerline,
+                        colors.overrange,
+                        window,
+                    );
                     return;
                 }
                 for (left, right, color) in regions(emphasis, colors) {
@@ -328,7 +435,14 @@ where
                         gpui::size(px((right - left) as f32 * width), bounds.size.height),
                     );
                     window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                        paint_channels(geometry, color, colors.centerline, window);
+                        paint_channels_with_offset(
+                            geometry,
+                            offset,
+                            color,
+                            colors.centerline,
+                            colors.overrange,
+                            window,
+                        );
                     });
                 }
             },

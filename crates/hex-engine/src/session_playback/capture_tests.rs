@@ -1,6 +1,8 @@
 use super::*;
 #[path = "capture_tests/render_work_tests.rs"]
 mod render_work_tests;
+#[path = "capture_tests/stereo_meter_tests.rs"]
+mod stereo_meter_tests;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 
@@ -59,6 +61,8 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 21,
@@ -164,6 +168,8 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 22,
@@ -173,6 +179,8 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 23,
@@ -780,6 +788,8 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 100,
@@ -787,6 +797,8 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
                 state: prefix,
             },
             DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 101,
@@ -805,6 +817,8 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
                 automation: Vec::new(),
                 comparison: None,
                 id: 103,
@@ -1196,6 +1210,8 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 31,
@@ -1204,6 +1220,8 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            modulation: Default::default(),
+            parent: None,
             automation: Vec::new(),
             comparison: None,
             id: 32,
@@ -1212,6 +1230,8 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: 21,
@@ -1337,6 +1357,13 @@ fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
         )
         .unwrap();
         tested.computer_keyboard = Some(Box::new(keyboard));
+        let linear_export = tested.linear_arrangement_export;
+        tested.linear_arrangement_export = false;
+        assert_eq!(
+            tested.visit_current_stream_quantum_at(0, 128, Some(true), false, &mut |_| Ok(())),
+            Err(crate::playback::StreamQuantumProjectionError::Unsupported)
+        );
+        tested.linear_arrangement_export = linear_export;
         let before = (tested.arrangement_frame, tested.performance_frame);
         let mut output = [[0.0; 2]; 128];
         let mut master = [[0.0; 2]; 128];

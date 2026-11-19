@@ -69,7 +69,7 @@ pub(crate) fn extend<K: Copy + Eq>(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 

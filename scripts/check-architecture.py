@@ -31,7 +31,7 @@ ALLOWED = {
     'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage'},
+    'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage', 'hex-warp'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
     'hex-preferences': set(),
@@ -54,8 +54,9 @@ DEV_ALLOWED = {
     'hex-storage': {'hex-plugin-state'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    # Verified worker/key-handler fixtures and the legacy native EQ gallery example.
-    'hex-ui': {'hex-media', 'hex-devices'},
+    # Worker/key-handler/native gallery fixtures and complete EQ upgrade codec round trips.
+    # Storage is test-only; production UI continues through Session save commands.
+    'hex-ui': {'hex-media', 'hex-devices', 'hex-storage'},
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.

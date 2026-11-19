@@ -70,6 +70,7 @@ impl OwnedShared<crate::Project> {
     pub(crate) fn retain_foreign_programs(
         &mut self,
         previous: &Self,
+        clocks: [std::num::NonZeroU64; 2],
         received: &mut dyn FnMut(
             hex_lattice_contract::ForeignProcessorBinding,
         ) -> crate::ForeignProgramFrontier,
@@ -81,7 +82,12 @@ impl OwnedShared<crate::Project> {
         }
         let project = Arc::get_mut(&mut self.arc)
             .ok_or(crate::Invalid("foreign program graph is already shared"))?;
-        crate::prepared_revision::foreign_programs::retain_project(project, &previous.arc, received)
+        crate::prepared_revision::foreign_programs::retain_project(
+            project,
+            &previous.arc,
+            clocks,
+            received,
+        )
     }
 
     pub(crate) fn prepare_scalar_automation(
@@ -381,6 +387,18 @@ impl<T: hex_lattice::PreparedNativeProcessor + 'static> OwnedShared<T> {
         self,
     ) -> (
         Arc<dyn hex_lattice::PreparedNativeProcessor>,
+        SharedDeclaration,
+    ) {
+        let (owner, declaration) = self.into_paired_parts_on_control();
+        (owner, declaration)
+    }
+}
+
+impl<T: hex_lattice::PreparedOwnedProcessorRuntime + 'static> OwnedShared<T> {
+    pub(crate) fn into_owned_processor_parts_on_control(
+        self,
+    ) -> (
+        Arc<dyn hex_lattice::PreparedOwnedProcessorRuntime>,
         SharedDeclaration,
     ) {
         let (owner, declaration) = self.into_paired_parts_on_control();

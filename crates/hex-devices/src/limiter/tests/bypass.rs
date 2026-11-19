@@ -21,6 +21,7 @@ fn chain(
         )
     );
     let instances = vec![PreparedRuntimeInstance {
+        modulation: None,
         automation: Default::default(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),

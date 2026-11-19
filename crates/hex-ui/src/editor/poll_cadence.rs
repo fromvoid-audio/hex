@@ -22,7 +22,9 @@
 //! controller-port changes, hardware held-note display) therefore wait at most
 //! one [`IDLE_INTERVAL`] (100 ms) while idle. Every worker *response* is
 //! solicited: its request keeps `worker_requests_pending` non-zero, so the poll
-//! stays at 16 ms until the response arrives. Live notes, monitoring and audio
+//! stays at 16 ms until the response arrives. Read-only parameter queries use
+//! their panel's pending read instead of the mutation counter, so they cannot
+//! block editor gestures or add a pending-edit status badge. Live notes, monitoring and audio
 //! rendering do not depend on this poll.
 use super::EditorView;
 use gpui::{Context, Task, Window};
@@ -196,8 +198,16 @@ impl EditorView {
         self.wake_poll();
     }
 
-    fn poll_tick(&mut self, window: &Window, cx: &mut Context<Self>) -> Duration {
-        let changed = self.tick(cx);
+    fn poll_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Duration {
+        super::device_panel::vst3_parameters::tick(self, cx);
+        let overrange_changed = self
+            .waveform_geometry_cache
+            .try_borrow_mut()
+            .is_ok_and(|mut cache| cache.poll_overrange());
+        if overrange_changed {
+            window.refresh();
+        }
+        let changed = self.tick(cx) | overrange_changed;
         if changed {
             cx.notify();
         }
@@ -214,8 +224,16 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         actual_playing
+            || self
+                .waveform_geometry_cache
+                .try_borrow()
+                .is_ok_and(|cache| cache.overrange_busy())
             || self.play_intent.desired_playing(actual_playing)
+            || self.audio_recorder.needs_poll()
             || self.edit_pending()
+            || self.automation_close_preflight.waiting()
+            || self.automation_take_recovery.polling()
+            || super::device_panel::vst3_parameters::query_pending(self)
             || self.transport_pending()
     }
 
@@ -230,7 +248,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

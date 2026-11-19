@@ -47,6 +47,18 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
+        let loop_hint = "toggle looping · cmd+l · l/w set scope or toggle matching scope";
+        let loop_enabled = self
+            .pending_loop_region()
+            .or_else(|| self.state().and_then(|state| state.project.loop_region()))
+            .is_some_and(|region| region.enabled());
+        let mut loop_style = theme::action_style();
+        loop_style.text = theme::color(if loop_enabled {
+            theme::PaletteRole::Primary
+        } else {
+            theme::PaletteRole::Muted
+        });
+        loop_style.hover_text = Some(loop_style.text);
         let automation_active =
             self.automation_view.enabled && self.mode == EditorMode::Arrangement;
         let automation_hint = "automation view · a · all arrangement tracks · track gain";
@@ -65,7 +77,12 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let field = self.project_tempo_input(cx);
+        // Reserve room for transient recording and automation controls on the
+        // first row at the minimum window width.
+        let compact = f32::from(window.viewport_size().width) < 1_000.0;
         let controls = div()
+            .id("transport-primary-controls")
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .flex_shrink_0()
@@ -78,10 +95,6 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
-            .child(
-                self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
-            )
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
@@ -95,15 +108,93 @@ impl EditorView {
                     } else {
                         TransportIcon::Play
                     },
-                    "play or pause · space",
-                    TogglePlay,
+                    if self.mode == EditorMode::Arrangement {
+                        "play or pause · space · right-click for history playback"
+                    } else {
+                        "play or pause · space"
+                    },
+                    |_| TogglePlay,
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                        view.open_history_playback_menu(event.position, window, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+            )
+            .child(
+                self.vector_icon(
+                    TransportIcon::Stop,
+                    "stop · escape",
+                    |event| Stop {
+                        return_to_beginning: event.click_count() >= 2,
+                    },
                     cx,
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
-                self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)
-                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+                self.control_icon_description(
+                    "in",
+                    "audio input",
+                    format!(
+                        "audio input · {}",
+                        hex_session::service::text::verbatim(self.audio_recorder.input_label())
+                    )
+                    .into(),
+                    theme::action_style(),
+                    |view, window, cx| view.open_audio_input_menu(window, cx),
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-input-picker".into()),
+            )
+            .child(
+                self.control_icon(
+                    "mon",
+                    if self.audio_recorder.software_monitor {
+                        "software monitor for armed input · click for hardware"
+                    } else {
+                        "hardware monitoring · click for software"
+                    },
+                    |view, _, cx| {
+                        view.toggle_software_monitor();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-monitor-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.software_monitor {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
+            .child(
+                self.control_icon(
+                    "●a",
+                    self.audio_recorder.label(),
+                    |view, _, cx| {
+                        view.toggle_audio_recording();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "audio-record-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.audio_recorder.blocks_edits() {
+                        theme::PaletteRole::Recording
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
             )
             .child(
                 self.control_icon(
@@ -118,7 +209,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(
                     if self.midi_recorder.blocks_edits() {
-                        theme::PaletteRole::Primary
+                        theme::PaletteRole::Recording
                     } else {
                         theme::PaletteRole::Muted
                     },
@@ -184,51 +275,42 @@ impl EditorView {
                 }))),
             )
             .child(
-                self.control_icon(
+                self.control_icon_description(
                     "↻",
-                    "toggle loop · cmd+l · l/w set selection or toggle matching loop",
+                    loop_hint,
+                    loop_hint.into(),
+                    loop_style,
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
                 .debug_selector(|| "transport-loop-toggle".into())
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(
-                    if self
-                        .state()
-                        .and_then(|state| state.project.loop_region())
-                        .is_some_and(|region| region.enabled())
-                    {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    },
-                )),
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(self.vector_icon(
                 TransportIcon::Split,
                 "split selection edges or edit cursor · e",
-                SplitClip,
+                |_| SplitClip,
                 cx,
             ))
             .child(
-                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", Undo, cx)
+                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", |_| Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),
             )
             .child(
-                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", Redo, cx)
+                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", |_| Redo, cx)
                     .opacity(if can_redo { 1.0 } else { 0.45 }),
             )
-            .child(self.vector_icon(TransportIcon::AddTrack, "add track", AddTrack, cx))
+            .child(self.vector_icon(TransportIcon::AddTrack, "add track", |_| AddTrack, cx))
             .child(self.vector_icon(
                 TransportIcon::AddMidiClip,
                 "add four-beat midi clip · cmd+shift+m",
-                AddMidiClip,
+                |_| AddMidiClip,
                 cx,
             ))
             .child(self.vector_icon(
                 TransportIcon::RemoveTrack,
                 "remove selected track",
-                RemoveTrack,
+                |_| RemoveTrack,
                 cx,
             ))
             .child(
@@ -288,53 +370,30 @@ impl EditorView {
                 .debug_selector(|| "reenable-device-automation".into())
             }))
             .children([self.snap_control(cx)])
-            .children([self.section_focus_toggle(cx)])
-            .children([self.track_tag_filter_control(cx)])
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
+            .children((!compact).then(|| self.section_focus_toggle(cx)))
+            .children((!compact).then(|| self.track_tag_filter_control(cx)))
+            .children(
+                (!compact)
+                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
+            )
+            .children(
+                (!compact)
+                    .then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
+            );
         let mut status = div()
+            .id("transport-status-controls")
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .min_w_0()
             .flex_1()
-            .child(
-                self.control_icon(
-                    "▤",
-                    "show arrange view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Arrangement),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Arrangement {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
+            .children(compact.then(|| self.section_focus_toggle(cx)))
+            .children(compact.then(|| self.track_tag_filter_control(cx)))
+            .children(
+                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx)),
             )
-            .child(
-                self.control_icon(
-                    "▦",
-                    "show console view · tab",
-                    |view, _, _| view.set_mode(EditorMode::Session),
-                    cx,
-                )
-                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .text_color(rgb(if self.mode == EditorMode::Session {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                })),
-            )
-            .child(
-                div()
-                    .debug_selector({
-                        let name = self.workspace_view_name();
-                        move || name.to_owned()
-                    })
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .child(theme::text(self.workspace_view_name())),
+            .children(
+                compact.then(|| self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx)),
             )
             .child(
                 div()
@@ -393,10 +452,16 @@ impl EditorView {
                     .child(theme::text("loading")),
             );
         }
+        status = status
+            .child(self.header_diagnostics(cx))
+            .child(self.workspace_view_toggle(cx));
         let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
-        let row = header::toolbar_row().h(px(header::toolbar_height(f32::from(
-            window.viewport_size().width,
-        ))));
+        let row = header::toolbar_row()
+            .relative()
+            .child(self.window_controls(cx))
+            .h(px(header::toolbar_height(f32::from(
+                window.viewport_size().width,
+            ))));
         if narrow {
             row.flex_col()
                 .items_start()
@@ -410,11 +475,37 @@ impl EditorView {
         }
     }
 
-    pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let title = header::project_title(
-            self.state()
-                .and_then(|state| state.document_path.as_deref()),
-        );
+    pub(super) fn browser_toggle_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
+            .size(px(18.0))
+            .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+            .text_color(rgb(theme::color(if self.browser.open {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+    }
+
+    fn workspace_view_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (glyph, next, next_name) = match self.mode {
+            EditorMode::Arrangement => ("▤", EditorMode::Session, "console view"),
+            EditorMode::Session => ("▦", EditorMode::Arrangement, "arrange view"),
+        };
+        self.control_icon_description(
+            glyph,
+            "workspace-view-toggle",
+            theme::text(format!(
+                "{} · switch to {next_name} · tab",
+                self.workspace_view_name()
+            )),
+            theme::action_style(),
+            move |view, _, _| view.set_mode(next),
+            cx,
+        )
+        .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+    }
+
+    fn header_diagnostics(&self, cx: &mut Context<Self>) -> Div {
         let description = theme::text(self.cpu_meter.description());
         let cpu_meter = div()
             .id("editor-cpu-meter")
@@ -466,7 +557,16 @@ impl EditorView {
                     }))),
             )
             .child(theme::text(self.cpu_meter.label()));
-        header::title_bar(title, cpu_meter, |control| match control {
+        div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .children([cpu_meter])
+            .child(crate::build_info::editor_label())
+    }
+
+    fn window_controls(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        header::window_controls(|control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
                     window.remove_window();
@@ -487,11 +587,11 @@ impl EditorView {
         })
     }
 
-    fn vector_icon(
+    fn vector_icon<A: gpui::Action>(
         &self,
         icon: TransportIcon,
         description: &'static str,
-        action: impl gpui::Action,
+        action: impl Fn(&gpui::ClickEvent) -> A + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let (path, selector) = icon.asset();
@@ -521,8 +621,8 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |_, _, window, cx| {
-                window.dispatch_action(action.boxed_clone(), cx);
+            .on_click(cx.listener(move |_, event, window, cx| {
+                window.dispatch_action(Box::new(action(event)), cx);
                 cx.notify();
             }))
     }
@@ -603,7 +703,8 @@ impl EditorView {
         .tooltip(|_, cx| {
             cx.new(|_| MiniTooltip {
                 kind: crate::tooltips::Kind::control("global launch quantization"),
-                description: "global launch quantization · sections and console clips".into(),
+                description: "global launch quantization · locators, sections and console clips"
+                    .into(),
             })
             .into()
         })

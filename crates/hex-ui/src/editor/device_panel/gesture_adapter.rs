@@ -74,8 +74,20 @@ pub fn commit_owned_numeric_edit(
     let active = view.device_gesture.snapshot();
     if active.is_some_and(|snapshot| snapshot.target != target)
         || view.device_gesture.has_pending_terminal()
+        || (matches!(
+            target,
+            GestureTarget::MainGain
+                | GestureTarget::ReturnGain { .. }
+                | GestureTarget::ReturnSend { .. }
+        ) && view.document_audio_mode != hex_session::DocumentAudioMode::Resident)
     {
         let command = match target {
+            GestureTarget::MainGain => Request::Edit(Command::MasterGain {
+                gain: match value {
+                    ParameterValue::Float(gain) => gain,
+                    _ => return Err("main gain requires a float value"),
+                },
+            }),
             GestureTarget::TrackBalance { track } => Request::Edit(Command::Balance {
                 track,
                 balance: match value {

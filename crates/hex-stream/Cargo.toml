@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 allocation-probe = []
-test-support = []
+test-support = ["hex-media/test-support"]
 
 [lints]
 workspace = true
@@ -17,9 +17,11 @@ hex-engine = { path = "../hex-engine" }
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
 hex-storage = { path = "../hex-storage" }
+hex-warp = { path = "../hex-warp" }
 rtrb = "=0.3.4"
 
 [dev-dependencies]
+hex-media = { path = "../hex-media", features = ["test-support"] }
 allocation-counter = "=0.8.1"
 
 [build-dependencies]
@@ -28,3 +30,7 @@ sha2 = "=0.11.0"
 [[test]]
 name = "callback_allocations"
 required-features = ["allocation-probe"]
+
+[[test]]
+name = "read_fault_gate"
+required-features = ["test-support", "allocation-probe"]

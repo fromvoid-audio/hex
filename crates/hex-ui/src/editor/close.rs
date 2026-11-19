@@ -3,10 +3,136 @@ use gpui::{App, AppContext, Context, Global, PromptButton, PromptLevel, Window};
 use std::cell::Cell;
 use std::time::Duration;
 
+/// One UI-owned close decision. Freeze gesture admission while draining the
+/// existing FIFO, awaiting Session's ordered custody read, and showing consent.
+/// The five-second drain/read bound refuses close; it never discards a take.
+#[derive(Default)]
+pub(super) struct AutomationClosePreflight {
+    state: PreflightState,
+    window: Option<gpui::AnyWindowHandle>,
+    update: Option<u64>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum PreflightState {
+    #[default]
+    Idle,
+    Draining {
+        quit: bool,
+        deadline: std::time::Instant,
+    },
+    Waiting {
+        request: u64,
+        quit: bool,
+        generation: u64,
+        revision: u64,
+        deadline: std::time::Instant,
+    },
+    Ready {
+        request: u64,
+        quit: bool,
+        generation: u64,
+        revision: u64,
+        safe: bool,
+    },
+    Dispatching {
+        request: u64,
+        quit: bool,
+        generation: u64,
+        revision: u64,
+        safe: bool,
+    },
+    Held {
+        quit: bool,
+    },
+}
+
+impl AutomationClosePreflight {
+    pub(super) fn frozen(&self) -> bool {
+        !matches!(self.state, PreflightState::Idle)
+    }
+    pub(super) fn waiting(&self) -> bool {
+        matches!(
+            self.state,
+            PreflightState::Draining { .. } | PreflightState::Waiting { .. }
+        )
+    }
+    pub(super) fn blocks_update_approval(&self) -> bool {
+        self.frozen() && !matches!(self.state, PreflightState::Held { .. })
+    }
+    pub(super) fn awaiting_update(&self) -> bool {
+        self.update.is_some() && self.blocks_update_approval()
+    }
+    pub(super) fn update_safe(&self, id: u64) -> bool {
+        matches!(self.state, PreflightState::Held { .. })
+            && self.update.is_none_or(|expected| expected == id)
+    }
+    pub(super) fn cancel_update(&mut self, id: u64) {
+        if self.update == Some(id) {
+            self.update = None;
+            self.state = PreflightState::Idle;
+        }
+    }
+
+    fn observe(
+        &mut self,
+        request_id: u64,
+        safe: bool,
+        observed_generation: u64,
+        observed_revision: u64,
+    ) {
+        let PreflightState::Waiting {
+            request,
+            quit,
+            generation,
+            revision,
+            ..
+        } = self.state
+        else {
+            return;
+        };
+        if request_id != request {
+            return;
+        }
+        self.state = PreflightState::Ready {
+            request,
+            quit,
+            generation,
+            revision,
+            safe: safe && observed_generation == generation && observed_revision == revision,
+        };
+    }
+}
+
 /// Bound for joining the project workers when hex quits. macOS termination
 /// exits without dropping the editor, so a cancelled export's cleanup would
 /// otherwise be cut off; the UI never waits longer than this.
 const QUIT_SHUTDOWN_BOUND: Duration = Duration::from_secs(1);
+
+/// Drive the actual worker and window events until close reaches its prompt.
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn wait_for_close_prompt(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut gpui::TestAppContext,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        editor.update(cx, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+        });
+        cx.run_until_parked();
+        if cx.has_pending_prompt() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "close prompt did not arrive"
+        );
+        std::thread::yield_now();
+    }
+}
 
 /// App-wide quit custody shared by Hex's own Quit paths and OS termination
 /// requests (Dock Quit, logout, restart, shutdown), which macOS delivers through
@@ -108,79 +234,88 @@ pub(super) fn requires_close_confirmation(
 }
 
 impl EditorView {
+    fn release_automation_close(&mut self, cx: &Context<Self>) {
+        let update = self.automation_close_preflight.update.take();
+        self.automation_close_preflight.state = PreflightState::Idle;
+        if let Some(id) = update {
+            self.cancel_update(id, cx);
+        }
+    }
+
+    pub(super) fn begin_update_automation_close(
+        &mut self,
+        id: u64,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if self.automation_close_preflight.frozen() {
+            return Err("another close decision is pending");
+        }
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or("automation safety deadline unavailable")?;
+        self.automation_close_preflight.update = Some(id);
+        self.automation_close_preflight.window = Some(window.window_handle());
+        self.automation_close_preflight.state = PreflightState::Draining {
+            quit: false,
+            deadline,
+        };
+        self.wake_poll();
+        cx.notify();
+        Ok(())
+    }
     pub(super) fn request_window_close(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.update_blocks_close() {
-            self.error = Some("update preparation is still in progress".into());
-            cx.notify();
-            return false;
-        }
-        if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
-            self.error = Some(if self.gain_recorder.has_retained_take() {
-                "retry or explicitly discard the retained gain take before closing".into()
-            } else {
-                "finish or cancel gain recording before closing".into()
-            });
-            cx.notify();
-            return false;
-        }
-        if self.close_prompt_open
-            || self.save_dialog_open
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
-        {
-            return false;
-        }
-        if !self.prepare_theme_window_close(window, cx) {
-            return false;
-        }
-        let _ = super::device_panel::finalize_controls(self, cx);
-        self.finalize_device_gesture_for_close();
-        if let Err(reason) = self.finalize_tuning_gesture() {
-            self.error = Some(reason.into());
-        }
-        if self.requires_close_confirmation(cx) {
-            self.show_close_prompt(window, cx, false);
-            false
-        } else if self.prepare_update_quit(false, cx) {
-            false
-        } else {
-            self.cancel_browser_sample_playback();
-            self.stop();
-            true
-        }
+        self.begin_automation_close(false, window, cx);
+        false
     }
 
     pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.update_blocks_close() {
-            self.error = Some("update preparation is still in progress".into());
-            cx.notify();
-            quit_refused(cx);
+        self.begin_automation_close(true, window, cx);
+    }
+
+    fn begin_automation_close(&mut self, quit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.automation_close_preflight.frozen() {
+            let quit_already_pending = matches!(
+                self.automation_close_preflight.state,
+                PreflightState::Draining { quit: true, .. }
+                    | PreflightState::Waiting { quit: true, .. }
+                    | PreflightState::Ready { quit: true, .. }
+                    | PreflightState::Dispatching { quit: true, .. }
+                    | PreflightState::Held { quit: true }
+            );
+            if quit && !quit_already_pending {
+                quit_refused(cx);
+            }
             return;
         }
-        if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
-            self.error = Some(if self.gain_recorder.has_retained_take() {
-                "retry or explicitly discard the retained gain take before quitting".into()
-            } else {
-                "finish or cancel gain recording before quitting".into()
-            });
-            cx.notify();
-            quit_refused(cx);
-            return;
-        }
-        if self.close_prompt_open
+        if self.update_blocks_close()
+            || super::device_panel::source_naming(self)
+            || self.gain_recorder.blocks_edits()
+            || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
+            || self.native_automation_recorder.busy()
+            || self.automation_take_recovery.unresolved()
+            || self.close_prompt_open
             || self.save_dialog_open
             || self.project_open.busy()
             || self.pending_open_path.is_some()
         {
-            quit_refused(cx);
+            self.error =
+                Some("finish pending work or recover the automation take before closing".into());
+            cx.notify();
+            if quit {
+                quit_refused(cx);
+            }
             return;
         }
         if !self.prepare_theme_window_close(window, cx) {
-            quit_refused(cx);
+            if quit {
+                quit_refused(cx);
+            }
             return;
         }
         let _ = super::device_panel::finalize_controls(self, cx);
@@ -188,15 +323,248 @@ impl EditorView {
         if let Err(reason) = self.finalize_tuning_gesture() {
             self.error = Some(reason.into());
         }
+        let Some(deadline) = std::time::Instant::now().checked_add(Duration::from_secs(5)) else {
+            self.error = Some("close safety deadline unavailable".into());
+            if quit {
+                quit_refused(cx);
+            }
+            return;
+        };
+        self.automation_close_preflight.window = Some(window.window_handle());
+        self.automation_close_preflight.state = PreflightState::Draining { quit, deadline };
+        self.wake_poll();
+        cx.notify();
+    }
+
+    fn submit_automation_close_query(
+        &mut self,
+        quit: bool,
+        deadline: std::time::Instant,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+            self.release_automation_close(cx);
+            self.error = Some("project is still loading".into());
+            if quit {
+                quit_refused(cx);
+            }
+            cx.notify();
+            return;
+        };
+        let Ok(request) = self.native_automation_recorder.reserve_request() else {
+            self.release_automation_close(cx);
+            self.error = Some("automation request limit reached".into());
+            if quit {
+                quit_refused(cx);
+            }
+            cx.notify();
+            return;
+        };
+        self.automation_close_preflight.state = PreflightState::Waiting {
+            request,
+            quit,
+            generation: self.project_generation,
+            revision,
+            deadline,
+        };
+        if self
+            .service
+            .submit(
+                hex_session::service::Request::QueryDeviceAutomationCloseSafety {
+                    request_id: request,
+                },
+            )
+            .is_err()
+        {
+            self.release_automation_close(cx);
+            self.error = Some("automation safety check unavailable · close cancelled".into());
+            if quit {
+                quit_refused(cx);
+            }
+        } else {
+            self.wake_poll();
+        }
+        cx.notify();
+    }
+
+    pub(super) fn observe_automation_close(&mut self, event: &hex_session::service::Event) {
+        let Some(completion) = event.device_automation_take_complete.as_ref() else {
+            return;
+        };
+        use hex_session::service::DeviceAutomationTakeProgress as Progress;
+        let safe = event.error.is_none() && completion.progress == Progress::CloseSafe;
+        self.automation_close_preflight.observe(
+            completion.request_id,
+            safe,
+            self.project_generation,
+            event.state.revision,
+        );
+    }
+
+    pub(super) fn tick_automation_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if let PreflightState::Draining { quit, deadline }
+        | PreflightState::Waiting { quit, deadline, .. } = self.automation_close_preflight.state
+            && std::time::Instant::now() >= deadline
+        {
+            self.release_automation_close(cx);
+            self.error = Some("automation safety check timed out · close cancelled".into());
+            if quit {
+                quit_refused(cx);
+            }
+            return true;
+        }
+        if let PreflightState::Draining { quit, deadline } = self.automation_close_preflight.state
+            && self.pending_requests.is_empty()
+            && self.worker_requests_pending == 0
+            && !self.device_gesture_pending()
+            && !self.native_automation_recorder.busy()
+            && !self.automation_take_recovery.unresolved()
+            && self.tuning.client.snapshot().is_none()
+        {
+            self.submit_automation_close_query(quit, deadline, cx);
+            return true;
+        }
+        if let PreflightState::Ready {
+            request,
+            quit,
+            generation,
+            revision,
+            safe,
+        } = self.automation_close_preflight.state
+        {
+            let Some(handle) = self.automation_close_preflight.window else {
+                self.release_automation_close(cx);
+                if quit {
+                    quit_refused(cx);
+                }
+                self.error = Some("close window unavailable · close cancelled".into());
+                return true;
+            };
+            self.automation_close_preflight.state = PreflightState::Dispatching {
+                request,
+                quit,
+                generation,
+                revision,
+                safe,
+            };
+            let editor = cx.entity();
+            let error_editor = editor.clone();
+            cx.spawn(async move |_, cx| {
+                if cx
+                    .update_window(handle, move |_, window, cx| {
+                        editor.update(cx, |view, cx| {
+                            view.finish_automation_close(request, window, cx)
+                        });
+                    })
+                    .is_err()
+                {
+                    let _ = cx.update(|cx| {
+                        error_editor.update(cx, |view, cx| {
+                            view.release_automation_close(cx);
+                            view.error = Some("close window unavailable · close cancelled".into());
+                            cx.notify();
+                        });
+                        if quit {
+                            quit_refused(cx);
+                        }
+                    });
+                }
+            })
+            .detach();
+            return true;
+        }
+        if let PreflightState::Held { quit } = self.automation_close_preflight.state
+            && !self.close_prompt_open
+            && !self.update_preparing()
+        {
+            self.release_automation_close(cx);
+            if quit {
+                quit_refused(cx);
+            }
+        }
+        false
+    }
+
+    pub(super) fn automation_close_disconnected(&mut self, cx: &mut Context<Self>) -> bool {
+        let quit = match self.automation_close_preflight.state {
+            PreflightState::Draining { quit, .. }
+            | PreflightState::Waiting { quit, .. }
+            | PreflightState::Ready { quit, .. }
+            | PreflightState::Dispatching { quit, .. } => quit,
+            _ => return false,
+        };
+        self.release_automation_close(cx);
+        self.error = Some("project worker stopped · close cancelled".into());
+        if quit {
+            quit_refused(cx);
+        }
+        true
+    }
+
+    fn finish_automation_close(
+        &mut self,
+        request: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let PreflightState::Dispatching {
+            request: current,
+            quit,
+            generation,
+            revision,
+            safe,
+        } = self.automation_close_preflight.state
+        else {
+            return;
+        };
+        if current != request {
+            return;
+        }
+        let valid = safe
+            && self.project_generation == generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == revision)
+            && self.pending_requests.is_empty()
+            && self.worker_requests_pending == 0
+            && !self.native_automation_recorder.busy()
+            && !self.automation_take_recovery.unresolved()
+            && !self.device_gesture_pending();
+        if !valid {
+            self.release_automation_close(cx);
+            if !safe {
+                self.probe_failed_plugin_automation();
+            }
+            self.error = Some(
+                "automation take needs recovery or pending work changed · close cancelled".into(),
+            );
+            if quit {
+                quit_refused(cx);
+            }
+            cx.notify();
+            return;
+        }
+        self.automation_close_preflight.state = PreflightState::Held { quit };
+        if self.automation_close_preflight.update.is_some() {
+            self.reconcile_update_ready(window, cx);
+            cx.notify();
+            return;
+        }
         if self.requires_close_confirmation(cx) {
-            self.show_close_prompt(window, cx, true);
+            self.show_close_prompt(window, cx, quit);
         } else if self.prepare_update_quit(false, cx) {
-            // Wait for the verified helper before closing this window.
+            // Keep the admission freeze until update preparation succeeds or fails.
         } else {
             self.cancel_browser_sample_playback();
             self.stop();
-            self.shutdown_service_for_quit(cx);
-            quit_confirmed(cx);
+            if quit {
+                self.shutdown_service_for_quit(cx);
+            }
+            window.remove_window();
+            if quit {
+                quit_confirmed(cx);
+            }
         }
     }
 
@@ -281,6 +649,7 @@ impl EditorView {
                             view.shutdown_service_for_quit(cx);
                         }
                     } else {
+                        view.release_automation_close(cx);
                         if quit {
                             quit_refused(cx);
                         }
@@ -311,9 +680,54 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
-    use super::requires_close_confirmation;
+    use super::{AutomationClosePreflight, PreflightState, requires_close_confirmation};
+
+    #[test]
+    fn automation_preflight_correlates_responses_and_keeps_admission_frozen() {
+        let mut gate = AutomationClosePreflight::default();
+        assert!(!gate.frozen());
+        gate.state = PreflightState::Waiting {
+            request: 7,
+            quit: true,
+            generation: 2,
+            revision: 3,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        };
+        assert!(gate.frozen());
+        gate.observe(6, true, 2, 3);
+        assert!(matches!(gate.state, PreflightState::Waiting { .. }));
+        gate.observe(7, true, 2, 4);
+        assert!(matches!(
+            gate.state,
+            PreflightState::Ready {
+                safe: false,
+                quit: true,
+                ..
+            }
+        ));
+        assert!(gate.frozen());
+        gate.state = PreflightState::Idle;
+        gate.observe(7, true, 2, 3);
+        assert!(!gate.frozen());
+    }
+
+    #[test]
+    fn update_readiness_belongs_to_one_update_and_cancellation_releases_it() {
+        let mut gate = AutomationClosePreflight {
+            update: Some(7),
+            state: PreflightState::Held { quit: false },
+            ..Default::default()
+        };
+        assert!(gate.update_safe(7));
+        assert!(!gate.update_safe(8));
+        gate.cancel_update(8);
+        assert!(gate.frozen());
+        gate.cancel_update(7);
+        assert!(!gate.frozen());
+        assert!(!gate.update_safe(7));
+    }
 
     #[test]
     fn close_confirmation_covers_dirty_and_pending_work() {
@@ -357,6 +771,38 @@ mod window_tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    fn settle_close(cx: &mut TestAppContext) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            cx.run_until_parked();
+            let mut pending = false;
+            for handle in cx.windows() {
+                let _ = cx.update_window(handle, |_, window, cx| {
+                    if let Some(editor) = window.root::<EditorView>().flatten() {
+                        editor.update(cx, |view, cx| {
+                            if matches!(
+                                view.automation_close_preflight.state,
+                                PreflightState::Draining { .. }
+                                    | PreflightState::Waiting { .. }
+                                    | PreflightState::Ready { .. }
+                                    | PreflightState::Dispatching { .. }
+                            ) {
+                                pending = true;
+                                view.tick(cx);
+                            }
+                        });
+                    }
+                });
+            }
+            if !pending {
+                break;
+            }
+            assert!(Instant::now() < deadline, "close preflight did not settle");
+            std::thread::yield_now();
+        }
+        cx.run_until_parked();
+    }
+
     fn next_service_event(service: &Service) -> Event {
         let start = Instant::now();
         loop {
@@ -393,33 +839,98 @@ mod window_tests {
         let editor = cx
             .update_window(handle, |_, window, cx| {
                 let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
+                let _ = next_service_event(&service);
+                service
+                    .submit(Request::Edit(hex_project::Command::AddTrack {
+                        name: "close fixture".into(),
+                    }))
+                    .unwrap();
+                let dirty = next_service_event(&service);
                 let editor = window.replace_root(cx, |window, cx| {
                     EditorView::new(window, cx, service, Err("test offline output".into()))
                 });
                 super::super::install_close_guard(window, cx, editor.downgrade());
                 editor.update(cx, |view, cx| {
-                    view.state = Some(Arc::new(ViewState {
-                        canonical_audio_source: None,
-                        comparison_audio: None,
-                        project: Arc::new(hex_project::Project::new(48_000).expect("test project")),
-                        waveforms: Default::default(),
-                        source_overviews: Default::default(),
-                        audio_clip_waveforms: std::collections::BTreeMap::new(),
-                        midi_preview: Arc::new(Default::default()),
-                        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                        timeline_frames: 384_000,
-                        can_undo: false,
-                        can_redo: false,
-                        revision: 1,
-                        unsaved: true,
-                        document_path: None,
-                    }));
+                    view.receive(dirty);
                     cx.notify();
                 });
                 editor
             })
             .expect("bootstrap window");
         (handle, editor)
+    }
+
+    #[gpui::test]
+    fn automation_close_freezes_admission_until_prompt_cancellation(cx: &mut TestAppContext) {
+        let (handle, editor) = dirty_replaced_window(cx);
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                view.request_quit(window, cx);
+                assert!(view.automation_close_preflight.frozen());
+                let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+                let target = hex_session::device_gesture::GestureTarget::TrackGain { track };
+                assert!(
+                    view.begin_device_gesture(
+                        target,
+                        hex_lattice_contract::ParameterValue::Float(0.5)
+                    )
+                    .is_err()
+                );
+                assert!(
+                    view.begin_native_automation_touch(
+                        target,
+                        hex_lattice_contract::ParameterValue::Float(0.5)
+                    )
+                    .is_err()
+                );
+            });
+        })
+        .unwrap();
+        settle_close(cx);
+        assert!(cx.has_pending_prompt());
+        editor.read_with(cx, |view, _| {
+            assert!(view.automation_close_preflight.frozen())
+        });
+        cx.simulate_prompt_answer("cancel");
+        settle_close(cx);
+        editor.read_with(cx, |view, _| {
+            assert!(!view.automation_close_preflight.frozen())
+        });
+        assert_eq!(cx.windows().len(), 1);
+        editor.update(cx, |view, cx| {
+            let revision = view.state.as_ref().unwrap().revision;
+            view.automation_close_preflight.state = PreflightState::Waiting {
+                request: 1000,
+                quit: false,
+                generation: view.project_generation,
+                revision,
+                deadline: Instant::now(),
+            };
+            assert!(view.tick_automation_close(cx));
+            assert!(!view.automation_close_preflight.frozen());
+            view.automation_close_preflight
+                .observe(1000, true, view.project_generation, revision);
+            assert!(
+                !view.automation_close_preflight.frozen(),
+                "late safe response stays retired"
+            );
+            view.automation_close_preflight.state = PreflightState::Waiting {
+                request: 1001,
+                quit: false,
+                generation: view.project_generation,
+                revision,
+                deadline: Instant::now() + Duration::from_secs(1),
+            };
+            view.automation_close_preflight
+                .observe(1001, false, view.project_generation, revision);
+            view.tick_automation_close(cx);
+        });
+        settle_close(cx);
+        assert!(!cx.has_pending_prompt());
+        editor.read_with(cx, |view, _| {
+            assert!(!view.automation_close_preflight.frozen())
+        });
+        assert_eq!(cx.windows().len(), 1);
     }
 
     fn click_custom_close(visual: &mut VisualTestContext) {
@@ -451,31 +962,12 @@ mod window_tests {
             return;
         }
         let (handle, editor) = dirty_replaced_window(cx);
-        editor.update(cx, |view, cx| {
-            if let Some(state) = view.state.as_ref() {
-                view.state = Some(Arc::new(ViewState {
-                    canonical_audio_source: None,
-                    comparison_audio: None,
-                    project: Arc::clone(&state.project),
-                    waveforms: state.waveforms.clone(),
-                    source_overviews: state.source_overviews.clone(),
-                    audio_clip_waveforms: state.audio_clip_waveforms.clone(),
-                    midi_preview: Arc::clone(&state.midi_preview),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                    timeline_frames: state.timeline_frames,
-                    can_undo: state.can_undo,
-                    can_redo: state.can_redo,
-                    revision: state.revision,
-                    unsaved: false,
-                    document_path: state.document_path.clone(),
-                }));
-            }
-            cx.notify();
-        });
+        mark_clean(&editor, cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         click_custom_close(&mut visual);
         visual.run_until_parked();
+        settle_close(cx);
         assert!(cx.windows().is_empty());
     }
 
@@ -490,19 +982,24 @@ mod window_tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         click_custom_close(&mut visual);
+        settle_close(cx);
         assert!(cx.has_pending_prompt());
         click_custom_close(&mut visual);
+        settle_close(cx);
         assert!(cx.has_pending_prompt());
+        settle_close(cx);
         cx.simulate_prompt_answer("cancel");
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(!cx.has_pending_prompt());
         assert_eq!(cx.windows().len(), 1);
 
         visual.run_until_parked();
         click_custom_close(&mut visual);
+        settle_close(cx);
         assert!(cx.has_pending_prompt());
+        settle_close(cx);
         cx.simulate_prompt_answer("discard");
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(cx.windows().is_empty());
     }
 
@@ -515,9 +1012,11 @@ mod window_tests {
             });
         })
         .expect("dirty window");
+        settle_close(cx);
         assert!(cx.has_pending_prompt());
+        settle_close(cx);
         cx.simulate_prompt_answer("cancel");
-        cx.run_until_parked();
+        settle_close(cx);
         assert_eq!(cx.windows().len(), 1);
         editor.read_with(cx, |view, _| {
             assert!(!view.close_prompt_open);
@@ -532,8 +1031,9 @@ mod window_tests {
             });
         })
         .expect("cancel preserved window");
+        settle_close(cx);
         cx.simulate_prompt_answer("discard");
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(!cx.has_pending_prompt());
         assert!(cx.windows().is_empty());
         assert!(cx.update_window(handle, |_, _, _| ()).is_err());
@@ -546,16 +1046,18 @@ mod window_tests {
             editor.update(cx, |view, cx| view.request_quit(window, cx));
         })
         .expect("dirty window");
+        settle_close(cx);
         cx.simulate_prompt_answer("cancel");
-        cx.run_until_parked();
+        settle_close(cx);
         assert_eq!(cx.windows().len(), 1);
         assert!(!editor.read_with(cx, |view, _| view.close_prompt_open));
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| view.request_quit(window, cx));
         })
         .expect("cancel preserved window");
+        settle_close(cx);
         cx.simulate_prompt_answer("discard");
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(!cx.has_pending_prompt());
         assert!(cx.windows().is_empty());
     }
@@ -641,25 +1143,31 @@ mod window_tests {
             });
         })
         .expect("close with draft");
+        settle_close(cx);
         assert!(cx.has_pending_prompt());
+        settle_close(cx);
         cx.simulate_prompt_answer("cancel");
-        cx.run_until_parked();
+        settle_close(cx);
         assert_eq!(cx.windows().len(), 1);
         editor.read_with(cx, |view, _| {
-            assert!(view.state.as_ref().is_some_and(|state| !state.unsaved));
-            let draft = view.device_gesture.snapshot().expect("cancel keeps draft");
-            assert_eq!(
-                draft.target,
-                hex_session::device_gesture::GestureTarget::DeviceParameter {
-                    device,
-                    parameter: hex_session::device_gesture::ParameterId::new(1)
-                        .expect("gain parameter"),
-                }
+            assert!(view.state.as_ref().is_some_and(|state| state.unsaved));
+            assert!(
+                view.device_gesture.snapshot().is_none(),
+                "close finalized the draft"
             );
-            assert_eq!(
-                draft.value,
-                hex_session::device_gesture::ParameterValue::Float(2.0)
-            );
+            view.service.submit(Request::Undo).unwrap();
+        });
+        let undone = next_editor_service_event(&editor, cx);
+        assert!(undone.error.is_none());
+        assert_eq!(undone.state.project, device_event.state.project);
+        editor.update(cx, |view, _| {
+            view.receive(undone);
+            view.service.submit(Request::Redo).unwrap();
+        });
+        let redone = next_editor_service_event(&editor, cx);
+        assert!(redone.error.is_none());
+        editor.update(cx, |view, _| {
+            view.receive(redone);
         });
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
@@ -667,8 +1175,9 @@ mod window_tests {
             });
         })
         .expect("second close");
+        settle_close(cx);
         cx.simulate_prompt_answer("discard");
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(cx.windows().is_empty());
         let _ = std::fs::remove_file(path);
     }
@@ -841,26 +1350,23 @@ mod window_tests {
     }
 
     fn mark_clean(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
-        editor.update(cx, |view, cx| {
-            let state = view.state.as_ref().expect("fixture state");
-            view.state = Some(Arc::new(ViewState {
-                canonical_audio_source: None,
-                comparison_audio: None,
-                project: Arc::clone(&state.project),
-                waveforms: state.waveforms.clone(),
-                source_overviews: state.source_overviews.clone(),
-                audio_clip_waveforms: state.audio_clip_waveforms.clone(),
-                midi_preview: Arc::clone(&state.midi_preview),
-                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                timeline_frames: state.timeline_frames,
-                can_undo: state.can_undo,
-                can_redo: state.can_redo,
-                revision: state.revision,
-                unsaved: false,
-                document_path: state.document_path.clone(),
-            }));
-            cx.notify();
+        let path = std::env::temp_dir().join(format!(
+            "hex-close-clean-{}-{}.hex",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        editor.update(cx, |view, _| {
+            view.service.submit(Request::SaveNew(path.clone())).unwrap()
         });
+        let event = next_editor_service_event(editor, cx);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |view, _| {
+            view.receive(event);
+        });
+        let _ = std::fs::remove_file(path);
     }
 
     #[gpui::test]
@@ -868,20 +1374,21 @@ mod window_tests {
         cx.update(install_quit_gate);
         let (_, editor) = dirty_replaced_window(cx);
         assert!(cx.simulate_should_quit());
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(cx.has_pending_prompt());
         assert!(cx.quit_request_pending());
         assert!(cx.quit_replies().is_empty(), "no answer before the prompt");
+        settle_close(cx);
         cx.simulate_prompt_answer("cancel");
-        cx.run_until_parked();
+        settle_close(cx);
         assert_eq!(cx.quit_replies(), [false]);
         assert_eq!(cx.windows().len(), 1);
         assert!(!editor.read_with(cx, |view, _| view.close_prompt_open));
 
         assert!(cx.simulate_should_quit());
-        cx.run_until_parked();
+        settle_close(cx);
         cx.simulate_prompt_answer("discard");
-        cx.run_until_parked();
+        settle_close(cx);
         assert_eq!(cx.quit_replies(), [false, true]);
         assert!(cx.windows().is_empty());
     }
@@ -889,10 +1396,10 @@ mod window_tests {
     #[gpui::test]
     fn os_quit_of_a_clean_project_terminates_at_once(cx: &mut TestAppContext) {
         cx.update(install_quit_gate);
-        let (handle, editor) = dirty_replaced_window(cx);
+        let (_, editor) = dirty_replaced_window(cx);
         mark_clean(&editor, cx);
         assert!(cx.simulate_should_quit());
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(!cx.has_pending_prompt());
         assert_eq!(cx.quit_replies(), [true]);
         // The project workers were joined before terminate was answered.
@@ -900,8 +1407,7 @@ mod window_tests {
             view.service.submit(Request::Undo),
             Err(hex_session::service::SubmitError::Closed(_))
         )));
-        cx.update_window(handle, |_, window, _| window.remove_window())
-            .expect("remove test window");
+        assert!(cx.windows().is_empty());
     }
 
     #[gpui::test]
@@ -912,12 +1418,13 @@ mod window_tests {
             editor.update(cx, |view, cx| view.request_quit(window, cx));
         })
         .expect("dirty window");
+        settle_close(cx);
         cx.simulate_prompt_answer("discard");
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(cx.windows().is_empty());
         // On macOS that confirmed cx.quit() re-enters as a termination request.
         assert!(cx.simulate_should_quit());
-        cx.run_until_parked();
+        settle_close(cx);
         assert!(
             !cx.has_pending_prompt(),
             "confirmed quit must not prompt again"

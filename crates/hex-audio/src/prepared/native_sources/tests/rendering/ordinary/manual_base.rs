@@ -12,6 +12,10 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env("HEX_ORDINARY_MANUAL_BASE_DRIVER", "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            // This isolated native-fixture test constructs several retained
+            // graphs on its test thread. The default test stack overflows;
+            // bound this child's test thread to the verified 16 MiB stack.
+            .env("RUST_MIN_STACK", "16777216")
             .output()
             .unwrap();
         assert!(
@@ -266,6 +270,11 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     }
     #[cfg(feature = "allocation-probe")]
     root.with_native_source_work_held_on_control(|| {
+        assert_eq!(
+            f.control
+                .try_native_source_approves_captured_state_on_control(binding, &captured_state),
+            Err("native preparation is busy")
+        );
         assert!(
             bases
                 .poll_on_control(&mut f.control, &mut || false)
@@ -276,6 +285,11 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     .unwrap();
     let bases = poll_bases(&mut f.control, &mut bases, false).unwrap();
     let qualified = bases.canonical_state();
+    assert_eq!(
+        f.control
+            .try_native_source_approves_captured_state_on_control(binding, qualified),
+        Ok(true)
+    );
     assert_eq!(
         f.control
             .native_source_approves_processing_state_on_control(binding, qualified),
@@ -303,6 +317,16 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
         f.control
             .native_source_approves_processing_state_on_control(binding, &reconstructed),
         Some(false)
+    );
+    assert_eq!(
+        f.control
+            .try_native_source_approves_captured_state_on_control(binding, &reconstructed),
+        Ok(false)
+    );
+    assert!(
+        f.control
+            .try_native_source_approves_captured_state_on_control(wrong_binding, qualified)
+            .is_err()
     );
     let mut qualified_history = Editor::new(f.editor.project().clone(), 8).unwrap();
     qualified_history

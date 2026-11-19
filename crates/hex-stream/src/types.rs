@@ -18,10 +18,14 @@ pub struct StreamConfig {
     pub max_sources: usize,
     pub max_catalog_path_bytes: usize,
     pub max_manifest_bytes: usize,
+    /// Shared bound for conversion/filter tables and retained Re-Pitch maps.
     pub max_kernel_table_bytes: usize,
     pub max_reader_scratch_bytes: usize,
     pub source_scratch_frames: usize,
     pub max_ready_pages_per_pump: usize,
+    /// Notify the constructing thread on ready pages or failures. Only use for
+    /// a synchronous, offline owner that waits with `thread::park_timeout`.
+    pub wake_offline_consumer: bool,
 }
 
 impl StreamConfig {
@@ -39,6 +43,7 @@ impl StreamConfig {
             max_reader_scratch_bytes: 32 * 1024 * 1024,
             source_scratch_frames: 131_072,
             max_ready_pages_per_pump: 128,
+            wake_offline_consumer: false,
         }
     }
 
@@ -61,6 +66,7 @@ impl StreamConfig {
             } else {
                 128
             },
+            wake_offline_consumer: false,
         }
     }
 
@@ -110,6 +116,11 @@ pub struct SourceDefinition {
     /// instead of re-hashing the file. When absent, or when the identity changed,
     /// it hashes the whole file and the fingerprint must still match.
     pub verified_manifest: Option<VerifiedWavManifest>,
+    pub(crate) repitch: Option<(
+        StreamedSourceMetadata,
+        hex_warp::TimeMap,
+        hex_warp::Resampler,
+    )>,
 }
 
 impl SourceDefinition {
@@ -124,7 +135,21 @@ impl SourceDefinition {
             metadata,
             reader_limits,
             verified_manifest: None,
+            repitch: None,
         }
+    }
+
+    /// Build a derived source from raw verified facts and its complete time map.
+    pub fn with_repitch(
+        mut self,
+        map: hex_warp::TimeMap,
+        law: hex_warp::Resampler,
+    ) -> Result<Self, hex_engine::Invalid> {
+        let raw = self.metadata.clone();
+        self.metadata = raw.with_repitch(&map, law)?;
+        self.key = self.metadata.key();
+        self.repitch = Some((raw, map, law));
+        Ok(self)
     }
 
     /// Reuse a manifest already captured, and accounted, by the caller's
@@ -168,6 +193,9 @@ impl ScalarSourceDefinition {
                 }
                 hex_storage::automation_draft::DraftTarget::Device { device, target } => {
                     hex_engine::ScalarSourceTarget::Device { device, target }
+                }
+                hex_storage::automation_draft::DraftTarget::Vst3Group(_) => {
+                    return Err(StreamRuntimeError::InvalidConfiguration);
                 }
             },
             projection.sample_rate(),
@@ -247,13 +275,19 @@ pub struct PageKey {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CatalogFootprint {
+    /// Dedicated granular worker, metadata and original-pool loan DATA. Opaque
+    /// native/thread costs and earlier source preparation are excluded.
+    pub granular_data_bytes: usize,
     pub sources: usize,
     pub catalog_path_bytes: usize,
     pub manifest_bytes: usize,
+    /// Retained conversion/filter tables and Re-Pitch map allocations.
     pub kernel_table_bytes: usize,
     pub kernel_peak_bound_bytes: usize,
     pub verified_reader_scratch_bytes: usize,
     pub source_scratch_bytes: usize,
+    /// Worker-only intermediate project-rate PCM for pitch and Re-Pitch pages.
+    pub pitch_scratch_bytes: usize,
 }
 
 /// Verified immutable catalog membership delivered only after worker-side

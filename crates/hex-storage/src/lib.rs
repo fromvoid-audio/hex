@@ -1,5 +1,5 @@
 //! # Purpose
-//! Own strict canonical project metadata serialization, recoverable publication and independent
+//! Own strict canonical project metadata serialization, recoverable file and folder publication and independent
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
@@ -10,13 +10,18 @@
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
 //! formats. Unsupported/malformed input refuses without rewriting the original file.
+//! Interrupted-save temporaries remain for deliberate inspection: their names and ages do not
+//! establish ownership or authorize deletion.
 pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;
+pub mod project_folder;
 pub mod project_name;
 mod publication;
 pub mod text;
+#[cfg(test)]
+mod text_tests;
 pub mod tuning_library;
 pub use journal::{
     Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
@@ -26,6 +31,7 @@ mod audio_edit;
 mod extended_attributes;
 mod replacement;
 mod schema;
+#[cfg(test)]
 mod temporaries;
 pub use extended_attributes::MetadataWarning;
 pub use files::{
@@ -78,7 +84,26 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LONG_INACTIVE_WARP_SCHEMA_VERSION;
+/// Schema121 stores long raw clips with retained inactive Warp settings.
+pub const LONG_INACTIVE_WARP_SCHEMA_VERSION: u32 = 121;
+/// Schema120 stores bounded long Tones/Texture roots over a valid prior document.
+/// Older readers refuse this extension; see `schema::long_granular`.
+pub const LONG_GRANULAR_SCHEMA_VERSION: u32 = 120;
+/// Full-source long pitch with its retained frame-clock fade.
+pub const LONG_PITCH_FADE_SCHEMA_VERSION: u32 = 119;
+/// Independent frame-clock audio repeat periods containing silence.
+pub const SILENT_REPEAT_SCHEMA_VERSION: u32 = 118;
+/// Exact plain pitch of full frame domains beyond the resident transform cap.
+pub const LONG_PITCH_SCHEMA_VERSION: u32 = 117;
+/// Exact plain reversals of frame domains beyond the resident transform cap.
+pub const LONG_REVERSE_SCHEMA_VERSION: u32 = 116;
+/// Adds ordered pairs of device automation points at the same beat.
+pub const COINCIDENT_AUTOMATION_SCHEMA_VERSION: u32 = 115;
+/// Schema114 persists frame-anchored arrangement locators.
+pub const ARRANGEMENT_LOCATOR_SCHEMA_VERSION: u32 = 114;
+/// Schema113 stores the explicit S-curve laws over a complete prior project.
+pub const S_CURVE_FADE_SCHEMA_VERSION: u32 = 113;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -100,6 +125,74 @@ pub const SAMPLE_RATE_MODE_SCHEMA_VERSION: u32 = 76;
 pub const VST3_AUTOMATION_SCHEMA_VERSION: u32 = 77;
 /// Native Arrangement touch overlays above the original authored envelope.
 pub const DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 78;
+/// Class-bound raw VST3 touch overlays; schema78 retains its native-only contract.
+pub const VST3_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 79;
+/// Schema80 adds bounded canonical serial-device parent membership.
+pub const SERIAL_DEVICE_SCHEMA_VERSION: u32 = 80;
+/// Schema81 retains device-local module configuration and source/route identities
+/// over the complete prior envelope; older projects migrate with empty banks.
+pub const DEVICE_MODULATION_SCHEMA_VERSION: u32 = 81;
+/// Schema82 adds a required semantic color on every modulator slot.
+pub const MODULATION_SLOT_COLOR_SCHEMA_VERSION: u32 = 82;
+/// Schema83 opts in to bound source units with serial native effects.
+pub const BOUND_SOURCE_EFFECT_SCHEMA_VERSION: u32 = 83;
+/// Schema84 admits newer LFO payloads and retains full slot colors and bound units.
+pub const LFO_SHAPE_SCHEMA_VERSION: u32 = 84;
+/// Schema85 admits the typed free LFO rate destination in the existing source bank.
+pub const LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 85;
+/// Schema86 admits rate assignments to tempo-synced LFO slots.
+pub const TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION: u32 = 86;
+/// Schema87 admits the Audio Rate source alongside every prior bank configuration.
+pub const AUDIO_RATE_MODULATOR_SCHEMA_VERSION: u32 = 87;
+/// Native instrument touches retain their exact source role and base read mode.
+pub const NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION: u32 = 88;
+/// A device touch lane may exceed the original combined point limit.
+pub const EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION: u32 = 89;
+/// FM4 source banks retain their complete underlying automation envelope.
+pub const INSTRUMENT_MODULATION_SCHEMA_VERSION: u32 = 90;
+/// Occurrence-owned pressure slots require a reader with the native voice grant.
+pub const NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION: u32 = 91;
+/// A modulation inventory containing a latched Button source.
+pub const BUTTON_MODULATOR_SCHEMA_VERSION: u32 = 92;
+/// Schema93 admits the four-output Macro-4 module.
+pub const MACRO_FOUR_MODULATOR_SCHEMA_VERSION: u32 = 93;
+/// Schema94 requires a reader that can play a loaded Sampler modulation bank.
+pub const SAMPLER_MODULATION_SCHEMA_VERSION: u32 = 94;
+/// Schema95 admits the two-input Math source.
+pub const MATH_MODULATOR_SCHEMA_VERSION: u32 = 95;
+/// Schema96 admits the two-output Buttons source.
+pub const BUTTONS_MODULATOR_SCHEMA_VERSION: u32 = 96;
+/// Schema97 admits the three-input Mix source.
+pub const MIX_MODULATOR_SCHEMA_VERSION: u32 = 97;
+/// Schema98 admits a note-event Note Counter source.
+pub const NOTE_COUNTER_MODULATOR_SCHEMA_VERSION: u32 = 98;
+/// Schema100 retains native post-instrument source effect touch rows over the
+/// complete prior codec, including modulation and other touch lanes.
+pub const NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION: u32 = 100;
+/// Schema101 admits the note-triggered Ramp source.
+pub const RAMP_MODULATOR_SCHEMA_VERSION: u32 = 101;
+/// Schema102 preserves source effect touches around a schema101 Ramp bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION: u32 = 102;
+/// Schema103 admits the note-off AHD source.
+pub const AHD_RELEASE_MODULATOR_SCHEMA_VERSION: u32 = 103;
+/// Schema104 preserves recorded source effect touches with an AHD bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION: u32 = 104;
+/// Schema105 admits the receiving-instrument ADSR source.
+pub const ADSR_MODULATOR_SCHEMA_VERSION: u32 = 105;
+/// Schema106 preserves recorded source effect touches with an ADSR bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION: u32 = 106;
+/// Schema107 admits the signed Steps provider.
+pub const STEPS_MODULATOR_SCHEMA_VERSION: u32 = 107;
+/// Schema108 preserves recorded source effect touches with a Steps bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION: u32 = 108;
+/// Schema109 admits Arrangement-synced Steps alongside free-running patterns.
+pub const ARRANGEMENT_STEPS_SCHEMA_VERSION: u32 = 109;
+/// Schema110 preserves recorded source effect touches with Arrangement Steps.
+pub const SOURCE_EFFECT_TOUCH_WITH_ARRANGEMENT_STEPS_SCHEMA_VERSION: u32 = 110;
+/// Schema111 admits playable mutable Operator modulation banks.
+pub const OPERATOR_MODULATION_SCHEMA_VERSION: u32 = 111;
+/// Schema112 preserves recorded source effect touches with an Operator bank.
+pub const SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION: u32 = 112;
 
 fn contains_larger_device_state(project: &Project) -> bool {
     schema::device_assets::authored_states(project)
@@ -137,6 +230,8 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 }
 
 /// Schema [`encode`] writes for `project`:
+/// [`LONG_PITCH_SCHEMA_VERSION`] for exact long plain pitch,
+/// [`LONG_REVERSE_SCHEMA_VERSION`] for an exact long plain reversal,
 /// [`VST3_AUTOMATION_SCHEMA_VERSION`] when VST3 lanes are present,
 /// [`SAMPLE_RATE_MODE_SCHEMA_VERSION`] when the mode is Follow Interface,
 /// [`VST3_STATE_SIZE_SCHEMA_VERSION`] when any VST3 state exceeds 4 KiB,
@@ -153,8 +248,113 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// when content names an explicit warp resampler law,
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
+/// Serial membership uses schema80 over its exact compatible flat envelope.
+/// Bound source effects use schema83 over their existing membership and state codecs.
+/// Non-sine LFOs use schema84 with complete slot colors and any bound source effects.
+/// Free LFO rate assignments require schema85 and tempo-synced rate assignments
+/// require schema86 regardless of oscillator shape. Audio Rate uses schema87.
+/// Native instrument touches use schema88 over the exact prior codec.
+/// Long touch lanes use schema89. FM4 source banks use schema90 over the
+/// prior project codec, including any instrument or long touch envelope.
+/// Note pressure on FM4 uses schema91. Button uses schema92. Macro-4 uses schema93.
+/// Loaded Sampler banks use schema94. Math uses schema95. Buttons uses schema96.
+/// Mix uses schema97. Note Counter uses schema98.
+/// Native source effect touches use schema100. Ramp uses schema101, or
+/// schema102 in a project with recorded native source effect touches.
+/// AHD on Release uses schema103, or schema104 alongside those touches.
+/// ADSR uses schema105, or schema106 alongside those touches.
+/// Free-running Steps uses schema107, or schema108 alongside those touches.
+/// Arrangement Steps uses schema109, or schema110 alongside those touches.
+/// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema120 wraps a valid prior document and restores complete long granular edits.
+/// Schema119 wraps a prior document for full-source long pitch with a fade.
+/// Schema118 wraps the appropriate prior document for independent audio repeat periods.
+/// Schema117 wraps the appropriate prior document for exact full-source long pitch.
+/// Schema116 wraps the appropriate prior document for exact long plain reversals.
+/// Schema115 wraps the appropriate prior document only when an authored device
+/// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::device_automation_touch::contains(project) {
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return LONG_INACTIVE_WARP_SCHEMA_VERSION;
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return LONG_GRANULAR_SCHEMA_VERSION;
+    }
+    if schema::long_pitch_fade::contains(project) {
+        return LONG_PITCH_FADE_SCHEMA_VERSION;
+    }
+    if schema::silent_repeat::contains(project) {
+        return SILENT_REPEAT_SCHEMA_VERSION;
+    }
+    if schema::long_pitch::contains(project) {
+        return LONG_PITCH_SCHEMA_VERSION;
+    }
+    if schema::long_reverse::contains(project) {
+        return LONG_REVERSE_SCHEMA_VERSION;
+    }
+    if schema::coincident_automation::contains(project) {
+        return COINCIDENT_AUTOMATION_SCHEMA_VERSION;
+    }
+    if !project.arrangement_locators().is_empty() {
+        return ARRANGEMENT_LOCATOR_SCHEMA_VERSION;
+    }
+    if schema::s_curve_fades::contains(project) {
+        return S_CURVE_FADE_SCHEMA_VERSION;
+    }
+    if schema::device_automation_touch::contains_native_source_effect(project) {
+        schema::device_automation_touch::source_effect_schema_version(project)
+    } else if schema::device_modulation::contains_operator_modulation(project) {
+        OPERATOR_MODULATION_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_arrangement_steps(project) {
+        ARRANGEMENT_STEPS_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_steps(project) {
+        STEPS_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_adsr(project) {
+        ADSR_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_ahd_release(project) {
+        AHD_RELEASE_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_ramp(project) {
+        RAMP_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_note_counter(project) {
+        NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_mix(project) {
+        MIX_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_buttons(project) {
+        BUTTONS_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_math(project) {
+        MATH_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_sampler_modulation(project) {
+        SAMPLER_MODULATION_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_macro_four(project) {
+        MACRO_FOUR_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_button(project) {
+        BUTTON_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_note_pressure(project) {
+        NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_instrument_modulation(project) {
+        INSTRUMENT_MODULATION_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains_extended(project) {
+        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains_native_instrument(project) {
+        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_audio_rate(project) {
+        AUDIO_RATE_MODULATOR_SCHEMA_VERSION
+    } else if let Some(version) = schema::device_modulation::lfo_rate_route_schema(project) {
+        version
+    } else if schema::device_modulation::contains_newer_lfo(project) {
+        LFO_SHAPE_SCHEMA_VERSION
+    } else if schema::bound_source_effects::contains(project) {
+        BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+    } else if schema::device_modulation::contains_colors(project) {
+        MODULATION_SLOT_COLOR_SCHEMA_VERSION
+    } else if schema::device_modulation::contains(project) {
+        DEVICE_MODULATION_SCHEMA_VERSION
+    } else if schema::serial_units::contains(project) {
+        SERIAL_DEVICE_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains_vst3(project) {
+        VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
+    } else if schema::device_automation_touch::contains(project) {
         DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION
     } else if schema::vst3_automation::contains(project) {
         VST3_AUTOMATION_SCHEMA_VERSION
@@ -360,45 +560,125 @@ impl From<serde_json::Error> for StorageError {
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
+/// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_automation_touch::contains(project) {
-        encode_document(&schema::device_automation_touch::encode(project)?)
+    use schema::long_granular::{self, LongWarpSchema};
+    if long_granular::contains(project, LongWarpSchema::Inactive) {
+        return long_granular::encode(project, LongWarpSchema::Inactive);
+    }
+    if long_granular::contains(project, LongWarpSchema::Granular) {
+        return long_granular::encode(project, LongWarpSchema::Granular);
+    }
+    if schema::long_pitch_fade::contains(project) {
+        return schema::long_pitch_fade::encode(project);
+    }
+    if schema::silent_repeat::contains(project) {
+        return schema::silent_repeat::encode(project);
+    }
+    if schema::long_pitch::contains(project) {
+        return schema::long_pitch::encode(project);
+    }
+    if schema::long_reverse::contains(project) {
+        return schema::long_reverse::encode(project);
+    }
+    if schema::coincident_automation::contains(project) {
+        return schema::coincident_automation::encode(project);
+    }
+    if !project.arrangement_locators().is_empty() {
+        return schema::arrangement_locators::encode(project);
+    }
+    if schema::s_curve_fades::contains(project) {
+        return schema::s_curve_fades::encode(project);
+    }
+    encode_document(&encode_prior(project)?)
+}
+
+/// Build the existing JSON object before an outer envelope is serialized.
+fn encode_prior(project: &Project) -> Result<serde_json::Value, StorageError> {
+    if schema::device_automation_touch::contains_native_source_effect(project) {
+        return schema::device_automation_touch::encode_native_source_effect(project);
+    }
+    if schema::device_modulation::contains_operator_modulation(project)
+        || schema::device_modulation::contains_steps(project)
+        || schema::device_modulation::contains_adsr(project)
+        || schema::device_modulation::contains_ahd_release(project)
+        || schema::device_modulation::contains_ramp(project)
+        || schema::device_modulation::contains_note_counter(project)
+        || schema::device_modulation::contains_mix(project)
+        || schema::device_modulation::contains_buttons(project)
+        || schema::device_modulation::contains_math(project)
+        || schema::device_modulation::contains_sampler_modulation(project)
+        || schema::device_modulation::contains_macro_four(project)
+        || schema::device_modulation::contains_instrument_modulation(project)
+    {
+        return schema::device_modulation::encode(project);
+    }
+    if schema::device_automation_touch::contains_extended(project) {
+        return schema::device_automation_touch::encode_extended(project);
+    }
+    if schema::device_automation_touch::contains_native_instrument(project) {
+        return schema::device_automation_touch::encode_native_instrument(project);
+    }
+    if schema::device_modulation::contains_audio_rate(project)
+        || schema::device_modulation::lfo_rate_route_schema(project).is_some()
+        || schema::device_modulation::contains_newer_lfo(project)
+    {
+        schema::device_modulation::encode(project)
+    } else if schema::bound_source_effects::contains(project) {
+        schema::bound_source_effects::encode(project)
+    } else {
+        encode_base_value(project)
+    }
+}
+
+/// Encode an existing layer without adding the bound-source envelope again.
+fn encode_base(project: &Project) -> Result<Vec<u8>, StorageError> {
+    encode_document(&encode_base_value(project)?)
+}
+
+fn encode_base_value(project: &Project) -> Result<serde_json::Value, StorageError> {
+    if schema::device_modulation::contains(project) {
+        schema::device_modulation::encode(project)
+    } else if schema::serial_units::contains(project) {
+        schema::serial_units::encode(project)
+    } else if schema::device_automation_touch::contains(project) {
+        schema::device_automation_touch::encode(project)
     } else if schema::vst3_automation::contains(project) {
-        encode_document(&schema::vst3_automation::encode(project)?)
+        schema::vst3_automation::encode(project)
     } else if schema::sample_rate_mode::contains(project) {
-        encode_document(&schema::sample_rate_mode::encode(project)?)
+        schema::sample_rate_mode::encode(project)
     } else if contains_larger_device_state(project) {
         let mut value = schema::group_output_mute::encode(project)?;
         value["version"] = VST3_STATE_SIZE_SCHEMA_VERSION.into();
-        encode_document(&value)
+        Ok(value)
     } else if schema::group_output_mute::contains(project) {
-        encode_document(&schema::group_output_mute::encode(project)?)
+        schema::group_output_mute::encode(project)
     } else if contains_leading_audio_once(project) {
         let mut value = schema::track_tags::encode(project)?;
         value["version"] = LEADING_AUDIO_ONCE_SCHEMA_VERSION.into();
-        encode_document(&value)
+        Ok(value)
     } else if schema::track_tags::contains(project) {
-        encode_document(&schema::track_tags::encode(project)?)
+        schema::track_tags::encode(project)
     } else if contains_extended_frame_events(project) {
         let mut value = schema::musical_event_source::encode(project)?;
         value["version"] = EXTENDED_FRAME_EVENTS_SCHEMA_VERSION.into();
-        encode_document(&value)
+        Ok(value)
     } else if schema::musical_event_source::contains(project) {
-        encode_document(&schema::musical_event_source::encode(project)?)
+        schema::musical_event_source::encode(project)
     } else if !project.sidechains().is_empty() {
-        encode_document(&schema::sidechain::encode(project)?)
+        schema::sidechain::encode(project)
     } else if schema::retained_receiver::contains(project) {
-        encode_document(&schema::retained_receiver::encode(project)?)
+        schema::retained_receiver::encode(project)
     } else if schema::sampler_crossfade::contains_newer_states(project) {
-        encode_document(&schema::sampler_crossfade::encode(project)?)
+        schema::sampler_crossfade::encode(project)
     } else if schema::content_view_resampler::contains_explicit(project) {
-        encode_document(&schema::content_view_resampler::encode(project)?)
+        schema::content_view_resampler::encode(project)
     } else if schema::warp_resampler::contains_explicit(project) {
-        encode_document(&schema::warp_resampler::encode(project)?)
+        schema::warp_resampler::encode(project)
     } else if schema::conversion_v2::contains_v2(project) {
-        encode_document(&schema::conversion_v2::encode(project)?)
+        schema::conversion_v2::encode(project)
     } else {
-        encode_document(&schema::track_name_origin::encode(project)?)
+        schema::track_name_origin::encode(project)
     }
 }
 
@@ -415,6 +695,23 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if !project.arrangement_locators().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save arrangement locators",
+        ));
+    }
+    if schema::s_curve_fades::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save s-curve fades",
+        ));
+    }
+    if schema::bound_source_effects::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save bound source effects",
+        ));
+    }
+    schema::device_modulation::refuse_legacy(project)?;
+    schema::serial_units::refuse_legacy(project)?;
     if schema::sample_rate_mode::contains(project) {
         return Err(StorageError::Invalid(
             "older schema cannot save the project sample rate mode",
@@ -597,10 +894,21 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// violating current model invariants refuse rather than lose musical data.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
-/// From schema30 upward the migration chain parses the bytes once (after one
+/// From schema30 through79 the migration chain parses the bytes once (after one
 /// duplicate-field check) and each frozen layer adapts that single value in
-/// place; layers never re-serialize the document for the next one.
+/// place; those layers never re-serialize the document for the next one.
+/// Schemas80 through87 materialize a compatible predecessor envelope before using that chain.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_impl(bytes, false)
+}
+
+/// Decode an inner envelope that the top-level reader will validate.
+fn decode_base(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_impl(bytes, true)
+}
+
+fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
+    use schema::long_granular::{self, LongWarpSchema};
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
@@ -610,8 +918,81 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
+    if header.version == LONG_INACTIVE_WARP_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Inactive);
+    }
+    if header.version == LONG_GRANULAR_SCHEMA_VERSION && !inside_envelope {
+        return long_granular::decode(bytes, LongWarpSchema::Granular);
+    }
+    if header.version == LONG_PITCH_FADE_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_pitch_fade::decode(bytes);
+    }
+    if header.version == SILENT_REPEAT_SCHEMA_VERSION && !inside_envelope {
+        return schema::silent_repeat::decode(bytes);
+    }
+    if header.version == LONG_PITCH_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_pitch::decode(bytes);
+    }
+    if header.version == LONG_REVERSE_SCHEMA_VERSION && !inside_envelope {
+        return schema::long_reverse::decode(bytes);
+    }
+    if header.version == COINCIDENT_AUTOMATION_SCHEMA_VERSION && !inside_envelope {
+        return schema::coincident_automation::decode(bytes);
+    }
+    if header.version == ARRANGEMENT_LOCATOR_SCHEMA_VERSION && !inside_envelope {
+        return schema::arrangement_locators::decode(bytes);
+    }
+    if header.version == S_CURVE_FADE_SCHEMA_VERSION && !inside_envelope {
+        return schema::s_curve_fades::decode(bytes);
+    }
     let project = match header.version {
-        DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION => schema::device_automation_touch::decode(bytes),
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_ARRANGEMENT_STEPS_SCHEMA_VERSION
+        | SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION
+            if !inside_envelope =>
+        {
+            schema::device_automation_touch::decode_native_source_effect(bytes, header.version)
+        }
+        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION if !inside_envelope => {
+            schema::device_automation_touch::decode_extended(bytes)
+        }
+        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION if !inside_envelope => {
+            schema::device_automation_touch::decode_native_instrument(bytes)
+        }
+        BOUND_SOURCE_EFFECT_SCHEMA_VERSION if !inside_envelope => {
+            schema::bound_source_effects::decode(bytes)
+        }
+        DEVICE_MODULATION_SCHEMA_VERSION
+        | MODULATION_SLOT_COLOR_SCHEMA_VERSION
+        | LFO_SHAPE_SCHEMA_VERSION
+        | LFO_RATE_ROUTE_SCHEMA_VERSION
+        | TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION
+        | AUDIO_RATE_MODULATOR_SCHEMA_VERSION
+        | INSTRUMENT_MODULATION_SCHEMA_VERSION
+        | NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
+        | BUTTON_MODULATOR_SCHEMA_VERSION
+        | MACRO_FOUR_MODULATOR_SCHEMA_VERSION
+        | SAMPLER_MODULATION_SCHEMA_VERSION
+        | MATH_MODULATOR_SCHEMA_VERSION
+        | BUTTONS_MODULATOR_SCHEMA_VERSION
+        | MIX_MODULATOR_SCHEMA_VERSION
+        | NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
+        | RAMP_MODULATOR_SCHEMA_VERSION
+        | AHD_RELEASE_MODULATOR_SCHEMA_VERSION
+        | ADSR_MODULATOR_SCHEMA_VERSION
+        | STEPS_MODULATOR_SCHEMA_VERSION
+        | ARRANGEMENT_STEPS_SCHEMA_VERSION
+        | OPERATOR_MODULATION_SCHEMA_VERSION => {
+            schema::device_modulation::decode(bytes, header.version)
+        }
+        SERIAL_DEVICE_SCHEMA_VERSION => schema::serial_units::decode(bytes, inside_envelope),
+        DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION | VST3_AUTOMATION_TOUCH_SCHEMA_VERSION => {
+            schema::device_automation_touch::decode(bytes, header.version)
+        }
         VST3_AUTOMATION_SCHEMA_VERSION => schema::vst3_automation::decode(bytes),
         SAMPLE_RATE_MODE_SCHEMA_VERSION => schema::sample_rate_mode::decode(bytes),
         VST3_STATE_SIZE_SCHEMA_VERSION | GROUP_OUTPUT_MUTE_SCHEMA_VERSION => {
@@ -671,6 +1052,36 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if long_granular::contains(&project, LongWarpSchema::Inactive) {
+        return Err(StorageError::Invalid(
+            "long inactive warp roots require their current project schema",
+        ));
+    }
+    if long_granular::contains(&project, LongWarpSchema::Granular) {
+        return Err(StorageError::Invalid(
+            "long granular roots require their current project schema",
+        ));
+    }
+    if schema::long_pitch_fade::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long pitch with fade requires its current project schema",
+        ));
+    }
+    if schema::long_pitch::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long plain pitch requires its current project schema",
+        ));
+    }
+    if schema::long_reverse::contains(&project) {
+        return Err(StorageError::Invalid(
+            "long plain reversal requires its current project schema",
+        ));
+    }
+    if schema::coincident_automation::contains(&project) {
+        return Err(StorageError::Invalid(
+            "coincident automation points require their current project schema",
+        ));
+    }
     if header.version < SAMPLE_RATE_MODE_SCHEMA_VERSION
         && contains_larger_device_state(&project)
             != (header.version == VST3_STATE_SIZE_SCHEMA_VERSION)
@@ -732,6 +1143,29 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if header.version < 47 && requires_schema47_audio_placement(&project)? {
         return Err(StorageError::Invalid(
             "historical project schema contains unsupported audio placement; open a copy with the hex build that saved it; original file unchanged",
+        ));
+    }
+    if !inside_envelope
+        && header.version < BOUND_SOURCE_EFFECT_SCHEMA_VERSION
+        && schema::bound_source_effects::contains(&project)
+    {
+        return Err(StorageError::Invalid(
+            "bound source effects require their current project schema",
+        ));
+    }
+    if !matches!(
+        header.version,
+        NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_RAMP_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_AHD_RELEASE_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_ADSR_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_STEPS_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_ARRANGEMENT_STEPS_SCHEMA_VERSION
+            | SOURCE_EFFECT_TOUCH_WITH_OPERATOR_MODULATION_SCHEMA_VERSION
+    ) && schema::device_automation_touch::contains_native_source_effect(&project)
+    {
+        return Err(StorageError::Invalid(
+            "recorded source effect touches require their current project schema",
         ));
     }
     Ok(project)

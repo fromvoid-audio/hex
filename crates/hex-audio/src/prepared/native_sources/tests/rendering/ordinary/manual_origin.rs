@@ -7,22 +7,30 @@ use hex_plugin_host::transport::ManualParameterOrigin;
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_manual_parameter_waits_for_final_main_delivery_across_compensated_cuts() {
-    verify_delivery(true);
+    verify_delivery(true, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_plain_parameter_reserves_delivery_before_input_and_keeps_busy_refusal_atomic() {
-    verify_delivery(false);
+    verify_delivery(false, false);
 }
 
-fn verify_delivery(held: bool) {
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn atomic_base_restoration_is_the_exclusive_compensated_output_end() {
+    verify_delivery(true, true);
+}
+
+fn verify_delivery(held: bool, restore_base: bool) {
     const CHILD: &str = "HEX_ORDINARY_MANUAL_ORIGIN_DRIVER";
     if std::env::var_os(CHILD).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &name, "--ignored", "--test-threads=1"])
             .env(CHILD, "1")
+            // The fixture builds several full prepared graphs on this test thread.
+            .env("RUST_MIN_STACK", "16777216")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
             .output()
             .unwrap();
@@ -37,12 +45,13 @@ fn verify_delivery(held: bool) {
     }
 
     let _serial = serial();
-    for location in 0..3 {
-        verify_location(location, held);
+    let locations = if restore_base { 2..3 } else { 0..3 };
+    for location in locations {
+        verify_location(location, held, restore_base);
     }
 }
 
-fn verify_location(location: usize, held: bool) {
+fn verify_location(location: usize, held: bool, restore_base: bool) {
     let mut f = fixture_with_authored("processing", location, 8, &[7]);
     let upstream = &hex_devices::overdrive::OVERDRIVE_DEFINITION;
     let state = upstream
@@ -59,6 +68,17 @@ fn verify_location(location: usize, held: bool) {
         .find(|device| device.id().value() == f.binding.instance)
         .unwrap()
         .id();
+    if restore_base {
+        // Keep the actual SDK grant, but remove this target from the reading
+        // program so a plain Release cannot change the held value.
+        f.editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+                points: Vec::new(),
+            })
+            .unwrap();
+    }
     let insert = |editor: &mut Editor, before, state| {
         let command = match location {
             0 => Command::InsertDevice {
@@ -263,7 +283,14 @@ fn verify_location(location: usize, held: bool) {
                 .native_source_parameter_hold_with_delivery_on_control(
                     expected,
                     f.binding,
-                    NativeParameterHold::Release { hold: &hold },
+                    if restore_base {
+                        NativeParameterHold::RestoreAndRelease {
+                            hold: &hold,
+                            normalized: 0.25,
+                        }
+                    } else {
+                        NativeParameterHold::Release { hold: &hold }
+                    },
                 ) {
                 Ok(pair) => break pair,
                 Err("native preparation is busy" | "native parameter mailbox is busy") => {}
@@ -301,7 +328,7 @@ fn verify_location(location: usize, held: bool) {
                 );
                 assert!(
                     output[offset..].iter().all(|frame| *frame == base),
-                    "authored PCM resumes exactly at the exclusive end"
+                    "the restored PCM starts exactly at the exclusive end"
                 );
                 let until = Instant::now() + Duration::from_secs(3);
                 loop {

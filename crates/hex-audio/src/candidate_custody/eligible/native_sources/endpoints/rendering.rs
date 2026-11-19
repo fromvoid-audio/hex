@@ -1,11 +1,11 @@
 //! Borrowed rendering through the actual loaned endpoint bank. Lazy staging and
 //! final acceptance use the same entry/cycle implementation as NativeEffectCallbacks.
 use super::*;
-use hex_lattice::{ForeignNote, ForeignProcessorNode, ForeignProcessors};
+use hex_lattice::{ForeignModulationSamples, ForeignNote, ForeignProcessorNode, ForeignProcessors};
 use hex_lattice_contract::DeviceContractError;
 use hex_plugin_host::transport::Fault;
 impl NativeEndpointBank {
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn test_transport_fault(&self, binding: Binding) -> Option<Fault> {
         self.entries
             .iter()
@@ -82,14 +82,26 @@ impl NativeEndpointBank {
         }
         Ok(())
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         for index in 0..self.routing_len {
             if let Some(entry) = self.entries[self.routing[index]]
                 .as_mut()
                 .and_then(|entry| entry.0.callback.as_mut())
             {
-                entry.end_staging_at_pause(frame);
+                entry.end_staging_at_rendered_prefix(frame);
             }
+        }
+    }
+    /// A full physical render can commit its streamed prefix and hold the
+    /// remaining output silent. Split renders may still visit a later span.
+    pub(crate) fn end_staging_at_stream_hold(
+        &mut self,
+        offset: usize,
+        frames: usize,
+        committed_frames: usize,
+    ) {
+        if offset == 0 && self.cycle.extent() == Some(frames) {
+            self.end_staging_at_rendered_prefix(committed_frames);
         }
     }
     pub(crate) fn reject_rendering(&mut self) {
@@ -102,6 +114,43 @@ impl NativeEndpointBank {
                 entry.reject();
             }
         }
+    }
+}
+impl NativeEndpointBank {
+    #[allow(clippy::too_many_arguments)] // Borrowed views share one physical acceptance.
+    fn stage_segment(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        notes: &[ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        lane: Option<ForeignModulationSamples<'_>>,
+    ) -> Result<(), DeviceContractError> {
+        let selected = node.prepared.binding().and_then(|binding| {
+            self.routing[..self.routing_len]
+                .binary_search_by_key(&Some(binding), |slot| {
+                    self.entries[*slot].as_ref().map(|e| e.0.binding)
+                })
+                .ok()
+                .map(|index| self.routing[index])
+        });
+        let result = match (self.cycle.extent(), selected) {
+            (Some(extent), Some(index)) => self.entries[index]
+                .as_mut()
+                .and_then(|e| e.0.callback.as_mut())
+                .ok_or(DeviceContractError::ForeignProcessingUnavailable)
+                .and_then(|entry| {
+                    entry.process(extent, node, offset, frames, parameters, notes, clock, lane)
+                }),
+            _ => Err(DeviceContractError::ForeignProcessingUnavailable),
+        };
+        if result.is_err() {
+            self.reject_rendering();
+            frames.fill([0.0; 2]);
+        }
+        result
     }
 }
 impl ForeignProcessors for NativeEndpointBank {
@@ -136,29 +185,17 @@ impl ForeignProcessors for NativeEndpointBank {
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        let selected = node.prepared.binding().and_then(|binding| {
-            self.routing[..self.routing_len]
-                .binary_search_by_key(&Some(binding), |slot| {
-                    self.entries[*slot].as_ref().map(|e| e.0.binding)
-                })
-                .ok()
-                .map(|index| self.routing[index])
-        });
-        let result = match (self.cycle.extent(), selected) {
-            (Some(extent), Some(index)) => self.entries[index]
-                .as_mut()
-                .and_then(|e| e.0.callback.as_mut())
-                .ok_or(DeviceContractError::ForeignProcessingUnavailable)
-                .and_then(|entry| {
-                    entry.process(extent, node, offset, frames, parameters, notes, clock)
-                }),
-            _ => Err(DeviceContractError::ForeignProcessingUnavailable),
-        };
-        if result.is_err() {
-            self.reject_rendering();
-            frames.fill([0.0; 2]);
-        }
-        result
+        self.stage_segment(node, offset, frames, parameters, notes, clock, None)
+    }
+    fn process_segment_with_modulation(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        lane: ForeignModulationSamples<'_>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.stage_segment(node, offset, frames, &[], &[], clock, Some(lane))
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         !self.cycle.revoked()

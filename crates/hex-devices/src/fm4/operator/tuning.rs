@@ -1,6 +1,8 @@
 //! Control-side oscillator tuning. No frequency conversion occurs while sampling.
 use super::{Invalid, OPERATORS};
 
+pub(crate) const FINE_LIMIT_HZ: f32 = 1000.0;
+
 /// Original fixed-frequency bounds, distinct from measured reference laws.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OperatorTuning {

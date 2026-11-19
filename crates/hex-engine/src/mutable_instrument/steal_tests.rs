@@ -103,6 +103,7 @@ fn onsets(spans: &[(u64, u64)]) -> (TrackId, MutableOnsetBuffer) {
                 pitch: 60,
                 channel: 0,
                 velocity: 127,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -134,6 +135,7 @@ fn run(
             &mut events,
             None,
             &resources,
+            None,
         )?;
         runtime.commit_block();
         offset += count;
@@ -169,6 +171,7 @@ fn half(
     _: MutableOccurrenceSignature,
     at: u64,
     _: usize,
+    _: bool,
 ) -> Result<Option<volume::VolumeSlice>, MutableInstrumentRuntimeError> {
     Ok(Some(volume::VolumeSlice {
         at,
@@ -210,6 +213,7 @@ fn stolen_occurrence_receives_no_host_gain_after_the_steal() {
                     None,
                     &resources,
                     &mut half,
+                    None,
                 )
                 .unwrap_or_else(|error| panic!("{partitions:?} at {offset}: {error:?}"));
             runtime.commit_block();
@@ -240,4 +244,71 @@ fn stolen_occurrence_receives_no_host_gain_after_the_steal() {
         results.push(output);
     }
     assert!(results.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[test]
+fn history_inheritance_preserves_audio_and_refuses_incompatible_source_atomically() {
+    let pcm = [1.0; 16];
+    let original_view = view(&pcm);
+    let resources = BorrowedDeviceResources(std::slice::from_ref(&original_view));
+    for gate in [4, 64] {
+        let (track, _) = onsets(&[(0, gate)]);
+        let mut donor = run(&[(0, gate)], &[16]).unwrap();
+        let mut oracle = run(&[(0, gate)], &[16]).unwrap();
+        let before = donor.transition_proofs(false).to_vec();
+        let mut changed_view = original_view;
+        changed_view.identity.content = [9; 32];
+        let mut refused = one_voice(changed_view);
+        let incompatible = MutableInstrumentRuntimeError::Runtime(
+            NativeInstrumentRuntimeError::IncompatibleHistory,
+        );
+        assert_eq!(refused.inherit_from(&donor), Err(incompatible));
+        assert!(refused.transition_proofs(false).is_empty());
+        let mut too_small = one_voice(original_view);
+        too_small.primary = Vec::new();
+        assert_eq!(too_small.inherit_from(&donor), Err(incompatible));
+        assert!(too_small.transition_proofs(false).is_empty());
+        let mut in_block = one_voice(original_view);
+        in_block.begin_block();
+        assert_eq!(in_block.inherit_from(&donor), Err(incompatible));
+        in_block.rollback_block();
+        assert!(in_block.transition_proofs(false).is_empty());
+        assert_eq!(donor.transition_proofs(false), before);
+        let mut candidate = one_voice(original_view);
+        candidate.inherit_from(&donor).unwrap();
+        assert_eq!(candidate.transition_proofs(false), before);
+        let render = |runtime: &mut MutableInstrumentTrackRuntime, commit: bool| {
+            let mut onsets = MutableOnsetBuffer::default();
+            let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+            let mut output = [[0.0; 2]; 16];
+            runtime.begin_block();
+            runtime
+                .process_segment_with_resources(
+                    track,
+                    16,
+                    16,
+                    &mut output,
+                    &mut onsets,
+                    &[],
+                    &mut events,
+                    None,
+                    &resources,
+                    None,
+                )
+                .unwrap();
+            if commit {
+                runtime.commit_block();
+            } else {
+                runtime.rollback_block();
+            }
+            output
+        };
+        let rolled_back = render(&mut candidate, false);
+        let actual = render(&mut candidate, true);
+        let expected = render(&mut oracle, true);
+        assert_eq!(rolled_back, expected);
+        assert_eq!(actual, expected);
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+        assert_eq!(render(&mut donor, true), expected);
+    }
 }

@@ -9,8 +9,8 @@ use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
 use hex_widgets::TextInput;
 
-pub(super) const CLIP_NAME_HEIGHT: f32 =
-    super::tracks::TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION;
+/// Shared title geometry; time-selection handles keep their own independent zones.
+pub(super) const CLIP_NAME_HEIGHT: f32 = 14.0;
 
 pub(super) struct NameEdit {
     clip: ClipId,
@@ -238,7 +238,9 @@ impl EditorView {
                 .child(edit.input.clone())
                 .into_any_element();
         }
-        clip_name_text(name).into_any_element()
+        clip_name_text(name)
+            .debug_selector(move || format!("clip-name-label-{}", clip.value()))
+            .into_any_element()
     }
     pub(super) fn clip_name_header(
         &self,
@@ -248,36 +250,72 @@ impl EditorView {
         fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, fill, true, cx)
+        self.clip_name_strip(track, clip, name, fill, true, false, false, cx)
     }
+
+    pub(super) fn clip_name_is_editing(&self, clip: ClipId) -> bool {
+        self.clip_name_edit
+            .as_ref()
+            .is_some_and(|edit| edit.clip == clip && edit.generation == self.project_generation)
+    }
+
+    pub(super) fn narrow_clip_header(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let header = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(CLIP_NAME_HEIGHT))
+            .id(("clip-name", clip.value()))
+            .debug_selector(move || format!("clip-name-{}", clip.value()));
+        self.bind_clip_name_click(header, track, clip, cx)
+    }
+
+    /// The canonical frame paints the same header fill under this content.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn clip_name_header_on_backdrop(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        fill: u32,
+        notched: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.clip_name_strip(track, clip, name, fill, true, true, notched, cx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn clip_name_preview_header(
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
+        on_backdrop: bool,
+        notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(
-            track,
-            clip,
-            name,
-            theme::color(theme::PaletteRole::Raised),
-            false,
-            cx,
-        )
+        self.clip_name_strip(track, clip, name, fill, false, on_backdrop, notched, cx)
     }
     pub(super) fn clip_name_drag_header(
         &self,
         clip: ClipId,
         name: &str,
         fill: u32,
+        on_backdrop: bool,
     ) -> impl IntoElement + use<> {
-        clip_name_surface(fill)
+        passive_name_header(name, fill, on_backdrop)
             .id(("clip-drag-name", clip.value()))
             .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
-            .child(clip_name_text(name))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn clip_name_strip(
         &self,
         track: hex_project::TrackId,
@@ -285,36 +323,60 @@ impl EditorView {
         name: &str,
         fill: u32,
         interactive: bool,
+        on_backdrop: bool,
+        notched: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         clip_name_surface(fill)
+            .when(on_backdrop, |header| header.bg(gpui::transparent_black()))
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
             .when(interactive, |header| {
-                header.cursor_pointer().on_click(cx.listener(
-                    move |view, event: &gpui::ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if view
-                            .clip_name_edit
-                            .as_ref()
-                            .is_some_and(|edit| edit.clip == clip)
-                        {
-                            cx.stop_propagation();
-                            return;
-                        }
-                        if view.clip_name_edit.is_some() {
-                            view.finish_clip_name(true, window, cx);
-                        }
-                        view.select_clip_header(track, clip, event.modifiers(), window, cx);
-                        view.focus.focus(window);
-                        cx.notify();
-                    },
-                ))
+                self.bind_clip_name_click(header, track, clip, cx)
             })
-            .when(self.clip_has_alias(clip), |header| header.pr(px(15.0)))
+            .when(notched, |header| header.pr(px(6.0)))
+            .when(self.clip_has_alias(clip), |header| {
+                header.pr(px(if notched { 20.0 } else { 15.0 }))
+            })
             .child(self.clip_name_label(clip, name))
-            .children(self.clip_alias_indicator(clip, fill))
+            .children(
+                self.clip_alias_indicator(clip, fill)
+                    .map(|indicator| indicator.when(notched, |indicator| indicator.right(px(7.0)))),
+            )
     }
+
+    fn bind_clip_name_click(
+        &self,
+        header: gpui::Stateful<gpui::Div>,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        header.cursor_pointer().on_click(cx.listener(
+            move |view, event: &gpui::ClickEvent, window, cx| {
+                cx.stop_propagation();
+                if view.clip_name_is_editing(clip) {
+                    return;
+                }
+                if view.clip_name_edit.is_some() {
+                    view.finish_clip_name(true, window, cx);
+                }
+                view.select_clip_header(track, clip, event.modifiers(), window, cx);
+                view.focus.focus(window);
+                cx.notify();
+            },
+        ))
+    }
+}
+
+/// A passive caption without an authored identity; clip and sample callers add
+/// only their own diagnostic IDs. It never mounts a live rename input.
+pub(super) fn passive_name_header(name: &str, fill: u32, on_backdrop: bool) -> gpui::Div {
+    clip_name_surface(fill)
+        .when(on_backdrop, |header| {
+            header.bg(gpui::transparent_black()).pr(px(6.0))
+        })
+        .child(clip_name_text(name))
 }
 
 fn clip_name_surface(fill: u32) -> gpui::Div {
@@ -325,12 +387,14 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
         .left(px(-1.0))
         .right(px(-1.0))
         .h(px(CLIP_NAME_HEIGHT))
+        .flex()
+        .items_center()
         .px_1()
         .overflow_hidden()
         .text_xs()
         .line_height(px(14.0))
         .bg(rgb(fill))
-        .border_b(px(0.5))
+        .border_b_1()
         .border_color(rgba((text << 8) | 0x70))
         .text_color(rgb(text))
 }

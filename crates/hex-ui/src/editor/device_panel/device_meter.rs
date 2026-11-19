@@ -1,4 +1,4 @@
-//! Post-device output metering: the passive stereo peak meter after each device,
+//! Post-device output metering: stereo peaks and a separate insertion action,
 //! plus the dynamics readings that device panels draw themselves.
 use super::*;
 use std::time::Instant;
@@ -196,7 +196,8 @@ fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 
 /// Host trim stays canonical device state edited by automation; a
 /// non-neutral trim is disclosed in the tooltip rather than hidden. A click
 /// clears the held peaks (Pulse #3273) and also reaches the device frame's
-/// selection listener; it never edits the project.
+/// selection listener; it never edits the project. The separate + action below
+/// opens the catalog without clearing peaks or selecting the frame.
 pub(super) fn render(
     view: &mut EditorView,
     device: &hex_project::Device,
@@ -237,18 +238,26 @@ pub(super) fn render(
         .h_full()
         .flex()
         .flex_shrink_0()
-        .justify_center()
+        .flex_col()
+        .items_center()
+        .gap(px(2.0))
         .py(px(4.0))
-        .child(hex_widgets::stereo_peak_meter(
-            format!("device-{}-output-meter", device.id().value()).into(),
-            hex_widgets::StereoPeakMeter {
-                levels,
-                held,
-                tooltip: theme::text(tooltip),
-                colors: theme::meter_colors(),
-            },
-            theme::control_style(),
-        ))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(hex_widgets::stereo_peak_meter(
+                    format!("device-{}-output-meter", device.id().value()).into(),
+                    hex_widgets::StereoPeakMeter {
+                        levels,
+                        held,
+                        tooltip: theme::text(tooltip),
+                        colors: theme::meter_colors(),
+                    },
+                    theme::control_style(),
+                )),
+        )
+        .child(device_add::button(view, id, cx))
 }
 
 fn peak_db(peak: f32) -> String {
@@ -261,7 +270,7 @@ fn peak_db(peak: f32) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

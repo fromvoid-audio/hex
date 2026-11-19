@@ -44,9 +44,83 @@ fn assert_color(visual: &mut VisualTestContext, editor: &Entity<EditorView>, tra
         }
     });
     assert_eq!(
-        visual.rendered_background(selector("track-name-area", track.value())),
+        visual.rendered_background(selector("track-name-plate", track.value())),
         Some(gpui::rgb(expected).into())
     );
+}
+
+#[gpui::test]
+fn colored_name_column_fills_compact_and_expanded_headers(cx: &mut TestAppContext) {
+    let (_environment, mut visual, editor, tracks) = setup(cx);
+    for group in [false, true] {
+        let id = if group {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(hex_session::service::Request::Edit(
+                    hex_project::Command::GroupTracks {
+                        tracks: hex_project::TrackSelectionIds::new(&tracks).unwrap(),
+                        name: "bus".into(),
+                    }
+                )))
+            });
+            clip_drag_ui_test::pump_move(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .tracks()
+                    .iter()
+                    .find(|track| track.is_group())
+                    .unwrap()
+                    .id()
+            })
+        } else {
+            tracks[0]
+        };
+        editor.update(&mut visual, |view, cx| {
+            view.track_scroll
+                .scroll_to_item(0, gpui::ScrollStrategy::Top);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let mut plate_width = None;
+        for height in [22.0, 44.0, 154.0] {
+            let header = bounds(&mut visual, "arrangement-track-header", id.value());
+            let start = bounds(&mut visual, "track-height-resize", id.value()).center();
+            let end = start + point(px(0.0), px(height - f32::from(header.size.height)));
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let plate = bounds(&mut visual, "track-name-plate", id.value());
+            let header = bounds(&mut visual, "arrangement-track-header", id.value());
+            let controls = bounds(&mut visual, "track-controls", id.value());
+            assert_color(&mut visual, &editor, id);
+            assert_eq!(header.size.height, px(height));
+            assert_eq!(plate.top(), header.top());
+            assert_eq!(
+                plate.bottom(),
+                header.bottom() - px(if group { 0.0 } else { 1.0 })
+            );
+            assert!(plate.right() <= controls.left());
+            assert_eq!(
+                *plate_width.get_or_insert(plate.size.width),
+                plate.size.width
+            );
+            let header_fill = visual
+                .rendered_background(selector("arrangement-track-header", id.value()))
+                .unwrap();
+            assert!(
+                [
+                    theme::PaletteRole::Surface,
+                    theme::PaletteRole::Raised,
+                    theme::PaletteRole::Hover
+                ]
+                .iter()
+                .any(|role| header_fill == gpui::rgb(theme::color(*role)).into())
+            );
+        }
+    }
 }
 #[gpui::test]
 fn colored_name_column_is_readable_and_its_blank_area_selects_with_modifiers(
@@ -204,11 +278,11 @@ fn colored_names_stay_bounded_when_headers_or_rows_are_compacted(cx: &mut TestAp
     visual.run_until_parked();
     let header = bounds(&mut visual, "arrangement-track-header", tracks[0].value());
     let name = bounds(&mut visual, "track-name", tracks[0].value());
-    assert_eq!(header.size.height, px(23.));
+    assert_eq!(header.size.height, px(22.));
     assert!(name.top() >= header.top() && name.bottom() <= header.bottom());
     assert!(
         visual
-            .debug_bounds(selector("track-controls", tracks[0].value()))
+            .debug_bounds(selector("track-volume", tracks[0].value()))
             .is_none()
     );
     editor.read_with(&visual, |v, _| assert_eq!(v.worker_requests_pending, 0));

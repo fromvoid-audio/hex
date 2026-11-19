@@ -238,9 +238,11 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
         decode(state)?;
-        Ok(Some(
-            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
-        ))
+        let mut semantics = crate::parameter_binding::binding(&BINDINGS, id)?.semantics;
+        if runtime_parameter_automation_supported(id) {
+            semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
+        }
+        Ok(Some(semantics))
     }
 
     fn patch_parameter(
@@ -367,6 +369,20 @@ impl PreparedNativeProcessor for PreparedSaturator {
         self.supports(parameter)
     }
 
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if !self.supports_parameter_automation(parameter) {
+            return None;
+        }
+        let binding = crate::parameter_binding::binding(&BINDINGS, parameter).ok()?;
+        Some(hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            ..binding.semantics
+        })
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -391,7 +407,7 @@ impl PreparedNativeProcessor for PreparedSaturator {
             channels: [Oversampler::default(); 2],
             delay: [[0.0; 2]; LATENCY_FRAMES],
             delay_index: 0,
-            gain_ramp_remaining: 0,
+            gain_ramp_remaining: [0; 2],
         };
         runtime.check_inline_ownership();
         Box::new(runtime)
@@ -417,10 +433,11 @@ const _: () = assert!(crate::oversampling::DRAIN_FRAMES >= LATENCY_FRAMES);
 /// Closed fixed-inline DSP owner, including the last effective controls used by
 /// transactional history copying. It owns no program, asset or external handle.
 ///
-/// A direct drive or output edit arrives as a new runtime. Each unautomated gain
+/// A direct drive or output edit arrives as a new runtime. Each fallback gain
 /// ramps from the previous effective value to its new target over 5 ms, even if
-/// another control is automated. Automated gains keep their per-frame law. The
-/// ramp is independent of sample rate and block partition.
+/// another control is automated. Eligibility is independent of value presence;
+/// authored gains keep their per-frame law. Each ramp is independent of sample
+/// rate and block partition.
 /// Curve changes switch immediately: the two clip laws are not crossfaded.
 #[derive(Clone, Copy, Debug)]
 pub struct SaturatorRuntime {
@@ -435,7 +452,7 @@ pub struct SaturatorRuntime {
     /// Dry input, delayed by the oversampler latency.
     delay: [[f64; 2]; LATENCY_FRAMES],
     delay_index: usize,
-    gain_ramp_remaining: u32,
+    gain_ramp_remaining: [u32; 2],
 }
 
 /// Direct-edit gain ramp frames: 5 ms at every rate, like Compressor's dry/wet.
@@ -494,41 +511,49 @@ impl SaturatorRuntime {
         self.delay_index = 0;
     }
 
-    /// Advance the direct-edit ramp by one frame; it ends on exact targets.
+    /// Advance each fallback gain independently; eligibility alone never
+    /// suppresses a direct edit. Authored values retain their per-frame law.
     #[inline]
     fn advance_gain_ramp(&mut self) {
-        if self.gain_ramp_remaining == 0 {
+        if self.gain_ramp_remaining == [0; 2] {
             return;
         }
-        let divisor = f64::from(self.gain_ramp_remaining);
-        if !self.base.supports(parameter::DRIVE) {
-            self.drive_gain += (self.base.drive_gain - self.drive_gain) / divisor;
-        }
-        if !self.base.supports(parameter::OUTPUT) {
-            self.output_gain += (self.base.output_gain - self.output_gain) / divisor;
-        }
-        self.gain_ramp_remaining -= 1;
-        if self.gain_ramp_remaining == 0 {
-            if !self.base.supports(parameter::DRIVE) {
-                self.drive_gain = self.base.drive_gain;
+        for (index, (gain, target)) in [
+            (&mut self.drive_gain, self.base.drive_gain),
+            (&mut self.output_gain, self.base.output_gain),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let remaining = &mut self.gain_ramp_remaining[index];
+            if *remaining == 0 || self.controls.has_value(index) {
+                continue;
             }
-            if !self.base.supports(parameter::OUTPUT) {
-                self.output_gain = self.base.output_gain;
+            *gain += (target - *gain) / f64::from(*remaining);
+            *remaining -= 1;
+            if *remaining == 0 {
+                *gain = target;
             }
         }
     }
 
-    /// Bypass is already a discontinuity; resume from the exact targets.
+    /// Bypass is already a discontinuity; resume from exact fallback targets.
     fn finish_gain_ramp(&mut self) {
-        if self.gain_ramp_remaining != 0 {
-            self.gain_ramp_remaining = 0;
-            if !self.base.supports(parameter::DRIVE) {
-                self.drive_gain = self.base.drive_gain;
-            }
-            if !self.base.supports(parameter::OUTPUT) {
-                self.output_gain = self.base.output_gain;
+        if self.gain_ramp_remaining == [0; 2] {
+            return;
+        }
+        for (index, (gain, target)) in [
+            (&mut self.drive_gain, self.base.drive_gain),
+            (&mut self.output_gain, self.base.output_gain),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if self.gain_ramp_remaining[index] != 0 && !self.controls.has_value(index) {
+                *gain = target;
             }
         }
+        self.gain_ramp_remaining = [0; 2];
     }
 }
 
@@ -561,6 +586,7 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         let mut resolved = self.controls.resolve(&BINDINGS, values)?;
         for (offset, frame) in frames.iter_mut().enumerate() {
             self.apply_automation(values, &mut resolved, offset)?;
+            self.finish_gain_ramp();
             self.render_frame(frame, true);
         }
         Ok(())
@@ -593,7 +619,7 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         self.drive_gain = self.base.drive_gain;
         self.output_gain = self.base.output_gain;
         self.clear_history();
-        self.gain_ramp_remaining = 0;
+        self.gain_ramp_remaining = [0; 2];
     }
 
     fn is_quiescent(&self) -> bool {
@@ -622,34 +648,37 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         if self.base.automation_mask != 0 && previous.base.automation_mask != 0 {
             self.controls.inherit(&previous.controls);
             self.settings = previous.settings;
-            self.drive_gain = previous.drive_gain;
-            self.output_gain = previous.output_gain;
         }
-        let direct_drive = !self.base.supports(parameter::DRIVE);
-        let direct_output = !self.base.supports(parameter::OUTPUT);
-        if direct_drive {
-            self.drive_gain = previous.drive_gain;
-        }
-        if direct_output {
-            self.output_gain = previous.output_gain;
-        }
-        let needs_ramp = (direct_drive && self.drive_gain != self.base.drive_gain)
-            || (direct_output && self.output_gain != self.base.output_gain);
-        self.gain_ramp_remaining = if !needs_ramp {
-            0
-        } else if (!direct_drive
-            || (!previous.base.supports(parameter::DRIVE)
-                && previous.base.drive_gain == self.base.drive_gain))
-            && (!direct_output
-                || (!previous.base.supports(parameter::OUTPUT)
-                    && previous.base.output_gain == self.base.output_gain))
-            && previous.gain_ramp_remaining != 0
+        self.drive_gain = previous.drive_gain;
+        self.output_gain = previous.output_gain;
+        for (index, (gain, target, old_target, parameter)) in [
+            (
+                self.drive_gain,
+                self.base.drive_gain,
+                previous.base.drive_gain,
+                parameter::DRIVE,
+            ),
+            (
+                self.output_gain,
+                self.base.output_gain,
+                previous.base.output_gain,
+                parameter::OUTPUT,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
         {
-            // Scratch/rollback twins copy the trajectory without restarting it.
-            previous.gain_ramp_remaining
-        } else {
-            gain_ramp_frames(self.sample_rate)
-        };
+            self.gain_ramp_remaining[index] = if gain == target {
+                0
+            } else if target == old_target
+                && (self.base.supports(parameter) || !previous.controls.has_value(index))
+            {
+                // Transactional twins retain each in-flight trajectory.
+                previous.gain_ramp_remaining[index]
+            } else {
+                gain_ramp_frames(self.sample_rate)
+            };
+        }
     }
 
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {

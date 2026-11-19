@@ -43,6 +43,93 @@ fn assert_value(program: &PreparedForeignAutomation, revision: u64) {
 }
 
 #[test]
+fn selected_history_preserves_old_quantum_and_immediate_predecessor_across_many_edits() {
+    let mut previous = program(1);
+    let initial = previous.clone();
+    let bytes = previous.storage_bytes();
+    for revision in 2..=64 {
+        let original = previous.clone();
+        let mut next = program(revision);
+        next.retain_selected_on_control(&previous, &[key(1)])
+            .unwrap();
+        assert!(previous.shares_storage_with(&original));
+        assert!(next.shares_current_program_history_with(&previous));
+        assert!(next.shares_current_program_history_with(&initial));
+        assert_value(&next, 1);
+        assert_value(&next, revision - 1);
+        assert_value(&next, revision);
+        assert!(next.storage_owners().count() <= 3);
+        assert_eq!(next.storage_bytes(), next.storage_owners().count() * bytes);
+        if revision > 3 {
+            assert!(!next.borrow().contains_revision(key(revision - 2)));
+        }
+        previous = next;
+    }
+}
+
+#[test]
+fn selective_history_refuses_unknown_source_alias_and_capacity_without_mutation() {
+    let mut previous = program(1);
+    for revision in 2..=9 {
+        let mut next = program(revision);
+        next.retain_previous_on_control(&previous).unwrap();
+        previous = next;
+    }
+    let mut cases = vec![(program(10), vec![key(10)]), (program(9), vec![key(1)])];
+    let mut wrong_source = program(10);
+    wrong_source.binding.epoch += 1;
+    cases.push((wrong_source, vec![key(1)]));
+    let mut conflict = program(10);
+    conflict.retain_previous_on_control(&program(1)).unwrap();
+    cases.push((conflict, vec![key(1)]));
+    cases.push((program(10), (1..=8).map(key).collect()));
+    for (mut candidate, required) in cases {
+        let original = candidate.clone();
+        assert!(
+            candidate
+                .retain_selected_on_control(&previous, &required)
+                .is_err()
+        );
+        assert!(candidate.shares_storage_with(&original));
+        assert_eq!(candidate.storage_bytes(), original.storage_bytes());
+    }
+    assert_value(&previous, 1);
+    assert_value(&previous, 9);
+}
+
+#[test]
+fn selective_history_keeps_only_requested_keys_and_predecessor() {
+    let mut previous = program(1);
+    for revision in 2..=9 {
+        let mut next = program(revision);
+        next.retain_previous_on_control(&previous).unwrap();
+        previous = next;
+    }
+    let original = previous.clone();
+    let mut candidate = program(10);
+    candidate.retain_previous_on_control(&program(2)).unwrap();
+    candidate
+        .retain_selected_on_control(&previous, &[key(1), key(5)])
+        .unwrap();
+    for revision in [1, 5, 9, 10] {
+        assert_value(&candidate, revision);
+    }
+    for revision in [2, 3, 4, 6, 7, 8] {
+        assert!(!candidate.borrow().contains_revision(key(revision)));
+    }
+    assert_eq!(candidate.storage_owners().count(), 4);
+    assert!(previous.shares_storage_with(&original));
+
+    let mut successor = program(11);
+    successor
+        .retain_selected_on_control(&candidate, &[])
+        .unwrap();
+    assert_value(&successor, 10);
+    assert_eq!(successor.storage_owners().count(), 2);
+    assert!(!successor.borrow().contains_revision(key(1)));
+}
+
+#[test]
 fn received_frontier_advances_without_losing_unfinished_or_newer_versions() {
     let mut previous = program(1);
     let bytes = previous.storage_bytes();
@@ -253,4 +340,55 @@ fn chain_matching_recognizes_exact_retained_programs_without_relaxing_source_or_
             );
         }
     }
+}
+
+#[test]
+fn delayed_effect_programs_resolve_by_exact_clock_and_reserve_the_joined_queue() {
+    struct Bounded(usize);
+    impl ForeignAutomationProgram for Bounded {
+        fn quantum_point_budget(&self) -> Option<usize> {
+            Some(self.0)
+        }
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            _: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            Ok(0)
+        }
+    }
+    let compile = |revision, clock, points| {
+        let mut prepared =
+            PreparedForeignAutomation::new(BINDING, key(revision), Bounded(points), 0).unwrap();
+        prepared.bind_effect_clock_on_control(key(clock), revision > 1);
+        prepared
+    };
+    let opening = compile(1, 1, 52);
+    let mut replacement = compile(2, 1, 38);
+    replacement.retain_previous_on_control(&opening).unwrap();
+    let mut next = compile(3, 2, 70);
+    next.retain_previous_on_control(&replacement).unwrap();
+    assert!(next.effect_clock_splice_fits());
+    assert!(next.covers_effect_clock_range(key(1), key(2)));
+    let old = next.borrow_for_effect_clock(Some(key(1))).unwrap();
+    assert_eq!(old.revision, key(2));
+    assert_eq!(old.authored_clock_epoch, Some(key(1)));
+    assert!(old.retains_program_from(opening.borrow(), key(1)));
+    let current = next.borrow_for_effect_clock(Some(key(2))).unwrap();
+    assert_eq!(current.revision, key(3));
+    assert_eq!(current.authored_clock_epoch, Some(key(2)));
+    assert!(next.borrow_for_effect_clock(Some(key(3))).is_err());
+
+    let mut too_dense = compile(4, 3, 7);
+    too_dense.retain_previous_on_control(&next).unwrap();
+    assert!(!too_dense.effect_clock_splice_fits());
+    // A received program on the later clock proves both earlier versions
+    // have cleared this particular effect's delayed input and worker queue.
+    let mut drained = compile(4, 3, 7);
+    drained.retain_received_on_control(&next, key(3)).unwrap();
+    assert!(drained.effect_clock_splice_fits());
+    assert!(drained.covers_effect_clock_range(key(2), key(3)));
+    assert!(!drained.covers_effect_clock_range(key(1), key(3)));
+    assert!(drained.borrow_for_effect_clock(Some(key(1))).is_err());
 }

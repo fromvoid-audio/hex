@@ -15,6 +15,8 @@ pub(super) struct Pending {
     before: Selection,
     pub(super) clipboard: Option<Clipboard>,
     pub(super) waveform: Option<waveform_preview::Preview>,
+    /// Paint identity transfers with this exact receipt, never with input capture.
+    pub(super) fade_handle: Option<(u64, super::super::fade_handles::Handle)>,
 }
 pub(in crate::editor) enum PlacementSelection {
     Range((u64, u64)),
@@ -90,6 +92,18 @@ impl EditorView {
             self.audio_event_editor.retained_selection = None;
             self.audio_event_editor.cursor = *start;
         }
+        let fade_handle = self
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .and_then(|gesture| {
+                let Kind::Fade(capture) = gesture.kind else {
+                    return None;
+                };
+                let identity = capture.identity();
+                matches!(&operation, AudioEventEdit::SetFade { event, .. } if *event == identity.0)
+                    .then_some(identity)
+            });
         self.audio_event_editor.gesture = None;
         self.audio_event_editor.pending = Some(Pending {
             owner: (clip, self.project_generation),
@@ -101,6 +115,7 @@ impl EditorView {
             before,
             clipboard: None,
             waveform: None,
+            fade_handle,
         });
         if !self.enqueue(Request::Edit(Command::EditAudioEvents { clip, operation })) {
             self.retire_pending_audio_events();
@@ -127,6 +142,9 @@ impl EditorView {
         let Some(p) = self.audio_event_editor.pending.take() else {
             return false;
         };
+        if is_gain(&p.operation) {
+            self.service.retire_arrangement_gain_audition();
+        }
         if self.audio_event_editor.owner == Some(p.owner)
             && p.intent.is_some()
             && p.intent == self.selection_intent_epoch
@@ -153,6 +171,9 @@ impl EditorView {
             }
             Disposition::Terminal => {
                 let p = self.audio_event_editor.pending.take()?;
+                if is_gain(&p.operation) {
+                    self.service.retire_arrangement_gain_audition();
+                }
                 if let Some(clipboard) = p.clipboard {
                     self.audio_event_editor.clipboard = Some(clipboard);
                 }
@@ -178,6 +199,9 @@ impl EditorView {
                 }
             }
             Disposition::Invalidated => {
+                if is_gain(&p.operation) {
+                    self.service.retire_arrangement_gain_audition();
+                }
                 self.audio_event_editor.pending = None;
             }
         }
@@ -204,4 +228,11 @@ impl EditorView {
         }
         editor.retained_selection = None;
     }
+}
+
+fn is_gain(operation: &AudioEventEdit) -> bool {
+    matches!(
+        operation,
+        AudioEventEdit::SetGain { .. } | AudioEventEdit::SetRetainedGain { .. }
+    )
 }

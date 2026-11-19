@@ -103,6 +103,8 @@ pub enum NumericControlPresentation {
     CompactSlider,
     LabeledSlider,
     FilledSlider,
+    /// Textless12×32 strip; scrub/keyboard/accessibility edits, with no text-entry target.
+    FilledVerticalSlider,
     VerticalSlider,
     /// Input-level well with a ceiling triangle and editable numeric readout.
     MeterFader,
@@ -118,7 +120,9 @@ impl NumericControlPresentation {
             | Self::CompactSlider
             | Self::LabeledSlider
             | Self::FilledSlider => NumericControlKind::HorizontalSlider,
-            Self::VerticalSlider | Self::MeterFader => NumericControlKind::VerticalSlider,
+            Self::VerticalSlider | Self::FilledVerticalSlider | Self::MeterFader => {
+                NumericControlKind::VerticalSlider
+            }
         }
     }
     fn appearance(self) -> NumericControlAppearance {
@@ -132,7 +136,9 @@ impl NumericControlPresentation {
             Self::InlineValue => NumericControlAppearance::InlineValue,
             Self::CompactSlider => NumericControlAppearance::CompactSlider,
             Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
-            Self::FilledSlider => NumericControlAppearance::FilledSlider,
+            Self::FilledSlider | Self::FilledVerticalSlider => {
+                NumericControlAppearance::FilledSlider
+            }
             Self::MeterFader => NumericControlAppearance::MeterFader,
         }
     }
@@ -169,6 +175,7 @@ enum NumericControlAppearance {
 
 #[cfg(test)]
 mod compact_slider_tests;
+mod compact_vertical;
 #[cfg(test)]
 mod edit_state_tests;
 mod vertical_fader;
@@ -201,6 +208,24 @@ pub struct NumericControlEvent {
     pub gesture: Option<NumericGestureId>,
 }
 
+/// Identity of one externally resolved text submission. Clones do not retain
+/// the control and are never interchangeable with another submission.
+#[derive(Debug, Clone)]
+pub struct NumericTextRequestId(Rc<()>);
+
+impl PartialEq for NumericTextRequestId {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for NumericTextRequestId {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericTextRequest {
+    pub id: NumericTextRequestId,
+    pub text: String,
+}
+
 /// Final value returned to an owner performing a lifecycle barrier. It lets
 /// the owner synchronously submit the same edit before GPUI flushes emitters.
 #[derive(Debug, Clone, PartialEq)]
@@ -229,6 +254,7 @@ pub struct NumericControlConfig {
     dial_layout: DialLayout,
     command_fine_steps: bool,
     value_drag_steps: bool,
+    slider_center_mark: bool,
 }
 
 impl NumericControlConfig {
@@ -256,6 +282,7 @@ impl NumericControlConfig {
             dial_layout: DialLayout::ReadoutGap,
             command_fine_steps: false,
             value_drag_steps: false,
+            slider_center_mark: true,
         })
     }
 
@@ -274,6 +301,13 @@ impl NumericControlConfig {
     /// Every control supports stepping a valid local text draft.
     pub fn with_command_fine_steps(mut self) -> Self {
         self.command_fine_steps = true;
+        self
+    }
+
+    /// Show or hide the center line of bipolar filled fields. The fill still
+    /// grows from the center; input geometry and all value semantics stay intact.
+    pub fn with_slider_center_mark(mut self, visible: bool) -> Self {
+        self.slider_center_mark = visible;
         self
     }
 
@@ -345,6 +379,10 @@ pub struct NumericControl {
     pub(crate) draft: f64,
     availability: crate::ControlAvailability,
     commit_unchanged_text: bool,
+    deferred_text: bool,
+    pending_text: Option<NumericTextRequestId>,
+    pending_text_request: Option<NumericTextRequest>,
+    external_display: Option<(f64, String)>,
     pub(crate) editing: NumericEditState,
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
@@ -368,6 +406,7 @@ pub struct NumericControl {
     tab_navigation: bool,
     command_fine_steps: bool,
     value_drag_steps: bool,
+    slider_center_mark: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -440,6 +479,7 @@ impl NumericControl {
             dial_layout,
             command_fine_steps,
             value_drag_steps,
+            slider_center_mark,
         } = config;
         Self {
             accessibility_binding: None,
@@ -453,6 +493,10 @@ impl NumericControl {
             draft: value,
             availability: crate::ControlAvailability::Available,
             commit_unchanged_text: false,
+            deferred_text: false,
+            pending_text: None,
+            pending_text_request: None,
+            external_display: None,
             editing: NumericEditState(Rc::new(Cell::new(false))),
             text_modified: false,
             caret_activity: 0,
@@ -476,6 +520,7 @@ impl NumericControl {
             tab_navigation: false,
             command_fine_steps,
             value_drag_steps,
+            slider_center_mark,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -581,8 +626,158 @@ impl NumericControl {
         self.commit_unchanged_text = enabled;
     }
 
+    /// Delegate typed text to the owner. This mode is opt-in and does not
+    /// change pointer, keyboard stepping or ordinary synchronous controls.
+    pub fn set_deferred_text(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.deferred_text == enabled {
+            return;
+        }
+        self.cancel(cx);
+        self.deferred_text = enabled;
+        self.pending_text = None;
+        self.pending_text_request = None;
+        if !enabled {
+            self.external_display = None;
+        }
+        cx.notify();
+    }
+
+    /// Associate a source-owned display string with one validated value.
+    /// An active draft is never replaced, even when its value is refreshed.
+    pub fn set_external_display(
+        &mut self,
+        value: f64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), NumericError> {
+        if !self.deferred_text {
+            return Err(NumericError::InvalidText);
+        }
+        let value = self.spec.validate(value)?;
+        if text.len() > 512 || text.contains(['\0', '\n', '\r']) {
+            return Err(NumericError::InvalidText);
+        }
+        if self
+            .external_display
+            .as_ref()
+            .is_some_and(|(old_value, old_text)| *old_value == value && old_text == text)
+        {
+            return Ok(());
+        }
+        self.external_display = Some((value, text.to_owned()));
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn invalidate_pending_text(&mut self) {
+        self.pending_text = None;
+        self.pending_text_request = None;
+    }
+
+    pub(crate) fn deferred_text_enabled(&self) -> bool {
+        self.deferred_text
+    }
+
+    /// Take a newly submitted request once after observing this entity.
+    /// The unresolved ID remains current until a reply or cancellation.
+    pub fn take_deferred_text_request(&mut self) -> Option<NumericTextRequest> {
+        self.pending_text_request.take()
+    }
+
+    fn request_deferred_text(&mut self, cx: &mut Context<Self>) {
+        if self.pending_text.is_some() || !self.editing.is_editing() {
+            return;
+        }
+        let id = NumericTextRequestId(Rc::new(()));
+        self.pending_text = Some(id.clone());
+        self.invalid_text = false;
+        self.pending_text_request = Some(NumericTextRequest {
+            id,
+            text: self.text.clone(),
+        });
+        cx.notify();
+    }
+
+    /// Apply only the currently pending parse. A refusal leaves the text
+    /// editable; cancellation or a newer draft makes old replies inert.
+    pub fn resolve_deferred_text(
+        &mut self,
+        id: &NumericTextRequestId,
+        value: Option<f64>,
+        display: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, NumericError> {
+        if !self.deferred_text
+            || !self.editing.is_editing()
+            || self.pending_text.as_ref() != Some(id)
+            || !self.availability.interactive()
+        {
+            return Ok(false);
+        }
+        self.pending_text = None;
+        self.pending_text_request = None;
+        let value = match value.and_then(|value| self.spec.validate(value).ok()) {
+            Some(value) => value,
+            None => {
+                self.invalid_text = true;
+                cx.notify();
+                return Ok(true);
+            }
+        };
+        if let Some(display) = display {
+            if let Err(error) = self.set_external_display(value, display, cx) {
+                self.invalid_text = true;
+                cx.notify();
+                return Err(error);
+            }
+        } else {
+            self.external_display = None;
+        }
+        let old = self.value;
+        if old != value {
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Begin,
+                value: old,
+                gesture: None,
+            });
+            self.value = value;
+            self.draft = value;
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Change,
+                value,
+                gesture: None,
+            });
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value,
+                gesture: None,
+            });
+        } else if self.commit_unchanged_text && self.text_modified {
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value,
+                gesture: None,
+            });
+        }
+        self.text = self.spec.format(value)?;
+        self.editing.0.set(false);
+        self.text_modified = false;
+        self.invalid_text = false;
+        self.selected = 0..0;
+        self.marked = None;
+        cx.notify();
+        Ok(true)
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.set_availability(crate::ControlAvailability::for_edit(enabled, false), cx);
+    }
+
+    /// Suspend input for a transient operation while retaining the current palette.
+    pub fn suspend_input(&mut self, cx: &mut Context<Self>) {
+        let availability =
+            crate::ControlAvailability::for_edit(self.availability.painted_enabled(), true);
+        self.set_availability(availability, cx);
     }
 
     /// Update input admission without making transient worker activity dim the
@@ -609,6 +804,7 @@ impl NumericControl {
 
     /// Call before removing an active control so its caller can cancel the edit.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_pending_text();
         self.text_mouse = None;
         self.text_click.clear();
         if let Some(press) = self.press.take()
@@ -669,6 +865,7 @@ impl NumericControl {
     }
 
     fn reset(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_pending_text();
         self.text_mouse = None;
         self.text_click.clear();
         let start = self.draft;
@@ -773,7 +970,7 @@ impl NumericControl {
             return self.text.len();
         }
         let shaped = line.closest_index_for_x(at.x - self.last_origin_x.unwrap_or(bounds.left()));
-        self.style.text_case.source_offset(&self.text, shaped)
+        self.value_text_case().source_offset(&self.text, shaped)
     }
 
     fn value_mouse_down(
@@ -947,6 +1144,7 @@ impl NumericControl {
         let total_x = f32::from(event.position.x - press.origin.x);
         let total_y = f32::from(event.position.y - press.origin.y);
         if !press.dragging && total_x.hypot(total_y) >= 3.0 {
+            self.invalidate_pending_text();
             press.dragging = true;
             self.active_gesture = Some(NumericGestureId(Rc::new(())));
             // Cursor visibility changes even at a value bound or on horizontal motion.
@@ -1057,10 +1255,19 @@ impl NumericControl {
                 .hypot(f32::from(event.position.y - press.origin.y))
                 < 3.0
         {
+            let text = if self.deferred_text {
+                self.external_display
+                    .as_ref()
+                    .filter(|(value, _)| *value == self.draft)
+                    .map(|(_, text)| text.clone())
+                    .unwrap_or_else(|| self.spec.format(self.draft).unwrap_or_default())
+            } else {
+                self.spec.format(self.draft).unwrap_or_default()
+            };
             self.editing.0.set(true);
             self.text_modified = false;
             self.invalid_text = false;
-            self.text = self.spec.format(self.draft).unwrap_or_default();
+            self.text = text;
             self.selected = 0..self.text.len();
             self.reversed = false;
             self.focus.focus(window);
@@ -1078,7 +1285,7 @@ impl NumericControl {
         if self.editing.is_editing() {
             // A composing or invalid draft must never be replaced with the old
             // canonical value. Stepping remains local until Enter/blur commits.
-            if self.marked.is_some() {
+            if self.marked.is_some() || self.deferred_text {
                 return;
             }
             if let Ok(current) = self.spec.parse_with_current(&self.text, Some(self.value))
@@ -1177,6 +1384,18 @@ impl NumericControl {
         if !self.editing.is_editing() {
             return;
         }
+        if self.deferred_text {
+            if self.marked.is_some() {
+                return;
+            } else if self.text_modified {
+                self.request_deferred_text(cx);
+            } else {
+                self.editing.0.set(false);
+                self.marked = None;
+                cx.notify();
+            }
+            return;
+        }
         match self.spec.parse_with_current(&self.text, Some(self.value)) {
             Ok(value) => {
                 let old = self.value;
@@ -1236,6 +1455,18 @@ impl NumericControl {
             cx.notify();
         }
         if !self.editing.is_editing() {
+            return Ok(());
+        }
+        if self.deferred_text {
+            if self.marked.is_some() {
+                return Err(NumericError::InvalidText);
+            } else if self.text_modified {
+                self.request_deferred_text(cx);
+                return Err(NumericError::InvalidText);
+            }
+            self.editing.0.set(false);
+            self.marked = None;
+            cx.notify();
             return Ok(());
         }
         let value = match self.finalized_text_value() {
@@ -1310,6 +1541,18 @@ impl NumericControl {
         if !self.editing.is_editing() {
             return Ok(None);
         }
+        if self.deferred_text {
+            if self.text_modified || self.marked.is_some() {
+                return Err(NumericError::InvalidText);
+            }
+            return Ok(Some(NumericControlFinalValue {
+                explicit_edit: false,
+                previous: self.value,
+                value: self.value,
+                gesture: None,
+                formatted: self.spec.format(self.value)?,
+            }));
+        }
         let value = match self.finalized_text_value() {
             Ok(value) => value,
             Err(error) => {
@@ -1382,6 +1625,7 @@ impl NumericControl {
     }
 
     fn escape(&mut self, _: &NumericEscape, _: &mut Window, cx: &mut Context<Self>) {
+        self.invalidate_pending_text();
         self.text_mouse = None;
         self.text_click.clear();
         if self.press.is_some() {
@@ -1509,6 +1753,7 @@ impl NumericControl {
             SliderPresentation {
                 value,
                 bipolar: self.spec.scale() == crate::NumericScale::Bipolar,
+                center_mark: self.slider_center_mark,
                 field: ValueFieldPresentation {
                     invalid: self.invalid_text,
                     editing: self.editing.is_editing(),
@@ -1538,11 +1783,27 @@ impl NumericControl {
 
     pub(crate) fn value_string(&self) -> String {
         if self.editing.is_editing() {
-            self.style.text_case.present(&self.text)
+            if self.deferred_text {
+                self.text.clone()
+            } else {
+                self.style.text_case.present(&self.text)
+            }
+        } else if let Some((value, text)) = &self.external_display
+            && *value == self.draft
+        {
+            text.clone()
         } else {
             self.style
                 .text_case
                 .present(&self.spec.format(self.draft).unwrap_or_default())
+        }
+    }
+
+    pub(crate) fn value_text_case(&self) -> crate::TextCase {
+        if self.deferred_text {
+            crate::TextCase::Preserve
+        } else {
+            self.style.text_case
         }
     }
 
@@ -1911,6 +2172,13 @@ impl gpui::Render for NumericControl {
                         .child(label),
                 )
                 .child(self.slider_element(value, value_text, cx)),
+            (NumericControlKind::VerticalSlider, NumericControlAppearance::FilledSlider) => div()
+                .id(self.id.clone())
+                .w(px(12.0))
+                .h(px(32.0))
+                .track_focus(&self.focus)
+                .key_context(key_context)
+                .child(self.compact_vertical(value, cx)),
             (NumericControlKind::VerticalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -2231,6 +2499,7 @@ fn value_field_sized(
 struct SliderPresentation {
     value: f32,
     bipolar: bool,
+    center_mark: bool,
     field: ValueFieldPresentation,
 }
 
@@ -2243,6 +2512,7 @@ fn filled_slider(
     let SliderPresentation {
         value,
         bipolar,
+        center_mark,
         field,
     } = presentation;
     let origin = if bipolar { 0.5 } else { 0.0 };
@@ -2272,7 +2542,7 @@ fn filled_slider(
         .overflow_hidden()
         .bg(rgb(field.style.rail))
         .child(fill)
-        .when(bipolar, |bar| {
+        .when(bipolar && center_mark, |bar| {
             bar.child(
                 div()
                     .debug_selector(move || center_id.clone())

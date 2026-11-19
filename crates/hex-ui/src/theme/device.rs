@@ -34,7 +34,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
         selection: color(PaletteRole::Secondary),
-        invalid: color(PaletteRole::Primary),
+        invalid: color(PaletteRole::Error),
         font_size: 9.0,
         text_case: hex_widgets::TextCase::Lowercase,
     };
@@ -55,7 +55,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
             if role == DeviceStyleRole::Readout {
                 style.text = readable_text(display, style.accent);
             } else if role == DeviceStyleRole::ErrorDisplay {
-                style.text = readable_text(display, color(PaletteRole::Primary));
+                style.text = readable_text(display, color(PaletteRole::Error));
             }
         }
     }
@@ -88,7 +88,7 @@ pub(crate) fn oscillator_identity_color(index: usize) -> Option<u32> {
     [0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428].get(index).copied()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -133,7 +133,7 @@ mod tests {
             assert_eq!(control.hover, color(PaletteRole::Hover));
             assert_eq!(control.focus_marker, palette.text.packed());
             assert_eq!(control.accent, palette.secondary.packed());
-            assert_eq!(control.invalid, palette.primary.packed());
+            assert_eq!(control.invalid, color(PaletteRole::Error));
             assert_ne!(control.selection, control.raised);
             assert!(super::super::contrast_ratio(control.selection, control.text) >= 4.5);
             assert_eq!(oscillator_identity_color(0), Some(0xe2cf25));
@@ -229,7 +229,7 @@ pub(crate) fn device_identity_style(index: usize, enabled: bool, selected: bool)
     style
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod action_tests {
     use super::*;
 

@@ -1,27 +1,9 @@
 //! One bounded sample transport row; cached peaks never decode during painting.
+use super::audition_geometry::hit_fraction;
 use super::*;
 use gpui::{Bounds, CursorStyle, MouseMoveEvent, MouseUpEvent, fill, point, size};
 
 const AUDITION_ROW_HEIGHT: f32 = 22.0;
-
-/// Normalize hit geometry without trusting stale or zero-width bounds.
-fn hit_fraction(x: f32, left: f32, width: f32) -> Option<f64> {
-    if !x.is_finite() || !left.is_finite() || !width.is_finite() || width <= 0.0 {
-        return None;
-    }
-    Some(((f64::from(x) - f64::from(left)) / f64::from(width)).clamp(0.0, 1.0))
-}
-
-/// Resolve against the actual decoded PCM, independently of cached display rate.
-pub(super) fn frame_at_fraction(frames: usize, fraction: f64) -> usize {
-    if !fraction.is_finite() || fraction <= 0.0 {
-        return 0;
-    }
-    if fraction >= 1.0 {
-        return frames;
-    }
-    ((frames as f64 * fraction).floor() as usize).min(frames)
-}
 
 impl EditorView {
     fn audition_control(
@@ -72,7 +54,8 @@ impl EditorView {
     fn audition_volume(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let entity = cx.entity();
         let owner = entity.entity_id();
-        let handle_top = 2.0 + (1.0 - self.browser.audition_gain) * 16.0;
+        let style = theme::control_style();
+        let gain = self.browser.audition_gain;
         div()
             .id("browser-audition-volume")
             .debug_selector(|| "browser-audition-volume".to_owned())
@@ -80,8 +63,9 @@ impl EditorView {
             .w(px(16.0))
             .h(px(AUDITION_ROW_HEIGHT))
             .flex_shrink_0()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+            .overflow_hidden()
+            .bg(rgb(style.rail))
+            .hover(move |rail| rail.bg(rgb(style.hover)))
             .cursor_pointer()
             .tooltip(|_, cx| super::layout::browser_label_tooltip("sample audition volume", cx))
             .on_mouse_down(
@@ -90,21 +74,19 @@ impl EditorView {
             )
             .child(
                 div()
+                    .debug_selector(|| "browser-audition-volume-fill".to_owned())
                     .absolute()
-                    .left(px(7.0))
-                    .top(px(2.0))
-                    .w(px(2.0))
-                    .h(px(18.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
+                    .bottom_0()
+                    .w_full()
+                    .h(relative(gain))
+                    .bg(rgb(style.numeric_fill)),
             )
             .child(
                 div()
                     .absolute()
-                    .left(px(3.0))
-                    .top(px(handle_top))
-                    .w(px(10.0))
-                    .h(px(2.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                    .inset_0()
+                    .border_1()
+                    .border_color(rgb(style.border)),
             )
             .child(
                 canvas(
@@ -130,12 +112,20 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let down = f32::from(event.position.y);
-        if !down.is_finite() || self.browser.preview_selected.is_none() {
+        let project_sample_key = self.browser_selected_item(cx).filter(|key| {
+            matches!(key, BrowserItemKey::ProjectSample(..))
+                && self.browser_history_index(key, cx).is_some()
+                && self.project_sample_waveform(key).is_some()
+        });
+        if !down.is_finite()
+            || (self.browser.preview_selected.is_none() && project_sample_key.is_none())
+        {
             return;
         }
         let initial = self.browser.audition_gain;
         let owner = cx.entity().downgrade();
         let cancelled = owner.clone();
+        let captured_project_key = project_sample_key.clone();
         if !window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
@@ -156,7 +146,11 @@ impl EditorView {
                         return;
                     }
                     if view.browser.open
-                        && view.browser.preview_selected.is_some()
+                        && (view.browser.preview_selected.is_some()
+                            || captured_project_key.as_ref().is_some_and(|key| {
+                                view.browser_selected_item(cx).as_ref() == Some(key)
+                                    && view.browser_history_index(key, cx).is_some()
+                            }))
                         && view.browser.results_focus.is_focused(window)
                         && y.is_finite()
                     {
@@ -197,7 +191,16 @@ impl EditorView {
             |entry| entry.name.clone(),
         );
         let sample = entry.filter(|entry| entry.kind == EntryKind::WaveAudio);
-        let volume = sample.as_ref().map(|_| self.audition_volume(cx));
+        let selected_project_key = self.browser_selected_item(cx).and_then(|key| {
+            (matches!(key, BrowserItemKey::ProjectSample(..))
+                && self.browser_history_index(&key, cx).is_some())
+            .then_some(key)
+        });
+        let project_waveform = selected_project_key
+            .as_ref()
+            .and_then(|key| self.project_sample_waveform(key));
+        let project_key = selected_project_key;
+        let volume = (sample.is_some() || project_key.is_some()).then(|| self.audition_volume(cx));
         let active = matches!(
             self.browser.playback_phase,
             Phase::Preparing | Phase::Playing
@@ -216,6 +219,7 @@ impl EditorView {
             cx,
         );
         let path = sample.as_ref().map(|entry| entry.path.clone());
+        let transport_project_key = project_key.clone();
         let control = self.audition_control(
             "browser-audition-transport",
             if active { "■" } else { "▶" },
@@ -234,6 +238,12 @@ impl EditorView {
                 ) {
                     view.cancel_browser_sample_playback();
                     view.status = "sample preview stopped".into();
+                } else if let Some(key) = &transport_project_key {
+                    if view.browser_history_index(key, cx).is_some()
+                        && view.project_sample_current(key)
+                    {
+                        view.play_browser_project_sample_from(key, 0.0, cx);
+                    }
                 } else if let Some(path) = &path {
                     view.play_browser_sample(path.clone(), cx);
                 }
@@ -241,11 +251,15 @@ impl EditorView {
             cx,
         );
         let click_path = sample.as_ref().map(|entry| entry.path.clone());
+        let click_project_key = project_key.clone();
         let bounds = Rc::clone(&self.browser.waveform_bounds);
         let measured_bounds = Rc::clone(&bounds);
-        let fraction = if sample
+        let fraction = if project_key
             .as_ref()
-            .is_some_and(|entry| self.browser.playback_path.as_ref() == Some(&entry.path))
+            .is_some_and(|key| self.browser.playback_project_sample.as_ref() == Some(key))
+            || sample
+                .as_ref()
+                .is_some_and(|entry| self.browser.playback_path.as_ref() == Some(&entry.path))
         {
             self.browser.playback_fraction
         } else {
@@ -267,20 +281,38 @@ impl EditorView {
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
-                    if let (Some(path), Some(bounds)) = (&click_path, bounds.get())
+                    if let Some(bounds) = bounds.get()
                         && let Some(fraction) = hit_fraction(
                             f32::from(event.position.x),
                             f32::from(bounds.left()),
                             f32::from(bounds.size.width),
                         )
                     {
-                        view.play_browser_sample_from(path.clone(), fraction, cx);
-                        cx.notify();
+                        if let Some(key) = &click_project_key {
+                            if view.browser_history_index(key, cx).is_some()
+                                && view.project_sample_current(key)
+                            {
+                                view.play_browser_project_sample_from(key, fraction, cx);
+                                cx.notify();
+                            }
+                        } else if let Some(path) = &click_path {
+                            view.play_browser_sample_from(path.clone(), fraction, cx);
+                            cx.notify();
+                        }
                     }
                 }),
             );
         self.browser.preview_selected = None;
-        if let Some(entry) = sample {
+        if let Some(project_source) = project_waveform {
+            waveform = waveform.child(super::super::overview_waveform::render(
+                super::super::overview_waveform::Source::Browser(project_source),
+                Rc::clone(&self.overview_waveform_cache),
+                None,
+            ));
+            let label = fallback.clone();
+            waveform =
+                waveform.tooltip(move |_, cx| super::layout::browser_label_tooltip(&label, cx));
+        } else if let Some(entry) = sample {
             let rate = self
                 .state
                 .as_ref()
@@ -379,29 +411,5 @@ impl EditorView {
             .child(control)
             .child(waveform)
             .children(volume)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn waveform_hit_positions_map_to_bounded_decoded_frames() {
-        for (x, expected) in [(-5.0, 0), (10.0, 0), (60.0, 50), (110.0, 100), (200.0, 100)] {
-            assert_eq!(
-                frame_at_fraction(100, hit_fraction(x, 10.0, 100.0).unwrap()),
-                expected
-            );
-        }
-        assert_eq!(
-            frame_at_fraction(7, hit_fraction(0.25, 0.0, 0.5).unwrap()),
-            3
-        );
-        assert_eq!(frame_at_fraction(0, 1.0), 0);
-        assert_eq!(frame_at_fraction(100, f64::NAN), 0);
-        for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            assert!(hit_fraction(1.0, 0.0, width).is_none());
-        }
-        assert!(hit_fraction(f32::NAN, 0.0, 10.0).is_none());
     }
 }

@@ -6,6 +6,7 @@ pub(super) fn run() {
     let application = Application::new().with_assets(crate::assets::HexAssets);
     application.run(|cx: &mut App| {
         hex_widgets::bind_numeric_control_keys(cx);
+        hex_widgets::bind_selector_keys(cx);
         hex_widgets::bind_text_input_keys(cx);
         hex_widgets::bind_response_graph_keys(cx);
         if let Err(error) = theme::load_fonts(cx) {

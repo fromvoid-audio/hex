@@ -1,9 +1,38 @@
 //! Canonical VST3 lanes for Arrangement preparation.
-use super::{Knot, Lane, Program, QuantumProfile};
-use crate::AudioStorageError as Error;
+use super::{Knot, Lane, Program};
+use crate::{AudioStorageError as Error, Invalid};
 use hex_lattice::{DevicePreparationContext, NativeDeviceRegistry, ProcessorInstanceIdentity};
 use hex_lattice_contract::DeviceAutomationTarget;
 use hex_project::{Device, DeviceAutomation, Project};
+
+pub(crate) enum PreparationError {
+    Source(Error),
+    Program(Invalid),
+}
+
+impl PreparationError {
+    pub(crate) fn into_storage(self) -> Error {
+        match self {
+            Self::Source(error) => error,
+            Self::Program(_) => Error::UnsupportedGraph,
+        }
+    }
+}
+
+impl From<PreparationError> for Invalid {
+    fn from(error: PreparationError) -> Self {
+        match error {
+            PreparationError::Program(reason) => reason,
+            PreparationError::Source(Error::SourceMismatch) => {
+                Self("vst3 automation source differs from the prepared device")
+            }
+            PreparationError::Source(Error::Overflow) => {
+                Self("vst3 automation storage size overflow")
+            }
+            PreparationError::Source(_) => Self("vst3 automation source is unavailable"),
+        }
+    }
+}
 
 fn effects(project: &Project) -> impl Iterator<Item = &Device> {
     project
@@ -65,20 +94,28 @@ fn quote_devices<'a>(
             .checked_add(std::mem::size_of::<Program>() + 3 * std::mem::size_of::<usize>())
             .and_then(|bytes| {
                 bytes.checked_add(
-                    super::MAX_POINTS * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
+                    super::MAX_TARGETS
+                        * (std::mem::size_of::<Lane>() + std::mem::size_of::<Knot>()),
                 )
             })
             .ok_or(Error::Overflow)?;
         rows = rows.checked_add(1).ok_or(Error::Overflow)?;
         for lane in lanes(device) {
             let knots = super::knot_reservation(&lane.points, project.tempo_map())
-                .ok_or(Error::Overflow)?;
+                .ok_or(Error::Overflow)?
+                .max(1);
             bytes = bytes
                 .checked_add(
                     knots
                         .checked_mul(std::mem::size_of::<Knot>())
                         .ok_or(Error::Overflow)?,
                 )
+                .and_then(|bytes| {
+                    bytes.checked_add(super::touch::Overlay::reservation_bytes(
+                        &lane.touch,
+                        knots,
+                    )?)
+                })
                 .ok_or(Error::Overflow)?;
         }
     }
@@ -92,9 +129,48 @@ pub(crate) fn prepare_device(
     processor: hex_lattice::PreparedForeignProcessor,
     tempo: &hex_project::TempoMap,
     region: Option<hex_project::LoopRegion>,
-) -> Result<Option<hex_lattice::PreparedForeignAutomation>, Error> {
+) -> Result<Option<hex_lattice::PreparedForeignAutomation>, PreparationError> {
+    let Some(source) = exact_source(device, identity, effects, processor, tempo.sample_rate())
+        .map_err(PreparationError::Source)?
+    else {
+        return if has_authored(device) {
+            Err(PreparationError::Source(Error::UnsupportedGraph))
+        } else {
+            Ok(None)
+        };
+    };
+    let revision = source.revision;
+    let program = Program::prepare_arrangement_source(
+        device.automation(),
+        source,
+        tempo,
+        region,
+        processor.is_instrument_profile(),
+    )
+    .map_err(PreparationError::Program)?;
+    let Some(program) = program else {
+        return Ok(None);
+    };
+    let overflow = || PreparationError::Source(Error::Overflow);
+    let bytes = program.backing_bytes().ok_or_else(overflow)?;
+    let mut prepared =
+        hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
+            .map_err(|_| overflow())?;
+    if !processor.is_instrument_profile() {
+        prepared.bind_effect_clock_on_control(std::num::NonZeroU64::MIN, false);
+    }
+    Ok(Some(prepared))
+}
+
+pub(crate) fn exact_source<'a>(
+    device: &Device,
+    identity: ProcessorInstanceIdentity,
+    effects: &'a NativeDeviceRegistry<'_>,
+    processor: hex_lattice::PreparedForeignProcessor,
+    sample_rate: u32,
+) -> Result<Option<hex_lattice::ForeignAutomationSource<'a>>, Error> {
     let context = DevicePreparationContext {
-        sample_rate: tempo.sample_rate(),
+        sample_rate,
         tuning: &hex_lattice::TuningTable::default(),
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
@@ -103,38 +179,13 @@ pub(crate) fn prepare_device(
         .ok_or(Error::UnsupportedGraph)?
         .foreign_automation_source(identity, device.state(), &context)
         .map_err(|_| Error::UnsupportedGraph)?;
-    let Some(source) = source else {
-        return if has_authored(device) {
-            Err(Error::UnsupportedGraph)
-        } else {
-            Ok(None)
-        };
-    };
-    if source.sample_rate != tempo.sample_rate()
-        || source.quantum_frames != processor.quantum_frames()
-        || Some(source.binding) != processor.binding()
-    {
+    if source.is_some_and(|source| {
+        source.sample_rate != sample_rate
+            || source.quantum_frames != processor.quantum_frames()
+            || Some(source.binding) != processor.binding()
+            || source.binding.instance != identity.device_id()
+    }) {
         return Err(Error::SourceMismatch);
     }
-    let revision = source.revision;
-    let profile = if processor.is_instrument_profile() {
-        QuantumProfile::for_arrangement_instrument(source.quantum_frames, region)
-    } else {
-        QuantumProfile::arrangement(source.quantum_frames, region)
-    };
-    let program = Program::prepare(
-        device.automation(),
-        source.class,
-        source.parameters,
-        tempo,
-        profile,
-    )
-    .map_err(|_| Error::UnsupportedGraph)?;
-    let Some(program) = program else {
-        return Ok(None);
-    };
-    let bytes = program.backing_bytes().ok_or(Error::Overflow)?;
-    hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
-        .map(Some)
-        .map_err(|_| Error::Overflow)
+    Ok(source)
 }

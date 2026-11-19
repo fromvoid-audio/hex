@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     NativeSourcePreparationProgress as Progress,
-    prepared::{AppliedAudioSource, PublicationControl},
+    prepared::{AppliedAudioSource, PublicationControl, StoppedEditFence},
 };
 
 enum Phase {
@@ -20,12 +20,16 @@ enum Phase {
 pub struct CapturedCanonicalBases {
     binding: Binding,
     source: (AppliedAudioSource, u64, bool),
+    fence: Option<StoppedEditFence>,
     canonical: NativeDeviceState,
     prepared: PreparedForeignProcessor,
     sample_rate: u32,
     pub(super) capabilities: automation::SourceCapabilities,
 }
 impl CapturedCanonicalBases {
+    pub(crate) fn matches_output_on_control(&self, output: &PublicationControl) -> bool {
+        output.canonical_source_matches_on_control(self.source, self.fence)
+    }
     pub fn binding(&self) -> Binding {
         self.binding
     }
@@ -61,12 +65,13 @@ pub struct CanonicalBasesCapture {
     original: Binding,
     identity: ProcessorInstanceIdentity,
     source: (AppliedAudioSource, u64, bool),
+    fence: Option<StoppedEditFence>,
     canonical: Option<NativeDeviceState>,
     selection: AuthoredSelection,
     presentation: hex_plugin_host::protocol::PresentationPlan,
     prepared: PreparedForeignProcessor,
     sample_rate: u32,
-    steps: [u32; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+    steps: [u32; MAX_FOREIGN_AUTOMATION_TARGETS],
     values: automation::CanonicalParameterBases,
     phase: Phase,
 }
@@ -84,12 +89,53 @@ impl Hosting {
         selection: &AuthoredSelection,
         playing: bool,
     ) -> Result<CanonicalBasesCapture, String> {
+        self.begin_canonical_query(output, source, binding, canonical, selection, playing, None)
+    }
+
+    /// Query a renewed original source after its ordinary graph returned.
+    /// The exact acknowledged restore fence must remain held through scratch
+    /// disposal and processing approval. This grants no graph admission.
+    pub fn begin_stopped_canonical_bases_capture_on_control(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        selection: &AuthoredSelection,
+    ) -> Result<CanonicalBasesCapture, String> {
+        self.begin_canonical_query(
+            output,
+            source,
+            binding,
+            canonical,
+            selection,
+            false,
+            Some(fence),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Exact source plus its optional held restore fence.
+    fn begin_canonical_query(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        selection: &AuthoredSelection,
+        playing: bool,
+        fence: Option<StoppedEditFence>,
+    ) -> Result<CanonicalBasesCapture, String> {
         let identity = Self::saved_identity_on_control(canonical)?;
         if selection.parameters().0 != identity.class {
             return Err("native canonical base class differs".into());
         }
-        let (rate, epoch, original) =
-            output.native_base_capture_source(source, binding, canonical, playing)?;
+        let (rate, epoch, original) = match fence {
+            Some(fence) => {
+                output.native_fenced_base_capture_source(source, fence, binding, canonical)?
+            }
+            None => output.native_base_capture_source(source, binding, canonical, playing)?,
+        };
         let scratch = self.begin_on_control(
             output,
             original.metadata.selection(),
@@ -99,26 +145,28 @@ impl Hosting {
             rate,
             original.profile,
             Some(canonical.clone()),
+            None,
         )?;
         Ok(CanonicalBasesCapture {
             scratch,
             original: binding,
             identity: original.identity,
             source: (source, epoch, playing),
+            fence,
             canonical: Some(canonical.clone()),
             selection: selection.clone(),
             presentation: original.presentation,
             prepared: original.prepared,
             sample_rate: rate,
-            steps: [0; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
-            values: [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS],
+            steps: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
+            values: [None; MAX_FOREIGN_AUTOMATION_TARGETS],
             phase: Phase::Prepare,
         })
     }
 }
 
 impl CanonicalBasesCapture {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn awaiting_processing_approval(&self) -> bool {
         matches!(self.phase, Phase::Verify)
     }
@@ -130,9 +178,7 @@ impl CanonicalBasesCapture {
         )
     }
     fn source_matches(&self, output: &PublicationControl) -> bool {
-        output.output_identity() == Some(self.source.0.output_identity)
-            && output.status.native_parameter_source(self.source.2)
-                == Some((self.source.0, self.source.1))
+        output.canonical_source_matches_on_control(self.source, self.fence)
     }
 
     /// Return once, after disposal/recovery and a final source check. Capacity,
@@ -193,8 +239,10 @@ impl CanonicalBasesCapture {
             Some(Progress::Facts(_)) => {
                 output.complete_native_source_preparation(self.scratch, self.presentation)
             }
-            Some(Progress::Prepared { .. }) => output
-                .start_native_effect_with_authored_selection(self.scratch, Some(&self.selection)),
+            Some(Progress::Prepared { .. }) => output.start_native_effect_with_authored_selection(
+                self.scratch,
+                (!self.selection.parameters().1.is_empty()).then_some(&self.selection),
+            ),
             Some(Progress::Effect { prepared }) => self
                 .read_bases(output, prepared)
                 .map(|()| self.phase = Phase::Retire(Ok(()))),
@@ -227,6 +275,7 @@ impl CanonicalBasesCapture {
         let mut facts = CapturedCanonicalBases {
             binding: self.original,
             source: self.source,
+            fence: self.fence,
             canonical: canonical.clone(),
             prepared: self.prepared,
             sample_rate: self.sample_rate,
@@ -278,6 +327,12 @@ impl CanonicalBasesCapture {
             self.selection.parameters().1,
             metadata.authored_base_values(),
         )?;
+        // The private restored instance has already established the exact
+        // class and compatible processing profile. An unlaned state has no
+        // parameter capabilities to read or claim.
+        if self.selection.parameters().1.is_empty() {
+            return Ok(());
+        }
         let canonical = self
             .canonical
             .as_ref()
@@ -300,7 +355,7 @@ impl CanonicalBasesCapture {
                 {
                     return Err("native canonical capabilities differ".into());
                 }
-                let mut steps = [0; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+                let mut steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
                 for ((slot, parameter), &expected) in steps
                     .iter_mut()
                     .zip(source.parameters)
@@ -338,7 +393,7 @@ fn copy_values(
     expected: &[u32],
     mut values: impl Iterator<Item = (u32, f64)>,
 ) -> Result<automation::CanonicalParameterBases, &'static str> {
-    let mut result = [None; hex_plugin_host::transport::MAX_PARAMETER_POINTS];
+    let mut result = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
     if expected.len() > result.len() {
         return Err("native canonical base selection exceeds capacity");
     }

@@ -7,6 +7,94 @@ use crate::native_callback_owner::{
 use crate::prepared::candidate_tests::{finish, serial};
 use std::time::{Duration, Instant};
 
+#[test]
+fn stopped_frontier_preserves_only_actual_quantum_and_empty_receipt() {
+    use crate::plugin_worker::CommittedQuantumState;
+    use hex_engine::ForeignProgramFrontier as Frontier;
+    let key = std::num::NonZeroU64::new(7).unwrap();
+    for (quantum, expected_key) in [
+        (CommittedQuantumState::Closed, None),
+        (CommittedQuantumState::OpenUnprogrammed, None),
+        (CommittedQuantumState::OpenProgram(key), Some(key)),
+    ] {
+        for worker in [Frontier::Unknown, Frontier::Empty, Frontier::Program(key)] {
+            let observed = hex_plugin_host::transport::QuantumObservation::Committed(
+                crate::plugin_worker::CommittedQuantum {
+                    binding: Binding {
+                        root: 1,
+                        instance: 2,
+                        graph: 3,
+                        epoch: 4,
+                    },
+                    state: quantum,
+                },
+            );
+            assert_eq!(
+                stopped_program_frontier(observed, worker),
+                Frontier::Stopped {
+                    open_quantum: expected_key,
+                    worker_empty: worker == Frontier::Empty,
+                }
+            );
+        }
+    }
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    assert_eq!(
+        stopped_program_frontier(
+            hex_plugin_host::transport::QuantumObservation::Untouched(binding),
+            Frontier::Unknown
+        ),
+        Frontier::Stopped {
+            open_quantum: None,
+            worker_empty: false
+        }
+    );
+    assert_eq!(
+        stopped_program_frontier(
+            hex_plugin_host::transport::QuantumObservation::Untouched(binding),
+            Frontier::Empty
+        ),
+        Frontier::Stopped {
+            open_quantum: None,
+            worker_empty: true
+        }
+    );
+}
+
+#[test]
+fn committed_quantum_is_unavailable_without_native_custody_or_after_closing() {
+    let (mut control, _callback) = channel(48_000).unwrap();
+    let binding = Binding {
+        root: 1,
+        instance: 1,
+        graph: 1,
+        epoch: 1,
+    };
+    assert!(
+        control
+            .publication
+            .try_native_source_committed_quantum_on_control(binding)
+            .is_err()
+    );
+    control.publication.enable_native_custody().unwrap();
+    control
+        .publication
+        .status
+        .closing
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        control
+            .publication
+            .try_native_source_committed_quantum_on_control(binding),
+        Err("native automation output is closing")
+    );
+}
+
 fn setup() -> (
     Control,
     Guard<NativeCallbackOwner>,
@@ -141,6 +229,26 @@ fn source_for_profile_with_authored(
     restore: Option<hex_lattice_contract::NativeDeviceState>,
     ids: &[u32],
 ) -> Binding {
+    source_for_profile_with_authored_mode(
+        control,
+        identity,
+        fixture,
+        quantum,
+        restore,
+        ids,
+        crate::plugin_effects::PluginProfile::Effect,
+    )
+}
+
+fn source_for_profile_with_authored_mode(
+    control: &mut Control,
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+    quantum: u16,
+    restore: Option<hex_lattice_contract::NativeDeviceState>,
+    ids: &[u32],
+    mode: crate::plugin_effects::PluginProfile,
+) -> Binding {
     let (build, source, mut preparation) =
         crate::candidate_custody::native_source_test_fixture::input_for(
             fixture,
@@ -155,6 +263,11 @@ fn source_for_profile_with_authored(
     let info_digest = hex_digest(identity_bytes.binary.info_sha256);
     let path = fixture_path(fixture);
     let hosting = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let hosting = if std::env::var_os("HEX_ORDINARY_GROUP_EDITOR_MAIN_DRIVER").is_some() {
+        hosting.with_grouped_editor_callbacks()
+    } else {
+        hosting
+    };
     let binding = hosting
         .begin_on_control(
             control,
@@ -169,19 +282,21 @@ fn source_for_profile_with_authored(
             identity.device_id(),
             12,
             48_000,
-            crate::plugin_effects::PluginProfile::Effect,
+            mode,
             restore,
+            None,
         )
         .unwrap();
     hosting
         .complete_on_control(
             control,
             binding,
-            Some(crate::plugin_effects::EffectPresentation {
+            crate::plugin_effects::EffectPresentation {
                 // Explicit headless fixture inputs, not production/device measurements.
                 input_frames: 77,
                 output_frames: 91,
-            }),
+            }
+            .plan(),
         )
         .unwrap();
     let authored = crate::plugin_effects::AuthoredSelection::from_targets(
@@ -279,6 +394,7 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
                     12,
                     48_000,
                     crate::plugin_effects::PluginProfile::Effect,
+                    None,
                     None,
                 )
                 .is_err()
@@ -417,8 +533,10 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    section_launch_frame: None,
+                    scheduled_cut_frame: None,
                     streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_continuation: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_references: None,
                     playback: Box::new(graph),

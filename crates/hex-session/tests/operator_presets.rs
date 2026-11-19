@@ -315,8 +315,8 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.state_version(), 15);
-    assert_eq!(selected.payload().len(), 1728);
+    assert_eq!(selected.state_version(), 17);
+    assert_eq!(selected.payload().len(), 1760);
     for (id, enabled) in [(513, false), (514, true), (515, true), (516, true)] {
         assert_eq!(
             hex_engine::native_device_parameter_for_class(
@@ -487,4 +487,98 @@ fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_hist
             .len(),
         16
     );
+}
+
+#[test]
+fn pitch_keytrack_history_and_disk_reopen_preserve_independent_amounts() {
+    let mut session = Session::new(48_000, 16, 0).unwrap();
+    let state = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    // Each iteration must be a real edit: leave op4 at0 before testing100.
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &state,
+        ParameterId::from_static(616),
+        ParameterValue::Float(0.0),
+    )
+    .unwrap();
+    let (Created::Track(track), mut graph) = session
+        .command_prepared_revision(
+            Command::InsertTrackWithDevice {
+                name: "keytrack".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state,
+            },
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = session
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    for (i, amount) in [0.0, 25.0, 50.0, 100.0].into_iter().enumerate() {
+        let before = session.project().device(device).unwrap().state().clone();
+        graph = session
+            .commit_device_parameter(
+                device,
+                ParameterId::from_static(613 + i as u32),
+                ParameterValue::Float(amount),
+                Some(&graph),
+            )
+            .unwrap();
+        let after = session.project().device(device).unwrap().state().clone();
+        let undone = session
+            .undo_prepared_revision(Some(&graph))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().device(device).unwrap().state(), &before);
+        graph = session
+            .redo_prepared_revision(Some(&undone))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().device(device).unwrap().state(), &after);
+    }
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "hex-pitch-keytrack-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    struct Saved(std::path::PathBuf);
+    impl Drop for Saved {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let saved = Saved(directory);
+    let path = saved.0.join("keytrack.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(&loaded, session.project());
+    let reopened = Session::from_prepared(loaded, 16, 0, vec![]).unwrap();
+    for (i, amount) in [0.0, 25.0, 50.0, 100.0].into_iter().enumerate() {
+        let state = reopened.project().device(device).unwrap().state();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                state,
+                ParameterId::from_static(613 + i as u32)
+            )
+            .unwrap(),
+            ParameterValue::Float(amount)
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }

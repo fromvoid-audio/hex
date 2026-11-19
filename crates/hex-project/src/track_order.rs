@@ -5,7 +5,8 @@ use std::sync::Arc;
 /// Frozen command membership, not editor selection state. At most MAX_TRACKS
 /// distinct IDs share one immutable, exactly sized allocation across a captured
 /// gesture, its queued request and receipt. Project membership is checked when
-/// applying the command; input order never changes canonical relative order.
+/// applying the command; input order never changes the members' relative order.
+/// GroupTracks uses the last member to choose the new group's destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackSelectionIds(Arc<[TrackId]>);
 

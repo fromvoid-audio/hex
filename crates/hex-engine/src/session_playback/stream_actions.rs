@@ -314,13 +314,104 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
+            let previous = self.route_scratch[index].owner;
             self.route_scratch[index].owner = self
                 .owner_for_target(pending.target, beat, pending.frame)
                 .map_err(|e| Invalid(e.diagnostic_message()))?;
             self.route_scratch[index].pending = None;
+            let fade = self.audio_release_fade();
+            // Other tracks may have transitioned before the requested frontier;
+            // their releases start at their own due frames, not at this visit.
+            super::audio_release::begin(
+                &mut self.route_scratch[index],
+                previous,
+                pending.frame,
+                fade,
+            )
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
         }
         Ok(())
     }
+    /// Visit every stream chunk in the next quantum of at most 256 frames.
+    /// The returned width is capped even when the caller asks for more; callers
+    /// must not treat it as coverage of a longer callback. Route planning uses
+    /// preallocated scratch and does not change committed clocks, routes or
+    /// owners. A failed visit leaves partial caller storage speculative.
+    pub(crate) fn visit_current_stream_quantum(
+        &mut self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, Invalid> {
+        self.visit_current_stream_quantum_at(0, maximum_frames, playing, ordinary, visit)
+            .map_err(Into::into)
+    }
+
+    /// Project a bounded window at an offset from the unmodified current clock.
+    pub(crate) fn visit_current_stream_quantum_at(
+        &mut self,
+        start_offset: u64,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<usize, crate::playback::StreamQuantumProjectionError> {
+        use crate::playback::StreamQuantumProjectionError as Error;
+        let ordinary = ordinary || self.linear_arrangement_export;
+        if !ordinary && !self.supports_closed_stream_demand() {
+            return Err(Error::Unsupported);
+        }
+        let frames = maximum_frames.min(256);
+        if frames == 0 || !playing.unwrap_or(self.playing) {
+            return Ok(0);
+        }
+        let start = self
+            .performance_frame
+            .checked_add(start_offset)
+            .filter(|start| start.checked_add(frames as u64).is_some())
+            .ok_or(Error::ClockOverflow)?;
+        let mut offset = 0usize;
+        while offset < frames {
+            let performance = start + offset as u64;
+            let (arrangement, pass) = self
+                .project_stream_arrangement(performance)
+                .map_err(Error::Projection)?;
+            self.route_scratch.copy_from_slice(&self.routes);
+            self.project_due_stream_routes(performance, self.anchor)
+                .map_err(Error::Projection)?;
+            let visitor_failed = std::cell::Cell::new(false);
+            let mut checked_visit =
+                |extent| visit(extent).inspect_err(|_| visitor_failed.set(true));
+            let window = self
+                .visit_stream_chunk_in_scope(
+                    ordinary,
+                    &self.route_scratch,
+                    performance,
+                    arrangement,
+                    self.route_state_generation,
+                    pass,
+                    true,
+                    frames - offset,
+                    &mut checked_visit,
+                )
+                .map_err(|error| {
+                    if visitor_failed.get() {
+                        Error::Visitor(error)
+                    } else {
+                        Error::Projection(error)
+                    }
+                })?;
+            if window.frames == 0 || window.frames > frames - offset {
+                return Err(Error::Projection(Invalid(
+                    "stream callback projection made no progress",
+                )));
+            }
+            offset += window.frames;
+        }
+        Ok(offset)
+    }
+
     /// Observe an already scheduled original due boundary, including loop wrap.
     /// Native prewarm is revocable; current due demand must still be validated.
     pub(crate) fn visit_pending_stream_chunk(

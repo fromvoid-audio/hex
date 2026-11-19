@@ -47,8 +47,8 @@ fn header_window_in(
         .unwrap();
     (handle, editor)
 }
-fn begin_catalog_drag(visual: &mut VisualTestContext, source: &'static str) {
-    let source = visual.debug_bounds(source).expect("catalog row").center();
+fn begin_device_drag(visual: &mut VisualTestContext, source: &'static str) {
+    let source = visual.debug_bounds(source).expect("drag source").center();
     visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
         point(source.x + px(12.), source.y),
@@ -64,7 +64,7 @@ fn drag_to_header(
     mode: EditorMode,
     source: &'static str,
 ) -> gpui::Background {
-    begin_catalog_drag(visual, source);
+    begin_device_drag(visual, source);
     let prefix = if mode == EditorMode::Arrangement {
         "arrangement-track-header"
     } else {
@@ -174,7 +174,9 @@ fn header_effect_drop_appends_to_unselected_track_once_and_keeps_history(cx: &mu
 }
 
 #[gpui::test]
-fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut TestAppContext) {
+fn header_instrument_drop_inserts_or_replaces_and_preserves_effects_and_history(
+    cx: &mut TestAppContext,
+) {
     cx.update(crate::editor::bind_editor_keys);
     for mode in [EditorMode::Arrangement, EditorMode::Session] {
         let mut accepted_feedback = None;
@@ -189,7 +191,6 @@ fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut T
             let Created::Track(empty) = event.created.unwrap() else {
                 panic!("track")
             };
-            let mut state = event.state;
             let target = if chain == 1 { selected } else { empty };
             if chain == 2 {
                 service
@@ -202,9 +203,19 @@ fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut T
                         before: None,
                     })
                     .unwrap();
-                state = receive_service_event(&service).state;
+                receive_service_event(&service);
             }
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track: target,
+                    start: hex_project::BeatTime::ONE,
+                    length: hex_project::BeatTime::from_quarters(4).unwrap(),
+                }))
+                .unwrap();
+            let state = receive_service_event(&service).state;
             let original = state.project.clone();
+            let original_track = original.track(target).unwrap();
+            let old_instrument = original_track.instrument().map(|device| device.id());
             let (handle, editor) = header_window(cx, service, state, selected, mode);
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.simulate_resize(size(px(1600.), px(700.)));
@@ -215,78 +226,54 @@ fn header_instrument_drop_accepts_only_empty_chain_and_never_replaces(cx: &mut T
                 mode,
                 "browser-device-instrument-hex.instrument.fm4",
             );
-            if chain == 0 {
-                accepted_feedback = Some(feedback);
-                editor.read_with(cx, |view, _| {
-                    assert!(view.last_enqueued_native_device_drop.is_some())
-                });
-                pump_until(&editor, cx, idle);
-                let changed =
-                    editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-                editor.read_with(cx, |view, _| {
-                    let project = &view.state.as_ref().unwrap().project;
-                    let track = project.track(target).unwrap();
-                    assert_eq!(
-                        track
-                            .instrument()
-                            .unwrap()
-                            .state()
-                            .type_id()
-                            .as_str()
-                            .unwrap(),
-                        "hex.instrument.fm4"
-                    );
-                    assert!(track.devices().is_empty());
-                    assert_eq!(project.track(selected), original.track(selected));
-                    assert_eq!(view.selected_track, Some(selected));
-                    assert!(view.error.is_none(), "{:?}", view.error);
-                    assert!(view.last_enqueued_arrangement_device_drop.is_none());
-                });
-                let mut expected = Editor::new((*original).clone(), 8).unwrap();
-                expected
-                    .execute(Command::InsertInstrument {
-                        track: target,
-                        state: hex_engine::default_native_device_state_for_class(
-                            NativeDeviceClass::Instrument,
-                            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.fm4"),
-                        )
-                        .unwrap(),
-                    })
-                    .unwrap();
-                assert_eq!(changed.as_ref(), expected.project());
-                assert!(expected.undo());
-                editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
-                pump_until(&editor, cx, idle);
-                editor.read_with(cx, |view, _| {
-                    assert_eq!(
-                        view.state.as_ref().unwrap().project.as_ref(),
-                        expected.project()
-                    )
-                });
-                editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
-                pump_until(&editor, cx, idle);
-                editor.read_with(cx, |view, _| {
-                    assert_eq!(view.state.as_ref().unwrap().project, changed)
-                });
-            } else {
-                assert_ne!(
-                    Some(&feedback),
-                    accepted_feedback.as_ref(),
-                    "refused header must not paint as an accepted target"
+            if let Some(accepted) = accepted_feedback.as_ref() {
+                assert_eq!(
+                    &feedback, accepted,
+                    "each valid target has accepted feedback"
                 );
-                editor.read_with(cx, |view, _| {
-                    assert!(view.last_enqueued_native_device_drop.is_none());
-                    assert_eq!(view.state.as_ref().unwrap().project, original);
-                    assert!(view.error.as_ref().unwrap().contains(if chain == 1 {
-                        "occupied"
-                    } else {
-                        "empty device chain"
-                    }));
-                    assert!(idle(view));
-                });
+            } else {
+                accepted_feedback = Some(feedback);
             }
             editor.read_with(cx, |view, _| {
-                assert!(view.active_native_device_drag.is_none())
+                assert!(view.last_enqueued_native_device_drop.is_some())
+            });
+            pump_until(&editor, cx, idle);
+            let changed = editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                let track = project.track(target).unwrap();
+                let instrument = track.instrument().unwrap();
+                assert_eq!(
+                    instrument.state().type_id().as_str().unwrap(),
+                    "hex.instrument.fm4"
+                );
+                if let Some(old_id) = old_instrument {
+                    assert_eq!(instrument.id(), old_id);
+                }
+                assert_eq!(track.devices(), original_track.devices());
+                assert_eq!(track.midi_clips(), original_track.midi_clips());
+                assert!(matches!(
+                    track.ordered_device_chain().next(),
+                    Some(hex_project::TrackDeviceRef::Instrument(_))
+                ));
+                if target != selected {
+                    assert_eq!(project.track(selected), original.track(selected));
+                }
+                assert_eq!(view.selected_track, Some(selected));
+                assert!(view.error.is_none(), "{:?}", view.error);
+                assert!(view.active_native_device_drag.is_none());
+                project.clone()
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                let project = &view.state.as_ref().unwrap().project;
+                assert_eq!(project.track(target), original.track(target));
+                assert_eq!(project.track(selected), original.track(selected));
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, changed)
             });
         }
     }
@@ -367,7 +354,7 @@ fn header_drop_refuses_busy_stale_and_escape_without_changing_target_or_selectio
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.simulate_resize(size(px(1600.), px(700.)));
             visual.run_until_parked();
-            begin_catalog_drag(&mut visual, "browser-device-effect-hex.utility");
+            begin_device_drag(&mut visual, "browser-device-effect-hex.utility");
             let prefix = if mode == EditorMode::Arrangement {
                 "arrangement-track-header"
             } else {
@@ -536,6 +523,175 @@ fn header_drop_preserves_invalid_track_gain_draft_without_admitting_an_edit(
         assert!(control.is_editing());
         assert_eq!(control.display_text(), "invalid");
     });
+}
+
+#[gpui::test]
+fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        for move_instrument in [false, true] {
+            let (service, initial, source, effect, _, _) = actor_utility_fixture();
+            let device = if move_instrument {
+                initial
+                    .project
+                    .track(source)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .id()
+            } else {
+                effect
+            };
+            service
+                .submit(Request::Edit(Command::AddTrack {
+                    name: "destination".into(),
+                }))
+                .unwrap();
+            let Created::Track(target) = receive_service_event(&service).created.unwrap() else {
+                panic!("destination track");
+            };
+            service
+                .submit(Request::AddNativeDevice {
+                    track: target,
+                    class: NativeDeviceClass::Effect,
+                    type_id: Box::new(hex_devices::utility::UTILITY_TYPE_ID),
+                    before: None,
+                })
+                .unwrap();
+            let state = receive_service_event(&service).state;
+            let original = state.project.clone();
+            let first = original.track(target).unwrap().devices()[0].id();
+            let (handle, editor) = header_window(cx, service, state, source, mode);
+            editor.update(cx, |view, cx| {
+                view.device_panel_active = true;
+                view.clip_view_open = true;
+                cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.simulate_resize(size(px(1600.), px(800.)));
+            visual.run_until_parked();
+            drag_to_header(
+                &mut visual,
+                target,
+                mode,
+                Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str()),
+            );
+            pump_until(&editor, cx, idle);
+            let changed = editor.read_with(cx, |view, _| {
+                assert!(view.error.is_none(), "{:?}", view.error);
+                let project = &view.state.as_ref().unwrap().project;
+                let ids = |track: TrackId| {
+                    project
+                        .track(track)
+                        .unwrap()
+                        .ordered_device_chain()
+                        .map(|entry| match entry {
+                            hex_project::TrackDeviceRef::Effect(device)
+                            | hex_project::TrackDeviceRef::Instrument(device) => device.id(),
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(ids(target), [first, device]);
+                assert!(!ids(source).contains(&device));
+                assert_eq!(project.device(device), original.device(device));
+                assert_eq!(view.selected_track, Some(source));
+                project.clone()
+            });
+            for (request, expected) in [(Request::Undo, original), (Request::Redo, changed)] {
+                editor.update(cx, |view, _| assert!(view.enqueue(request)));
+                pump_until(&editor, cx, idle);
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(view.state.as_ref().unwrap().project, expected);
+                });
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+        let (service, _, source, first, _, _) = actor_utility_fixture();
+        let add_effect = |track| {
+            service
+                .submit(Request::AddNativeDevice {
+                    track,
+                    class: NativeDeviceClass::Effect,
+                    type_id: Box::new(hex_devices::utility::UTILITY_TYPE_ID),
+                    before: None,
+                })
+                .unwrap();
+            receive_service_event(&service).state
+        };
+        let middle = add_effect(source).project.track(source).unwrap().devices()[1].id();
+        let last = add_effect(source).project.track(source).unwrap().devices()[2].id();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "destination".into(),
+            }))
+            .unwrap();
+        let Created::Track(target) = receive_service_event(&service).created.unwrap() else {
+            panic!("destination track");
+        };
+        let state = add_effect(target);
+        let original = state.project.clone();
+        let existing = original.track(target).unwrap().devices()[0].id();
+        let (handle, editor) = header_window(cx, service, state, source, mode);
+        editor.update(cx, |view, cx| {
+            view.device_panel_active = true;
+            view.clip_view_open = true;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1800.), px(800.)));
+        visual.run_until_parked();
+        let title = |device: DeviceId| -> &'static str {
+            Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str())
+        };
+        let last_title = visual.debug_bounds(title(last)).unwrap().center();
+        let first_title = visual.debug_bounds(title(first)).unwrap().center();
+        visual.simulate_click(last_title, Modifiers::default());
+        visual.simulate_click(
+            first_title,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(view.device_panel.is_selected(first) && view.device_panel.is_selected(last));
+            assert!(!view.device_panel.is_selected(middle));
+        });
+        drag_to_header(&mut visual, target, mode, title(last));
+        pump_until(&editor, cx, idle);
+        let moved = editor.read_with(cx, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let project = &view.state.as_ref().unwrap().project;
+            let effects = |track| {
+                project
+                    .track(track)
+                    .unwrap()
+                    .devices()
+                    .iter()
+                    .map(hex_project::Device::id)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(effects(source), [middle]);
+            assert_eq!(effects(target), [existing, first, last]);
+            for id in [existing, first, last, middle] {
+                assert_eq!(project.device(id), original.device(id));
+            }
+            project.clone()
+        });
+        for (request, expected) in [(Request::Undo, original), (Request::Redo, moved)] {
+            editor.update(cx, |view, _| assert!(view.enqueue(request)));
+            pump_until(&editor, cx, idle);
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, expected);
+            });
+        }
+    }
 }
 
 #[gpui::test]

@@ -325,3 +325,191 @@ fn priority_stop_preserves_only_its_own_output_keyboard_epochs_without_callback_
         control.reclaim();
     }
 }
+
+mod vst_audition_probe {
+    use super::*;
+    use hex_lattice::{
+        DevicePreparationContext, ForeignProcessorNode, ForeignProcessors, NativeDeviceDefinition,
+        NativeDeviceRegistry, PreparedForeignProcessor, PreparedProcessorFactory,
+        ProcessorChainOwner, ProcessorInstanceIdentity, StereoMatrix,
+    };
+    use hex_lattice_contract::{
+        DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+        ParameterDescriptor, ParameterId, ParameterValue,
+    };
+
+    const VST3: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
+    struct Definition(ProcessorInstanceIdentity);
+    impl NativeDeviceMetadata for Definition {
+        fn type_id(&self) -> DeviceTypeId {
+            VST3
+        }
+        fn state_version(&self) -> u32 {
+            1
+        }
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            &[]
+        }
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(VST3, 1, vec![19])
+        }
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state != &self.default_state()? {
+                return Err(DeviceContractError::MalformedState);
+            }
+            Ok(state.clone())
+        }
+        fn read_parameter(
+            &self,
+            _: &NativeDeviceState,
+            _: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            Err(DeviceContractError::UnknownParameter)
+        }
+        fn patch_parameter(
+            &self,
+            _: &NativeDeviceState,
+            _: ParameterId,
+            _: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            Err(DeviceContractError::UnknownParameter)
+        }
+    }
+    impl NativeDeviceDefinition for Definition {
+        fn prepare_matrix(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<StereoMatrix, DeviceContractError> {
+            self.migrate_state(state)?;
+            Ok(StereoMatrix::identity())
+        }
+        fn prepare_instance_runtime_factory(
+            &self,
+            identity: ProcessorInstanceIdentity,
+            state: &NativeDeviceState,
+            context: &DevicePreparationContext<'_>,
+        ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+            self.migrate_state(state)?;
+            if identity != self.0 || context.sample_rate != 48_000 {
+                return Err(DeviceContractError::InvalidId);
+            }
+            let processor = PreparedForeignProcessor::new(8, 3, 16)?
+                .with_binding(hex_lattice_contract::ForeignProcessorBinding {
+                    root: 1,
+                    instance: identity.device_id(),
+                    graph: 1,
+                    epoch: 1,
+                })?
+                .with_instrument_profile();
+            Ok(Some(PreparedProcessorFactory::Foreign(processor)))
+        }
+    }
+    #[derive(Default)]
+    struct Endpoint {
+        on: usize,
+        off: usize,
+        rejected: bool,
+    }
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            Err(DeviceContractError::ForeignProcessingFailed)
+        }
+        fn process_segment_with_notes(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [Frame],
+            _: &[hex_lattice_contract::ForeignParameterPoint],
+            notes: &[hex_lattice::ForeignNote],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            for note in notes {
+                if note.on {
+                    self.on += 1;
+                } else {
+                    self.off += 1;
+                }
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {
+            self.rejected = true;
+        }
+    }
+
+    #[test]
+    fn foreign_audition_render_and_release_do_not_allocate_or_free() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "probe".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let state = NativeDeviceState::new(VST3, 1, vec![19]).unwrap();
+        editor
+            .execute(Command::InsertInstrument { track, state })
+            .unwrap();
+        let instrument = editor.project().track(track).unwrap().instrument().unwrap();
+        let identity = ProcessorInstanceIdentity::new(
+            ProcessorChainOwner::Track(track.value()),
+            instrument.id().value(),
+        )
+        .unwrap();
+        let definition = Definition(identity);
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let revision = Arc::new(
+            hex_engine::PreparedRevision::prepare_with_effect_registry(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let input = Arc::new(
+            ComputerKeyboardInput::default()
+                .with_note_audition(&[(60, 37), (64, 93)], 8)
+                .unwrap(),
+        );
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback
+            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+            .unwrap();
+        input.trigger_note_audition().unwrap();
+        let mut output = [[0.0; 2]; 8];
+        let mut endpoint = Endpoint::default();
+        for _ in 0..2 {
+            let count = allocation_counter::measure(|| {
+                playback
+                    .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+                    .unwrap();
+            });
+            assert_eq!(
+                (
+                    count.count_total,
+                    count.bytes_total,
+                    count.count_current,
+                    count.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert_eq!((endpoint.on, endpoint.off), (2, 2));
+        assert!(!endpoint.rejected);
+        assert!(input.note_audition_finished());
+    }
+}

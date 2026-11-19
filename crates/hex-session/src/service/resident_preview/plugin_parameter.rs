@@ -16,8 +16,36 @@ pub(super) fn operation(
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
 ) -> crate::device_gesture::PreparedGesture {
+    operation_using(
+        session, operation, context, current, preview, sink, admission, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Same canonical owners, with the shared take coordinator.
+pub(in crate::service) fn operation_using(
+    session: &mut Session,
+    operation: PluginGesturePreparation,
+    context: hex_engine::AudioSourceContext,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    mut recording: Option<&mut super::super::plugin_recording::Preparation<'_>>,
+) -> crate::device_gesture::PreparedGesture {
+    let records = recording
+        .as_ref()
+        .is_some_and(|recording| recording.handles(operation));
     let snapshot = match operation {
-        PluginGesturePreparation::Begin { origin, snapshot } => {
+        PluginGesturePreparation::Begin {
+            origin,
+            snapshot,
+            recording,
+        } => {
+            if recording && !records {
+                return Err(SessionError::Invalid(
+                    "vst3 recording requires the durable gesture connection",
+                ));
+            }
             if origin.context != context {
                 return Err(SessionError::Invalid("plugin parameter context changed"));
             }
@@ -83,6 +111,13 @@ pub(super) fn operation(
             }
             restored?;
         }
+        if records
+            && let Some(recording) = recording.as_mut()
+            && let Some(result) =
+                recording.before(session, operation, context, sink, current, admission)
+        {
+            return result;
+        }
         let source = session
             .project()
             .device(device)
@@ -124,25 +159,31 @@ pub(super) fn operation(
                 "manual vst3 automation takeover is unavailable for this device",
             ));
         }
-        let result = sink
-            .prepare_plugin_parameter_gesture(PluginParameterGestureInput {
-                context,
-                operation,
-                canonical_state: state,
-                reading_class,
-                isolated_class,
-                instrument: session
-                    .project()
-                    .native_sources()
-                    .iter()
-                    .any(|source| source.instrument().id() == device),
-            })
-            .map_err(|error| match error {
-                PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
-                PluginParameterGestureError::SourceLost(reason) => {
-                    SessionError::PluginSourceLost(reason)
-                }
-            })?;
+        let result = sink.prepare_plugin_parameter_gesture(PluginParameterGestureInput {
+            context,
+            operation,
+            canonical_state: state,
+            reading_class,
+            isolated_class,
+            confirm_delivery: records,
+            record_touch: records,
+            instrument: session
+                .project()
+                .native_sources()
+                .iter()
+                .any(|source| source.instrument().id() == device),
+        });
+        if records && let Some(recording) = recording.as_mut() {
+            return recording.after(
+                session, operation, context, sink, result, current, admission,
+            );
+        }
+        let result = result.map_err(|error| match error {
+            PluginParameterGestureError::Refused(reason) => SessionError::NativeAudio(reason),
+            PluginParameterGestureError::SourceLost(reason) => {
+                SessionError::PluginSourceLost(reason)
+            }
+        })?;
         let commit = match (operation, result) {
             (
                 PluginGesturePreparation::Commit(_),
@@ -195,7 +236,15 @@ pub(super) fn operation(
         *preview = None;
         Ok(Some((Arc::new(session.project().clone()), prepared)))
     })();
-    if terminal {
+    if matches!(operation, PluginGesturePreparation::Begin { .. })
+        && result.is_ok()
+        && let Some(recording) = recording.as_mut()
+    {
+        // The actor admitted a new gesture; an older resource-free retirement
+        // marker must not classify a newly reused client key as recorded input.
+        recording.state.actor_began();
+    }
+    if terminal && !records {
         sink.finish_plugin_parameter_commit(
             context,
             snapshot.key,
@@ -561,6 +610,37 @@ mod tests {
             plugin_value: Some(PluginParameterValue::new(0.75).unwrap()),
         };
         let mut sink = MissingOutput::default();
+        let recording = operation(
+            &mut session,
+            PluginGesturePreparation::Begin {
+                origin: crate::device_gesture::PluginParameterOrigin {
+                    context,
+                    device,
+                    parameter: 0,
+                    page_first: 0,
+                    metadata_revision: 1,
+                    initial: draft.plugin_value.unwrap(),
+                },
+                snapshot: GestureSnapshot {
+                    sequence: 0,
+                    ..draft
+                },
+                recording: true,
+            },
+            context,
+            &mut None,
+            &mut None,
+            &mut sink,
+            sampler_export::Admission::default(),
+        );
+        assert!(matches!(
+            recording,
+            Err(SessionError::Invalid(
+                "vst3 recording requires the durable gesture connection"
+            ))
+        ));
+        assert!(sink.finished.is_empty());
+        assert_eq!(session.project(), &before);
         assert_eq!(
             sink.received_foreign_program_on_control(
                 hex_lattice_contract::ForeignProcessorBinding {

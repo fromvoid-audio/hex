@@ -6,6 +6,12 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+mod overrange;
+pub use overrange::Overrange;
+
+#[cfg(test)]
+mod channel_tests;
+
 pub const MAX_BINS: usize = 65_536;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Peak {
@@ -16,8 +22,9 @@ pub struct Peak {
 /// source is covered exactly once, even when its length is not divisible by bins.
 #[derive(Debug, Clone)]
 pub struct Waveform {
-    pub source_frames: usize,
-    pub bins: Vec<[Peak; 2]>,
+    source_frames: usize,
+    bins: Vec<[Peak; 2]>,
+    identical_channels: bool,
     // Pairwise extrema above the leaf bins; built once on the control worker.
     levels: Vec<Vec<[Peak; 2]>>,
     samples: Option<Audio>,
@@ -38,6 +45,42 @@ pub struct Repeat {
 }
 
 impl Waveform {
+    /// Immutable extent of the signal represented by this summary.
+    pub fn source_frames(&self) -> usize {
+        self.source_frames
+    }
+
+    /// Immutable leaf bins; mutation would invalidate their cached hierarchy.
+    pub fn bins(&self) -> &[[Peak; 2]] {
+        &self.bins
+    }
+
+    /// Transfer leaf storage on control, retiring the rest of this summary there.
+    pub fn into_bins(self) -> Vec<[Peak; 2]> {
+        self.bins
+    }
+
+    /// Whether every represented channel sample is known to have identical bits.
+    /// False includes unknown peak-only data, even when its extrema match. This
+    /// describes signal content, not the original file's channel count.
+    pub fn has_identical_channels(&self) -> bool {
+        self.identical_channels
+    }
+
+    /// Propagate a complete control producer's sample-equality observation.
+    /// The caller must have compared every represented sample (or preserve an
+    /// existing observation through a channel-preserving conversion). Matching
+    /// extrema alone cannot justify this call; contradictory extrema refuse.
+    pub fn with_identical_channels(mut self) -> Result<Self, ImportError> {
+        if self.bins.iter().any(|pair| pair[0] != pair[1]) {
+            return Err(ImportError::LimitExceeded(
+                "contradictory identical-channel peaks",
+            ));
+        }
+        self.identical_channels = true;
+        Ok(self)
+    }
+
     /// Exact retained PCM identity, for control-side summary reuse across revisions.
     /// A repeated summary never matches here; see `shares_repeat_with`.
     pub fn shares_audio_with(&self, audio: &Audio) -> bool {
@@ -137,6 +180,7 @@ impl Waveform {
         Ok(Self {
             source_frames,
             bins,
+            identical_channels: false,
             levels,
             samples: None,
             sparse: None,
@@ -403,18 +447,31 @@ pub fn summarize_sparse(
     let width = frames / count;
     let extra = frames % count;
     let mut start = 0;
+    let mut identical_channels = true;
     for bin in 0..count {
         let end = start + width + usize::from(bin < extra);
-        bins.push(sparse_peaks(audio, &map, start..end));
+        bins.push(sparse_peaks_observed(audio, &map, start..end, |frame| {
+            identical_channels &= frame[0].to_bits() == frame[1].to_bits();
+        }));
         start = end;
     }
     let mut waveform = Waveform::from_peaks(frames, bins)?;
     waveform.samples = Some(audio.clone());
     waveform.sparse = Some(map);
+    waveform.identical_channels = identical_channels;
     Ok(waveform)
 }
 
 fn sparse_peaks(audio: &Audio, map: &SparseFrameMap, range: Range<usize>) -> [Peak; 2] {
+    sparse_peaks_observed(audio, map, range, |_| {})
+}
+
+fn sparse_peaks_observed(
+    audio: &Audio,
+    map: &SparseFrameMap,
+    range: Range<usize>,
+    mut observe: impl FnMut([f32; 2]),
+) -> [Peak; 2] {
     const SILENCE: [Peak; 2] = [Peak { min: 0.0, max: 0.0 }; 2];
     let length = range.len();
     let mut occupied = 0;
@@ -422,6 +479,7 @@ fn sparse_peaks(audio: &Audio, map: &SparseFrameMap, range: Range<usize>) -> [Pe
     map.visit(range, |_, packed| {
         occupied += packed.len();
         for &sample in &audio.frames()[packed] {
+            observe(sample);
             include(&mut result, sample.map(|x| Peak { min: x, max: x }));
         }
     });
@@ -486,6 +544,7 @@ pub fn summarize_repeated(
     let mut root_summary = summarize_slice(root, requested_bins)?;
     root_summary.samples = Some(audio.clone());
     root_summary.repeat = Some(Repeat { phase: 0, ..repeat });
+    waveform.identical_channels = root_summary.identical_channels;
     waveform.repeat_root = Some(Box::new(root_summary));
     Ok(waveform)
 }
@@ -530,10 +589,12 @@ fn summarize_slice_with_check(
     let width = frames.len() / count;
     let extra = frames.len() % count;
     let mut start = 0;
+    let mut identical_channels = true;
     for bin in 0..count {
         check()?;
         let end = start + width + usize::from(bin < extra);
         let first = frames[start];
+        identical_channels &= first[0].to_bits() == first[1].to_bits();
         let mut peaks = first.map(|sample| Peak {
             min: sample,
             max: sample,
@@ -541,6 +602,7 @@ fn summarize_slice_with_check(
         for window in frames[start + 1..end].chunks(crate::CANCEL_CHECK_FRAMES) {
             check()?;
             for frame in window {
+                identical_channels &= frame[0].to_bits() == frame[1].to_bits();
                 for (peak, sample) in peaks.iter_mut().zip(frame) {
                     peak.min = peak.min.min(*sample);
                     peak.max = peak.max.max(*sample);
@@ -550,7 +612,8 @@ fn summarize_slice_with_check(
         bins.push(peaks);
         start = end;
     }
-    let waveform = Waveform::from_peaks(frames.len(), bins)?;
+    let mut waveform = Waveform::from_peaks(frames.len(), bins)?;
+    waveform.identical_channels = identical_channels;
     check()?;
     Ok(waveform)
 }

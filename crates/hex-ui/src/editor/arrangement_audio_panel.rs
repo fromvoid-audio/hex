@@ -66,6 +66,13 @@ pub(super) fn view(
     let (track, clip_id, position, length, source_start, source_length) =
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
+    let display_gain = view.waveform_clip_gain(clip).unwrap_or(clip.gain());
+    let identity = state.project.track(track)?.color();
+    let active = view.displayed_clip_active(clip_id, clip.active());
+    let waveform_ink =
+        theme::clip_waveform_ink(identity, theme::ClipWaveformBackground::Source, active);
+    let event_ink =
+        theme::clip_waveform_ink(identity, theme::ClipWaveformBackground::Events, active);
     let retained_source_count = clip
         .audio_edit()
         .and_then(|edit| edit.domain.events.as_ref())
@@ -188,6 +195,8 @@ pub(super) fn view(
         view.audio_event_editor.source_view = false;
     }
     let source_view = view.audio_event_editor.source_view;
+    let decibels = view.clip_waveform_geometry_cache.amplitude_scale()
+        == super::waveform::WaveformAmplitudeScale::Decibel;
     let control = if grouped_audio {
         div()
             .id("audio-source-tab")
@@ -236,11 +245,36 @@ pub(super) fn view(
                     })),
             )
             .child(control)
+            .child(
+                super::waveform::button(
+                    if decibels { "db" } else { "linear" },
+                    if decibels {
+                        "waveform scale · switch to linear"
+                    } else {
+                        "waveform scale · switch to db"
+                    },
+                    ("audio-waveform-scale", 0),
+                )
+                .w(px(56.0))
+                .debug_selector(|| "audio-waveform-scale".into())
+                .on_click(cx.listener(|view, _, _, cx| {
+                    let decibels = view.clip_waveform_geometry_cache.amplitude_scale()
+                        != super::waveform::WaveformAmplitudeScale::Decibel;
+                    view.clip_waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(decibels),
+                    );
+                    cx.notify();
+                })),
+            )
             .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
-        waveform_panel =
-            waveform_panel.child(super::audio_event_editor::view(view, render_window, cx)?);
+        waveform_panel = waveform_panel.child(super::audio_event_editor::view(
+            view,
+            render_window,
+            cx,
+            event_ink,
+        )?);
         return Some(details.child(waveform_panel));
     }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
@@ -248,9 +282,9 @@ pub(super) fn view(
             super::waveform::prepared_waveform_view_cached(
                 prepared,
                 clip,
-                clip.start(),
-                clip.start() + clip.duration(),
-                std::rc::Rc::clone(&view.waveform_geometry_cache),
+                display_gain,
+                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
+                waveform_ink,
             ),
         ));
         waveform_panel = waveform_panel.child(div().text_xs().child(theme::text(
@@ -261,6 +295,15 @@ pub(super) fn view(
     waveform_panel = waveform_panel.child(time_ruler(window, viewport));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
+        .on_mouse_down(
+            gpui::MouseButton::Middle,
+            cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                if view.begin_audio_pan(true, event.position, window, cx) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
+        )
         .on_scroll_wheel(cx.listener(|view, event, window, cx| {
             if view.audio_navigation_wheel(event, true, window, cx) {
                 cx.stop_propagation();
@@ -309,9 +352,10 @@ pub(super) fn view(
     let measure = cx.entity().clone();
     canvas_region = canvas_region.children([gpui::canvas(
         |_, _, _| (),
-        move |bounds, _, _, cx| {
+        move |bounds, _, window, cx| {
             measure.update(cx, |view, _| {
-                view.audio_event_editor.source_bounds = Some(bounds)
+                view.audio_event_editor.source_bounds = Some(bounds);
+                view.renew_audio_pan(true, bounds, window, measure.entity_id());
             });
         },
     )
@@ -324,11 +368,11 @@ pub(super) fn view(
             let visible = super::waveform::waveform_source_segment_gain_view_cached(
                 waveform,
                 0,
-                first,
-                end,
-                window.gain,
+                first..end,
+                display_gain.linear(),
                 false,
-                std::rc::Rc::clone(&view.waveform_geometry_cache),
+                std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
+                waveform_ink,
             );
             canvas_region = canvas_region.child(
                 div()
@@ -450,27 +494,6 @@ fn frame_step(sample_rate: u32, fine: bool) -> u64 {
         1
     } else {
         u64::from((sample_rate / 1_000).max(1))
-    }
-}
-
-#[cfg(test)]
-fn selection_command_for(
-    window: ClipWindow,
-    field: Field,
-    direction: i8,
-    step: u64,
-    multiple: bool,
-) -> Option<Command> {
-    if field == Field::Gain && multiple {
-        let millidb = i32::try_from(step)
-            .ok()?
-            .checked_mul(i32::from(direction))?;
-        Some(Command::EditClips {
-            clips: vec![window.clip],
-            edit: hex_project::ClipEdit::GainBy { millidb },
-        })
-    } else {
-        command_for(window, field, direction, step)
     }
 }
 
@@ -944,6 +967,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn review_play_start_uses_retained_source_looping_independent_of_placement_mode() {
         for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
             for raw in [false, true] {
@@ -994,25 +1018,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn gain_steps_use_db_units_and_refuse_the_bounds() {
         let mut captured = window();
         assert!(matches!(
             command_for(captured, Field::Gain, -1, 100),
             Some(Command::SetAudioClipGain { millidb: -100, .. })
         ));
-        for (direction, step, delta) in [(-1, 100, -100), (1, 1_000, 1_000)] {
-            assert!(
-                matches!(selection_command_for(captured, Field::Gain, direction, step, true),
-                Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb } })
-                if clips == vec![captured.clip] && millidb == delta)
-            );
-        }
         captured.gain = hex_project::ClipGain::new(24_000).unwrap();
         assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
         captured.gain = hex_project::ClipGain::new(-60_000).unwrap();
         assert!(command_for(captured, Field::Gain, -1, 100).is_none());
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     pub(super) fn window() -> ClipWindow {
         use hex_project::{Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
@@ -1074,6 +1093,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn controls_map_to_typed_clip_edits_and_loop_toggle() {
         let window = window();
         assert!(matches!(
@@ -1109,6 +1129,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     fn invalid_edges_and_overflow_refuse_without_partial_command() {
         let window = window();
         assert!(command_for(window, Field::Length, -1, 1_000).is_none());

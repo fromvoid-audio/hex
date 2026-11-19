@@ -27,6 +27,10 @@ required-features = ["instrument-test-support"]
 name = "playback_stack"
 required-features = ["instrument-test-support"]
 
+[[example]]
+name = "profile_stateful_tails"
+required-features = ["instrument-test-support"]
+
 [dev-dependencies]
 hex-tuning = { path = "../hex-tuning" }
 hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

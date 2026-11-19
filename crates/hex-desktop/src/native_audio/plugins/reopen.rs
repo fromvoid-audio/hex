@@ -250,7 +250,7 @@ impl Plugins {
             )
         })();
         let binding = selected.and_then(|selected| {
-            let authored = AuthoredSelection::from_targets(input.authored_plugin_targets(device))?;
+            let authored = edits::requested_selection(&input, device)?;
 
             self.host
                 .as_ref()
@@ -270,6 +270,7 @@ impl Plugins {
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 )
                 .map(|binding| (binding, authored))
         });
@@ -287,7 +288,11 @@ impl Plugins {
                     queued: false,
                     observes_latency: false,
                     editor_open: false,
+                    editor_transfer: false,
+                    editor_open_on_insert: false,
                     edit_backlog: false,
+                    edit_recovery: None,
+                    pending_touch: None,
                     #[cfg(all(test, feature = "allocation-probe"))]
                     observed_latency_receipt: false,
                     #[cfg(all(test, feature = "allocation-probe"))]

@@ -74,7 +74,7 @@ fn channel_bar(
 ) -> Div {
     let peak_selector = format!("{id}-peak");
     let held_above = held.is_finite() && held > 1.0;
-    crate::level_meter::meter_body(
+    crate::level_meter::signal_meter(
         id,
         crate::MeterLevel::fraction_from_amplitude(level),
         crate::LevelMeterStyle {

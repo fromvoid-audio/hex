@@ -40,6 +40,13 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    AudioInput {
+        id: Option<hex_audio::input_devices::InputDeviceId>,
+        name: gpui::SharedString,
+    },
+    SourcePicker(device_panel::SourcePickerChoice),
+    SourceManager(device_panel::SourceManagerAction),
+    HistoryPlayback(super::history_playback::MenuAction),
     Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
     ClipAlias(ClipAliasAction),
@@ -69,6 +76,10 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    WaveformDecibels {
+        generation: u64,
+        enabled: bool,
+    },
     InputQuantization {
         generation: u64,
         policy: hex_project::InputQuantization,
@@ -91,7 +102,9 @@ pub(super) enum EditorContextAction {
         before: Option<SceneId>,
     },
     UtilityMode(UtilityModeAction),
+    AddModulator(device_panel::AddModulatorAction),
     DeviceComparison(super::device_comparison::Intent),
+    DevicePreset(super::device_preset::Intent),
     RenameTrackName {
         generation: u64,
         revision: u64,
@@ -213,8 +226,9 @@ impl EditorView {
         };
         if let Some(tracks) = after_track.and_then(|id| self.track_membership(Some(id))) {
             use hex_session::service::TrackClipboardAction as Action;
+            let group_tracks = self.track_group_membership(after_track);
             if let Some(menu) = &mut self.context_menu {
-                menu.items.push(MenuItem {
+                menu.items.extend(group_tracks.map(|tracks| MenuItem {
                     label: "group tracks",
                     swatch: None,
                     checked: false,
@@ -222,11 +236,11 @@ impl EditorView {
                         generation,
                         revision,
                         command: Command::GroupTracks {
-                            tracks: tracks.clone(),
+                            tracks,
                             name: "group".into(),
                         },
                     },
-                });
+                }));
                 if let Some(track) = after_track.filter(|id| {
                     state
                         .project
@@ -492,7 +506,7 @@ impl EditorView {
                 ),
             ];
             if linked {
-                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push(("make unique · shift+i", ClipAliasOperation::MakeUnique));
                 entries.push((
                     "apply settings to aliases",
                     ClipAliasOperation::ApplySettings,
@@ -607,6 +621,11 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::SourcePicker(choice) => choice.perform(self, window, cx),
+            EditorContextAction::SourceManager(action) => action.perform(self, window, cx),
+            EditorContextAction::HistoryPlayback(action) => {
+                self.history_playback_menu_action(action, cx)
+            }
             EditorContextAction::Tags(action) => self.perform_tag_action(action, window, cx),
             EditorContextAction::Automation(action) => {
                 self.automation_menu_action(action, window, cx)
@@ -663,6 +682,10 @@ impl EditorView {
                     cx.notify();
                 }
             }
+            EditorContextAction::AudioInput { id, name } => {
+                self.select_audio_input(id, name);
+                cx.notify();
+            }
             EditorContextAction::LaunchQuantization {
                 generation,
                 quantization,
@@ -692,8 +715,23 @@ impl EditorView {
                     cx.notify();
                 }
             }
+            EditorContextAction::WaveformDecibels {
+                generation,
+                enabled,
+            } => {
+                if generation == self.project_generation {
+                    self.waveform_geometry_cache.set_amplitude_scale(
+                        super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
+                    );
+                    cx.notify();
+                }
+            }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
+            }
+            EditorContextAction::AddModulator(action) => action.perform(self),
+            EditorContextAction::DevicePreset(target) => {
+                self.perform_device_preset_action(target, cx)
             }
             EditorContextAction::BounceTrack {
                 generation,
@@ -912,6 +950,12 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::AudioInput { .. } => self.audio_recorder.blocks_edits(),
+                EditorContextAction::SourcePicker(choice) => !choice.current(self),
+                EditorContextAction::SourceManager(action) => !action.current(self),
+                EditorContextAction::HistoryPlayback(action) => {
+                    !self.history_playback_menu_current(action)
+                }
                 EditorContextAction::Tags(action) => action.stale(self),
                 EditorContextAction::Automation(action) => self.automation_action_stale(action),
                 EditorContextAction::ClipAlias(target) => !self.clip_alias_menu_current(target),
@@ -924,6 +968,10 @@ impl EditorView {
                 }
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
+                }
+                EditorContextAction::AddModulator(action) => !action.current(self),
+                EditorContextAction::DevicePreset(target) => {
+                    !super::device_preset::current(self, target)
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
@@ -962,6 +1010,7 @@ impl EditorView {
                     *generation != self.project_generation
                 }
                 EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::WaveformDecibels { generation, .. }
                 | EditorContextAction::LaunchQuantization { generation, .. }
                 | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
@@ -1025,11 +1074,15 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            if !menu
-                .items
-                .iter()
-                .any(|item| matches!(item.action, EditorContextAction::Automation(_)))
-            {
+            if !menu.items.iter().any(|item| {
+                matches!(
+                    item.action,
+                    EditorContextAction::Automation(_)
+                        | EditorContextAction::AudioInput { .. }
+                        | EditorContextAction::SourcePicker(_)
+                        | EditorContextAction::SourceManager(_)
+                )
+            }) {
                 return crate::context_menu::popup(
                     menu,
                     window,
@@ -1054,6 +1107,12 @@ impl EditorView {
 
 pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
     match &item.action {
+        EditorContextAction::AudioInput { id: Some(_), name } => {
+            hex_session::service::text::verbatim(name).into()
+        }
+        EditorContextAction::AudioInput { name, .. } => name.clone(),
+        EditorContextAction::SourcePicker(choice) => choice.label.clone(),
+        EditorContextAction::SourceManager(action) => action.label.clone(),
         EditorContextAction::Tags(action) => action.label(),
         EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
             if item.label == "parameter" =>
@@ -1292,6 +1351,7 @@ mod tests {
                     EditorContextAction::ClipFlavor { .. }
                         | EditorContextAction::ClipAlias(_)
                         | EditorContextAction::AdaptiveGrid { .. }
+                        | EditorContextAction::WaveformDecibels { .. }
                 )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
@@ -1425,7 +1485,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn track_header_offers_nine_non_gray_swatches_and_stale_clip_action_is_ignored(
+    fn track_header_offers_eight_non_blue_swatches_and_stale_clip_action_is_ignored(
         cx: &mut TestAppContext,
     ) {
         let (project, track, _, clip) = audio_project();
@@ -1455,7 +1515,7 @@ mod tests {
                     .iter()
                     .filter(|item| item.swatch.is_some())
                     .count(),
-                9
+                8
             );
             let choices: Vec<_> = menu
                 .items
@@ -1465,8 +1525,9 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(choices, ElementColor::ALL[1..]);
+            assert_eq!(choices, ElementColor::TRACK_CHOICES);
             assert!(!choices.contains(&ElementColor::Gray));
+            assert!(!choices.contains(&ElementColor::Blue));
             // Color and density are independent checkmark groups in one popup.
             let checked_colors: Vec<_> = menu
                 .items
@@ -2085,7 +2146,7 @@ mod tests {
             for label in [
                 "duplicate · d",
                 "duplicate alias · cmd+d",
-                "make unique · i",
+                "make unique · shift+i",
                 "apply settings to aliases",
             ] {
                 assert!(menu.items.iter().any(|item| item.label == label));
@@ -2128,7 +2189,7 @@ mod tests {
                 .unwrap()
                 .items
                 .iter()
-                .find(|item| item.label == "make unique · i")
+                .find(|item| item.label == "make unique · shift+i")
                 .unwrap()
                 .action
                 .clone()

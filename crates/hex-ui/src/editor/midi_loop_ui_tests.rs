@@ -16,9 +16,10 @@ fn at(v: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
 }
 fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
     let b = content_bounds(v, "midi-loop-ruler");
-    let scale = gpui::ScaledPixels::from(v.update(|window, _| window.scale_factor()));
+    let scale_factor = v.update(|window, _| window.scale_factor());
+    let scale = gpui::ScaledPixels::from(scale_factor);
     let color: gpui::Background = gpui::Hsla::from(rgb(theme::color(if on {
-        theme::PaletteRole::Primary
+        theme::PaletteRole::Text
     } else {
         theme::PaletteRole::Muted
     })))
@@ -33,8 +34,14 @@ fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
         .collect();
     assert_eq!(bars.len(), 1);
     let width = f32::from(b.size.width);
-    assert!((bars[0].0.origin.x / scale - (f32::from(b.origin.x) + width * first)).abs() < 0.05);
-    assert!((bars[0].0.size.width / scale - width * (last - first)).abs() < 0.05);
+    // Both edges are rounded in physical pixels by layout and painting.
+    let pixel = 1.0 / scale_factor;
+    assert!(
+        (bars[0].0.origin.x / scale - (f32::from(b.origin.x) + width * first)).abs() <= pixel,
+        "content={b:?} quad={:?} scale={scale:?} first={first}",
+        bars[0].0
+    );
+    assert!((bars[0].0.size.width / scale - width * (last - first)).abs() <= pixel);
 }
 #[gpui::test]
 fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeats(

@@ -57,7 +57,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
     let (mut visual, editor, tracks) = fixture(cx, 2);
     visual.update(|_, cx| {
         editor.update(cx, |view, cx| {
-            view.track_meters.set_test_level(tracks[0], 0.5);
+            view.track_meters.set_test_level(tracks[0], [0.5, 0.125]);
             cx.notify();
         })
     });
@@ -66,12 +66,12 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
     let meter = bounds(&mut visual, "track-output-meter", tracks[0]);
     let first_fill = visual
         .debug_bounds(Box::leak(
-            format!("track-output-meter-{}-fill", tracks[0].value()).into_boxed_str(),
+            format!("track-output-meter-{}-left-fill", tracks[0].value()).into_boxed_str(),
         ))
         .unwrap();
     let other_fill = visual
         .debug_bounds(Box::leak(
-            format!("track-output-meter-{}-fill", tracks[1].value()).into_boxed_str(),
+            format!("track-output-meter-{}-left-fill", tracks[1].value()).into_boxed_str(),
         ))
         .unwrap();
     assert!(meter.left() >= header.left() && meter.right() <= header.right());
@@ -93,7 +93,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
             "track-pan",
             "track-mute",
             "track-solo",
-            "track-arm-unavailable",
+            "track-audio-arm",
         ] {
             let control = bounds(&mut visual, prefix, tracks[0]);
             assert!(
@@ -101,7 +101,7 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
                 "{prefix} {control:?} overlaps {meter:?}"
             );
         }
-        let arm = bounds(&mut visual, "track-arm-unavailable", tracks[0]);
+        let arm = bounds(&mut visual, "track-audio-arm", tracks[0]);
         let pan = bounds(&mut visual, "track-pan", tracks[0]);
         assert_eq!(arm.right(), pan.right());
     }
@@ -135,7 +135,7 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
     assert_eq!(lane.origin.x + lane.size.width, header.origin.x);
     for selector in [
         "arrangement-grid",
-        "arrangement-overview-map",
+        "main-arrangement-map",
         "timeline-ruler",
         "main-track-lane",
     ] {
@@ -201,7 +201,7 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
 }
 
 #[gpui::test]
-fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color(
+fn tall_track_header_keeps_controls_at_default_offset_and_extends_plate_and_meter(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, tracks) = fixture(cx, 2);
@@ -217,11 +217,21 @@ fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color
     assert_eq!(tall_controls.top() - tall.top(), top_offset);
     let header_selector: &'static str =
         Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
-    let name_selector: &'static str =
-        Box::leak(format!("track-name-area-{}", track.value()).into_boxed_str());
-    assert_eq!(
-        visual.rendered_background(header_selector),
-        visual.rendered_background(name_selector)
+    let plate = bounds(&mut visual, "track-name-plate", track);
+    let meter = bounds(&mut visual, "track-output-meter", track);
+    assert_eq!(plate.top(), tall.top());
+    assert_eq!(plate.bottom(), tall.bottom() - px(1.0));
+    assert!(meter.left() >= tall_controls.right());
+    assert_eq!(meter.size.height, tall.size.height - px(6.0));
+    assert!(
+        [
+            super::super::theme::PaletteRole::Surface,
+            super::super::theme::PaletteRole::Raised,
+            super::super::theme::PaletteRole::Hover
+        ]
+        .iter()
+        .any(|role| visual.rendered_background(header_selector)
+            == Some(gpui::rgb(super::super::theme::color(*role)).into()))
     );
     let other_name = bounds(&mut visual, "track-name", tracks[1]).center();
     visual.simulate_click(other_name, Modifiers::default());
@@ -232,9 +242,15 @@ fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_track, Some(track))
     });
-    assert_eq!(
-        visual.rendered_background(header_selector),
-        visual.rendered_background(name_selector)
+    assert!(
+        [
+            super::super::theme::PaletteRole::Surface,
+            super::super::theme::PaletteRole::Raised,
+            super::super::theme::PaletteRole::Hover
+        ]
+        .iter()
+        .any(|role| visual.rendered_background(header_selector)
+            == Some(gpui::rgb(super::super::theme::color(*role)).into()))
     );
     // A narrow header must still leave a readable label beside the mixer.
     let width_handle = bounds(&mut visual, "track-width-resize", track).center();
@@ -257,11 +273,26 @@ fn bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned(cx: &mut Test
     let before = bounds(&mut visual, "arrangement-track-header", track);
     let main = visual.debug_bounds("pinned-main-track").unwrap();
     let handle = bounds(&mut visual, "track-height-resize", track).center();
-    drag(&mut visual, handle, point(handle.x, handle.y + px(80.0)));
+    visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    for (delta, height) in [(10.0, 44.0), (12.0, 66.0), (32.0, 66.0), (34.0, 88.0)] {
+        visual.simulate_mouse_move(
+            point(handle.x, handle.y + px(delta)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_heights(&mut visual, &tracks, &[height, 44.0]);
+    }
+    visual.simulate_mouse_up(
+        point(handle.x, handle.y + px(80.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
     let header = bounds(&mut visual, "arrangement-track-header", track);
     let lane = bounds(&mut visual, "arrangement-lane", track);
     let next = bounds(&mut visual, "arrangement-track-header", tracks[1]);
-    assert_eq!(header.size.height, before.size.height + px(80.0));
+    assert_eq!(header.size.height, before.size.height + px(88.0));
     assert_eq!(lane.origin.y, header.origin.y);
     assert_eq!(lane.size.height, header.size.height);
     assert_eq!(next.origin.y, header.origin.y + header.size.height);
@@ -299,7 +330,7 @@ fn bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned(cx: &mut Test
         bounds(&mut visual, "arrangement-track-header", track)
             .size
             .height,
-        body.size.height.max(px(TRACK_ROW_HEIGHT))
+        px((f32::from(body.size.height) / 22.0).floor() * 22.0)
     );
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
@@ -323,7 +354,7 @@ fn resize_capture_cancels_on_escape_lost_button_window_change_and_stale_revision
             bounds(&mut visual, "arrangement-track-header", track)
                 .size
                 .height,
-            before.size.height + px(60.0)
+            before.size.height + px(66.0)
         );
         match mode {
             0 => visual.simulate_keystrokes("escape"),
@@ -414,7 +445,7 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
     drag(&mut visual, handle, point(handle.x, handle.y + px(60.0)));
     let resized = bounds(&mut visual, "arrangement-track-header", tracks[12]);
     assert_eq!(resized.origin.y, anchor.origin.y);
-    assert_eq!(resized.size.height, anchor.size.height + px(60.0));
+    assert_eq!(resized.size.height, anchor.size.height + px(66.0));
     assert_eq!(
         bounds(&mut visual, "arrangement-lane", tracks[12])
             .size
@@ -472,7 +503,11 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     let lane = visual.debug_bounds("main-track-lane").unwrap();
     assert_eq!(ruler.size.width, lane.size.width);
-    assert!(lane.size.width >= px(super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH));
+    assert!(
+        lane.size.width >= px(super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH),
+        "lane={lane:?}, main={main:?}, ruler={ruler:?}, content={:?}",
+        visual.debug_bounds("arrangement-content")
+    );
     assert!(main.size.width >= px(TRACK_HEADER_WIDTH));
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
@@ -547,7 +582,7 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
         visual.simulate_mouse_down(handle, MouseButton::Left, alt);
         visual.simulate_mouse_move(to, MouseButton::Left, alt);
         visual.run_until_parked();
-        let expected = old[0] + px(20.0);
+        let expected = old[0] + px(22.0);
         let mut previous_bottom = None;
         for track in &tracks {
             let header = bounds(&mut visual, "arrangement-track-header", *track);
@@ -598,7 +633,7 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
 }
 
 #[gpui::test]
-fn minimum_track_height_keeps_only_readable_title_and_resize_hit(cx: &mut TestAppContext) {
+fn minimum_track_height_fits_compact_controls_and_resize_hit(cx: &mut TestAppContext) {
     let (mut visual, editor, tracks) = fixture(cx, 1);
     let track = tracks[0];
     let handle = bounds(&mut visual, "track-height-resize", track).center();
@@ -606,7 +641,7 @@ fn minimum_track_height_keeps_only_readable_title_and_resize_hit(cx: &mut TestAp
     let header = bounds(&mut visual, "arrangement-track-header", track);
     let title = bounds(&mut visual, "track-name", track);
     let resize = bounds(&mut visual, "track-height-resize", track);
-    assert_eq!(header.size.height, px(23.0));
+    assert_eq!(header.size.height, px(22.0));
     assert_eq!(title.size.height, px(18.0));
     let meter = bounds(&mut visual, "track-output-meter", track);
     assert!(
@@ -614,13 +649,25 @@ fn minimum_track_height_keeps_only_readable_title_and_resize_hit(cx: &mut TestAp
         "compact title must leave the meter visible"
     );
     assert!(title.top() >= header.top() && title.bottom() <= resize.top());
+    let mut left = title.right();
     for prefix in [
-        "track-controls",
         "track-mute",
-        "track-volume",
-        "track-pan",
+        "gain-lane-show",
         "track-return-sends",
+        "sample-arm-track",
+        "track-solo",
+        "track-audio-arm",
     ] {
+        let control = bounds(&mut visual, prefix, track);
+        assert!(control.left() >= left && control.right() <= meter.left());
+        assert!(control.top() >= header.top() && control.bottom() <= resize.top());
+        left = control.right();
+    }
+    assert_eq!(
+        bounds(&mut visual, "track-mute", track).size.width,
+        px(34.0)
+    );
+    for prefix in ["track-volume", "track-pan"] {
         assert!(
             visual
                 .debug_bounds(Box::leak(
@@ -708,11 +755,11 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
         let edge = bounds(&mut visual, "track-height-resize", track).center();
         drag(&mut visual, edge, point(edge.x, edge.y + px(delta)));
     }
-    assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 132.0]);
     focus_workspace(&mut visual, &editor);
     for key in ["ctrl-h", "alt-h", "shift-h"] {
         visual.simulate_keystrokes(key);
-        assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
+        assert_heights(&mut visual, &tracks, &[88.0, 132.0]);
     }
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("h").unwrap(),
@@ -721,7 +768,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     visual.simulate_event(KeyUpEvent {
         keystroke: Keystroke::parse("h").unwrap(),
     });
-    assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 132.0]);
     // The header is a real nested focus owner, not a global shortcut context.
     let name = bounds(&mut visual, "track-name", tracks[0]).center();
     visual.simulate_click(name, Modifiers::default());
@@ -729,7 +776,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
         editor.read_with(cx, |view, _| assert!(view.track_header_focused(window)));
     });
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[22.0, 22.0]);
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("h").unwrap(),
         is_held: true,
@@ -737,7 +784,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     visual.simulate_event(KeyUpEvent {
         keystroke: Keystroke::parse("h").unwrap(),
     });
-    assert_heights(&mut visual, &tracks, &[23.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[22.0, 22.0]);
     assert_eq!(
         visual
             .debug_bounds(Box::leak(
@@ -754,17 +801,17 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
             .unwrap()
             .size
             .height,
-        px(23.0)
+        px(22.0)
     );
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 132.0]);
     visual.simulate_keystrokes("tab h");
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.mode, super::EditorMode::Session)
     });
     visual.simulate_keystrokes("tab");
-    assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 132.0]);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
         assert_eq!(view.worker_requests_pending, 0);
@@ -801,7 +848,7 @@ fn command_h_resets_track_heights_and_exits_overview(cx: &mut TestAppContext) {
     visual.simulate_mouse_down(edge, MouseButton::Left, alt);
     visual.simulate_mouse_move(to, MouseButton::Left, alt);
     visual.simulate_mouse_up(to, MouseButton::Left, alt);
-    assert_heights(&mut visual, &tracks, &[84.0, 84.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 88.0]);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("cmd-h");
     assert_heights(&mut visual, &tracks, &[44.0, 44.0]);
@@ -810,11 +857,11 @@ fn command_h_resets_track_heights_and_exits_overview(cx: &mut TestAppContext) {
     let name = bounds(&mut visual, "track-name", tracks[0]).center();
     visual.simulate_click(name, Modifiers::default());
     visual.simulate_keystrokes("cmd-r cmd-h");
-    assert_heights(&mut visual, &tracks, &[84.0, 44.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 44.0]);
     visual.simulate_keystrokes("escape");
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("tab cmd-h tab");
-    assert_heights(&mut visual, &tracks, &[84.0, 44.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 44.0]);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
         assert!(view.last_enqueued_edit.is_none());
@@ -832,10 +879,10 @@ fn h_overview_single_and_option_resizes_are_temporary_and_reentry_starts_compact
     }
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.0; 3]);
+    assert_heights(&mut visual, &tracks, &[22.0; 3]);
     let edge = bounds(&mut visual, "track-height-resize", tracks[0]).center();
     drag(&mut visual, edge, point(edge.x, edge.y + px(30.0)));
-    assert_heights(&mut visual, &tracks, &[53.0, 23.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[44.0, 22.0, 22.0]);
     let alt = Modifiers {
         alt: true,
         ..Modifiers::default()
@@ -844,22 +891,22 @@ fn h_overview_single_and_option_resizes_are_temporary_and_reentry_starts_compact
     let to = point(edge.x, edge.y + px(40.0));
     visual.simulate_mouse_down(edge, MouseButton::Left, alt);
     visual.simulate_mouse_move(to, MouseButton::Left, alt);
-    assert_heights(&mut visual, &tracks, &[63.0; 3]);
+    assert_heights(&mut visual, &tracks, &[66.0; 3]);
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(to, MouseButton::Left, alt);
-    assert_heights(&mut visual, &tracks, &[53.0, 23.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[44.0, 22.0, 22.0]);
     let edge = bounds(&mut visual, "track-height-resize", tracks[1]).center();
     let to = point(edge.x, edge.y + px(40.0));
     visual.simulate_mouse_down(edge, MouseButton::Left, alt);
     visual.simulate_mouse_move(to, MouseButton::Left, alt);
     visual.simulate_mouse_up(to, MouseButton::Left, alt);
-    assert_heights(&mut visual, &tracks, &[63.0; 3]);
+    assert_heights(&mut visual, &tracks, &[66.0; 3]);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[84.0, 124.0, 44.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 132.0, 44.0]);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.0; 3]);
+    assert_heights(&mut visual, &tracks, &[22.0; 3]);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[84.0, 124.0, 44.0]);
+    assert_heights(&mut visual, &tracks, &[88.0, 132.0, 44.0]);
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
     });
@@ -921,13 +968,13 @@ fn h_overview_defers_to_text_numeric_modal_nested_focus_and_resize_capture(
     visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[74.0]);
+    assert_heights(&mut visual, &tracks, &[66.0]);
     editor.read_with(&visual, |view, _| assert!(view.track_resize_active()));
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.0]);
+    assert_heights(&mut visual, &tracks, &[22.0]);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[74.0]);
+    assert_heights(&mut visual, &tracks, &[66.0]);
 }
 
 #[gpui::test]
@@ -947,6 +994,23 @@ fn h_enabled_keyboard_owns_note_69_and_release_while_pending_edits_block_overvie
     pump(&editor, &mut visual);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("m");
+    let before = editor.read_with(&visual, |view, _| view.worker_requests_pending);
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("t").unwrap(),
+        is_held: false,
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.worker_requests_pending, before,
+            "MIDI note must not add a track"
+        );
+        let notes: Vec<_> = view.computer_keyboard.physical_notes().collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].pitch, 66);
+    });
+    visual.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse("t").unwrap(),
+    });
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("h").unwrap(),
         is_held: false,
@@ -994,7 +1058,7 @@ fn h_enabled_keyboard_owns_note_69_and_release_while_pending_edits_block_overvie
     pump(&editor, &mut visual);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &[track], &[23.0]);
+    assert_heights(&mut visual, &[track], &[22.0]);
 }
 
 #[gpui::test]
@@ -1010,18 +1074,18 @@ fn h_overview_topology_prunes_both_height_maps_and_generation_restarts_normal_la
     visual.simulate_keystrokes("h");
     let edge = bounds(&mut visual, "track-height-resize", tracks[0]).center();
     drag(&mut visual, edge, point(edge.x, edge.y + px(17.0)));
-    assert_heights(&mut visual, &tracks, &[40.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[44.0, 22.0]);
     let project = editor.read_with(&visual, |view, _| {
         view.state.as_ref().unwrap().project.as_ref().clone()
     });
     let mut model = Editor::new(project, 8).unwrap();
     model.execute(Command::RemoveTrack(tracks[0])).unwrap();
     install_layout_project(&mut visual, &editor, model.project());
-    assert_heights(&mut visual, &[tracks[1]], &[23.0]);
+    assert_heights(&mut visual, &[tracks[1]], &[22.0]);
     assert!(model.undo());
     install_layout_project(&mut visual, &editor, model.project());
     // Reappearing stable IDs must not recover either removed height entry.
-    assert_heights(&mut visual, &tracks, &[23.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[22.0, 22.0]);
     let Created::Track(new) = model
         .execute(Command::AddTrack { name: "new".into() })
         .unwrap()
@@ -1030,14 +1094,14 @@ fn h_overview_topology_prunes_both_height_maps_and_generation_restarts_normal_la
     };
     install_layout_project(&mut visual, &editor, model.project());
     let tracks = [tracks[0], tracks[1], new];
-    assert_heights(&mut visual, &tracks, &[23.0; 3]);
+    assert_heights(&mut visual, &tracks, &[22.0; 3]);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[44.0, 124.0, 44.0]);
+    assert_heights(&mut visual, &tracks, &[44.0, 132.0, 44.0]);
     visual.simulate_keystrokes("h");
     let edge = bounds(&mut visual, "track-height-resize", tracks[1]).center();
     drag(&mut visual, edge, point(edge.x, edge.y + px(37.0)));
-    assert_heights(&mut visual, &tracks, &[23.0, 60.0, 23.0]);
+    assert_heights(&mut visual, &tracks, &[22.0, 66.0, 22.0]);
     editor.update(&mut visual, |view, cx| {
         view.project_generation += 1;
         cx.notify();
@@ -1045,7 +1109,7 @@ fn h_overview_topology_prunes_both_height_maps_and_generation_restarts_normal_la
     assert_heights(&mut visual, &tracks, &[44.0; 3]);
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
-    assert_heights(&mut visual, &tracks, &[23.0; 3]);
+    assert_heights(&mut visual, &tracks, &[22.0; 3]);
     visual.simulate_keystrokes("h");
     assert_heights(&mut visual, &tracks, &[44.0; 3]);
 }
@@ -1071,8 +1135,8 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
         view.selected_track = Some(tracks[7]);
         view.track_selection.replace(&tracks[6..8]);
         view.time_selection = Some(super::time_selection::TimeSelection {
-            anchor_track: tracks[6],
-            end_track: tracks[7],
+            anchor_track: Some(tracks[6]),
+            end_track: Some(tracks[7]),
             anchor_frame: 48_000,
             end_frame: 96_000,
         });

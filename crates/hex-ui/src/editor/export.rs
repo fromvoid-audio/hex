@@ -289,7 +289,7 @@ impl EditorView {
                             hex_session::service::text::verbatim(path.display())
                         )
                     }),
-                    Err(error) => Some(error.clone()),
+                    Err(error) => Some(error.to_string()),
                 };
                 if let (Some(handle), Some(message)) = (self.export_window.take(), recovery_message)
                     && let Ok(response) = cx.update_window(handle, |_, window, cx| {
@@ -319,7 +319,7 @@ impl EditorView {
                         );
                         self.error = None;
                     }
-                    Err(error) => self.error = Some(error.into()),
+                    Err(error) => self.error = Some(error.to_string().into()),
                 }
                 true
             }
@@ -372,7 +372,7 @@ fn export_status(
     status
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod status_tests {
     use super::{ExportFormat, export_status, format_choice, format_label};
 

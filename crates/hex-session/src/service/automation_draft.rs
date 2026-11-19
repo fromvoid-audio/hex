@@ -16,10 +16,23 @@
 use super::{Session, recovery};
 use hex_storage::automation_draft::DraftWriter;
 mod native_device;
+mod recovery_copy;
+pub(in crate::service) use recovery_copy::copy_outcome_with_tail_on_control;
+mod recovery_worker;
 pub use hex_storage::automation_draft::{
-    AppliedEvent, DraftAbortReason, DraftProgress, DraftProvenance, DraftTarget, DraftTerminal,
+    AppliedEvent, DraftAbortReason, DraftClock, DraftPrefixIdentity, DraftProgress,
+    DraftProvenance, DraftTarget, DraftTerminal, GroupApplication, GroupDraftEvent,
+    Vst3GroupTarget,
 };
-pub use native_device::DeviceDraftInput;
+pub(in crate::service) use native_device::native_application_clock;
+pub use native_device::{
+    DeviceDraftInput, Vst3ApplicationValue, Vst3CaptureTarget, Vst3GroupCaptureTarget,
+    Vst3ParameterApplication,
+};
+pub use recovery_copy::{
+    RecoveryCopyReceipt, copy_failed_on_control, copy_group_outcome_with_tail_on_control,
+};
+pub use recovery_worker::{RecoveryCopyCompletion, RecoveryCopyWorker};
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -114,17 +127,34 @@ pub fn discover_on_control(directory: &Path, max_entries: usize) -> Result<Draft
     DraftDiscoveryCursor::open_on_control(directory)?.next_page_on_control(max_entries)
 }
 
+// One preallocated payload per loan. The larger group row changes no
+// loan, ACK or terminal credit and is never copied into a callback.
+#[allow(clippy::large_enum_variant)]
+enum BatchPayload {
+    Single([AppliedEvent; EVENTS_PER_BATCH]),
+    Group([GroupDraftEvent; EVENTS_PER_BATCH]),
+}
 struct Batch {
     slot: usize,
     ticket: u64,
-    events: [AppliedEvent; EVENTS_PER_BATCH],
+    payload: BatchPayload,
     len: usize,
 }
 impl Batch {
     fn events(&self) -> &[AppliedEvent] {
-        &self.events[..self.len]
+        match &self.payload {
+            BatchPayload::Single(events) => &events[..self.len],
+            BatchPayload::Group(_) => &[],
+        }
+    }
+    fn group_events(&self) -> Option<&[GroupDraftEvent]> {
+        match &self.payload {
+            BatchPayload::Group(events) => Some(&events[..self.len]),
+            BatchPayload::Single(_) => None,
+        }
     }
 }
+
 enum Ack {
     Durable(Box<Batch>, DraftProgress),
     Failed(String, DraftProgress),
@@ -139,6 +169,8 @@ struct State {
     failed: bool,
     finished: bool,
     outcome: Option<DraftWorkerOutcome>,
+    #[cfg(feature = "recording-fault-test-support")]
+    fail_next_append: bool,
 }
 struct Shared {
     path: PathBuf,
@@ -214,11 +246,17 @@ impl RetainedBatch {
     pub fn events(&self) -> &[AppliedEvent] {
         self.0.events()
     }
+    pub fn group_events(&self) -> Option<&[GroupDraftEvent]> {
+        self.0.group_events()
+    }
 }
 pub struct DraftWorkerOutcome {
     pub path: PathBuf,
     pub admitted_events: u64,
+    pub grouped: bool,
     pub progress: DraftProgress,
+    /// Exact header and last sync-acknowledged event chain, retained after writer failure.
+    pub durable_prefix: DraftPrefixIdentity,
     pub requested_terminal: DraftTerminal,
     pub failure: Option<String>,
     /// At most three original batches, including any partially written/synced batch.
@@ -266,6 +304,28 @@ pub fn start_with_playback_on_control(
     spawn_writer_on_control(writer)
 }
 
+/// Start a grouped writer with the exact already admitted capture clock.
+pub fn start_group_on_control(
+    session: &Session,
+    document_base: Option<&Path>,
+    path: PathBuf,
+    target: Vst3GroupTarget,
+    provenance: DraftProvenance,
+    clock: hex_storage::automation_draft::CaptureClock,
+) -> Result<(DraftInput, DraftWorker), String> {
+    let source = recovery::project_for_save(session, document_base)?;
+    let path = recovery::absolute_document_path(&path)?;
+    let writer = DraftWriter::create_with_clock(
+        path,
+        &source,
+        DraftTarget::Vst3Group(target),
+        provenance,
+        clock,
+    )
+    .map_err(|error| error.to_string())?;
+    spawn_writer_on_control(writer)
+}
+
 /// The writer is already source-validated and exclusively owned. All buffer allocation and
 /// thread creation happen before a caller can reserve a receipt batch.
 fn spawn_writer_on_control(writer: DraftWriter) -> Result<(DraftInput, DraftWorker), String> {
@@ -283,11 +343,29 @@ fn spawn_with_start(
         loop_pass: 0,
         value: zero,
     };
+    let group_empty = GroupDraftEvent {
+        ordinal: 0,
+        parameter: 0,
+        sdk_sequence: 0,
+        sdk_gesture: 0,
+        clock: DraftClock {
+            performance_frame: 0,
+            content_frame: 0,
+            loop_pass: 0,
+        },
+        application: GroupApplication::Restored,
+    };
+    let grouped = writer.has_group_records();
     let free = std::array::from_fn(|slot| {
+        let payload = if grouped {
+            BatchPayload::Group([group_empty; EVENTS_PER_BATCH])
+        } else {
+            BatchPayload::Single([empty; EVENTS_PER_BATCH])
+        };
         Some(Box::new(Batch {
             slot,
             ticket: 0,
-            events: [empty; EVENTS_PER_BATCH],
+            payload,
             len: 0,
         }))
     });
@@ -314,6 +392,8 @@ fn spawn_with_start(
             failed: false,
             finished: false,
             outcome: None,
+            #[cfg(feature = "recording-fault-test-support")]
+            fail_next_append: false,
         }),
         wake: Condvar::new(),
     });
@@ -343,12 +423,32 @@ fn spawn_with_start(
                 let Some(batch) = state.queue.pop_front() else {
                     break state.terminal.unwrap_or(DraftTerminal::Interrupted);
                 };
+                #[cfg(feature = "recording-fault-test-support")]
+                let inject_failure = std::mem::take(&mut state.fail_next_append);
                 drop(state);
                 if failure.is_some() {
                     retained.push(RetainedBatch(batch));
                     continue;
                 }
-                match writer.append(batch.events()) {
+                #[cfg(feature = "recording-fault-test-support")]
+                if inject_failure {
+                    let message = "injected automation writer failure; retain the take".to_owned();
+                    let progress = writer.progress();
+                    let mut state = worker_shared.state();
+                    state.failed = true;
+                    state
+                        .acknowledgements
+                        .push_back(Ack::Failed(message.clone(), progress));
+                    retained.push(RetainedBatch(batch));
+                    failure = Some(message);
+                    continue;
+                }
+                let written = if let Some(events) = batch.group_events() {
+                    writer.append_group(events)
+                } else {
+                    writer.append(batch.events())
+                };
+                match written {
                     Ok(progress) => {
                         let mut state = worker_shared.state();
                         state.progress = progress;
@@ -375,6 +475,7 @@ fn spawn_with_start(
                 failure = Some(error.to_string());
             }
             let progress = writer.progress();
+            let durable_prefix = writer.durable_prefix_identity();
             let path = writer.path().to_path_buf();
             // Release the exclusive file lock before publishing a completed observation.
             drop(writer);
@@ -388,7 +489,9 @@ fn spawn_with_start(
             state.outcome = Some(DraftWorkerOutcome {
                 path,
                 admitted_events: state.accepted_events,
+                grouped,
                 progress,
+                durable_prefix,
                 requested_terminal: terminal,
                 failure,
                 retained,
@@ -453,6 +556,9 @@ impl RefusedBatch {
     pub fn events(&self) -> &[AppliedEvent] {
         self.batch.events()
     }
+    pub fn group_events(&self) -> Option<&[GroupDraftEvent]> {
+        self.batch.group_events()
+    }
     /// Only the original lane may own a retry; source changes never restamp this batch.
     pub fn retry(self, input: &mut DraftInput) -> Result<u64, Self> {
         if !Arc::ptr_eq(&self.origin, &input.shared) {
@@ -462,6 +568,19 @@ impl RefusedBatch {
     }
 }
 impl DraftInput {
+    #[cfg(feature = "recording-fault-test-support")]
+    pub(in crate::service) fn inject_next_append_failure(&mut self) -> Result<(), &'static str> {
+        let mut state = self.shared.state();
+        if state.failed
+            || state.terminal.is_some()
+            || state.fail_next_append
+            || !state.queue.is_empty()
+        {
+            return Err("automation writer cannot arm failure injection");
+        }
+        state.fail_next_append = true;
+        Ok(())
+    }
     pub fn path(&self) -> &Path {
         &self.shared.path
     }
@@ -569,7 +688,24 @@ impl ReservedBatch<'_> {
         let Some(batch) = self.batch.as_mut() else {
             return Err(event);
         };
-        let Some(slot) = batch.events.get_mut(batch.len) else {
+        let BatchPayload::Single(events) = &mut batch.payload else {
+            return Err(event);
+        };
+        let Some(slot) = events.get_mut(batch.len) else {
+            return Err(event);
+        };
+        *slot = event;
+        batch.len += 1;
+        Ok(())
+    }
+    pub fn push_group(&mut self, event: GroupDraftEvent) -> Result<(), GroupDraftEvent> {
+        let Some(batch) = self.batch.as_mut() else {
+            return Err(event);
+        };
+        let BatchPayload::Group(events) = &mut batch.payload else {
+            return Err(event);
+        };
+        let Some(slot) = events.get_mut(batch.len) else {
             return Err(event);
         };
         *slot = event;
@@ -632,4 +768,4 @@ impl Drop for DraftWorker {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -48,6 +48,7 @@ fn reserved_bypass_cpu_comparison() {
             };
             let state = state(&changes);
             let mut chain = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+                modulation: None,
                 automation: Default::default(),
                 meter: Default::default(),
                 owner: ProcessorChainOwner::Main,

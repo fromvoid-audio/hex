@@ -190,24 +190,23 @@ fn idle_vst3_drag_survives_undo_save_reopen() {
 
 fn gesture_fixture() -> SavedEffectFixture {
     // Keep resident backing below this harness's 8192-frame source budget.
-    // Reusing the same source gives native control work a longer audible run.
+    // A long loop of the same source keeps native control work audible even
+    // when headless callback driving runs much faster than wall time.
     let mut fixture = nondefault_fixture_with_frames(8192);
     let track = fixture.project.tracks()[0].id();
     let asset = fixture.project.assets().next().unwrap().id();
     let mut editor = hex_project::Editor::new(fixture.project.clone(), 8).unwrap();
-    for start in [8192, 16384] {
-        editor
-            .execute(Command::PlaceClip {
-                track,
-                asset,
-                start,
-                duration: 8192,
-                source_offset: 0,
-                source_length: 8192,
-                looping: false,
-            })
-            .unwrap();
-    }
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 8192,
+            duration: 8192 * 256,
+            source_offset: 0,
+            source_length: 8192,
+            looping: true,
+        })
+        .unwrap();
     fixture.project = editor.project().clone();
     fixture.path = fixture.files.0.join("gesture.hex");
     hex_storage::save_new(&fixture.path, &fixture.project).unwrap();
@@ -269,10 +268,11 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
         device,
         output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
         request_id: 1,
+        page_first: None,
     };
     h.run(Request::QueryPluginParameters(query));
     let result = h.next().plugin_parameters.unwrap().rows.unwrap();
-    let gain = &result[0];
+    let mut gain = result[0].clone();
     assert!(gain.editable);
     assert_eq!(gain.normalized, 0.75 / 4.0);
     if changed_steps {
@@ -309,15 +309,24 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
             .command(PlaybackCommand::Play)
             .unwrap();
     }
-    let mut blocks = h.plugin_completed.load(Acquire);
-    let mut render = |h: &ResidentHarness| {
+    let render = |h: &ResidentHarness| {
         if !playing {
             h.render_worker_step();
             return [[0.0; 2]; 256];
         }
         let samples = h.render_plugin_block();
-        blocks += 1;
-        wait(|| h.plugin_completed.load(Acquire) >= blocks);
+        // The Session worker is waiting for this gesture's PCM point. Its
+        // copied completion counter cannot advance until the request returns;
+        // wait on the actual endpoint before offering the next callback.
+        wait(|| {
+            h.callback
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .native_workers_idle_on_control()
+                == Some(true)
+        });
         samples
     };
     for _ in 0..3 {
@@ -352,22 +361,49 @@ fn vst3_drag_roundtrip(playing: bool, stopped: bool, changed_steps: bool) {
     } else {
         h.run(Request::DeviceGesture(begin))
     };
-    let ack = event.gesture_ack.unwrap();
-    if changed_steps {
+    let mut ack = event.gesture_ack.unwrap();
+    if stopped {
+        // Stop renews the original endpoint and invalidates the old page.
+        // The refused Begin must not edit the project; query the renewed
+        // source before trying the gesture again.
         assert!(!ack.accepted && !ack.source_lost, "{ack:?}");
-        assert!(ack.reason.unwrap().contains("metadata changed"));
+        assert!(
+            ack.reason
+                .as_deref()
+                .unwrap()
+                .contains("refresh the vst3 parameter list")
+        );
         assert_eq!(event.state.project.as_ref(), &fixture.project);
         assert!(!event.state.can_undo && !event.state.can_redo);
-        let saved = h.run(Request::SaveCurrent);
-        assert!(saved.save_complete && !saved.state.unsaved);
-        assert_eq!(hex_storage::load(&fixture.path).unwrap(), fixture.project);
         h.run(Request::QueryPluginParameters(PluginParameterQuery {
             request_id: 2,
             ..query
         }));
         let current = h.next().plugin_parameters.unwrap().rows.unwrap();
-        assert_eq!(current[0].steps, 3);
-        return;
+        if changed_steps {
+            assert_eq!(current[0].steps, 3);
+            assert_ne!(current[0].steps, gain.steps);
+            let saved = h.run(Request::SaveCurrent);
+            assert!(saved.save_complete && !saved.state.unsaved);
+            assert_eq!(hex_storage::load(&fixture.path).unwrap(), fixture.project);
+            return;
+        }
+        gain = current[0].clone();
+        assert!(gain.editable);
+        client = GestureClient::default();
+        client
+            .begin_plugin(PluginParameterOrigin {
+                context: metadata.context,
+                device,
+                parameter: gain.id,
+                page_first: gain.page_first,
+                metadata_revision: gain.metadata_revision,
+                initial: PluginParameterValue::new(gain.normalized).unwrap(),
+            })
+            .unwrap();
+        let begin = client.next_request().unwrap();
+        client.mark_submitted();
+        ack = h.run(Request::DeviceGesture(begin)).gesture_ack.unwrap();
     }
     assert!(ack.accepted, "{ack:?}");
     assert!(client.acknowledge(&ack));
@@ -655,6 +691,7 @@ fn authored_drag(reading: bool, editor_changed: bool, transport: GestureTranspor
             device,
             output_identity: h.audio.as_ref().unwrap().control.output_identity().unwrap(),
             request_id,
+            page_first: None,
         };
         h.run(Request::QueryPluginParameters(query));
         let rows = h.next().plugin_parameters.unwrap().rows.unwrap();

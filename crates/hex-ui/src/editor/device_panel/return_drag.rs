@@ -18,7 +18,7 @@ pub(super) fn render_chain(
         .map(|device| {
             (
                 device.id(),
-                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                device_card_width(view, NativeDeviceClass::Effect, device),
             )
         })
         .collect();
@@ -73,6 +73,14 @@ pub(super) fn render_chain(
                 cx,
                 device.id(),
                 NativeDeviceClass::Effect,
+                focus.clone(),
+                rendered,
+            );
+            let rendered = super::super::device_preset::card(
+                view,
+                cx,
+                device.id(),
+                NativeDeviceClass::Effect,
                 focus,
                 rendered,
             );
@@ -88,7 +96,7 @@ pub(super) fn render_chain(
         } else {
             let card = chain_window::spacer(
                 device.id(),
-                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                device_card_width(view, NativeDeviceClass::Effect, device),
             )
             .mr(px(DEVICE_CHAIN_PADDING));
             chain = chain.child(card);

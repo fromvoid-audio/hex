@@ -201,7 +201,6 @@ pub(super) struct GestureContext {
     pub(super) revision: u64,
     pub(super) selected_clip: Option<ClipId>,
     pub(super) selected_note: Option<NoteId>,
-    pub(super) clip_contains_note: bool,
     pub(super) pending: bool,
     pub(super) beat_start: i128,
     pub(super) beat_span: u64,
@@ -216,7 +215,6 @@ pub(super) fn is_current(gesture: &NoteGesture, context: GestureContext) -> bool
         && gesture.revision == context.revision
         && context.selected_clip == Some(gesture.clip)
         && context.selected_note == Some(gesture.note)
-        && context.clip_contains_note
         && !context.pending
         && gesture.beat_start == context.beat_start
         && gesture.beat_span == context.beat_span
@@ -331,7 +329,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 pub(super) fn update(gesture: &mut NoteGesture, pointer_x: f32, pointer_y: f32) -> bool {
     update_with_modifier(gesture, pointer_x, pointer_y, false)
 }
@@ -547,7 +545,7 @@ fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
     snapped.clamp(i128::from(min), i128::from(max)) as u64
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         HitKind, MidiGrid, NotePreview, begin, default_gate_raw, effective_grid, hit_kind, is_noop,
@@ -1242,7 +1240,6 @@ mod tests {
             revision: drag.revision,
             selected_clip: Some(drag.clip),
             selected_note: Some(drag.note),
-            clip_contains_note: true,
             pending: false,
             beat_start: drag.beat_start,
             beat_span: drag.beat_span,
@@ -1276,7 +1273,7 @@ mod tests {
         assert!(!is_current(
             &drag,
             GestureContext {
-                clip_contains_note: false,
+                selected_clip: None,
                 ..context
             }
         ));
@@ -1304,7 +1301,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod creation_geometry_tests {
     use super::*;
     #[test]

@@ -1,7 +1,7 @@
 //! Borrowed, fallible foreign graph processing, separate from rollbackable DSP.
 //! The host retains actual source/endpoint/worker custody and performs final
 //! host-format acceptance. A scalar declaration or state equality grants none.
-use crate::{NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
+use crate::{ForeignModulationSamples, NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
     NativeDeviceState,
@@ -114,6 +114,9 @@ pub struct ForeignAutomationSource<'a> {
     pub class: [u8; 16],
     pub sample_rate: u32,
     pub quantum_frames: u16,
+    /// Raw continuous ID with a reserved dense lane on this exact effect.
+    /// Ordinary effects and all instruments expose no reservation here.
+    pub dense_parameter: Option<u32>,
     /// Strictly increasing raw parameter IDs.
     pub parameters: &'a [ForeignParameterCapability],
 }
@@ -122,6 +125,12 @@ pub struct ForeignAutomationSource<'a> {
 /// complete physical foreign processing quantum. This call borrows the program
 /// and must perform no allocation, waiting or I/O.
 pub trait ForeignAutomationProgram: Sync {
+    /// Bound for any admitted region of the quantum. Used by the graph
+    /// owner before a clock splice combines independently compiled programs.
+    fn quantum_point_budget(&self) -> Option<usize> {
+        None
+    }
+
     fn render_quantum(
         &self,
         origins: &[Option<u64>],
@@ -139,6 +148,9 @@ pub struct ForeignAutomation<'a> {
     pub revision: std::num::NonZeroU64,
     pub program: &'a dyn ForeignAutomationProgram,
     retained: &'a [Option<RetainedProgram>],
+    /// Frame-coordinate identity for an explicitly admitted authored clock splice.
+    /// Ordinary edits on the same Arrangement clock keep the same identity.
+    pub authored_clock_epoch: Option<NonZeroU64>,
 }
 
 impl<'a> ForeignAutomation<'a> {
@@ -153,16 +165,34 @@ impl<'a> ForeignAutomation<'a> {
             revision,
             program,
             retained: &[],
+            authored_clock_epoch: None,
+        }
+    }
+
+    fn program_at(self, revision: NonZeroU64) -> Option<&'a dyn ForeignAutomationProgram> {
+        if revision == self.revision {
+            Some(self.program)
+        } else {
+            self.retained
+                .iter()
+                .flatten()
+                .find(|entry| entry.revision == revision)
+                .map(|entry| entry.program.as_ref() as &dyn ForeignAutomationProgram)
         }
     }
 
     pub fn contains_revision(self, revision: NonZeroU64) -> bool {
-        revision == self.revision
-            || self
-                .retained
-                .iter()
-                .flatten()
-                .any(|entry| entry.revision == revision)
+        self.program_at(revision).is_some()
+    }
+
+    /// Both borrowed views resolve this key to the same immutable program on
+    /// the same worker. Scalar revision equality does not prove custody.
+    pub fn retains_program_from(self, previous: Self, revision: NonZeroU64) -> bool {
+        self.binding == previous.binding
+            && self
+                .program_at(revision)
+                .zip(previous.program_at(revision))
+                .is_some_and(|(next, old)| std::ptr::eq(next, old))
     }
 
     /// Resolve a complete quantum without cloning or releasing an owner.
@@ -173,17 +203,9 @@ impl<'a> ForeignAutomation<'a> {
         cuts: &[u16],
         output: &mut [ForeignParameterPoint],
     ) -> Result<usize, DeviceContractError> {
-        let program = if revision == self.revision {
-            self.program
-        } else {
-            self.retained
-                .iter()
-                .flatten()
-                .find(|entry| entry.revision == revision)
-                .map(|entry| entry.program.as_ref())
-                .ok_or(DeviceContractError::ForeignProcessingFailed)?
-        };
-        program.render_quantum(origins, cuts, output)
+        self.program_at(revision)
+            .ok_or(DeviceContractError::ForeignProcessingFailed)?
+            .render_quantum(origins, cuts, output)
     }
 }
 
@@ -195,6 +217,7 @@ pub const MAX_RETAINED_FOREIGN_PROGRAMS: usize = 8;
 #[derive(Clone)]
 struct RetainedProgram {
     revision: NonZeroU64,
+    clock_epoch: Option<NonZeroU64>,
     program: Arc<dyn ForeignAutomationProgram + Send>,
     bytes: usize,
 }
@@ -205,6 +228,8 @@ struct RetainedProgram {
 pub struct PreparedForeignAutomation {
     binding: ForeignProcessorBinding,
     revision: NonZeroU64,
+    clock_epoch: Option<NonZeroU64>,
+    clock_splices: bool,
     program: Arc<dyn ForeignAutomationProgram + Send>,
     program_bytes: usize,
     storage_bytes: usize,
@@ -235,6 +260,8 @@ impl PreparedForeignAutomation {
         Ok(Self {
             binding,
             revision,
+            clock_epoch: None,
+            clock_splices: false,
             program: Arc::new(program),
             program_bytes: storage_bytes,
             storage_bytes,
@@ -282,6 +309,56 @@ impl PreparedForeignAutomation {
         self.retain_previous_since_on_control(previous, Some(received))
     }
 
+    /// Keep the predecessor's current program and precisely the additional
+    /// predecessor revisions selected by the caller. The caller must establish
+    /// that no omitted revision can be needed by any callback or graph; keys
+    /// alone are not a source, installation, or quiescence witness. A refusal
+    /// leaves both owners unchanged, including their actual allocations.
+    pub fn retain_selected_on_control(
+        &mut self,
+        previous: &Self,
+        required: &[NonZeroU64],
+    ) -> Result<(), DeviceContractError> {
+        if self.binding != previous.binding
+            || self.revision <= previous.revision
+            || required.len() > MAX_RETAINED_FOREIGN_PROGRAMS
+            || required
+                .iter()
+                .any(|key| !previous.borrow().contains_revision(*key))
+            || previous
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= previous.revision)
+            || self
+                .retained
+                .iter()
+                .flatten()
+                .any(|entry| entry.revision >= self.revision)
+        {
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
+        let mut candidate = self.clone();
+        let mut filtered = previous.clone();
+        for owner in [&mut candidate, &mut filtered] {
+            for slot in &mut owner.retained {
+                if slot.as_ref().is_some_and(|entry| {
+                    entry.revision != previous.revision && !required.contains(&entry.revision)
+                }) {
+                    let bytes = slot.as_ref().map_or(0, |entry| entry.bytes);
+                    owner.storage_bytes = owner
+                        .storage_bytes
+                        .checked_sub(bytes)
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    *slot = None;
+                }
+            }
+        }
+        candidate.retain_previous_on_control(&filtered)?;
+        *self = candidate;
+        Ok(())
+    }
+
     fn retain_previous_since_on_control(
         &mut self,
         previous: &Self,
@@ -304,30 +381,43 @@ impl PreparedForeignAutomation {
                 *slot = None;
             }
         }
-        let versions =
-            std::iter::once((previous.revision, &previous.program, previous.program_bytes)).chain(
-                previous
-                    .retained
-                    .iter()
-                    .flatten()
-                    .map(|entry| (entry.revision, &entry.program, entry.bytes)),
-            );
-        for (revision, program, bytes) in versions {
+        let versions = std::iter::once((
+            previous.revision,
+            previous.clock_epoch,
+            &previous.program,
+            previous.program_bytes,
+        ))
+        .chain(previous.retained.iter().flatten().map(|entry| {
+            (
+                entry.revision,
+                entry.clock_epoch,
+                &entry.program,
+                entry.bytes,
+            )
+        }));
+        for (revision, clock_epoch, program, bytes) in versions {
             if received.is_some_and(|received| revision < received) {
                 continue;
             }
             let existing = if revision == candidate.revision {
-                Some((&candidate.program, candidate.program_bytes))
+                Some((
+                    candidate.clock_epoch,
+                    &candidate.program,
+                    candidate.program_bytes,
+                ))
             } else {
                 candidate
                     .retained
                     .iter()
                     .flatten()
                     .find(|entry| entry.revision == revision)
-                    .map(|entry| (&entry.program, entry.bytes))
+                    .map(|entry| (entry.clock_epoch, &entry.program, entry.bytes))
             };
-            if let Some((existing, existing_bytes)) = existing {
-                if !Arc::ptr_eq(existing, program) || existing_bytes != bytes {
+            if let Some((existing_clock, existing, existing_bytes)) = existing {
+                if existing_clock != clock_epoch
+                    || !Arc::ptr_eq(existing, program)
+                    || existing_bytes != bytes
+                {
                     return Err(DeviceContractError::ForeignProcessingFailed);
                 }
                 continue;
@@ -343,6 +433,7 @@ impl PreparedForeignAutomation {
                 .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
             *slot = Some(RetainedProgram {
                 revision,
+                clock_epoch,
                 program: Arc::clone(program),
                 bytes,
             });
@@ -388,6 +479,8 @@ impl PreparedForeignAutomation {
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         self.binding == other.binding
             && self.revision == other.revision
+            && self.clock_epoch == other.clock_epoch
+            && self.clock_splices == other.clock_splices
             && self.program_bytes == other.program_bytes
             && Arc::ptr_eq(&self.program, &other.program)
             && self
@@ -398,6 +491,7 @@ impl PreparedForeignAutomation {
                     (None, None) => true,
                     (Some(a), Some(b)) => {
                         a.revision == b.revision
+                            && a.clock_epoch == b.clock_epoch
                             && a.bytes == b.bytes
                             && Arc::ptr_eq(&a.program, &b.program)
                     }
@@ -409,12 +503,100 @@ impl PreparedForeignAutomation {
         self.storage_bytes
     }
 
+    /// Bind the unpublished current effect program to its Arrangement clock.
+    /// Earlier versions preserve the exact clock under which they compiled.
+    pub fn bind_effect_clock_on_control(&mut self, epoch: NonZeroU64, clock_splices: bool) {
+        self.clock_epoch = Some(epoch);
+        self.clock_splices = clock_splices;
+    }
+
+    pub fn effect_clock_splices(&self) -> bool {
+        self.clock_splices
+    }
+
+    /// Admit the greatest possible sparse queue across all retained clock
+    /// regions. A region can finish an earlier same-clock version so charge
+    /// the largest such program on each clock once.
+    pub fn effect_clock_splice_fits(&self) -> bool {
+        use hex_lattice_contract::{MAX_FOREIGN_PARAMETER_POINTS, MAX_FOREIGN_TIMING_CHANGES};
+        let mut clocks = [(None, 0usize); MAX_FOREIGN_TIMING_CHANGES + 1];
+        let programs = std::iter::once((self.clock_epoch, self.program.as_ref())).chain(
+            self.retained
+                .iter()
+                .flatten()
+                .map(|old| (old.clock_epoch, old.program.as_ref())),
+        );
+        for (epoch, program) in programs {
+            let Some(epoch) = epoch else {
+                return false;
+            };
+            let Some(points) = program.quantum_point_budget() else {
+                return false;
+            };
+            let Some(slot) = clocks
+                .iter_mut()
+                .find(|(key, _)| key.is_none() || *key == Some(epoch))
+            else {
+                return false;
+            };
+            *slot = (Some(epoch), slot.1.max(points));
+        }
+        clocks
+            .into_iter()
+            .fold(0usize, |total, (_, points)| total.saturating_add(points))
+            <= MAX_FOREIGN_PARAMETER_POINTS
+    }
+
+    /// Prove a complete range still has compiled programs before accepting
+    /// a graph that can read delayed frames from those clocks.
+    pub fn covers_effect_clock_range(&self, oldest: NonZeroU64, newest: NonZeroU64) -> bool {
+        newest.get().checked_sub(oldest.get()).is_some_and(|span| {
+            span <= MAX_RETAINED_FOREIGN_PROGRAMS as u64
+                && (oldest.get()..=newest.get()).all(|epoch| {
+                    self.clock_epoch.is_some_and(|clock| clock.get() == epoch)
+                        || self.retained.iter().flatten().any(|program| {
+                            program
+                                .clock_epoch
+                                .is_some_and(|clock| clock.get() == epoch)
+                        })
+                })
+        })
+    }
+
+    /// Resolve the effect input's delayed clock without moving an owner.
+    /// A worker that has never crossed a retained clock keeps its existing
+    /// current-program behaviour, including initial warm-up and legacy clocks.
+    pub(crate) fn borrow_for_effect_clock(
+        &self,
+        epoch: Option<NonZeroU64>,
+    ) -> Result<ForeignAutomation<'_>, DeviceContractError> {
+        let mut view = self.borrow();
+        view.authored_clock_epoch = self.clock_epoch;
+        if let Some(epoch) = epoch
+            && self.clock_splices
+            && Some(epoch) != self.clock_epoch
+        {
+            let program = self
+                .retained
+                .iter()
+                .flatten()
+                .filter(|entry| entry.clock_epoch == Some(epoch))
+                .max_by_key(|entry| entry.revision)
+                .ok_or(DeviceContractError::ForeignProcessingFailed)?;
+            view.revision = program.revision;
+            view.program = program.program.as_ref();
+            view.authored_clock_epoch = Some(epoch);
+        }
+        Ok(view)
+    }
+
     pub fn borrow(&self) -> ForeignAutomation<'_> {
         ForeignAutomation {
             binding: self.binding,
             revision: self.revision,
             program: self.program.as_ref(),
             retained: &self.retained,
+            authored_clock_epoch: None,
         }
     }
 }
@@ -523,6 +705,21 @@ pub trait ForeignProcessors {
             frames.fill([0.0; 2]);
             Err(DeviceContractError::ForeignProcessingUnavailable)
         }
+    }
+    /// Stage a dense value lane through the same endpoint and host acceptance
+    /// as PCM. Values are normalized f64 at the supplied segment's offsets.
+    /// Hosts without the exact reservation must refuse before dispatch.
+    fn process_segment_with_modulation(
+        &mut self,
+        _node: ForeignProcessorNode<'_>,
+        _frame_offset: usize,
+        frames: &mut [StereoFrame],
+        _lane: ForeignModulationSamples<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.reject_callback();
+        frames.fill([0.0; 2]);
+        Err(DeviceContractError::ForeignProcessingUnavailable)
     }
     /// Stage ordered note events along with the segment. Like PCM, staged
     /// events become visible to the worker only after host acceptance.

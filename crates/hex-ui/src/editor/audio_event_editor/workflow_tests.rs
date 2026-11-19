@@ -166,7 +166,14 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
     repaint(&mut visual, &editor);
     let grip = visual.debug_bounds("audio-event-gain-1").unwrap().center();
     let moved = point(grip.x, grip.y + px(20.0));
-    visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(
+        grip,
+        MouseButton::Left,
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     let deadline = crate::test_wait::hang_deadline();
@@ -217,7 +224,22 @@ pub(super) fn open(
     Entity<EditorView>,
     ClipId,
 ) {
-    let (files, handle, editor) = upper_rail_owned_fixture(cx);
+    let fixture = upper_rail_owned_fixture(cx);
+    open_fixture(cx, fixture)
+}
+pub(super) fn open_fixture(
+    cx: &mut TestAppContext,
+    (files, handle, editor): (
+        Arc<crate::editor::test_environment::Environment>,
+        gpui::AnyWindowHandle,
+        Entity<EditorView>,
+    ),
+) -> (
+    Arc<crate::editor::test_environment::Environment>,
+    VisualTestContext,
+    Entity<EditorView>,
+    ClipId,
+) {
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1280.0), px(800.0)));
     let clip = editor.update(&mut visual, |v, cx| {
@@ -810,8 +832,8 @@ fn cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_m
             .as_ref()
             .unwrap()
             .waveform;
-        assert_eq!(waveform.source_frames, 24_000);
-        assert!(waveform.bins.len() <= 1_024);
+        assert_eq!(waveform.source_frames(), 24_000);
+        assert!(waveform.bins().len() <= 1_024);
         assert_eq!(
             waveform.peaks_for_frames(0, 24_000),
             Some(
@@ -1318,11 +1340,33 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         .debug_bounds("audio-event-fade-in-top-1")
         .unwrap()
         .center();
+    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    crate::editor::fade_handles::paint_probe::assert_style(
+        &mut visual,
+        "audio-event-fade-in-top-1",
+        crate::theme::FadeHandleState::Hover,
+    );
     let target = point(down.x + px(64.0), down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual.debug_bounds("audio-event-fade-in-top-1").unwrap();
+    use crate::{editor::fade_handles::paint_probe, theme::FadeHandleState};
+    paint_probe::assert_style(
+        &mut visual,
+        "audio-event-fade-in-top-1",
+        FadeHandleState::Active,
+    );
+    paint_probe::assert_style(
+        &mut visual,
+        "audio-event-fade-out-top-1",
+        FadeHandleState::Idle,
+    );
     assert!(held.center().x > down.x + px(20.0));
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -1343,6 +1387,14 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert!(v.audio_event_editor.pending.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        paint_probe::assert_style(
+            &mut visual,
+            "audio-event-fade-in-top-1",
+            FadeHandleState::Active,
+        );
+    }
     visual.simulate_keystrokes("escape");
     repaint(&mut visual, &editor);
     assert_eq!(
@@ -1352,6 +1404,7 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     );
     pump(&editor, &mut visual);
     repaint(&mut visual, &editor);
+    paint_probe::assert_not_active(&mut visual, "audio-event-fade-in-top-1");
     let accepted = editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
         assert!(v.audio_event_editor.pending.is_none());
@@ -1364,7 +1417,9 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
             .unwrap()
             .audio_events()
             .events[0];
-        assert!(event.fade.unwrap().shape().fade_in() > 0);
+        let fade = event.fade.unwrap().shape();
+        assert!(fade.fade_in() > 0);
+        assert_eq!(fade.curve_laws()[0], hex_project::ClipFade::DEFAULT_S_CURVE);
         v.state.as_ref().unwrap().project.snapshot()
     });
     editor.read_with(&visual, |v, _| {
@@ -1383,7 +1438,8 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
             .shape()
             .fade_in() as usize;
         assert_eq!(pcm[0], [0.0; 2]);
-        assert!((pcm[1][0] - 0.25 / (count - 1) as f32).abs() < 1e-7);
+        let t = 1.0 / (count - 1) as f32;
+        assert!((pcm[1][0] - 0.25 * t * t * (3.0 - 2.0 * t)).abs() < 1e-7);
         assert_eq!(pcm[count - 1], [0.25; 2]);
     });
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
@@ -1393,6 +1449,39 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
     visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
+    });
+    let diamond = visual
+        .debug_bounds("audio-event-fade-in-curve-1")
+        .unwrap()
+        .center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: diamond,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(diamond, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let fade = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events[0]
+            .fade
+            .unwrap();
+        assert!(fade.shape().fade_in() > 0);
+        assert!(!fade.shape().ramp_is_curved(false));
+    });
+    visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)

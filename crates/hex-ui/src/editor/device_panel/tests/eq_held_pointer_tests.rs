@@ -88,7 +88,7 @@ fn held_node_window(cx: &mut TestAppContext) -> Fixture {
         assert!(view.clip_view_open && view.device_panel_active)
     });
     let start = plot(&mut visual, device, 0.5, 0.5);
-    visual.simulate_click(start, Modifiers::default());
+    eq_double_click(&mut visual, start);
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
     });
@@ -991,7 +991,7 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
             request_id: id,
-            mode: seek.mode,
+            mode: seek.kind.mode(),
             generation: seek.project_generation,
             revision: seek.project_revision,
             prepared_revision: seek.prepared_revision.unwrap(),
@@ -1419,7 +1419,7 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
     });
     let start = plot(&mut visual, device, 0.8, 0.8);
     let end = plot(&mut visual, device, 0.72, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     let held = graph.read_with(&visual, |graph, _| {
@@ -1507,7 +1507,7 @@ fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut Te
     });
     let start = plot(&mut visual, device, 0.78, 0.8);
     let end = plot(&mut visual, device, 0.66, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
+    eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     pump_until(&editor, cx, |view| {
         view.resident_device_preview

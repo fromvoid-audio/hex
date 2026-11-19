@@ -33,6 +33,19 @@ impl Restore {
     }
 }
 impl Plugins {
+    pub(super) fn restored_canonical_source(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<(hex_audio::prepared::AppliedAudioSource, StoppedEditFence)> {
+        self.restore
+            .as_ref()
+            .filter(|restore| {
+                restore.context == context
+                    && matches!(restore.result, Some(Ok(())))
+                    && !restore.submitted()
+            })
+            .map(|restore| (restore.source, restore.fence))
+    }
     pub fn prepare_restore(
         &mut self,
         output: &mut WorkerPreparedOutput,

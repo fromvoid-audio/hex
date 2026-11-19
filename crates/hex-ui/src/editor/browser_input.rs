@@ -44,6 +44,14 @@ pub(super) fn plugin_parameter_search(cx: &mut Context<TextInput>) -> TextInput 
     settings.max_bytes = 256;
     TextInput::new(cx, settings)
 }
+pub(super) fn device_search(cx: &mut Context<TextInput>) -> TextInput {
+    let mut settings = config(TextInputKind::Search);
+    settings.id = "device-picker-search".into();
+    settings.placeholder = theme::text("search devices");
+    settings.clear_name = theme::text("clear device search");
+    settings.max_bytes = 256;
+    TextInput::new(cx, settings)
+}
 pub(super) fn name(content: String, cx: &mut Context<TextInput>) -> TextInput {
     let mut input = TextInput::new(cx, config(TextInputKind::Value));
     input.set_text(&content, cx);

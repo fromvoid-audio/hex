@@ -2,8 +2,8 @@
 //! programme cannot rewrite ordinary parameters or MIDI already staged there.
 use super::*;
 use crate::transport::{
-    AuthoredSegment, MidiEvent, ParameterPoint, ProcessTiming, ReceivedProgram, SegmentTiming,
-    channel,
+    AuthoredSegment, CommittedQuantum, CommittedQuantumState, MidiEvent, ParameterPoint,
+    ProcessTiming, ReceivedProgram, SegmentTiming, channel,
 };
 use std::cell::Cell;
 
@@ -61,6 +61,50 @@ fn measured(run: impl FnOnce()) {
 }
 
 #[test]
+fn committed_partial_quantum_exposes_its_actual_frozen_program() {
+    let binding = crate::transport::Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let (control, mut callback, _) = channel(binding, 8).unwrap();
+    let programme = FirstProgram {
+        calls: Cell::new(0),
+        linear: false,
+    };
+    let mut output = [[0.0; 2]; 3];
+    measured(|| {
+        callback.begin_physical_callback(3).unwrap();
+        callback
+            .stage_segment_with_authored_parameters(
+                0,
+                &[[0.0; 2]; 3],
+                &[],
+                &mut output,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                AuthoredSegment {
+                    program: &programme,
+                    origin: &|_| None,
+                },
+            )
+            .unwrap();
+        assert_eq!(control.committed_quantum(), None);
+        callback.finish(true).unwrap();
+    });
+    assert_eq!(
+        control.committed_quantum(),
+        Some(CommittedQuantum {
+            binding,
+            state: CommittedQuantumState::OpenProgram(NonZeroU64::MIN),
+        })
+    );
+}
+
+#[test]
 fn first_programme_preserves_the_open_empty_quantum_and_starts_at_the_next_boundary() {
     for linear in [false, true] {
         for cut in [1, 3, 7] {
@@ -101,6 +145,13 @@ fn first_programme_preserves_the_open_empty_quantum_and_starts_at_the_next_bound
                     .unwrap();
                 callback.finish(true).unwrap();
             });
+            assert_eq!(
+                control.committed_quantum(),
+                Some(CommittedQuantum {
+                    binding,
+                    state: CommittedQuantumState::OpenUnprogrammed,
+                })
+            );
             assert_eq!(output[..cut], [[0.0; 2]; 8][..cut]);
             assert!(worker.receive_request().unwrap().is_none());
             measured(|| {
@@ -129,6 +180,13 @@ fn first_programme_preserves_the_open_empty_quantum_and_starts_at_the_next_bound
                     .unwrap();
                 callback.finish(true).unwrap();
             });
+            assert_eq!(
+                control.committed_quantum(),
+                Some(CommittedQuantum {
+                    binding,
+                    state: CommittedQuantumState::Closed,
+                })
+            );
             assert_eq!(
                 programme.calls.get(),
                 0,

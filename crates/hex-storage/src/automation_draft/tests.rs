@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "completed_tests.rs"]
 mod completed_tests;
+#[path = "group_tests.rs"]
+mod group_tests;
+#[path = "vst3_tests.rs"]
+mod vst3_tests;
 
 static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
 
@@ -110,6 +114,47 @@ fn open(path: &Path) -> DraftReader {
     #[cfg(unix)]
     let _released = wait_for_shared_lock(path, std::time::Duration::from_millis(250)).unwrap();
     DraftReader::open(path, limits()).unwrap()
+}
+
+#[test]
+fn bounded_reader_refuses_only_prefixes_beyond_budget() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer.append(&[event(0), event(1)]).unwrap();
+    drop(writer);
+    let original = fs::read(&path).unwrap();
+
+    let reader = DraftReader::open_bounded(&path, limits(), 2).unwrap();
+    assert_eq!(reader.progress().durable_events, 2);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    drop(reader);
+    let error = DraftReader::open_bounded(&path, limits(), 1).err().unwrap();
+    assert!(error.to_string().contains("event budget"));
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(open(&path).progress().durable_events, 2);
+}
+
+#[test]
+fn bounded_reader_preserves_damage_at_limit() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    writer.append(&[event(0)]).unwrap();
+    drop(writer);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.push(1);
+    fs::write(&path, &bytes).unwrap();
+    let reader = DraftReader::open_bounded(&path, limits(), 1).unwrap();
+    assert_eq!(
+        reader.outcome(),
+        DraftOutcome::Damaged {
+            reason: DraftDamage::TruncatedRecord
+        }
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -241,7 +286,10 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         let dir = TestDir::new();
         let path = dir.path();
         let mut writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+        let empty_identity = writer.durable_prefix_identity();
         writer.append(&[event(0)]).unwrap();
+        let acknowledged = writer.durable_prefix_identity();
+        assert_ne!(acknowledged, empty_identity);
         let error = if fail_sync {
             writer
                 .append_with(
@@ -264,11 +312,14 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         };
         assert_eq!(error.progress.accepted_events, 2);
         assert_eq!(error.progress.durable_events, 1);
+        assert_eq!(writer.durable_prefix_identity(), acknowledged);
         assert!(writer.append(&[event(2)]).is_err());
         assert!(writer.finish(DraftTerminal::Interrupted).is_err());
         let failed_bytes = fs::read(&path).unwrap();
         drop(writer);
         let mut reader = open(&path);
+        assert!(reader.matches_prefix(empty_identity).unwrap());
+        assert!(reader.matches_prefix(acknowledged).unwrap());
         assert_eq!(
             reader.progress().durable_events,
             if fail_sync { 2 } else { 1 }
@@ -291,6 +342,33 @@ fn partial_write_and_sync_failure_are_sticky_and_keep_recoverable_prefix() {
         assert_eq!(page[0], Some(event(0)));
         assert_eq!(fs::read(&path).unwrap(), failed_bytes);
     }
+}
+
+#[test]
+fn acknowledged_identity_rejects_replacement_with_same_source() {
+    let (source, target, provenance) = fixture();
+    let first = TestDir::new();
+    let second = TestDir::new();
+    let mut writer = DraftWriter::create_new(first.path(), &source, target, provenance).unwrap();
+    writer.append(&[event(0)]).unwrap();
+    let identity = writer.durable_prefix_identity();
+    writer.append(&[event(1)]).unwrap();
+    let later = writer.durable_prefix_identity();
+    drop(writer);
+    let mut replacement =
+        DraftWriter::create_new(second.path(), &source, target, provenance).unwrap();
+    replacement.append(&[event(1)]).unwrap();
+    drop(replacement);
+    assert!(open(&first.path()).matches_prefix(identity).unwrap());
+    let mut changed = open(&second.path());
+    assert!(!changed.matches_prefix(identity).unwrap());
+    assert!(!changed.matches_prefix(later).unwrap());
+    let mut damaged = fs::read(first.path()).unwrap();
+    damaged.pop();
+    fs::write(first.path(), &damaged).unwrap();
+    let mut truncated = open(&first.path());
+    assert!(truncated.matches_prefix(identity).unwrap());
+    assert!(!truncated.matches_prefix(later).unwrap());
 }
 
 #[test]

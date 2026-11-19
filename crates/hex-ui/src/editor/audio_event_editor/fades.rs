@@ -29,11 +29,10 @@ pub(super) struct FadeGesture {
 }
 impl FadeGesture {
     pub(super) fn pointer_cursor(self) -> gpui::CursorStyle {
-        if matches!(self.handle, Handle::InCurve | Handle::OutCurve) {
-            gpui::CursorStyle::Crosshair
-        } else {
-            gpui::CursorStyle::ResizeLeftRight
-        }
+        gpui::CursorStyle::Arrow
+    }
+    pub(super) fn identity(self) -> (u64, Handle) {
+        (self.event.id, self.handle)
     }
 }
 fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<(u64, u64)> {
@@ -107,6 +106,7 @@ fn retain_unchanged_knots(
     .ok()?
     .with_curve_positions(edited.in_position(), edited.out_position())
     .ok()
+    .map(|fade| fade.with_curve_laws(edited.curve_laws()))
 }
 fn destination_frame(
     root: &AudioClipEdit,
@@ -454,12 +454,16 @@ impl EditorView {
         if !self.update_audio_event_fade_pointer(position, platform, window, cx) {
             return false;
         }
-        if let Some(gesture) = self.audio_event_editor.gesture.take()
-            && gesture.moved
-            && let Some(operation) = gesture.operation
+        if let Some(operation) = self
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .filter(|gesture| gesture.moved)
+            .and_then(|gesture| gesture.operation.clone())
         {
             self.event_commit(operation);
         }
+        self.audio_event_editor.gesture = None;
         cx.notify();
         true
     }
@@ -473,11 +477,22 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
         let held = self.audio_event_editor.fade_key_held;
-        let active = self
+        let captured = self
             .audio_event_editor
             .gesture
             .as_ref()
-            .is_some_and(|g| matches!(g.kind,Kind::Fade(f) if f.event.id==event.id));
+            .and_then(|g| match g.kind {
+                Kind::Fade(f) => Some(f.identity()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.audio_event_editor
+                    .pending
+                    .as_ref()
+                    .filter(|p| Some(p.owner) == self.audio_event_editor.owner)
+                    .and_then(|p| p.fade_handle)
+            });
+        let active = captured.is_some_and(|(id, _)| id == event.id);
         let hovered = self.audio_event_editor.fade_hover == Some(event.id);
         if !held && !active && !hovered && event.fade.is_none_or(|fade| fade.shape().is_neutral()) {
             return Vec::new();
@@ -625,6 +640,17 @@ impl EditorView {
             }
             .clamp(inset, height - inset - 2.0);
             let selector = format!("audio-event-{}-{}", handle.name(), event.id);
+            let paint_state = if captured == Some((event.id, handle)) {
+                theme::FadeHandleState::Active
+            } else if captured.is_none()
+                && self.audio_event_editor.fade_handle_hover == Some((event.id, handle))
+            {
+                theme::FadeHandleState::Hover
+            } else {
+                theme::FadeHandleState::Idle
+            };
+            let owner = self.audio_event_editor.owner;
+            let revision = self.audio_event_editor.revision;
             elements.push(
                 div()
                     .id((handle.name(), event.id))
@@ -636,19 +662,39 @@ impl EditorView {
                     .h(px(size))
                     .children([fade_handles::handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
-                        active,
+                        paint_state,
                     )])
-                    .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                        gpui::CursorStyle::Crosshair
-                    } else {
-                        gpui::CursorStyle::ResizeLeftRight
-                    })
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                        let state = &mut view.audio_event_editor;
+                        if state.owner != owner || state.revision != revision {
+                            return;
+                        }
+                        let target = (event.id, handle);
+                        let next = if *hovered {
+                            Some(target)
+                        } else {
+                            state.fade_handle_hover.filter(|current| *current != target)
+                        };
+                        if next != state.fade_handle_hover {
+                            state.fade_handle_hover = next;
+                            cx.notify();
+                        }
+                    }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::editor::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: format!(
-                                "{} · double click to reset event fades",
-                                handle.name().replace('-', " ")
+                                "{} · double click to {}",
+                                handle.name().replace('-', " "),
+                                if handle.curve_side().is_some_and(|out| {
+                                    controls.curve_laws()[usize::from(out)]
+                                        == ClipFade::DEFAULT_S_CURVE
+                                }) {
+                                    "straighten"
+                                } else {
+                                    "reset event fades"
+                                }
                             ),
                         })
                         .into()
@@ -667,9 +713,19 @@ impl EditorView {
                                 v.audio_event_editor.selected = Some(event.id);
                                 v.audio_event_editor.range = None;
                                 if e.click_count >= 2 {
+                                    let straightened = event.fade.and_then(|fade| {
+                                        let out = handle.curve_side()?;
+                                        let shape = fade.shape();
+                                        if shape.curve_laws()[usize::from(out)]
+                                            != ClipFade::DEFAULT_S_CURVE
+                                        {
+                                            return None;
+                                        }
+                                        Some(fade.straighten_ramp(out))
+                                    });
                                     v.event_commit(AudioEventEdit::SetFade {
                                         event: event.id,
-                                        fade: None,
+                                        fade: straightened,
                                     });
                                 } else if let Some((_, root, _)) = v.event_context()
                                     && let Some(anchor) = v.fade_pointer_source_frame(

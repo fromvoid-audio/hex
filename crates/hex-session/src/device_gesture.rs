@@ -32,6 +32,7 @@ pub struct GestureKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GestureTarget {
+    MainGain,
     TrackGain {
         track: TrackId,
     },
@@ -72,6 +73,16 @@ pub enum GestureTarget {
 }
 
 impl GestureTarget {
+    pub fn is_mixer_gain(self) -> bool {
+        matches!(
+            self,
+            Self::TrackGain { .. }
+                | Self::TrackGains { .. }
+                | Self::MainGain
+                | Self::ReturnGain { .. }
+        )
+    }
+
     pub fn track_gain_anchor(self) -> Option<TrackId> {
         match self {
             Self::TrackGain { track } | Self::TrackGains { track } => Some(track),
@@ -157,6 +168,7 @@ pub enum GestureRequest {
     BeginPlugin {
         key: GestureKey,
         origin: PluginParameterOrigin,
+        recording: bool,
     },
     ChangePlugin {
         key: GestureKey,
@@ -292,6 +304,25 @@ pub struct GestureClient {
 }
 
 impl GestureClient {
+    /// Share the local identity space without pretending the original editor
+    /// delivered a Hex pointer gesture or owning any of its acknowledgements.
+    pub fn reserve_plugin_editor_key(
+        &mut self,
+        generation: u64,
+    ) -> Result<GestureKey, &'static str> {
+        if self.active.is_some() || self.in_flight.is_some() || self.recovery_pending {
+            return Err("finish the current device gesture first");
+        }
+        self.next_token = self
+            .next_token
+            .checked_add(1)
+            .ok_or("device gesture limit reached")?;
+        Ok(GestureKey {
+            generation,
+            token: self.next_token,
+        })
+    }
+
     pub fn begin(
         &mut self,
         generation: u64,
@@ -1238,11 +1269,14 @@ struct Active {
 
 #[derive(Clone, Copy)]
 enum ActiveKind {
-    Plugin,
+    Plugin {
+        recording: bool,
+    },
     TrackGain,
     TrackGains,
     TrackBalance,
     ReturnGain,
+    MainGain,
     Device {
         class: NativeDeviceClass,
         type_id: DeviceTypeId,
@@ -1334,6 +1368,45 @@ impl GestureMachine {
         self.last_key = None;
     }
 
+    /// Retire a refused native terminal when the resident worker has no
+    /// matching published overlay. Plugin previews use their own custody.
+    pub(crate) fn retire_unpublished_native_terminal(&mut self, ack: &mut GestureAck) {
+        if ack.preview_retained
+            && self.active.as_ref().is_some_and(|active| {
+                active.snapshot.key == ack.key && !matches!(active.kind, ActiveKind::Plugin { .. })
+            })
+        {
+            self.active = None;
+            ack.preview_retained = false;
+        }
+    }
+
+    /// An accepted restart relinquishes output-bound previews. An unrecorded
+    /// plugin preview has lost its original source, so report that its edit was
+    /// not saved. Recorded gestures retain their separate recovery custody.
+    pub(crate) fn retire_native_on_restart(&mut self) -> Option<GestureAck> {
+        let active = self.active.as_ref()?;
+        if matches!(active.kind, ActiveKind::Plugin { recording: true }) {
+            return None;
+        }
+        let plugin = matches!(active.kind, ActiveKind::Plugin { .. });
+        let snapshot = active.snapshot;
+        self.active = None;
+        Some(GestureAck {
+            key: snapshot.key,
+            phase: GesturePhase::Cancel,
+            sequence: 0,
+            accepted: false,
+            preview_retained: false,
+            source_lost: plugin,
+            reason: Some(if plugin {
+                "vst3 parameter edit was not saved · audio restarted".into()
+            } else {
+                "device edit canceled · audio is restarting".into()
+            }),
+        })
+    }
+
     pub fn handle(
         &mut self,
         session: &mut Session,
@@ -1387,7 +1460,16 @@ impl GestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                if matches!(error, SessionError::PluginSourceLost(_))
+                let source_lost = matches!(error, SessionError::PluginSourceLost(_));
+                // A recorded terminal may already have restored authored input
+                // before durable take publication refuses. Its completed SDK
+                // preview cannot be retained, and the source is still alive.
+                let recording_released = matches!(error, SessionError::PluginRecordingReleased(_))
+                    && matches!(request.phase(), GesturePhase::Commit | GesturePhase::Cancel)
+                    && self.active.as_ref().is_some_and(|active| {
+                        matches!(active.kind, ActiveKind::Plugin { recording: true })
+                    });
+                if (source_lost || recording_released)
                     && self.snapshot().is_some_and(|active| {
                         active.key == request.key()
                             && matches!(active.target, GestureTarget::PluginParameter { .. })
@@ -1396,7 +1478,7 @@ impl GestureMachine {
                     self.active = None;
                     outcome.playback = None;
                     outcome.preview_project = None;
-                    outcome.ack.source_lost = true;
+                    outcome.ack.source_lost = source_lost;
                 }
                 outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
                     &error.to_string(),
@@ -1703,6 +1785,14 @@ impl GestureMachine {
                             Some(second_value),
                         )
                     }
+                    GestureTarget::MainGain => {
+                        require_resident_mix(session)?;
+                        (
+                            ActiveKind::MainGain,
+                            ParameterValue::Float(session.project().master_gain()),
+                            None,
+                        )
+                    }
                     GestureTarget::TrackBalance { track } => (
                         ActiveKind::TrackBalance,
                         ParameterValue::Float(static_track_balance(session, track)?),
@@ -1938,6 +2028,9 @@ impl GestureMachine {
                     ));
                 }
             }
+            (GestureTarget::MainGain, ActiveKind::MainGain) => {
+                require_resident_mix(session)?;
+            }
             (GestureTarget::TrackBalance { track }, ActiveKind::TrackBalance) => {
                 static_track_balance(session, track)?;
             }
@@ -2044,7 +2137,7 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("return send target was removed"));
                 }
             }
-            (GestureTarget::PluginParameter { device, .. }, ActiveKind::Plugin) => {
+            (GestureTarget::PluginParameter { device, .. }, ActiveKind::Plugin { .. }) => {
                 let origin = active
                     .state_origin
                     .as_ref()
@@ -2406,6 +2499,12 @@ fn preview_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
     match target {
+        GestureTarget::MainGain => session.preview_mix_command(
+            hex_project::Command::MasterGain {
+                gain: mix_value(value, 0.0, 2.0)?,
+            },
+            previous,
+        ),
         GestureTarget::TrackBalance { track } => {
             session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
         }
@@ -2439,6 +2538,14 @@ fn commit_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     match target {
+        GestureTarget::MainGain => session
+            .command_prepared_revision(
+                hex_project::Command::MasterGain {
+                    gain: mix_value(value, 0.0, 2.0)?,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared),
         GestureTarget::TrackBalance { track } => {
             session.commit_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
         }

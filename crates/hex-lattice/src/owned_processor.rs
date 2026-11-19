@@ -36,6 +36,13 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }
+    /// Prepared, state-aware opt-in to sample-rate modulation delivery.
+    fn parameter_modulation_semantics(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        None
+    }
     fn runtime_version(&self) -> u32;
     /// Entire owner plus both histories, all buffers and reserved capacities.
     /// Shared prepared configuration is accounted by its separate control owner.
@@ -260,6 +267,35 @@ impl PreparedProcessorFactory {
             Self::Foreign(_) => false,
         }
     }
+    pub fn parameter_modulation_semantics(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        match self {
+            Self::Legacy(value) => value.parameter_modulation_semantics(parameter),
+            Self::Owned(value) => value.parameter_modulation_semantics(parameter),
+            Self::Foreign(_) => None,
+        }
+    }
+    /// Outer allocation only. A definition's control-storage bound must also
+    /// cover any objects the native factory itself retains.
+    pub fn native_factory_arc_bytes(&self) -> Option<usize> {
+        use std::alloc::Layout;
+        let payload = match self {
+            Self::Legacy(factory) => Layout::for_value(factory.as_ref()),
+            Self::Owned(factory) => Layout::for_value(factory.as_ref()),
+            Self::Foreign(_) => return None,
+        };
+        Some(
+            Layout::new::<[usize; 2]>()
+                .extend(payload)
+                .ok()?
+                .0
+                .pad_to_align()
+                .size(),
+        )
+    }
+
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),
@@ -334,6 +370,7 @@ impl PreparedProcessorFactory {
 /// and convert once on control; there is no positional factory sidecar.
 #[derive(Clone)]
 pub struct PreparedRuntimeInstance {
+    pub modulation: Option<crate::PreparedModulationState>,
     pub automation: crate::PreparedParameterAutomation,
     pub meter: Arc<DeviceMeter>,
     pub owner: ProcessorChainOwner,
@@ -346,6 +383,14 @@ pub struct PreparedRuntimeInstance {
     pub definition: Option<PreparedProcessorFactory>,
 }
 impl PreparedRuntimeInstance {
+    /// Processing facts for this prepared instance, without endpoint custody.
+    pub fn foreign_processor(&self) -> Option<crate::PreparedForeignProcessor> {
+        match self.definition {
+            Some(PreparedProcessorFactory::Foreign(processor)) => Some(processor),
+            _ => None,
+        }
+    }
+
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         if self.bypassed
             && self.definition.as_ref().is_none_or(|factory| {
@@ -365,6 +410,7 @@ impl PreparedRuntimeInstance {
 impl From<PreparedProcessorInstance> for PreparedRuntimeInstance {
     fn from(value: PreparedProcessorInstance) -> Self {
         Self {
+            modulation: None,
             automation: Default::default(),
             meter: value.meter,
             owner: value.owner,
@@ -512,6 +558,7 @@ mod tests {
         let make = |frames: u32, bypassed| {
             let kind = DeviceTypeId::from_static("test.reserved.bypass");
             crate::NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+                modulation: None,
                 automation: Default::default(),
                 meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),

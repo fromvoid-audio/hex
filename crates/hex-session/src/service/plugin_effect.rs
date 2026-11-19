@@ -1,7 +1,10 @@
 //! Canonical worker's explicit plugin insertion request, not native custody.
 use super::*;
 pub use hex_lattice_contract::NativeDeviceState;
-use std::{path::Component, sync::atomic::AtomicU8};
+use std::{
+    path::Component,
+    sync::{Mutex, PoisonError, atomic::AtomicU8},
+};
 
 /// Copied catalog identity. Filesystem, helper and native class revalidation
 /// belong to the injected audio owner before it returns a captured state.
@@ -47,17 +50,28 @@ impl PluginEffectSelection {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PluginEffectDestination {
     Track(hex_project::TrackId),
     Instrument(hex_project::TrackId),
+    ReplaceInstrument {
+        track: hex_project::TrackId,
+        instrument: hex_project::DeviceId,
+    },
+    NewTrack {
+        before_track: Option<hex_project::TrackId>,
+        slot: hex_project::TrackDeviceSlot,
+        gain: f32,
+        /// The captured next identity. The worker checks it before native preparation.
+        track_identity: u64,
+    },
     Return(hex_project::ReturnId),
     Main,
 }
 impl PluginEffectDestination {
     fn devices(self, project: &Project) -> Result<&[hex_project::Device], String> {
         match self {
-            Self::Track(id) | Self::Instrument(id) => project
+            Self::Track(id) => project
                 .track(id)
                 .map(|track| track.devices())
                 .ok_or_else(|| "effect destination no longer exists".into()),
@@ -68,15 +82,29 @@ impl PluginEffectDestination {
                 .map(|track| track.devices())
                 .ok_or_else(|| "effect destination no longer exists".into()),
             Self::Main => Ok(project.main_devices()),
+            Self::Instrument(_) | Self::ReplaceInstrument { .. } | Self::NewTrack { .. } => {
+                Err("effect destination requires an existing chain".into())
+            }
         }
     }
     pub fn is_instrument(self) -> bool {
-        matches!(self, Self::Instrument(_))
+        matches!(
+            self,
+            Self::Instrument(_)
+                | Self::ReplaceInstrument { .. }
+                | Self::NewTrack {
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    ..
+                }
+        )
     }
     pub fn owner(self) -> hex_engine::ProcessorChainOwner {
         match self {
-            Self::Track(id) | Self::Instrument(id) => {
+            Self::Track(id) | Self::Instrument(id) | Self::ReplaceInstrument { track: id, .. } => {
                 hex_engine::ProcessorChainOwner::Track(id.value())
+            }
+            Self::NewTrack { track_identity, .. } => {
+                hex_engine::ProcessorChainOwner::Track(track_identity)
             }
             Self::Return(id) => hex_engine::ProcessorChainOwner::Return(id.value()),
             Self::Main => hex_engine::ProcessorChainOwner::Main,
@@ -84,7 +112,7 @@ impl PluginEffectDestination {
     }
 }
 
-/// Per-request cancellation only, following the existing export/import atomic
+/// Per-request intent and cancellation, following the existing export/import atomic
 /// admission pattern. It owns no native token, descriptor, source or endpoint.
 /// Cancellation can win until final publication admission begins.
 #[derive(Debug, Default)]
@@ -92,15 +120,80 @@ pub struct PluginEffectControl {
     // 0 preparing, 1 cancelled, 2 admitting, 3 finished, 4 finished after cancellation.
     phase: AtomicU8,
     claimed: AtomicBool,
+    open_editor: bool,
+    // Held only by editor/worker control code during the bounded receipt update.
+    install_receipt: Mutex<Option<Box<dyn DeviceInsertAudioReceipt>>>,
 }
 impl PluginEffectControl {
+    pub fn opening_editor() -> Self {
+        Self {
+            open_editor: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn opens_editor(&self) -> bool {
+        self.open_editor
+    }
+
     pub fn cancel(&self) -> bool {
+        let receipt = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(receipt) = receipt.as_ref() {
+            return match self.phase.load(Ordering::Acquire) {
+                1 => true,
+                0 if receipt.cancel() => {
+                    self.phase.store(1, Ordering::Release);
+                    true
+                }
+                _ => false,
+            };
+        }
         matches!(
             self.phase
                 .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire),
             Ok(_) | Err(1)
         )
     }
+
+    /// Bind the exact receipt before the audio owner makes its graph visible.
+    /// A prior cancellation must fence this graph before it reaches the callback.
+    pub fn bind_device_insert_receipt(&self, receipt: Box<dyn DeviceInsertAudioReceipt>) {
+        let mut bound = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.phase.load(Ordering::Acquire) != 0 || bound.is_some() {
+            receipt.cancel();
+        } else {
+            *bound = Some(receipt);
+        }
+    }
+
+    /// Free the exact refused receipt so the confirmed successor can bind.
+    /// Until then the same prepared SDK operation remains live and cancellable.
+    pub(super) fn release_refused_insert_receipt(&self, refused: ResidentGraphSubmission) -> bool {
+        let mut bound = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.phase.load(Ordering::Acquire) != 0
+            || !bound.as_ref().is_some_and(|receipt| {
+                receipt.submission() == refused
+                    && receipt.state()
+                        == DeviceInsertAudioState::Refused(
+                            hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                        )
+            })
+        {
+            return false;
+        }
+        *bound = None;
+        true
+    }
+
     pub fn is_cancelled(&self) -> bool {
         matches!(self.phase.load(Ordering::Acquire), 1 | 4)
     }
@@ -110,11 +203,16 @@ impl PluginEffectControl {
             .is_ok()
     }
     pub(super) fn finish(&self) {
+        let mut receipt = self
+            .install_receipt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let _ = self
             .phase
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |phase| {
                 Some(if phase == 1 { 4 } else { 3 })
             });
+        *receipt = None;
     }
 }
 
@@ -124,6 +222,8 @@ pub struct PluginEffectInsertion {
     pub selection: PluginEffectSelection,
     pub destination: PluginEffectDestination,
     pub before: Option<hex_project::DeviceId>,
+    /// The catalog label for naming a newly created instrument track.
+    pub track_device_name: Option<String>,
     pub control: Arc<PluginEffectControl>,
 }
 impl PluginEffectInsertion {
@@ -136,15 +236,58 @@ impl PluginEffectInsertion {
             return Err("vst3 insertion cancelled · source changed".into());
         }
         self.selection.validate()?;
-        if let PluginEffectDestination::Instrument(track) = self.destination {
+        if let PluginEffectDestination::NewTrack {
+            before_track,
+            gain,
+            track_identity,
+            ..
+        } = self.destination
+        {
+            if self.before.is_some()
+                || before_track.is_some_and(|track| project.track(track).is_none())
+                || track_identity != project.next_identity()
+                || project.tracks().len() >= hex_project::MAX_TRACKS
+                || !gain.is_finite()
+                || !(0.0..=2.0).contains(&gain)
+            {
+                return Err("vst3 track insertion target is no longer available".into());
+            }
+            let name = self.track_device_name.as_deref().unwrap_or("vst3");
+            if name.trim().is_empty()
+                || name.len() > hex_project::MAX_NAME_BYTES
+                || name.chars().any(char::is_control)
+            {
+                return Err("invalid vst3 track device name".into());
+            }
+            return Ok(());
+        }
+        if let PluginEffectDestination::Instrument(track)
+        | PluginEffectDestination::ReplaceInstrument { track, .. } = self.destination
+        {
             let track = project
                 .track(track)
                 .ok_or("instrument destination no longer exists")?;
             if track.is_group() || self.before.is_some() {
                 return Err("select an ordinary track for the vst3 instrument".into());
             }
-            if track.instrument().is_some() {
-                return Err("instrument slot is already occupied".into());
+            let current = track.instrument().map(hex_project::Device::id);
+            match self.destination {
+                PluginEffectDestination::ReplaceInstrument { instrument, .. }
+                    if current != Some(instrument) || !track.receives_source_audio() =>
+                {
+                    return Err("instrument replacement target changed".into());
+                }
+                PluginEffectDestination::Instrument(_) if current.is_some() => {
+                    return Err("instrument slot is already occupied".into());
+                }
+                _ => {}
+            }
+            if track
+                .source_id()
+                .and_then(|id| project.native_source(id))
+                .is_some_and(|source| !source.post_instrument_effects().is_empty())
+            {
+                return Err("vst3 instruments cannot host effects inside the source chain".into());
             }
             return Ok(());
         }
@@ -173,6 +316,27 @@ impl PluginEffectInsertion {
             PluginEffectDestination::Instrument(track) => {
                 Command::InsertInstrument { track, state }
             }
+            PluginEffectDestination::ReplaceInstrument { track, instrument } => {
+                Command::ReplaceTrackInstrument {
+                    track,
+                    replacing: instrument,
+                    state,
+                }
+            }
+            PluginEffectDestination::NewTrack {
+                before_track,
+                slot,
+                gain,
+                ..
+            } => super::device_track_command(
+                before_track,
+                slot,
+                state,
+                self.track_device_name
+                    .clone()
+                    .unwrap_or_else(|| "vst3".into()),
+                Some(gain),
+            ),
             PluginEffectDestination::Return(return_track) => Command::InsertReturnDevice {
                 return_track,
                 before: self.before,
@@ -213,7 +377,7 @@ pub struct PluginEffectCompletion {
 /// with the sink through its matching finish/cancel hook, including failures.
 pub(super) struct Pending {
     pub insertion: PluginEffectInsertion,
-    device_id: u64,
+    next_identity: u64,
     native_started: bool,
 }
 impl Pending {
@@ -223,7 +387,7 @@ impl Pending {
         }
         Ok(Self {
             insertion,
-            device_id: project.next_identity(),
+            next_identity: project.next_identity(),
             native_started: false,
         })
     }
@@ -236,17 +400,25 @@ impl Pending {
     ) -> Result<PluginEffectPreparationState, String> {
         self.insertion.validate(context, session.project())?;
         if session.audio_mode() != DocumentAudioMode::Resident
-            || session.project().next_identity() != self.device_id
+            || session.project().next_identity() != self.next_identity
             || !sink.resident_publication_enabled()
         {
             return Err("vst3 insertion requires its original resident audio context".into());
         }
+        // The new-track command allocates the track before its device.
+        let device_id = self
+            .next_identity
+            .checked_add(u64::from(matches!(
+                self.insertion.destination,
+                PluginEffectDestination::NewTrack { .. }
+            )))
+            .ok_or("project id space exhausted")?;
         self.native_started = true;
         sink.prepare_plugin_effect(PluginEffectPreparation {
             insertion: &self.insertion,
             project: session.project(),
             prepared,
-            device_id: self.device_id,
+            device_id,
         })
     }
     pub fn finish(

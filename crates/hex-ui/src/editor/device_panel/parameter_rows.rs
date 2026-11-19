@@ -214,6 +214,7 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                 | GestureTarget::TrackGain { .. }
                 | GestureTarget::TrackGains { .. }
                 | GestureTarget::TrackBalance { .. }
+                | GestureTarget::MainGain
                 | GestureTarget::ReturnGain { .. } => false,
             })
         || view
@@ -383,6 +384,7 @@ pub(super) mod tests {
             .collect()
     }
 
+    #[cfg(all(test, not(feature = "ui-test-support")))]
     #[test]
     fn mixed_rows_preserve_order_extent_resize_and_surviving_scroll_anchor() {
         let mut parameters = parameters();

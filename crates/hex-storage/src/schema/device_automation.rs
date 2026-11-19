@@ -34,7 +34,7 @@ struct Lane {
 }
 #[derive(Deserialize)]
 struct Lanes(#[serde(deserialize_with = "lanes")] Vec<Lane>);
-fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
+pub(crate) fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

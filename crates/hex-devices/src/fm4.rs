@@ -1,14 +1,15 @@
 //! Original standalone phase-modulation kernel, a prerequisite for Operator.
 //!
 //! The built-in definition admits this bounded acyclic kernel to native MIDI
-//! playback. The legacy FM4 device remains memoryless; Operator's separate
-//! standalone feedback voice adds bounded sequential self-feedback without
-//! changing native admission. State and note preparation validate on control;
-//! sampling uses fixed arrays and borrowed tables.
+//! playback through fixed mutable voices with transactional history. Its inline
+//! acyclic note kernel remains an immutable sampler and comparison oracle.
+//! Operator's separate standalone feedback voice adds bounded sequential
+//! self-feedback. State and note preparation validate on control; sampling uses
+//! fixed arrays and borrowed tables.
 //! Graph coefficients are modulation depth in turns.
 pub mod device;
 mod operator;
-pub(crate) use operator::OperatorFeedbackRetargetFrame;
+pub(crate) use operator::{FINE_LIMIT_HZ, OperatorFeedbackRetargetFrame};
 pub use operator::{
     OperatorFeedbackParameters, OperatorTuning, PreparedOperatorConfiguration,
     PreparedOperatorFeedbackRetarget, PreparedOperatorFeedbackVoice, PreparedOperatorFm4,
@@ -667,7 +668,15 @@ fn sample_fm4_note(
 }
 
 fn phase_from_turns(turns: f64) -> u64 {
-    (turns.rem_euclid(1.0) * PHASE_SCALE).round() as u64
+    // Modulo one removes only the integral part. Truncation uses the native
+    // rounding instruction and keeps the same Euclidean wrap for negative FM.
+    let fraction = turns - turns.trunc();
+    let wrapped = if fraction < 0.0 {
+        fraction + 1.0
+    } else {
+        fraction
+    };
+    (wrapped * PHASE_SCALE).round() as u64
 }
 
 #[cfg(test)]

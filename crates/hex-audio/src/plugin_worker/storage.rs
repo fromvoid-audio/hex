@@ -62,12 +62,37 @@ impl NativeWorker {
     pub(crate) fn preconstruction_data_bytes_for_source_on_control(
         source: hex_plugin_host::native::PreparedStorage,
     ) -> Option<usize> {
+        Self::preconstruction_with_channel(source, channel_storage_bound()?)
+    }
+
+    /// Known constructor DATA for the exact dense effect queue profile.
+    pub fn preconstruction_dense_effect_data_bytes_on_control(
+        instance: &hex_plugin_host::native::Prepared,
+    ) -> Option<usize> {
+        if instance.configuration().input_channels != 2 {
+            return None;
+        }
+        Self::preconstruction_dense_effect_for_source_on_control(
+            instance.retained_storage_on_control()?,
+        )
+    }
+
+    pub(crate) fn preconstruction_dense_effect_for_source_on_control(
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<usize> {
+        Self::preconstruction_with_channel(source, dense_channel_storage_bound()?)
+    }
+
+    fn preconstruction_with_channel(
+        source: hex_plugin_host::native::PreparedStorage,
+        channel: ConstructorStorage,
+    ) -> Option<usize> {
         fn capture_bytes<R>(_: fn(Guard<State>, Arc<Signal>) -> R) -> usize {
             std::mem::size_of::<R>()
         }
         source
             .data_bytes
-            .checked_add(channel_storage_bound()?.data_bytes)?
+            .checked_add(channel.data_bytes)?
             .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?
             .checked_add(std::mem::size_of::<hex_plugin_host::native::Prepared>())?
             .checked_add(std::mem::size_of::<Signal>())?
@@ -85,6 +110,25 @@ impl NativeWorker {
     ) -> Option<NativeWorkerStorage> {
         let transport = self.transport_storage_on_control(callback)?;
         let source = self.retained_source_storage_on_control(callback)?;
+        self.constructor_storage_for(transport, source)
+    }
+
+    /// Constructor-owned backing of the exact reserved effect pair, including
+    /// the independent dense ring and its control-owned staging storage.
+    pub fn constructor_dense_effect_storage_on_control(
+        &self,
+        callback: &DenseEffectCallback,
+    ) -> Option<NativeWorkerStorage> {
+        let transport = callback.constructor_storage_on_control(&self.reaper.control)?;
+        let source = self.source_storage?;
+        self.constructor_storage_for(transport, source)
+    }
+
+    fn constructor_storage_for(
+        &self,
+        transport: ConstructorStorage,
+        source: hex_plugin_host::native::PreparedStorage,
+    ) -> Option<NativeWorkerStorage> {
         let worker = self.reaper.storage?;
         Some(NativeWorkerStorage {
             data_bytes: transport
@@ -122,7 +166,9 @@ pub struct NativeWorkerResourceBound {
 impl NativeWorker {
     pub(crate) fn resource_bound_on_control() -> Option<NativeWorkerResourceBound> {
         let source = hex_plugin_host::native::PreparationResourceBound::ordinary_instance();
-        let channel = channel_storage_bound()?;
+        // Root reserves the largest admitted copied-channel profile before
+        // any individual source chooses its actual ordinary or dense pair.
+        let channel = dense_channel_storage_bound()?;
         let terminal = ChannelStorage::owner_reservation::<State>()?;
         Some(NativeWorkerResourceBound {
             source,

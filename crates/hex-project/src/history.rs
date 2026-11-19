@@ -1,5 +1,6 @@
 use crate::{Command, Created, Invalid, Project};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 /// Bounded snapshot history on the control thread. Oldest edits expire at capacity.
 /// IDs never rewind across undo, redo or branching, so stale references stay stale.
@@ -24,31 +25,49 @@ pub enum SampleRateHistoryAction {
     Redo,
 }
 
+/// One validated edit and its reserved history step. It can outlive the
+/// Editor borrow while an external owner prepares or applies the candidate.
+/// Dropping it leaves the authored project and history unchanged.
+#[must_use]
+pub struct StagedProjectEdit {
+    editor_identity: Arc<()>,
+    history_revision: u64,
+    project: Project,
+    created: Created,
+    changed: bool,
+    midi_effect: Option<crate::MidiHistoryEffect>,
+    section_publication: bool,
+    stopped_bounce: bool,
+}
+
+impl StagedProjectEdit {
+    pub fn project(&self) -> &Project {
+        &self.project
+    }
+}
+
 pub struct Editor {
     project: Project,
     undo: VecDeque<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     capacity: usize,
+    identity: Arc<()>,
+    history_revision: u64,
 }
 impl Editor {
+    /// Start history for an already validated project, including retained source
+    /// paths. Subsequent edits validate source and receiver bindings before commit.
     pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
-        }
-        if project
-            .tracks()
-            .iter()
-            .any(crate::Track::retained_source_path)
-        {
-            return Err(Invalid(
-                "retained source path editing is not supported yet; keep the original project",
-            ));
         }
         Ok(Self {
             project,
             undo: VecDeque::new(),
             redo: Vec::new(),
             capacity,
+            identity: Arc::new(()),
+            history_revision: 0,
         })
     }
     pub fn project(&self) -> &Project {
@@ -191,6 +210,11 @@ impl Editor {
             stopped_bounce,
         });
         self.redo.clear();
+        self.advance_history_revision();
+    }
+
+    fn advance_history_revision(&mut self) {
+        self.history_revision = self.history_revision.saturating_add(1);
     }
 
     /// Commit one device state with the actual pre-gesture state as its Undo
@@ -282,6 +306,43 @@ impl Editor {
         require_midi: bool,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        let edit = self.stage_transition(command, require_midi)?;
+        let prepared = prepare(&self.project, edit.project())?;
+        Ok((self.commit_staged_edit(edit)?, prepared))
+    }
+
+    /// Validate one command and reserve history before a delayed consumer
+    /// can publish its graph. The canonical project remains available to save.
+    pub fn stage_edit(&mut self, command: Command) -> Result<StagedProjectEdit, Invalid> {
+        self.stage_transition(command, false)
+    }
+
+    /// Commit exactly the prepared edit, consuming its reserved history step.
+    /// The caller owns the external approval and must prevent intervening edits
+    /// once publication may install. A stale or foreign candidate is refused.
+    pub fn commit_staged_edit(&mut self, edit: StagedProjectEdit) -> Result<Created, Invalid> {
+        if edit.history_revision != self.history_revision
+            || !Arc::ptr_eq(&edit.editor_identity, &self.identity)
+        {
+            return Err(Invalid("staged edit no longer matches project history"));
+        }
+        // No-op controls should neither add history nor erase a redo branch.
+        if edit.changed {
+            self.commit_candidate(
+                edit.project,
+                edit.midi_effect,
+                edit.section_publication,
+                edit.stopped_bounce,
+            );
+        }
+        Ok(edit.created)
+    }
+
+    fn stage_transition(
+        &mut self,
+        command: Command,
+        require_midi: bool,
+    ) -> Result<StagedProjectEdit, Invalid> {
         let mut command = command;
         let alias_plan = crate::clip_alias_edit::Plan::capture(&self.project, &mut command)?;
         let section_publication = command.requires_section_publication();
@@ -296,7 +357,7 @@ impl Editor {
             plan.ok().flatten()
         };
         if require_midi && plan.is_none() {
-            return Err(E::from(Invalid("unsupported midi edit command")));
+            return Err(Invalid("unsupported midi edit command"));
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
@@ -305,6 +366,7 @@ impl Editor {
         if alias_changed {
             Project::from_snapshot(candidate.snapshot())?;
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
@@ -312,26 +374,35 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
-        if require_midi && candidate != self.project && effect.is_none() {
-            return Err(E::from(Invalid(
-                "midi command changed unsupported project state",
-            )));
+        let changed = candidate != self.project;
+        if require_midi && changed && effect.is_none() {
+            return Err(Invalid("midi command changed unsupported project state"));
         }
-        if candidate != self.project {
+        if changed {
             self.undo
                 .try_reserve(1)
-                .map_err(|_| E::from(Invalid("could not reserve edit history")))?;
+                .map_err(|_| Invalid("could not reserve edit history"))?;
         }
-        let prepared = prepare(&self.project, &candidate)?;
-        // No-op controls should neither add history nor erase a redo branch.
-        if candidate == self.project {
-            return Ok((result, prepared));
+        // Renew the identity before admission so commit never allocates a
+        // replacement key, and an exhausted revision cannot alias old edits.
+        if self.history_revision == u64::MAX {
+            self.identity = Arc::new(());
+            self.history_revision = 0;
         }
-        self.commit_candidate(candidate, effect, section_publication, stopped_bounce);
-        Ok((result, prepared))
+        Ok(StagedProjectEdit {
+            editor_identity: Arc::clone(&self.identity),
+            history_revision: self.history_revision,
+            project: candidate,
+            created: result,
+            changed,
+            midi_effect: effect,
+            section_publication,
+            stopped_bounce,
+        })
     }
     /// Apply at most MAX_CLIPS ordered commands to one private candidate and
     /// prepare it once. Preparation sees each command's result in input order.
@@ -457,6 +528,7 @@ impl Editor {
                 Project::from_snapshot(candidate.snapshot())?;
             }
         }
+        candidate.validate_serial_units()?;
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
@@ -464,6 +536,7 @@ impl Editor {
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_device_automation()?;
+        candidate.validate_device_modulation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.
@@ -472,17 +545,7 @@ impl Editor {
             .map_err(|_| E::from(Invalid("could not reserve batch history")))?;
         let prepared = prepare(&candidate, &results)?;
         if candidate != self.project {
-            let previous = std::mem::replace(&mut self.project, candidate);
-            if self.undo.len() == self.capacity {
-                self.undo.pop_front();
-            }
-            self.undo.push_back(HistoryEntry {
-                project: previous,
-                midi_effect: None,
-                section_publication,
-                stopped_bounce: false,
-            });
-            self.redo.clear();
+            self.commit_candidate(candidate, None, section_publication, false);
         }
         Ok((results, prepared))
     }
@@ -501,6 +564,7 @@ impl Editor {
             section_publication: previous.section_publication,
             stopped_bounce: previous.stopped_bounce,
         });
+        self.advance_history_revision();
         true
     }
 
@@ -548,6 +612,7 @@ impl Editor {
             section_publication,
             stopped_bounce,
         });
+        self.advance_history_revision();
         Ok(Some(prepared))
     }
 
@@ -563,6 +628,7 @@ impl Editor {
             section_publication: next.section_publication,
             stopped_bounce: next.stopped_bounce,
         });
+        self.advance_history_revision();
         true
     }
 
@@ -613,7 +679,93 @@ impl Editor {
             section_publication,
             stopped_bounce,
         });
+        self.advance_history_revision();
         Ok(Some(prepared))
+    }
+}
+
+#[cfg(test)]
+mod staged_edit_tests {
+    use super::*;
+
+    fn insert() -> Command {
+        Command::InsertMainDevice {
+            before: None,
+            state: crate::default_instrument_state().unwrap(),
+        }
+    }
+
+    #[test]
+    fn staged_insert_is_private_until_its_one_history_commit() {
+        let original = Project::new(48_000).unwrap();
+        let mut editor = Editor::new(original.clone(), 2).unwrap();
+        let abandoned = editor.stage_edit(insert()).unwrap();
+        let candidate = abandoned.project().clone();
+        assert_eq!(candidate.main_devices().len(), 1);
+        assert_eq!(editor.project(), &original);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+        drop(abandoned);
+        assert_eq!(editor.project(), &original);
+
+        let insertion = editor.stage_edit(insert()).unwrap();
+        assert_eq!(insertion.project(), &candidate);
+        assert_eq!(
+            editor.commit_staged_edit(insertion).unwrap(),
+            Created::Device(candidate.main_devices()[0].id())
+        );
+        assert_eq!(editor.project(), &candidate);
+        assert!(editor.undo());
+        assert!(editor.project().main_devices().is_empty());
+        assert!(!editor.can_undo());
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &candidate);
+    }
+
+    #[test]
+    fn staged_edit_cannot_cross_editor_or_return_to_an_old_history_edge() {
+        let original = Project::new(48_000).unwrap();
+        let mut editor = Editor::new(original.clone(), 2).unwrap();
+        let mut other = Editor::new(original.clone(), 2).unwrap();
+        let foreign = editor.stage_edit(insert()).unwrap();
+        assert!(other.commit_staged_edit(foreign).is_err());
+        assert_eq!(other.project(), &original);
+        assert!(!other.can_undo());
+
+        let stale = editor.stage_edit(insert()).unwrap();
+        editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+        assert!(editor.try_undo().unwrap());
+        assert_eq!(editor.project(), &original);
+        assert!(editor.commit_staged_edit(stale).is_err());
+        assert!(editor.can_redo());
+
+        let before_redo = editor.stage_edit(insert()).unwrap();
+        assert!(editor.try_redo().unwrap());
+        assert!(editor.commit_staged_edit(before_redo).is_err());
+        assert!(editor.project().main_devices().is_empty());
+    }
+
+    #[test]
+    fn a_staged_no_op_keeps_redo_and_a_batch_invalidates_older_candidates() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+        assert!(editor.undo());
+        let no_op = editor
+            .stage_edit(Command::MasterGain { gain: 1.0 })
+            .unwrap();
+        editor.commit_staged_edit(no_op).unwrap();
+        assert!(!editor.can_undo());
+        assert!(editor.can_redo());
+
+        let older = editor.stage_edit(insert()).unwrap();
+        editor
+            .execute_many_prepared(vec![Command::MasterGain { gain: 0.7 }], |_, _| {
+                Ok::<_, Invalid>(())
+            })
+            .unwrap();
+        assert!(editor.commit_staged_edit(older).is_err());
+        assert!(editor.project().main_devices().is_empty());
+        assert!(!editor.can_redo());
     }
 }
 
@@ -651,11 +803,7 @@ mod retained_source_batch_tests {
         if retained {
             snapshot.retained_source_paths.push(receiver.value());
         }
-        // The public constructor intentionally refuses retained projects until
-        // the complete editing and UI lifecycle is implemented.
-        editor.project = Project::from_snapshot(snapshot).unwrap();
-        editor.undo.clear();
-        editor.redo.clear();
+        let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
         (editor, receiver, source)
     }
 

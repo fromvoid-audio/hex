@@ -838,3 +838,169 @@ fn bypassed_blocks_advance_histories_once_with_or_without_automation() {
     assert_eq!(automated, plain);
     assert_eq!(automated, audible);
 }
+
+#[test]
+fn retained_gain_eligibility_preserves_manual_ramps_and_transactional_twins() {
+    struct Values([Option<f32>; 2], Vec<ParameterId>);
+    impl hex_lattice::NativeParameterAutomation for Values {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.1
+        }
+        fn value_at(&self, id: ParameterId, _: usize) -> Option<ParameterValue> {
+            let index = if id == parameter::DRIVE { 0 } else { 1 };
+            self.0[index].map(ParameterValue::Float)
+        }
+    }
+    let ids = [parameter::DRIVE, parameter::OUTPUT];
+    let resources = &hex_lattice::EMPTY_DEVICE_RESOURCES;
+    let old = SATURATOR_DEFINITION.default_state().unwrap();
+    let new = patch(
+        &patch(&old, parameter::DRIVE, ParameterValue::Float(-6.0)),
+        parameter::OUTPUT,
+        ParameterValue::Float(-12.0),
+    );
+    let prepare = |state, admitted: &[ParameterId]| {
+        SaturatorDefinition::prepare_owned(state, 48_000, admitted)
+            .unwrap()
+            .create_runtime()
+    };
+    let mut previous = prepare(&old, &ids);
+    previous
+        .process_block_with_automation(
+            &mut [[0.2, -0.3]; 128],
+            None,
+            &Values([Some(18.0), Some(-3.0)], ids.to_vec()),
+            resources,
+        )
+        .unwrap();
+    for new in [&old, &new] {
+        for active in [[None, None], [Some(18.0), None], [None, Some(-3.0)]] {
+            let admitted: Vec<_> = ids
+                .into_iter()
+                .zip(active)
+                .filter_map(|(id, v)| v.map(|_| id))
+                .collect();
+            let mut oracle = prepare(new, &admitted);
+            oracle.copy_history_from(previous.as_ref());
+            let mut actual = prepare(new, &ids);
+            actual.copy_history_from(previous.as_ref());
+            let mut expected = [[0.2, -0.3]; 248];
+            oracle
+                .process_block_with_automation(
+                    &mut expected,
+                    None,
+                    &Values(active, admitted.clone()),
+                    resources,
+                )
+                .unwrap();
+            let mut output = [[0.2, -0.3]; 248];
+            for chunk in output.chunks_mut(7) {
+                let mut twin = prepare(new, &ids);
+                twin.copy_history_from(actual.as_ref());
+                twin.process_block_with_automation(
+                    chunk,
+                    None,
+                    &Values(active, ids.to_vec()),
+                    resources,
+                )
+                .unwrap();
+                actual = twin;
+            }
+            assert_eq!(output, expected, "active={active:?}");
+            let mut resumed = [[0.2, -0.3]; 32];
+            actual
+                .process_block_with_automation(
+                    &mut resumed,
+                    None,
+                    &Values([Some(18.0), Some(-3.0)], ids.to_vec()),
+                    resources,
+                )
+                .unwrap();
+            let state = actual.as_any().downcast_ref::<SaturatorRuntime>().unwrap();
+            assert_eq!(state.drive_gain, amplitude_from_db(18.0).unwrap());
+            assert_eq!(state.output_gain, amplitude_from_db(-3.0).unwrap());
+        }
+    }
+}
+
+#[test]
+fn shared_lfo_matches_independent_saturator_control_frames() {
+    use hex_lattice::{
+        ModulationRoute, ModulationTarget, NativeParameterAutomation, PreparedModulation,
+    };
+    struct Expected;
+    impl NativeParameterAutomation for Expected {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[parameter::DRIVE, parameter::DRY_WET]
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            let lfo = [0.0, 1.0, 0.0, -1.0][offset % 4];
+            match id {
+                parameter::DRIVE => Some(ParameterValue::Float(lfo * 7.2)),
+                parameter::DRY_WET => Some(ParameterValue::Float(
+                    (1.0 + lfo * 0.25_f32).clamp(0.0, 1.0),
+                )),
+                _ => None,
+            }
+        }
+    }
+    let state = SATURATOR_DEFINITION.default_state().unwrap();
+    let ids = [parameter::DRIVE, parameter::DRY_WET];
+    let factory = SaturatorDefinition::prepare_owned(&state, 48_000, &ids).unwrap();
+    let targets = ids.map(|id| ModulationTarget {
+        descriptor: *DESCRIPTORS.iter().find(|d| d.id == id).unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
+        base: SATURATOR_DEFINITION.read_parameter(&state, id).unwrap(),
+    });
+    let program = PreparedModulation::new(
+        &targets,
+        &[
+            ModulationRoute {
+                source: 0,
+                target: ids[0],
+                amount: 0.1,
+                range: [-1.0, 1.0],
+            },
+            ModulationRoute {
+                source: 0,
+                target: ids[1],
+                amount: 0.25,
+                range: [-1.0, 1.0],
+            },
+        ],
+        1,
+    )
+    .unwrap();
+    let mut lfo =
+        hex_dsp::ModulationLfo::new(hex_dsp::LfoRate::free(48_000.0, 12_000.0).unwrap(), 0.0)
+            .unwrap();
+    let mut samples = [0.0; 64];
+    lfo.render(&mut samples);
+    let sources = [&samples[..]];
+    let block = program.block(None, &sources, samples.len()).unwrap();
+
+    let mut actual_runtime = factory.create_runtime();
+    let mut expected_runtime = factory.create_runtime();
+    let mut actual = [[0.2, -0.1]; 64];
+    let mut expected = actual;
+    actual_runtime
+        .process_block_with_automation(
+            &mut actual,
+            None,
+            &block,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    expected_runtime
+        .process_block_with_automation(
+            &mut expected,
+            None,
+            &Expected,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    for (a, b) in actual.into_iter().zip(expected) {
+        assert_near(a, b);
+    }
+    assert_eq!(SATURATOR_DEFINITION.default_state().unwrap(), state);
+}
