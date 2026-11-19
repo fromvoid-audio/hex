@@ -600,6 +600,20 @@ fn isolated_latency_removal_preserves_held_operator_without_callback_allocations
 }
 
 #[test]
+fn edited_return_send_preserves_tail_and_source_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    for edit in [
+        IsolatedLatencyEdit::Insert,
+        IsolatedLatencyEdit::Remove,
+        IsolatedLatencyEdit::BufferedInsert,
+        IsolatedLatencyEdit::BufferedRemove,
+    ] {
+        verify_silent_track_latency_edit(SilentLatencyRouting::EditedReturnSend, edit)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn buffered_latency_insert_refuses_without_callback_allocations_or_source_replacement()
 -> Result<(), Box<dyn Error>> {
     verify_silent_track_latency_edit(
@@ -624,6 +638,7 @@ fn approved_isolated_latency_edit_preserves_other_pcm_and_source_without_allocat
 enum SilentLatencyRouting {
     TrackReverb,
     GroupAndReturn,
+    EditedReturnSend,
     HeldOperator,
 }
 
@@ -632,6 +647,7 @@ enum IsolatedLatencyEdit {
     Insert,
     Remove,
     BufferedInsert,
+    BufferedRemove,
     ApprovedInsert,
     ApprovedRemove,
 }
@@ -647,11 +663,17 @@ fn verify_silent_track_latency_edit(
         edit,
         IsolatedLatencyEdit::ApprovedInsert | IsolatedLatencyEdit::ApprovedRemove
     );
-    let buffered = approved || edit == IsolatedLatencyEdit::BufferedInsert;
+    let buffered = approved
+        || matches!(
+            edit,
+            IsolatedLatencyEdit::BufferedInsert | IsolatedLatencyEdit::BufferedRemove
+        );
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
-    let names = if routing == SilentLatencyRouting::GroupAndReturn {
+    let edited_sends = routing == SilentLatencyRouting::EditedReturnSend;
+    let grouped = edited_sends || routing == SilentLatencyRouting::GroupAndReturn;
+    let names = if grouped {
         &["edited", "limiter", "sibling"][..]
     } else {
         &["edited", "unchanged"][..]
@@ -670,7 +692,7 @@ fn verify_silent_track_latency_edit(
         if index == 0 && buffered {
             // The right channel is an independent witness for untouched DSP.
             samples.fill([0.25, 0.0]);
-        } else if routing != SilentLatencyRouting::HeldOperator {
+        } else if routing != SilentLatencyRouting::HeldOperator && !(edited_sends && index == 1) {
             samples[..512].fill([0.25, -0.125]);
         }
         media.insert(asset, Audio::new(RATE, samples)?);
@@ -697,7 +719,7 @@ fn verify_silent_track_latency_edit(
         ParameterId::from_static(2),
         ParameterValue::Float(100.0),
     )?;
-    if routing == SilentLatencyRouting::GroupAndReturn {
+    if grouped {
         let Created::Track(group) = editor.execute(Command::GroupTracks {
             tracks: hex_project::TrackSelectionIds::new(&tracks[1..])?,
             name: "group".into(),
@@ -716,6 +738,13 @@ fn verify_silent_track_latency_edit(
             return_track: bus,
             gain: 0.5,
         })?;
+        if edited_sends {
+            editor.execute(Command::SetReturnSend {
+                track: tracks[0],
+                return_track: bus,
+                gain: 0.5,
+            })?;
+        }
         editor.execute(Command::InsertDevice {
             track: group,
             before: None,
@@ -759,7 +788,9 @@ fn verify_silent_track_latency_edit(
     }
     let command = if matches!(
         edit,
-        IsolatedLatencyEdit::Remove | IsolatedLatencyEdit::ApprovedRemove
+        IsolatedLatencyEdit::Remove
+            | IsolatedLatencyEdit::BufferedRemove
+            | IsolatedLatencyEdit::ApprovedRemove
     ) {
         let Created::Device(device) = editor.execute(insert_limiter(tracks[0])?)? else {
             return Err("expected limiter".into());
@@ -831,7 +862,13 @@ fn verify_silent_track_latency_edit(
     let submitted = control
         .publish_with_admission_and_source_on_control(next, policy, context, |_| Ok::<_, ()>(()))
         .map_err(|_| "updated publication")?;
+    let position = control.status.position.load(Ordering::Acquire);
     measured_block(&mut callback, &mut actual);
+    assert!(control.status.playing.load(Ordering::Acquire));
+    assert_eq!(
+        control.status.position.load(Ordering::Acquire),
+        position + actual.len() as u64
+    );
     if buffered {
         assert_eq!(control.status.recording_source(), Some(active));
         assert_eq!(
