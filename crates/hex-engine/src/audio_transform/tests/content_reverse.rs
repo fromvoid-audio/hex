@@ -119,6 +119,13 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
             })
             .unwrap();
     }
+    let duration = editor.project().clip(clip).unwrap().duration();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::neutral(duration).unwrap(),
+        })
+        .unwrap();
     let context = AudioTransformPreparation::default();
     let before = prepare(&editor, &media, &context);
     let c = editor.project().clip(clip).unwrap();
@@ -126,6 +133,15 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
     let original = render(&before, c.start(), length, 127);
     editor.execute(Command::ReverseClips(vec![clip])).unwrap();
     let after = prepare(&editor, &media, &context);
+    let table = after.arrangement().audio_clip_views()[0]
+        .event_source_occurrences
+        .as_ref()
+        .expect("directed waveform needs the neutral base sources used by playback");
+    let read = table.directed().unwrap();
+    assert_eq!(read.base(), 0..12_000);
+    assert_eq!(read.read_resampler(), hex_project::WarpResampler::V2);
+    assert_eq!(table.reads()[0].source.source_frames(), 12_000);
+    assert_eq!(read.spans()[0].destination(), 0..12_000);
     let reflected = original.iter().rev().copied().collect::<Vec<_>>();
     let q = 1_i128 << 32;
     let map = hex_warp::TimeMap::new(
@@ -146,6 +162,13 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
         length,
     )
     .unwrap();
+    for frame in [0, 1, 3_999, 4_000, 4_001, 11_999] {
+        assert_eq!(
+            read.position_q32(frame).unwrap(),
+            Some(11_999 * q - map.position_q32(i128::from(frame)).unwrap())
+        );
+    }
+    assert!(read.position_q32(12_000).unwrap().is_none());
     // A new directed view reads with the current v2 law.
     let oracle = hex_warp::render_with_resampler(
         &hex_warp::Request {
@@ -171,6 +194,59 @@ fn reverse_musical_audio_reflects_beats_across_tempo_seams_and_keeps_live_warp()
     .frames;
     assert_eq!(render(&after, 0, length, 257), oracle);
     assert_ne!(oracle, original.iter().rev().copied().collect::<Vec<_>>());
+    let mut cropped = Editor::new(editor.project().clone(), 8).unwrap();
+    cropped
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        })
+        .unwrap();
+    let cropped_view = prepare(&cropped, &media, &context);
+    let cropped_map = cropped_view.arrangement().audio_clip_views()[0]
+        .event_source_occurrences
+        .as_ref()
+        .unwrap()
+        .directed()
+        .unwrap();
+    let row = cropped.project().clip(clip).unwrap();
+    let end = row.start() + row.duration();
+    assert_eq!(
+        render(&cropped_view, row.start(), row.duration() as usize, 79),
+        oracle[row.start() as usize..end as usize]
+    );
+    assert!(cropped_map.position_q32(row.start() - 1).unwrap().is_none());
+    for frame in [row.start(), 4_000, end - 1] {
+        assert_eq!(
+            cropped_map.position_q32(frame).unwrap(),
+            read.position_q32(frame).unwrap()
+        );
+    }
+    let mut faded = Editor::new(editor.project().clone(), 8).unwrap();
+    faded
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(duration, 0, 741, 1_283).unwrap(),
+        })
+        .unwrap();
+    let faded_view = prepare(&faded, &media, &context);
+    assert!(Arc::ptr_eq(
+        table,
+        faded_view.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .as_ref()
+            .unwrap()
+    ));
+    let uncached = prepare(&faded, &media, &isolated(64 * 1024 * 1024, 0, 0));
+    assert!(
+        uncached.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .is_none()
+    );
+    assert_eq!(
+        render(&uncached, 0, length, 127),
+        render(&faded_view, 0, length, 127)
+    );
     let settings = editor
         .project()
         .clip(clip)

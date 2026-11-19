@@ -3,6 +3,8 @@ use super::budget::{Budget, Reservation};
 use crate::{Frame, Invalid, PreparedAudioPeak};
 use hex_project::{AudioClipEdit, AudioViewOccurrence, BeatTime, TempoMap, audio_projection_frame};
 use std::sync::{Arc, OnceLock};
+mod directed;
+pub use directed::{PreparedDirectedEventRead, PreparedDirectedEventSpan};
 
 const EVENT_SOURCE_BINS: usize = 1_024;
 const EVENT_SOURCE_PEAK_BYTES: usize = 8 * 1024 * 1024;
@@ -20,11 +22,13 @@ pub struct PreparedEventOccurrence {
 }
 
 /// Complete, budgeted source reads for a finite musical placement. The
-/// entries are in destination order. They own summaries and clocks, without
+/// entries are in forward root order, using virtual base frames for directed
+/// content. They own summaries and clocks, without
 /// retaining the source or composed PCM for each occurrence.
 #[derive(Debug)]
 pub struct PreparedEventOccurrences {
     reads: Vec<PreparedEventOccurrence>,
+    pub(super) directed: Option<PreparedDirectedEventRead>,
     _reservation: Reservation,
 }
 
@@ -39,6 +43,7 @@ impl PreparedEventOccurrences {
         reads.try_reserve_exact(count).ok()?;
         Some(Self {
             reads,
+            directed: None,
             _reservation: reservation,
         })
     }
@@ -55,6 +60,10 @@ impl PreparedEventOccurrences {
 
     pub fn reads(&self) -> &[PreparedEventOccurrence] {
         &self.reads
+    }
+
+    pub fn directed(&self) -> Option<&PreparedDirectedEventRead> {
+        self.directed.as_ref()
     }
 }
 

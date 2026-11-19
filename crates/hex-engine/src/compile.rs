@@ -866,7 +866,7 @@ fn compile_project_inner<'a>(
                         .and(materialized.event_source_repeat.or(repeat));
                     let event_source_occurrences = materialized.event_source_occurrences.or_else(|| {
                         clip.audio_edit()
-                            .filter(|edit| edit.placement.is_some() && matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_)))
+                            .filter(|edit| (edit.placement.is_some() || edit.content_view.is_some()) && matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_)))
                             .and_then(|_| transforms.event_source_occurrences(audio))
                     });
                     audio_clip_views

@@ -371,18 +371,7 @@ impl AudioTransformPreparation {
                     "audio placement root projection differs from prepared pcm",
                 ));
             }
-            if let Some(table) = &mut event_sources {
-                // Take the reservation-backed summary while this exact root is
-                // still selected. A miss abandons the whole optional table.
-                if let Some(source) = self
-                    .event_source_peaks(root)
-                    .filter(|source| source.musical_clock().is_some())
-                {
-                    table.push(occurrence, source);
-                } else {
-                    event_sources = None;
-                }
-            }
+            self.capture_event_occurrence(&mut event_sources, occurrence, root);
             let source_range = occurrence.root_start as usize..occurrence.root_end as usize;
             let elapsed = occurrence
                 .destination_start
