@@ -74,6 +74,8 @@ mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod modulators;
 pub(super) use modulators::AddModulatorAction;
+#[cfg(feature = "ui-test-support")]
+pub(super) mod operator_focus_fixture;
 mod operator_panel;
 mod parameter_rows;
 pub(super) mod vst3_parameters;
