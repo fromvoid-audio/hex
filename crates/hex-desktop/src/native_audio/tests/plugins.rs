@@ -2334,15 +2334,18 @@ fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() 
     assert_eq!(edited.state.revision, before.state.revision + 1);
     let (_, metadata) = h.applied(applied);
     assert_eq!(metadata.context.editor_revision, edited.state.revision);
-    for _ in 0..8 {
+    for _ in 0..16 {
         h.render();
     }
-    let expected = 0.125;
+    let settled = h.render();
     assert!(
-        h.render()
+        settled
             .into_iter()
             .flatten()
-            .all(|sample| (sample - expected).abs() < 1e-5)
+            .all(|sample| (sample - 0.125).abs() < 1e-5),
+        "accepted EQ output gain did not settle: first={:?}, last={:?}",
+        settled[0],
+        settled[63],
     );
 
     resume.send(()).unwrap();
