@@ -240,6 +240,9 @@ impl ProjectedOuterAudioFade<'_> {
                 .ok_or(Invalid("outer fade boundary overflow"))?
         };
         let (start, end) = self.view.outer_frame_bounds();
+        if elapsed > self.view.elapsed_at_frame(end)? {
+            return Ok(None);
+        }
         let frame = self.view.frame_at_elapsed(elapsed)?;
         Ok((start..=end).contains(&frame).then_some(frame))
     }
