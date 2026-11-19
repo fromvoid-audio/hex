@@ -616,16 +616,23 @@ impl EditorView {
         };
         self.wake_poll();
         self.latency_rebuild = None;
-        self.admit_prepared_seek(intent, source.audio_revision);
+        self.queue_normal_start(super::playback_settings::Start::Prepared {
+            intent,
+            audio_revision: source.audio_revision,
+        });
     }
 
     pub(super) fn request_history_playback(&mut self, frame: u64) {
+        self.playback_settings.pending = None;
         self.request_prepared_seek_with_kind(frame, true, SeekKind::History);
     }
 
-    pub(super) fn request_section_launch(
+    /// The section/loop owner already captured the gesture's policy before its loop edit.
+    /// Keep the existing adjacent-refused-loop admission proof; do not re-gate this receipt.
+    pub(super) fn request_section_launch_with_note_chase(
         &mut self,
         section: hex_session::arrangement_seek::SectionLaunch,
+        note_chase: hex_engine::NoteChase,
     ) {
         if !section.matches_loop(
             self.state
@@ -635,10 +642,26 @@ impl EditorView {
             self.error = Some("section launch requires its arrangement loop state".into());
             return;
         }
-        self.request_prepared_seek_with_kind(
-            section.region.start(),
-            true,
-            SeekKind::Section(section),
+        let Some((prepared_revision, audio_revision, project_revision)) =
+            self.current_prepared_seek_source()
+        else {
+            self.error = Some("section playback source is unavailable".into());
+            return;
+        };
+        self.wake_poll();
+        self.submit_prepared_seek_intent(
+            SeekIntent {
+                note_chase,
+                kind: SeekKind::Section(section),
+                recovery_generation: None,
+                destination_frame: section.region.start(),
+                start_playing: true,
+                project_generation: self.project_generation,
+                project_revision,
+                prepared_revision,
+                device_preview_identity: self.active_seek_preview(),
+            },
+            audio_revision,
         );
     }
 
@@ -705,6 +728,19 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
+        if matches!(kind, SeekKind::Section(_) | SeekKind::Locator(_))
+            || (matches!(kind, SeekKind::Fresh) && start_playing)
+        {
+            self.queue_normal_start(super::playback_settings::Start::Prepared {
+                intent,
+                audio_revision,
+            });
+            return;
+        }
+        self.submit_prepared_seek_intent(intent, audio_revision);
+    }
+
+    pub(super) fn submit_prepared_seek_intent(&mut self, intent: SeekIntent, audio_revision: u64) {
         if intent.kind.quantization().is_some() && self.prepared_seek.is_some() {
             self.invalidate_prepared_seek();
         }
@@ -796,7 +832,7 @@ impl EditorView {
         )
     }
 
-    fn admit_prepared_seek(
+    pub(super) fn admit_prepared_seek(
         &mut self,
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,

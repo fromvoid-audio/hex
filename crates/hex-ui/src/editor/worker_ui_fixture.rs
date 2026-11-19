@@ -305,7 +305,7 @@ mod tests {
         let start = BeatTime::from_quarters(2).unwrap();
         let end = BeatTime::from_quarters(3).unwrap();
         let region = LoopRegion::new(48_000, 72_000, true).unwrap();
-        let mut fixture = open(
+        let mut fixture = open_with_section_support(
             cx,
             vec![
                 Command::AddTrack {
@@ -324,6 +324,8 @@ mod tests {
                     end: BeatTime::from_quarters(4).unwrap(),
                 },
             ],
+            false,
+            true,
         );
         let mut visual = VisualTestContext::from_window(fixture.handle, cx);
         let selector: &'static str = fixture.editor.read_with(&visual, |view, _| {

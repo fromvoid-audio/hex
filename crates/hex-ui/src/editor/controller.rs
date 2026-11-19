@@ -2939,6 +2939,7 @@ impl EditorView {
             self.loop_state_installed(event.error.is_none());
         }
         if event.project_replaced {
+            self.playback_settings.pending = None;
             self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
             self.midi_hit_cycle = None;
@@ -4196,6 +4197,7 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        self.playback_settings.pending = None;
         self.wake_poll();
         self.latency_rebuild = None;
         if self.section_install_pending() {
@@ -4401,6 +4403,7 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        self.playback_settings.pending = None;
         let Some(audio) = self.audio.as_ref() else {
             self.error = Some("session playback requires an audio output".into());
             return;
@@ -4445,6 +4448,33 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        self.queue_normal_start(super::playback_settings::Start::Session { command, revision });
+    }
+
+    pub(super) fn queue_session_launch_with_note_chase(
+        &mut self,
+        command: hex_engine::SessionPlaybackCommand,
+        revision: u64,
+        note_chase: hex_engine::NoteChase,
+    ) {
+        let command = match command {
+            hex_engine::SessionPlaybackCommand::LaunchClip { clip, quantization } => {
+                hex_engine::SessionPlaybackCommand::LaunchClipWithNoteChase {
+                    clip,
+                    quantization,
+                    note_chase,
+                }
+            }
+            hex_engine::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization,
+            } => hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase {
+                scene,
+                quantization,
+                note_chase,
+            },
+            command => command,
+        };
         self.wake_poll();
         self.invalidate_prepared_seek();
         if !matches!(
@@ -4569,6 +4599,20 @@ impl EditorView {
         source: hex_audio::prepared::AppliedAudioSource,
         allow_playing: bool,
     ) {
+        self.queue_normal_start(super::playback_settings::Start::Source {
+            frame,
+            source,
+            allow_playing,
+        });
+    }
+
+    pub(super) fn queue_applied_source_play_with_note_chase(
+        &mut self,
+        frame: u64,
+        source: hex_audio::prepared::AppliedAudioSource,
+        allow_playing: bool,
+        note_chase: hex_engine::NoteChase,
+    ) {
         self.wake_poll();
         let playing = self
             .audio
@@ -4607,13 +4651,13 @@ impl EditorView {
         let Some(ticket) = self.audio.as_mut().and_then(|audio| {
             audio
                 .control
-                .play_from_source_with_ticket(frame, source)
+                .play_from_with_note_chase_source_with_ticket(frame, note_chase, source)
                 .ok()
         }) else {
             self.error = Some("playback unavailable · retry".into());
             return;
         };
-        let command = PlaybackCommand::PlayFrom(frame);
+        let command = PlaybackCommand::PlayFromWithNoteChase { frame, note_chase };
         self.admit_play_intent(
             PendingPlaybackAction {
                 action: PlaybackAction::Transport(command),
@@ -4638,6 +4682,7 @@ impl EditorView {
         frame: u64,
         source: hex_audio::prepared::AppliedAudioSource,
     ) {
+        self.playback_settings.pending = None;
         self.wake_poll();
         if !self.pending_audio_commands.is_empty()
             || self.stopped_playback_restore.is_some()
@@ -4668,6 +4713,9 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        if !matches!(action, PlaybackAction::SetMetronome(_)) {
+            self.playback_settings.pending = None;
+        }
         self.wake_poll();
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.latency_rebuild = None;
@@ -5267,6 +5315,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.playback_settings.pending = None;
         self.escape_stop_armed = false;
         if self.finish_audio_recording_before_stop() {
             return;
@@ -5335,6 +5384,7 @@ impl EditorView {
     }
 
     fn stop_transport(&mut self, stop_output: bool) {
+        self.playback_settings.pending = None;
         self.cancel_native_automation_touch();
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
