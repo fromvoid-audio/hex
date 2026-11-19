@@ -444,6 +444,7 @@ fn borrowed_fade_events_and_gain_match_first_fade_and_repeated_view_ack() {
             project.asset(row.asset()).unwrap(),
             FrameFadeOverrides {
                 fade: Some(fade),
+                legacy_root_fade: false,
                 events: Some(&events),
                 gain: Some(gain),
             },

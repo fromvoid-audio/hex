@@ -91,7 +91,11 @@ pub(crate) fn preview(
         .with_shape(in_start, out_end_offset, fade.in_curve(), fade.out_curve())?
         .with_curve_positions(fade.in_position(), fade.out_position())?
         .with_curve_laws(fade.curve_laws());
-    trimmed = trimmed.with_authored_outer_fade(tempo, next)?;
+    if trimmed.audio_edit().is_some() {
+        crate::audio_edit::set_clip_fade_envelope(&mut trimmed, next, tempo)?;
+    } else {
+        trimmed.fade = next;
+    }
     if let Some(edit) = trimmed.audio_edit() {
         edit.validate(&trimmed, tempo, asset_frames)?;
     }

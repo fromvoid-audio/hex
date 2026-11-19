@@ -525,8 +525,11 @@ impl EditorView {
         let controls = fade.reanchor(clip.duration()).ok()?;
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
-        let tempo = self.state.as_ref()?.project.tempo_map();
-        let outer = if let Some(fade) = preview.filter(|_| clip.audio_edit().is_some()) {
+        let project = &self.state.as_ref()?.project;
+        let tempo = project.tempo_map();
+        let outer = if let Some(fade) =
+            preview.filter(|_| project.arrangement_fade_edit_uses_outer(clip))
+        {
             Some(clip.projected_outer_fade_preview(tempo, fade).ok()?)
         } else {
             clip.projected_outer_fade(tempo).ok()?

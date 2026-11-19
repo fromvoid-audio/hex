@@ -90,7 +90,7 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
     tempo: &hex_project::TempoMap,
     visible_start: u64,
     visible_end: u64,
-    preview: Option<ClipFade>,
+    preview: Option<(ClipFade, bool)>,
 ) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
     let edit = clip
         .audio_edit()
@@ -101,7 +101,15 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
     {
         return Ok(Vec::new());
     }
-    if let Some(fade) = preview {
+    if let Some((fade, outer)) = preview {
+        if !outer {
+            return Ok(fade_envelope_samples(
+                fade,
+                clip.start(),
+                visible_start,
+                visible_end,
+            ));
+        }
         let projection = clip.projected_outer_fade_preview(tempo, fade)?;
         return outer_fade_samples(&projection, fade, visible_start, visible_end);
     }
@@ -626,7 +634,7 @@ mod tests {
                         editor.project().tempo_map(),
                         a,
                         b,
-                        Some(preview),
+                        Some((preview, true)),
                     )
                     .unwrap()
                 })

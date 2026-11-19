@@ -3017,7 +3017,8 @@ impl EditorView {
                     state.project.tempo_map(),
                     visible_start,
                     visible_end,
-                    fade_preview,
+                    fade_preview
+                        .map(|fade| (fade, state.project.arrangement_fade_edit_uses_outer(clip))),
                 )
                 .unwrap_or_default()
             } else {

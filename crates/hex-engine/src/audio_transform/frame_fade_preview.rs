@@ -47,6 +47,9 @@ impl FrameFadeSample {
 #[derive(Clone, Copy, Default)]
 pub struct FrameFadeOverrides<'a> {
     pub fade: Option<ClipFade>,
+    /// Use the retained-root law when an existing overlap needs its Legacy
+    /// ramp proof. Callers obtain the policy from the arrangement project.
+    pub legacy_root_fade: bool,
     /// The editor's existing preview, edited from `Clip::editable_audio_events()`
     /// when a crop creates virtual fragments. This preserves local event IDs.
     pub events: Option<&'a AudioEvents>,
@@ -159,7 +162,7 @@ impl<'a> FrameFadePreview<'a> {
         }
         let outer_fade = if projection.is_none() {
             None
-        } else if let Some(fade) = overrides.fade {
+        } else if let Some(fade) = overrides.fade.filter(|_| !overrides.legacy_root_fade) {
             Some(
                 clip.projected_outer_fade_preview(tempo, fade)
                     .map_err(|error| Invalid(error.0))?,
@@ -310,7 +313,10 @@ impl<'a> FrameFadePreview<'a> {
         let clip_fade = if self.outer_fade.is_some() {
             1.0
         } else if let Some(fade) = self.overrides.fade {
-            fade.gain_at(frame)
+            let start = self.clip.audio_edit().map_or(0, |edit| edit.view_start);
+            frame
+                .checked_sub(start)
+                .map_or(0.0, |age| fade.gain_at(age))
         } else if let Some(edit) = self.clip.audio_edit() {
             edit.projected_fade(self.tempo)
                 .and_then(|fade| fade.gain_at(frame))
