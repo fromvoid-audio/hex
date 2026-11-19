@@ -8,7 +8,7 @@ fn geometry(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<
     let mut result: Vec<_> = visual
         .rendered_filled_quads("midi-note-roll")
         .into_iter()
-        // Canonical notes also paint one-pixel leading/trailing borders.
+        // Ignore grid strokes and count only note bodies.
         .filter(|(b, _)| {
             (b.size.height / scale - height).abs() < 0.01 && b.size.width / scale > 1.01
         })
