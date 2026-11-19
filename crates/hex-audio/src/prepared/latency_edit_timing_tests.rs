@@ -7,6 +7,8 @@ use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
 
+mod reverb_power;
+
 const RATE: u32 = 48_000;
 const DELAY: usize = 72;
 const BLOCK: usize = 257;

@@ -445,3 +445,76 @@ fn freeze_off_tail_declaration_includes_an_inherited_slow_transition() {
     assert!(next.is_quiescent());
     assert_eq!(silence.last(), Some(&[0.0; 2]));
 }
+
+#[test]
+fn reverb_power_off_discards_the_room_and_on_restarts_fresh() {
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedProcessorFactory, PreparedRuntimeInstance, ProcessorChainOwner,
+        StereoMatrix,
+    };
+    use std::sync::Arc;
+
+    const RATE: u32 = 8_000;
+    const SILENCE: [f32; 2] = [0.0; 2];
+
+    let configured = Arc::new(state(15.0, 100.0));
+    let prepare_chain = |bypassed| {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            owner: ProcessorChainOwner::Main,
+            device_id: 1,
+            device_type: REVERB_TYPE_ID,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: RATE,
+            configuration: Some(Arc::clone(&configured)),
+            definition: Some(PreparedProcessorFactory::Legacy(Arc::from(prepare(
+                RATE,
+                &configured,
+            )))),
+            automation: Default::default(),
+            modulation: None,
+            meter: Default::default(),
+        }])
+        .unwrap()
+    };
+    let render = |chain: &mut NativeRuntimeChain, frames: &mut [[f32; 2]]| {
+        for block in frames.chunks_mut(257) {
+            chain.begin_block();
+            chain.process_block(block).unwrap();
+            chain.commit_block();
+        }
+    };
+
+    let mut on = prepare_chain(false);
+    let mut excited = [[0.25, -0.125]; 2048];
+    render(&mut on, &mut excited);
+    let mut tail = [SILENCE; 257];
+    render(&mut on, &mut tail);
+    assert!(tail.iter().any(|&frame| frame != SILENCE));
+
+    let mut off = prepare_chain(true);
+    off.transfer_history_from(&mut on);
+    let mut fade = [SILENCE; 40];
+    render(&mut off, &mut fade);
+    assert!(fade[..39].iter().any(|&frame| frame != SILENCE));
+    assert_eq!(fade[39], SILENCE);
+    assert!(
+        off.committed_range_is_quiescent(0..1),
+        "settled Reverb kept its old room running"
+    );
+    let leaked_input = [0.125, 0.25];
+    let mut dry = [leaked_input; 257];
+    render(&mut off, &mut dry);
+    assert_eq!(dry, [leaked_input; 257]);
+
+    let mut restarted = prepare_chain(false);
+    restarted.transfer_history_from(&mut off);
+    let mut fresh = prepare_chain(false);
+    let mut expected = [SILENCE; 1024];
+    expected[128] = [0.5, -0.5];
+    let mut actual = expected;
+    render(&mut fresh, &mut expected);
+    render(&mut restarted, &mut actual);
+    assert_eq!(actual, expected);
+    assert!(actual[128..].iter().any(|&frame| frame != SILENCE));
+}
