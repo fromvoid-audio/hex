@@ -88,6 +88,10 @@ impl SessionPlayback {
         Ok(NativeRemovalProgress::Fading)
     }
 
+    pub(crate) fn native_removal_pending(&self) -> bool {
+        self.native_removal.is_some()
+    }
+
     /// Return a pending removal and restore the original stage from its
     /// current wet/dry mix, including after a transport command invalidates it.
     pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {

@@ -3437,6 +3437,7 @@ impl Callback {
             streams.cancel_install(&mut self.domain_pages);
         }
         self.release_refused_device_insert_cut(&publication);
+        self.restore_refused_native_removal(&mut publication);
         if let Some(receipt) = publication.fresh_runtime_cancellation.as_ref() {
             // The callback is the sole writer of these refusal fields. A
             // refused graph is returned in the same callback branch that
@@ -4110,6 +4111,21 @@ impl Callback {
                 // The candidate owns this law so stream preflight and final
                 // inheritance both reject the same unproven interruption.
                 next.playback.require_continuous_device_insert();
+                if stale_fence.is_none() && !forced_refusal {
+                    match self.advance_native_device_removal(&mut next) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.deferred = Some(next);
+                            return;
+                        }
+                        Err(reason) => {
+                            self.reject_publication(next.revision, reason);
+                            self.return_graph(next);
+                            self.status.publication_pending.store(false, Release);
+                            return;
+                        }
+                    }
+                }
             }
             let mut promotions = None;
             if confirmed_insert && stale_fence.is_none() && self.device_insert_uses_streams(&next) {
