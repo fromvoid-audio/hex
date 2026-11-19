@@ -215,6 +215,13 @@ does, and keep the default harness arguments so the same tests run. Record the
 source, toolchain, test counts, build times and the two tier totals. Timing the
 feature-enabled library executable measures the windowed integration suite.
 
+For a focused first-launch comparison, time the first exact test invocation on
+the newly linked executable, then repeat it on the same file. Run `--list` on
+separate fresh APFS copies to sample launch and discovery without executing the
+test. Keep the executable format, signing preparation, toolchain and system
+settings consistent between comparisons. Record the process wall time and
+harness time separately. This establishes the launch cost on that configuration.
+
 For focused recorder layout timing on macOS arm64, build
 `sample_recorder_layout` with `--release --no-run --message-format=json`.
 Copy Cargo's reported test executable to a local artifact directory and prepare
