@@ -1387,11 +1387,6 @@ fn resident_gate_power_restarts_closed_and_installs_at_the_callback_boundary() {
 fn resident_eq8_power_reverses_wet_or_restarts_silent_at_the_callback_boundary() {
     use hex_devices::eq8::{EQ8_DEFINITION, parameter};
 
-    const SILENCE: Frame = [0.0; 2];
-    const FADE: usize = 240;
-    let mut pcm = vec![SILENCE; 8192];
-    pcm[..BLOCK].fill(SIGNAL);
-    let (mut editor, _, prepare) = resident_input(pcm);
     let mut state = EQ8_DEFINITION.default_state().unwrap();
     for (parameter, value) in [
         (parameter::enabled(0, 0), ParameterValue::Bool(true)),
@@ -1403,6 +1398,28 @@ fn resident_eq8_power_reverses_wet_or_restarts_silent_at_the_callback_boundary()
             .patch_parameter(&state, parameter, value)
             .unwrap();
     }
+    resident_eq_power_reverses_wet_or_restarts_silent(state);
+}
+
+#[test]
+fn resident_flexible_eq_power_reverses_wet_or_restarts_silent_at_the_callback_boundary() {
+    use hex_devices::eq::{EqState, Node, NodeId};
+
+    let mut state = EqState::default();
+    let mut node = Node::new(NodeId::new(1).unwrap(), 40.0, 12.0, 0).unwrap();
+    node.q = 8.0;
+    state.add(node).unwrap();
+    resident_eq_power_reverses_wet_or_restarts_silent(state.encode().unwrap());
+}
+
+fn resident_eq_power_reverses_wet_or_restarts_silent(
+    state: hex_lattice_contract::NativeDeviceState,
+) {
+    const SILENCE: Frame = [0.0; 2];
+    const FADE: usize = 240;
+    let mut pcm = vec![SILENCE; 8192];
+    pcm[..BLOCK].fill(SIGNAL);
+    let (mut editor, _, prepare) = resident_input(pcm);
     let Created::Device(device) = editor
         .execute(Command::InsertMainDevice {
             before: None,
@@ -1410,7 +1427,7 @@ fn resident_eq8_power_reverses_wet_or_restarts_silent_at_the_callback_boundary()
         })
         .unwrap()
     else {
-        panic!("EQ Eight insertion");
+        panic!("EQ insertion");
     };
     let on = prepare(editor.project());
     editor
@@ -1494,7 +1511,7 @@ fn resident_eq8_power_reverses_wet_or_restarts_silent_at_the_callback_boundary()
                 ),
                 _ => assert_eq!(
                     block, [SILENCE; BLOCK],
-                    "settled EQ Eight kept its old filter history"
+                    "settled EQ kept its old filter history"
                 ),
             }
         }
