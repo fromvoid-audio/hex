@@ -1246,8 +1246,6 @@ impl SessionPlayback {
                 if count == 0 {
                     return Err(SessionPlaybackError::ArithmeticOverflow);
                 }
-                // Leave the first frame of a wrapped pass with the scalar
-                // renderer, which may chase a note that began before the loop.
                 let mutable_loop_pass = (count > 1
                     && self.revision.session().has_mutable_instruments()
                     && observer.is_none()
@@ -1256,9 +1254,6 @@ impl SessionPlayback {
                     && sources.is_none()
                     && scalar.is_none()
                     && live_audio.is_none()
-                    && self.interactive_start_frame.is_none()
-                    && (arrangement_loop_pass == 0
-                        || region.is_none_or(|region| arrangement_frame != region.start()))
                     && self.release_scratch.is_empty()
                     && self
                         .native_parameter_state
@@ -1275,6 +1270,7 @@ impl SessionPlayback {
                         arrangement_frame,
                         frames: count,
                         mutable_loop_pass,
+                        chase_at_start: self.interactive_start_frame == Some(performance_frame),
                     },
                     &mut resident_source_eligible,
                     &mut resident_instrument_eligible,

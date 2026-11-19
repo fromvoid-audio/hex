@@ -31,6 +31,7 @@ pub(super) struct ResidentSourceWindow {
     pub(super) arrangement_frame: u64,
     pub(super) frames: usize,
     pub(super) mutable_loop_pass: Option<u64>,
+    pub(super) chase_at_start: bool,
 }
 
 pub(super) fn add_main_track(main: &mut [Frame], track: &[Frame]) {
@@ -40,21 +41,64 @@ pub(super) fn add_main_track(main: &mut [Frame], track: &[Frame]) {
     }
 }
 
-fn mutable_arrangement_has_no_onset(
+fn render_isolated_mutable_window<T: crate::prepared_tempo::MidiTempoBreaks>(
+    context: MutableInstrumentChunkContext<'_, T>,
+    index: usize,
     track: &crate::Track,
-    start: u64,
-    frames: usize,
-) -> Result<bool, SessionPlaybackError> {
+    output: &mut [Frame],
+) -> Result<(), SessionPlaybackError> {
+    let start = context.arrangement_frame;
     let end = start
-        .checked_add(frames as u64)
+        .checked_add(output.len() as u64)
         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-    let mut has_onset = false;
+    context
+        .performance_frame
+        .checked_add(output.len() as u64)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    let mut note_boundaries = [false; 256];
+    let note_boundaries = &mut note_boundaries[..output.len()];
+    note_boundaries[0] = context.chase_at_start
+        || (context.arrangement_loop_pass > 0
+            && context
+                .loop_region
+                .is_some_and(|region| start == region.start()));
     track
         .for_each_mutable_midi_span(start, end, |span| {
-            has_onset |= span.start >= start && span.start < end;
+            if (start..end).contains(&span.start) {
+                note_boundaries[(span.start - start) as usize] = true;
+            }
         })
         .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
-    Ok(!has_onset)
+    let mut offset = 0;
+    while offset < output.len() {
+        let performance = context.performance_frame + offset as u64;
+        let next_onset = note_boundaries[offset..]
+            .iter()
+            .position(|&due| due)
+            .unwrap_or(output.len() - offset);
+        let runtime = context.runtimes[index]
+            .as_ref()
+            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+        let width = runtime.isolated_segment_width(performance, next_onset.max(1));
+        let segment_end = offset + width;
+        render_mutable_instrument_chunk(
+            MutableInstrumentChunkContext {
+                runtimes: &mut *context.runtimes,
+                onsets: &mut *context.onsets,
+                events: &mut *context.events,
+                spans: &mut *context.spans,
+                performance_frame: performance,
+                arrangement_frame: start + offset as u64,
+                chase_at_start: context.chase_at_start && offset == 0,
+                ..context
+            },
+            index,
+            &mut output[offset..segment_end],
+            None,
+        )?;
+        offset = segment_end;
+    }
+    Ok(())
 }
 
 fn resident_return_track_taps(
@@ -311,6 +355,7 @@ impl SessionPlayback {
             arrangement_frame,
             frames,
             mutable_loop_pass,
+            chase_at_start,
         } = window;
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -440,12 +485,9 @@ impl SessionPlayback {
                         })
                         && self.mutable_instruments[index]
                             .as_ref()
-                            .is_some_and(|runtime| {
-                                runtime.can_batch_held_segment(performance_frame, frames as u64)
-                            })
-                        && mutable_arrangement_has_no_onset(track, arrangement_frame, frames)?
+                            .is_some_and(|runtime| runtime.can_batch_isolated_window(frames as u64))
                     {
-                        render_mutable_instrument_chunk(
+                        render_isolated_mutable_window(
                             MutableInstrumentChunkContext {
                                 revision: &self.revision,
                                 midi: crate::session_inventory::EffectiveSessionMidi::new(
@@ -463,14 +505,14 @@ impl SessionPlayback {
                                 arrangement_frame,
                                 arrangement_loop_pass,
                                 transient: None,
-                                chase_at_start: false,
+                                chase_at_start,
                                 pending_shared_chase: None,
                                 loop_region: active_loop,
                                 timing: &timing,
                             },
                             index,
+                            track,
                             output,
-                            None,
                         )?;
                         instruments[index] = true;
                     } else if batch_analytic
