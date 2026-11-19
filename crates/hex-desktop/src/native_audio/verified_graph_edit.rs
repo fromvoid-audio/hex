@@ -42,17 +42,23 @@ impl Edit {
                 context,
                 self.predecessor,
                 approval,
+                self.attempt.preparation_deadline(),
                 |receipt| {
+                    let submission = hex_session::service::ResidentGraphSubmission {
+                        context,
+                        audio_revision: receipt.revision(),
+                        output_identity: receipt.output_identity(),
+                    };
                     self.attempt.bind_proposal_receipt(|| {
-                        Box::new(resident::InsertReceipt::new(
-                            hex_session::service::ResidentGraphSubmission {
-                                context,
-                                audio_revision: receipt.revision(),
-                                output_identity: receipt.output_identity(),
-                            },
-                            receipt.clone(),
-                        ))
+                        Box::new(resident::InsertReceipt::new(submission, receipt.clone()))
                     });
+                    // A timeout or cancellation winning the Session state
+                    // drops this receipt and fences it before queue visibility.
+                    self.attempt
+                        .submitted(Box::new(resident::InsertReceipt::new(
+                            submission,
+                            receipt.clone(),
+                        )));
                 },
             ),
             Transition::TempoCut(fence) => {

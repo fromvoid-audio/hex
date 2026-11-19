@@ -25,8 +25,10 @@ impl DeviceInsertBasis {
         fence: FreshRuntimeFence,
         status: &Status,
         approved: Option<DeviceInsertConsent>,
+        preparation_deadline: Option<Instant>,
     ) -> Self {
         let deadline = Instant::now() + INSTALL_WINDOW;
+        let deadline = preparation_deadline.map_or(deadline, |limit| deadline.min(limit));
         Self {
             predecessor,
             fence,

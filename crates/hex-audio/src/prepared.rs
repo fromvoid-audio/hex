@@ -2510,6 +2510,7 @@ impl PublicationControl {
                         fence,
                         &self.status,
                         approved,
+                        None,
                     ))
                 }
                 _ => tempo_cut.map_or(
