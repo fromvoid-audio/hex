@@ -92,7 +92,7 @@ pub(in crate::editor) fn action_matches_project(
         return false;
     };
     match command {
-        SessionPlaybackCommand::LaunchClip { clip, .. } => project.session_cells().iter().any(
+        SessionPlaybackCommand::LaunchClip { clip, .. } | SessionPlaybackCommand::LaunchClipWithNoteChase { clip, .. } => project.session_cells().iter().any(
             |cell| matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip),
         ),
         SessionPlaybackCommand::CueMidiClip { track, clip, .. } => {
@@ -101,7 +101,7 @@ pub(in crate::editor) fn action_matches_project(
                     && matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip)
             })
         }
-        SessionPlaybackCommand::LaunchScene { scene, .. } => {
+        SessionPlaybackCommand::LaunchScene { scene, .. } | SessionPlaybackCommand::LaunchSceneWithNoteChase { scene, .. } => {
             project.scenes().iter().any(|item| item.id() == scene)
         }
         SessionPlaybackCommand::StopTrack { track, .. } => project.track(track).is_some(),
@@ -120,6 +120,20 @@ pub(super) fn with_quantization(
     quantization: LaunchQuantization,
 ) -> SessionPlaybackCommand {
     match command {
+        SessionPlaybackCommand::LaunchClipWithNoteChase {
+            clip, note_chase, ..
+        } => SessionPlaybackCommand::LaunchClipWithNoteChase {
+            clip,
+            quantization,
+            note_chase,
+        },
+        SessionPlaybackCommand::LaunchSceneWithNoteChase {
+            scene, note_chase, ..
+        } => SessionPlaybackCommand::LaunchSceneWithNoteChase {
+            scene,
+            quantization,
+            note_chase,
+        },
         SessionPlaybackCommand::LaunchClip { clip, .. } => {
             SessionPlaybackCommand::LaunchClip { clip, quantization }
         }
@@ -529,6 +543,16 @@ mod tests {
                 scene,
                 quantization: LaunchQuantization::Immediate,
             },
+            SessionPlaybackCommand::LaunchClipWithNoteChase {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+                note_chase: hex_engine::NoteChase::Off,
+            },
+            SessionPlaybackCommand::LaunchSceneWithNoteChase {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+                note_chase: hex_engine::NoteChase::Off,
+            },
             SessionPlaybackCommand::StopTrack {
                 track,
                 quantization: LaunchQuantization::Immediate,
@@ -547,6 +571,20 @@ mod tests {
             for command in commands {
                 let captured = with_quantization(command, quantization);
                 let expected = match command {
+                    SessionPlaybackCommand::LaunchClipWithNoteChase {
+                        clip, note_chase, ..
+                    } => SessionPlaybackCommand::LaunchClipWithNoteChase {
+                        clip,
+                        quantization,
+                        note_chase,
+                    },
+                    SessionPlaybackCommand::LaunchSceneWithNoteChase {
+                        scene, note_chase, ..
+                    } => SessionPlaybackCommand::LaunchSceneWithNoteChase {
+                        scene,
+                        quantization,
+                        note_chase,
+                    },
                     SessionPlaybackCommand::LaunchClip { clip, .. } => {
                         SessionPlaybackCommand::LaunchClip { clip, quantization }
                     }
