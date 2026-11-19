@@ -106,6 +106,125 @@ fn verified_editor_insert_commits_only_the_confirmed_graph_and_one_undo() {
 }
 
 #[test]
+fn verified_main_reorder_saves_and_installs_only_the_approved_graph() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.wait = Duration::from_secs(2);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    h.run(Request::Import(files.wav(48_000, 96_000)));
+    h.applied(h.context.unwrap());
+    let mut original = None;
+    for name in ["hex.limiter", "hex.utility"] {
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::new(name).unwrap(),
+        )
+        .unwrap();
+        original = Some(
+            h.run_verified_device_insert(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .state,
+        );
+        h.applied(h.context.unwrap());
+    }
+    let original = original.unwrap();
+    let context = h.context.unwrap();
+    let predecessor = h.applied(context);
+    let devices = original.project.main_devices();
+    let saved = files.0.join("verified-reorder.hex");
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    wait_for_audio(&h);
+    for proceed in [false, true] {
+        let request = if proceed {
+            Request::ReorderDevices {
+                project_generation: context.project_generation,
+                revision: original.revision,
+                owner: DeviceChainOwner::Main,
+                selected: DeviceSelectionIds::new(&[devices[0].id()]).unwrap(),
+                before: None,
+            }
+        } else {
+            Request::Edit(Command::MoveMainDevice {
+                device: devices[0].id(),
+                before: None,
+            })
+        };
+        let pending = h.run(request);
+        assert!(!pending.request_complete);
+        assert_eq!(pending.state.project, original.project);
+        if !proceed {
+            assert!(h.run(Request::SaveNew(saved.clone())).save_complete);
+            assert_eq!(hex_storage::load(&saved).unwrap().main_devices(), devices);
+        }
+        let offered = h.next_with_audio();
+        assert_eq!(offered.state.revision, original.revision);
+        let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(offer.operation(), GraphEditOperation::MoveDevice);
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source(),
+            Some(predecessor)
+        );
+        assert!(if proceed {
+            offer.proceed()
+        } else {
+            offer.cancel()
+        });
+        let terminal = h.next_with_audio();
+        assert!(
+            terminal.request_complete && terminal.error.is_none(),
+            "{:?}",
+            terminal.error
+        );
+        let receipt = terminal.device_insert_complete.unwrap();
+        if proceed {
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            let installed = h.applied(h.context.unwrap());
+            assert_eq!(installed.audio_revision, receipt.submission.audio_revision);
+            assert_eq!(installed.output_identity, predecessor.output_identity);
+            assert_eq!(
+                terminal.state.project.main_devices(),
+                &[devices[1].clone(), devices[0].clone()]
+            );
+            assert_eq!(terminal.state.revision, original.revision + 1);
+        } else {
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+            assert_eq!(terminal.state.project, original.project);
+            assert_eq!(terminal.state.revision, original.revision);
+            assert_eq!(h.applied(context), predecessor);
+        }
+    }
+    assert!(h.run(Request::SaveCurrent).save_complete);
+    assert_eq!(
+        hex_storage::load(&saved).unwrap().main_devices()[0].id(),
+        devices[1].id()
+    );
+    assert_eq!(h.run(Request::Undo).state.project, original.project);
+}
+
+#[test]
 fn stopped_verified_stream_installs_auto_pan_and_renders_processed_audio() {
     check_auto_pan(false);
 }
