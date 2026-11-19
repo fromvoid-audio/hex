@@ -634,11 +634,26 @@ fn approved_isolated_latency_edit_preserves_other_pcm_and_source_without_allocat
     Ok(())
 }
 
+#[test]
+fn grouped_send_track_latency_edits_preserve_admitted_pcm_and_source_without_allocations()
+-> Result<(), Box<dyn Error>> {
+    for edit in [
+        IsolatedLatencyEdit::Insert,
+        IsolatedLatencyEdit::Remove,
+        IsolatedLatencyEdit::ApprovedInsert,
+        IsolatedLatencyEdit::ApprovedRemove,
+    ] {
+        verify_silent_track_latency_edit(SilentLatencyRouting::EditedGroupAndReturn, edit)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SilentLatencyRouting {
     TrackReverb,
     GroupAndReturn,
     EditedReturnSend,
+    EditedGroupAndReturn,
     HeldOperator,
 }
 
@@ -659,6 +674,11 @@ fn verify_silent_track_latency_edit(
     use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy, PublicationReceiptState};
     use hex_project::BeatTime;
 
+    const BLOCK: usize = 512;
+    const PREROLL_BLOCKS: usize = 12;
+    const FADE: usize = 128;
+    const PENDING_HIT_FRAMES: usize = 8;
+
     let approved = matches!(
         edit,
         IsolatedLatencyEdit::ApprovedInsert | IsolatedLatencyEdit::ApprovedRemove
@@ -671,8 +691,11 @@ fn verify_silent_track_latency_edit(
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
-    let edited_sends = routing == SilentLatencyRouting::EditedReturnSend;
+    let edited_grouped = routing == SilentLatencyRouting::EditedGroupAndReturn;
+    let edited_sends = edited_grouped || routing == SilentLatencyRouting::EditedReturnSend;
     let grouped = edited_sends || routing == SilentLatencyRouting::GroupAndReturn;
+    let cut_pending_hit = approved && edited_grouped;
+    let mut reference_audio = None;
     let names = if grouped {
         &["edited", "limiter", "sibling"][..]
     } else {
@@ -689,11 +712,20 @@ fn verify_silent_track_latency_edit(
             return Err("expected source".into());
         };
         let mut samples = vec![[0.0; 2]; 12_000];
-        if index == 0 && buffered {
+        if index == 0 && cut_pending_hit {
+            samples[..BLOCK].fill([0.25, -0.125]);
+            // The first hit is pending at the initial continuity check and
+            // reaches the shared buses before the confirmed cut.
+            let request = PREROLL_BLOCKS * BLOCK;
+            samples[request - PENDING_HIT_FRAMES..request].fill([0.125, 0.375]);
+            reference_audio = Some((asset, Audio::new(RATE, samples.clone())?));
+            let cut = request + BLOCK + FADE;
+            samples[cut - PENDING_HIT_FRAMES..cut].fill([-0.375, 0.5]);
+        } else if index == 0 && buffered {
             // The right channel is an independent witness for untouched DSP.
             samples.fill([0.25, 0.0]);
         } else if routing != SilentLatencyRouting::HeldOperator && !(edited_sends && index == 1) {
-            samples[..512].fill([0.25, -0.125]);
+            samples[..BLOCK].fill([0.25, -0.125]);
         }
         media.insert(asset, Audio::new(RATE, samples)?);
         tracks.push(track);
@@ -705,23 +737,34 @@ fn verify_silent_track_latency_edit(
         })?;
     }
     let insert_limiter = |track| -> Result<Command, Box<dyn Error>> {
+        let state =
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?;
+        let state = if cut_pending_hit {
+            // Keep the pending hit beyond the fade-in so its absence is
+            // visible directly in the resumed PCM comparison.
+            hex_engine::patch_native_device_parameter(
+                &state,
+                ParameterId::from_static(6),
+                ParameterValue::Choice(2),
+            )?
+        } else {
+            state
+        };
         Ok(Command::InsertDevice {
             track,
             before: None,
-            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
-                "hex.limiter",
-            ))?,
+            state,
         })
     };
     editor.execute(insert_limiter(tracks[1])?)?;
     let reverb = hex_engine::patch_native_device_parameter(
         &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?,
         ParameterId::from_static(2),
-        ParameterValue::Float(100.0),
+        ParameterValue::Float(if cut_pending_hit { 50.0 } else { 100.0 }),
     )?;
     if grouped {
         let Created::Track(group) = editor.execute(Command::GroupTracks {
-            tracks: hex_project::TrackSelectionIds::new(&tracks[1..])?,
+            tracks: hex_project::TrackSelectionIds::new(&tracks[usize::from(!edited_grouped)..])?,
             name: "group".into(),
         })?
         else {
@@ -804,8 +847,25 @@ fn verify_silent_track_latency_edit(
         PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
     };
     let first = prepare(editor.project())?;
+    if cut_pending_hit {
+        let latency = first.arrangement().main_latency_frames() as usize;
+        assert!((FADE + PENDING_HIT_FRAMES..BLOCK).contains(&latency));
+    }
     let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
     oracle.apply(PlaybackCommand::Play);
+    // This independently prepared predecessor never received the pending
+    // hit. Its previously admitted bus state is the post-cut PCM oracle.
+    let mut admitted_only = if let Some((asset, audio)) = reference_audio {
+        let mut original_media = media.clone();
+        original_media.insert(asset, audio);
+        let revision =
+            PreparedRevision::prepare(editor.project(), &original_media, Arc::clone(&table), None)?;
+        let mut playback = Playback::try_from_prepared_with_session(Arc::new(revision))?;
+        playback.apply(PlaybackCommand::Play);
+        Some(playback)
+    } else {
+        None
+    };
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control.configure_device_resource_publication_on_control(
         hex_engine::AudioStorageLedgerReservation {
@@ -829,12 +889,17 @@ fn verify_silent_track_latency_edit(
         )
         .map_err(|_| "initial publication")?;
     control.command(PlaybackCommand::Play).map_err(|_| "play")?;
-    let mut actual = [[0.0; 2]; 512];
+    let mut actual = [[0.0; 2]; BLOCK];
     let mut expected = actual;
-    for _ in 0..12 {
+    let mut admitted_pcm = actual;
+    for _ in 0..PREROLL_BLOCKS {
         measured_block(&mut callback, &mut actual);
         oracle.render(&mut expected)?;
         assert_eq!(actual, expected);
+        if let Some(admitted) = admitted_only.as_mut() {
+            admitted.render(&mut admitted_pcm)?;
+            assert_eq!(actual, admitted_pcm);
+        }
     }
     let active = control
         .status
@@ -892,6 +957,10 @@ fn verify_silent_track_latency_edit(
     oracle.render(&mut expected)?;
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
     assert_eq!(actual, expected);
+    if let Some(admitted) = admitted_only.as_mut() {
+        admitted.render(&mut admitted_pcm)?;
+        assert_eq!(actual, admitted_pcm);
+    }
     if approved {
         let refused = control
             .fresh_runtime_receipt(submitted)
@@ -911,9 +980,12 @@ fn verify_silent_track_latency_edit(
             .map_err(|_| "approved publication")?;
         let receipt = receipt.ok_or("approved receipt")?;
         let position = control.status.position.load(Ordering::Acquire);
-        const FADE: usize = 128;
         measured_block(&mut callback, &mut actual);
         oracle.render(&mut expected[..FADE])?;
+        if let Some(admitted) = admitted_only.as_mut() {
+            admitted.render(&mut admitted_pcm[..FADE])?;
+            assert_eq!(admitted_pcm[..FADE], expected[..FADE]);
+        }
         assert_eq!(
             actual[0],
             expected[0].map(|sample| sample * (127.0 / 128.0))
@@ -941,9 +1013,23 @@ fn verify_silent_track_latency_edit(
             control.status.position.load(Ordering::Acquire),
             position + (FADE + actual.len()) as u64
         );
-        assert!(expected[FADE..].iter().any(|frame| frame[1].abs() > 1e-7));
-        for (actual, expected) in actual[FADE..].iter().zip(&expected[FADE..]) {
-            assert_eq!(actual[1].to_bits(), expected[1].to_bits());
+        if let Some(admitted) = admitted_only.as_mut() {
+            admitted.render(&mut admitted_pcm)?;
+            assert_ne!(
+                admitted_pcm, expected,
+                "pending hit must reach the old buses"
+            );
+            assert!(
+                admitted_pcm[FADE..]
+                    .iter()
+                    .any(|frame| frame[1].abs() > 1e-7)
+            );
+            assert_eq!(actual[FADE..], admitted_pcm[FADE..]);
+        } else {
+            assert!(expected[FADE..].iter().any(|frame| frame[1].abs() > 1e-7));
+            for (actual, expected) in actual[FADE..].iter().zip(&expected[FADE..]) {
+                assert_eq!(actual[1].to_bits(), expected[1].to_bits());
+            }
         }
     }
     control.request_shutdown();

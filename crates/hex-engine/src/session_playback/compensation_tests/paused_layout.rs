@@ -224,7 +224,7 @@ enum SilentLatencyCase {
     StaleMutedHistory,
     IncreasedMaximum,
     ChangedReturnArrival,
-    ChildOfGroup,
+    ChangedGroupArrival,
 }
 
 #[test]
@@ -383,46 +383,80 @@ fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit, approved: boo
 
 #[test]
 fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
-    latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Insert, LatencyEditHandoff::Direct);
+    latency_edit_keeps_group_and_return(
+        IsolatedLatencyEdit::Insert,
+        LatencyEditRoute::Direct,
+        false,
+    );
 }
 
 #[test]
 fn isolated_latency_removal_keeps_unchanged_group_and_return_tails() {
-    latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Remove, LatencyEditHandoff::Direct);
+    latency_edit_keeps_group_and_return(
+        IsolatedLatencyEdit::Remove,
+        LatencyEditRoute::Direct,
+        false,
+    );
 }
 
 #[test]
 fn approved_isolated_latency_cut_keeps_group_and_return_tails() {
     for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
-        latency_edit_keeps_group_and_return(edit, LatencyEditHandoff::ApprovedCut);
+        latency_edit_keeps_group_and_return(edit, LatencyEditRoute::Direct, true);
     }
 }
 
 #[test]
 fn quiet_send_track_latency_edit_keeps_its_return_tail() {
     for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
-        latency_edit_keeps_group_and_return(edit, LatencyEditHandoff::ReturnSend);
+        latency_edit_keeps_group_and_return(edit, LatencyEditRoute::ReturnSend, false);
+    }
+}
+
+#[test]
+fn quiet_group_child_latency_edit_preserves_shared_history() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        latency_edit_keeps_group_and_return(edit, LatencyEditRoute::GroupAndReturn, false);
+    }
+}
+
+#[test]
+fn approved_routed_latency_cut_preserves_only_admitted_group_and_return_pcm() {
+    for route in [
+        LatencyEditRoute::ReturnSend,
+        LatencyEditRoute::GroupAndReturn,
+    ] {
+        for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+            latency_edit_keeps_group_and_return(edit, route, true);
+        }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LatencyEditHandoff {
+enum LatencyEditRoute {
     Direct,
-    ApprovedCut,
     ReturnSend,
+    GroupAndReturn,
 }
 
-fn latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, handoff: LatencyEditHandoff) {
+fn latency_edit_keeps_group_and_return(
+    edit: IsolatedLatencyEdit,
+    route: LatencyEditRoute,
+    approved: bool,
+) {
     use crate::{OutputCapture, OutputCaptureId};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Created, TrackSelectionIds};
 
-    let approved = handoff == LatencyEditHandoff::ApprovedCut;
-    let edited_track_sends = handoff == LatencyEditHandoff::ReturnSend;
+    const CUT: usize = 6_000;
+    const PENDING_HIT_FRAMES: usize = 8;
+    let edited_track_sends = route != LatencyEditRoute::Direct;
+    let grouped = route == LatencyEditRoute::GroupAndReturn;
+    let cut_pending_hit = approved && edited_track_sends;
     let mut f = fixture(&[&[], &[], &[]], 12_000);
     for (index, audio) in f.media.values_mut().enumerate() {
         let mut samples = vec![[0.0; 2]; 12_000];
-        let end = if approved && index == 0 {
+        let end = if approved && !edited_track_sends && index == 0 {
             samples.len()
         } else {
             512
@@ -432,6 +466,11 @@ fn latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, handoff: Laten
         if !(edited_track_sends && index == 1) {
             samples[..end].fill([0.25, -0.125]);
         }
+        if cut_pending_hit && index == 0 {
+            // Equally delayed by the old Limiter or the outgoing compensation
+            // edges. This hit has reached neither surviving bus at the cut.
+            samples[CUT - PENDING_HIT_FRAMES..CUT].fill([-0.375, 0.5]);
+        }
         *audio = crate::Audio::new(48_000, samples).unwrap();
     }
     let changed = f.tracks[0];
@@ -439,7 +478,7 @@ fn latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, handoff: Laten
     let Created::Track(group) = f
         .editor
         .execute(Command::GroupTracks {
-            tracks: TrackSelectionIds::new(&f.tracks[1..]).unwrap(),
+            tracks: TrackSelectionIds::new(&f.tracks[usize::from(!grouped)..]).unwrap(),
             name: "group".into(),
         })
         .unwrap()
@@ -485,7 +524,9 @@ fn latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, handoff: Laten
         .patch_parameter(
             &reverb.default_state().unwrap(),
             hex_devices::reverb::parameter::DRY_WET,
-            ParameterValue::Float(100.0),
+            // The dry path independently witnesses whether the pending hit
+            // leaks into the bus. The earlier hit still has a live wet tail.
+            ParameterValue::Float(if cut_pending_hit { 50.0 } else { 100.0 }),
         )
         .unwrap();
     f.editor
@@ -506,34 +547,51 @@ fn latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, handoff: Laten
     let latency = old_revision.arrangement().main_latency_frames();
     assert!(latency > 0);
     assert_eq!(new_revision.arrangement().main_latency_frames(), latency);
-    let changed_arrival = |revision: &PreparedRevision| {
-        revision
-            .arrangement()
+    let changed_latency = |revision: &PreparedRevision| {
+        let arrangement = revision.arrangement();
+        let index = arrangement
             .signal_graph
             .as_ref()
             .unwrap()
-            .resident_main_alignment(0)
-            .unwrap()
-            .1
+            .track_index(changed)
+            .unwrap();
+        arrangement.tracks()[index]
+            .device_chain
+            .first()
+            .map_or(0, |device| device.algorithmic_latency_frames().unwrap())
     };
     let (before, after) = match edit {
         IsolatedLatencyEdit::Insert => (0, latency),
         IsolatedLatencyEdit::Remove => (latency, 0),
     };
-    assert_eq!(changed_arrival(&old_revision), before);
-    assert_eq!(changed_arrival(&new_revision), after);
+    assert_eq!(changed_latency(&old_revision), before);
+    assert_eq!(changed_latency(&new_revision), after);
 
+    // A separate revision with the original topology and only the earlier
+    // hit is the independent oracle for history already admitted at the cut.
+    let reference_revision = if cut_pending_hit {
+        assert!(latency as usize > PENDING_HIT_FRAMES);
+        assert!(f.editor.undo());
+        let mut samples = vec![[0.0; 2]; 12_000];
+        samples[..512].fill([0.25, -0.125]);
+        *f.media.values_mut().next().unwrap() = crate::Audio::new(48_000, samples).unwrap();
+        prepare(&f)
+    } else {
+        Arc::clone(&old_revision)
+    };
+    let play_to_cut = |runtime: &mut SessionPlayback| {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = vec![[0.0; 2]; CUT];
+        runtime.render(&mut prefix).unwrap();
+        prefix
+    };
     for partition in [1, 257] {
         let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
-        let mut uninterrupted = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
-        let cut = 6_000;
-        for runtime in [&mut old, &mut uninterrupted] {
-            runtime.apply(SessionPlaybackCommand::Play).unwrap();
-            runtime.render(&mut vec![[0.0; 2]; cut]).unwrap();
-        }
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&reference_revision)).unwrap();
+        assert_eq!(play_to_cut(&mut old), play_to_cut(&mut uninterrupted));
         let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
         let mut fresh = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
-        fresh.play_from(cut as u64).unwrap();
+        fresh.play_from(CUT as u64).unwrap();
         inherit_isolated_latency_edit(&mut candidate, &mut old, approved);
         let render = |runtime: &mut SessionPlayback| {
             let ids = [
@@ -565,8 +623,17 @@ fn latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, handoff: Laten
         let (old_main, old_group, old_bus, _) = render(&mut uninterrupted);
         let (_, _, fresh_bus, fresh_affected) = render(&mut fresh);
         let bits = |pcm: [[f32; 2]; 512]| pcm.map(|frame| frame.map(f32::to_bits));
-        if !approved {
+        if !approved || cut_pending_hit {
             assert_eq!(bits(main), bits(old_main));
+        }
+        if cut_pending_hit {
+            let mut uncut = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+            play_to_cut(&mut uncut);
+            let (_, uncut_group, uncut_bus, _) = render(&mut uncut);
+            assert_ne!(bits(old_bus), bits(uncut_bus));
+            if grouped {
+                assert_ne!(bits(old_group), bits(uncut_group));
+            }
         }
         assert_eq!(bits(group), bits(old_group));
         assert_eq!(bits(bus), bits(old_bus));
@@ -641,7 +708,7 @@ fn unproven_latency_additions_keep_existing_restart_behavior() {
         SilentLatencyCase::StaleMutedHistory,
         SilentLatencyCase::IncreasedMaximum,
         SilentLatencyCase::ChangedReturnArrival,
-        SilentLatencyCase::ChildOfGroup,
+        SilentLatencyCase::ChangedGroupArrival,
     ] {
         silent_latency_addition_case(case, 257);
     }
@@ -680,10 +747,10 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
             })
             .unwrap();
     }
-    if matches!(case, SilentLatencyCase::ChildOfGroup) {
+    if matches!(case, SilentLatencyCase::ChangedGroupArrival) {
         f.editor
             .execute(Command::GroupTracks {
-                tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+                tracks: hex_project::TrackSelectionIds::new(&f.tracks[..1]).unwrap(),
                 name: "group".into(),
             })
             .unwrap();
@@ -771,7 +838,10 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
         })
         .unwrap();
     let revision = prepare(&f);
-    if matches!(case, SilentLatencyCase::ChangedReturnArrival) {
+    if matches!(
+        case,
+        SilentLatencyCase::ChangedReturnArrival | SilentLatencyCase::ChangedGroupArrival
+    ) {
         assert_eq!(
             revision.arrangement().main_latency_frames(),
             reference.revision.arrangement().main_latency_frames()

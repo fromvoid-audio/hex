@@ -1,6 +1,6 @@
 use super::return_effect_tails::DeviceEditTailPolicy;
 use super::*;
-use crate::signal_graph::FreshHistory;
+use crate::signal_graph::{FreshHistory, TrackOutput};
 use crate::{Invalid, MidiTiming, Track};
 use std::sync::Weak;
 mod shared_sources;
@@ -6907,8 +6907,8 @@ fn fresh_added_audio_track(
 /// Exactly one resident audio track gains or loses its only native latency processor.
 /// Unchanged native Arrangement instruments use the ordinary voice handoff.
 /// Graph preflight proves equal maximum latency and retained route timing.
-/// A continuous edit needs silent rings. A track sending to a Return also
-/// needs a quiet old device so it cannot introduce a newly detached tail.
+/// A continuous edit needs silent rings and, on a shared route, a quiet old
+/// device. An approved cut may retire the old device before it feeds the buses.
 fn single_track_latency_edit(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
@@ -6958,6 +6958,7 @@ fn single_track_latency_edit(
     if old.len() != new.len() {
         return None;
     }
+    let old_graph = &previous.compensation.as_ref()?.graph;
     // Bound state comparisons on the callback even for many native devices.
     const MAX_STATE_COMPARE_BYTES: usize = 4096;
     let mut compared_bytes = 0_usize;
@@ -7035,14 +7036,19 @@ fn single_track_latency_edit(
             ([], [device]) | ([device], []) => device,
             _ => return None,
         };
+        let shared_route = !before.sends().is_empty()
+            || matches!(
+                old_graph.tracks.get(index)?.output,
+                TrackOutput::Group { .. }
+            );
         if changed.is_some()
             || before.sends() != after.sends()
-            || (!before.sends().is_empty()
-                && (approved_cut
-                    || !previous
-                        .device_chains
-                        .get(index)
-                        .is_some_and(|chain| chain.committed_range_is_quiescent(0..chain.len()))))
+            || (!approved_cut
+                && shared_route
+                && !previous
+                    .device_chains
+                    .get(index)
+                    .is_some_and(|chain| chain.committed_range_is_quiescent(0..chain.len())))
             || before.instrument_id.is_some()
             || before.source_id.is_some()
             || before.midi_source_index.is_some()
