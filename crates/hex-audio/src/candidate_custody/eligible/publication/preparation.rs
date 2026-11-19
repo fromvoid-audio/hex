@@ -529,20 +529,26 @@ impl Custody {
                     && slot.preparation_reservation.is_some()
             })
             .ok_or("candidate preparation token differs")?;
+        let work = &mut work.publication;
         let predecessor = bank
             .publication
             .slots
             .iter()
-            .find_map(|slot| {
-                (slot.phase == Phase::Accepted
+            .find(|slot| {
+                slot.phase == Phase::Accepted
                     && slot.life.revision.load(Ordering::Acquire) == observation.audio_revision
-                    && slot.context_generation == observation.control_generation)
-                    .then_some(slot.anchors.as_ref())
-                    .flatten()
+                    && slot.context_generation == observation.control_generation
+            })
+            .and_then(|slot| {
+                // Maintenance moves the anchor into its assigned archive
+                // while the same runtime is still active on the callback.
+                slot.anchors
+                    .as_ref()
+                    .or_else(|| work.anchors.get(slot.archive)?.as_ref())
+                    .filter(|anchors| slot.identity == Some(anchors.identity()))
             })
             .ok_or("installed candidate anchors unavailable")?;
         let successor = work
-            .publication
             .preparations
             .get_mut(token.slot)
             .and_then(Option::as_mut)

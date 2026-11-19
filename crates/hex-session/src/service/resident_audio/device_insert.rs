@@ -70,11 +70,35 @@ impl DeviceInsertConfirmation {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::service) enum Operation {
+    Device(GraphEditOperation),
+    Tempo,
+}
+
+impl Operation {
+    pub(in crate::service) fn installed_status(self) -> &'static str {
+        match self {
+            Self::Device(GraphEditOperation::InsertDevice) => "device inserted",
+            Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
+            Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
+            Self::Tempo => "tempo applied",
+        }
+    }
+
+    pub(in crate::service) fn device(self) -> Option<GraphEditOperation> {
+        match self {
+            Self::Device(operation) => Some(operation),
+            Self::Tempo => None,
+        }
+    }
+}
+
 pub(in crate::service) struct Pending {
     edit: hex_project::StagedProjectEdit,
     prepared: Prepared,
     confirmation: Option<DeviceInsertConfirmation>,
-    pub(in crate::service) operation: GraphEditOperation,
+    pub(in crate::service) operation: Operation,
     // A cut publishes its captured selection only with the canonical removal.
     pub(in crate::service) cut_devices: Option<Arc<hex_project::DeviceClipboard>>,
     pub(in crate::service) cut_tracks: Option<Arc<hex_project::TrackClipboard>>,
@@ -91,7 +115,7 @@ struct Resident {
 enum Prepared {
     Resident(Box<Resident>),
     Verified {
-        attempt: VerifiedDeviceInsertAttempt,
+        attempt: VerifiedGraphEditAttempt,
         editor_revision: Arc<hex_engine::PreparedRevision>,
     },
 }
@@ -99,13 +123,14 @@ enum Prepared {
 /// An editor-owned immutable source shared with the native preparation worker
 /// until it can bind the exact callback receipt. Never used in the callback.
 #[derive(Clone)]
-pub struct VerifiedDeviceInsertAttempt(Arc<VerifiedAttempt>);
+pub struct VerifiedGraphEditAttempt(Arc<VerifiedAttempt>);
 
 struct VerifiedAttempt {
     source: Arc<CanonicalAudioSourceSnapshot>,
     predecessor: hex_engine::AudioSourceContext,
     retiring_gain: Option<DevicePreviewIdentity>,
     confirmation: Option<ResidentGraphSubmission>,
+    tempo_cut: bool,
     prepare_until: Instant,
     state: std::sync::Mutex<VerifiedState>,
 }
@@ -117,18 +142,20 @@ enum VerifiedState {
     Cancelled,
 }
 
-impl VerifiedDeviceInsertAttempt {
+impl VerifiedGraphEditAttempt {
     fn new(
         source: Arc<CanonicalAudioSourceSnapshot>,
         predecessor: hex_engine::AudioSourceContext,
         retiring_gain: Option<DevicePreviewIdentity>,
         confirmation: Option<ResidentGraphSubmission>,
+        tempo_cut: bool,
     ) -> Self {
         Self(Arc::new(VerifiedAttempt {
             source,
             predecessor,
             retiring_gain,
             confirmation,
+            tempo_cut,
             prepare_until: Instant::now() + std::time::Duration::from_secs(10),
             state: std::sync::Mutex::new(VerifiedState::Preparing),
         }))
@@ -147,6 +174,10 @@ impl VerifiedDeviceInsertAttempt {
     pub fn confirmation(&self) -> Option<ResidentGraphSubmission> {
         self.0.confirmation
     }
+    pub fn needs_tempo_cut(&self) -> bool {
+        self.0.tempo_cut
+    }
+
     pub fn same_attempt(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -176,7 +207,7 @@ impl VerifiedDeviceInsertAttempt {
                 }) {
                 VerifiedState::Submitted(receipt)
             } else {
-                VerifiedState::Failed("verified device insert receipt differs".into())
+                VerifiedState::Failed("verified graph edit receipt differs".into())
             };
         }
     }
@@ -203,12 +234,12 @@ impl VerifiedDeviceInsertAttempt {
                 Some(Progress::Terminal(DeviceInsertAudioState::Cancelled))
             }
             VerifiedState::Preparing if Instant::now() >= self.0.prepare_until => {
-                *state =
-                    VerifiedState::Failed("verified device insert preparation timed out".into());
+                *state = VerifiedState::Failed("verified graph edit preparation timed out".into());
                 Some(Progress::PreparationFailed)
             }
             VerifiedState::Preparing => None,
-            VerifiedState::Submitted(receipt) => receipt.poll(cancel),
+            VerifiedState::Submitted(receipt) => receipt
+                .poll(cancel || self.needs_tempo_cut() && Instant::now() >= self.0.prepare_until),
             VerifiedState::Failed(_) => Some(Progress::PreparationFailed),
             VerifiedState::Cancelled => Some(Progress::Terminal(DeviceInsertAudioState::Cancelled)),
         }
@@ -250,7 +281,7 @@ impl Pending {
         }
     }
 
-    pub(in crate::service) fn verified_attempt(&self) -> Option<&VerifiedDeviceInsertAttempt> {
+    pub(in crate::service) fn verified_attempt(&self) -> Option<&VerifiedGraphEditAttempt> {
         match &self.prepared {
             Prepared::Verified { attempt, .. } => Some(attempt),
             Prepared::Resident(_) => None,
@@ -299,6 +330,7 @@ impl Pending {
         &mut self,
         sink: &mut dyn WorkerAudioSink,
     ) -> Option<DeviceInsertConfirmation> {
+        let operation = self.operation.device()?;
         if self.confirmation.is_some() {
             return None;
         }
@@ -312,7 +344,7 @@ impl Pending {
         }) {
             return None;
         }
-        let offer = DeviceInsertConfirmation::new(submission, deadline, self.operation);
+        let offer = DeviceInsertConfirmation::new(submission, deadline, operation);
         self.confirmation = Some(offer.clone());
         Some(offer)
     }
@@ -330,13 +362,14 @@ impl Pending {
         let resident = match &mut self.prepared {
             Prepared::Resident(resident) => resident,
             Prepared::Verified { attempt, .. } => {
-                let retry = VerifiedDeviceInsertAttempt::new(
+                let retry = VerifiedGraphEditAttempt::new(
                     Arc::clone(attempt.source()),
                     attempt.predecessor(),
                     attempt.retiring_gain(),
                     Some(refused),
+                    false,
                 );
-                sink.begin_verified_device_insert(retry.clone())
+                sink.begin_verified_graph_edit(retry.clone())
                     .map_err(SessionError::NativeAudio)?;
                 *attempt = retry;
                 self.confirmation = None;
@@ -421,7 +454,7 @@ pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<Grap
 }
 
 impl Session {
-    pub(in crate::service) fn stage_verified_device_insert(
+    pub(in crate::service) fn stage_verified_graph_edit(
         &mut self,
         command: Command,
         state: &ViewState,
@@ -429,7 +462,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         document_intent: u64,
         gesture: Option<&crate::device_gesture::GestureSnapshot>,
-    ) -> Result<Pending, SessionError> {
+    ) -> Result<Option<Pending>, SessionError> {
         crate::validate_command_media(&command)?;
         let predecessor = state
             .canonical_audio_source
@@ -438,23 +471,31 @@ impl Session {
                 source.audio_mode() == DocumentAudioMode::VerifiedStreaming
                     && source.matches_session_sources(self)
             })
-            .ok_or(SessionError::Invalid(
-                "verified device insert source changed",
-            ))?
+            .ok_or(SessionError::Invalid("verified graph edit source changed"))?
             .context();
         if state.project.as_ref() != self.project()
             || state.audio_authoring_revision(predecessor) != Some(state.revision)
         {
             return Err(SessionError::Invalid(
-                "verified device insert authoring revision changed",
+                "verified graph edit authoring revision changed",
             ));
         }
-        let operation = graph_edit_operation(&command)
-            .ok_or(SessionError::Invalid("unsupported staged graph edit"))?;
+        let operation = if matches!(&command, Command::SetProjectTempo { .. }) {
+            Operation::Tempo
+        } else {
+            Operation::Device(
+                graph_edit_operation(&command)
+                    .ok_or(SessionError::Invalid("unsupported staged graph edit"))?,
+            )
+        };
         let edit = self.editor.stage_edit(command)?;
+        let tempo_cut = matches!(operation, Operation::Tempo);
+        if tempo_cut && edit.project() == self.project() {
+            return Ok(None);
+        }
         let retiring_gain = gesture
             .filter(|active| {
-                operation == GraphEditOperation::RemoveTrack
+                operation.device() == Some(GraphEditOperation::RemoveTrack)
                     && active.target.track_gain_anchor().is_some_and(|track| {
                         edit.project().track(track).is_none()
                             || active.track_gains.as_ref().is_some_and(|group| {
@@ -470,17 +511,6 @@ impl Session {
                 sequence: active.sequence,
                 canonical_revision: state.revision,
             });
-        let prepared = crate::prepare_with_waveforms(
-            edit.project(),
-            &self.media_bank(),
-            self.sine_table(),
-            previous.map(|artifact| artifact.session().as_ref()),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-        )
-        .and_then(|prepared| {
-            crate::tuning_prepared_transition(prepared, self.project(), edit.project(), previous)
-        })?;
         let next = state
             .revision
             .checked_add(1)
@@ -491,10 +521,38 @@ impl Session {
             next,
             self,
         ));
-        let attempt = VerifiedDeviceInsertAttempt::new(source, predecessor, retiring_gain, None);
-        sink.begin_verified_device_insert(attempt.clone())
-            .map_err(SessionError::NativeAudio)?;
-        Ok(Pending {
+        let attempt =
+            VerifiedGraphEditAttempt::new(source, predecessor, retiring_gain, None, tempo_cut);
+        if tempo_cut {
+            // Retain the exact running audio source before offline projection.
+            sink.begin_verified_graph_edit(attempt.clone())
+                .map_err(SessionError::NativeAudio)?;
+        }
+        let prepared = crate::prepare_with_waveforms(
+            edit.project(),
+            &self.media_bank(),
+            self.sine_table(),
+            previous.map(|artifact| artifact.session().as_ref()),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+        )
+        .and_then(|prepared| {
+            crate::tuning_prepared_transition(prepared, self.project(), edit.project(), previous)
+        });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if tempo_cut {
+                    sink.finish_verified_graph_edit(&attempt, false);
+                }
+                return Err(error.into());
+            }
+        };
+        if !tempo_cut {
+            sink.begin_verified_graph_edit(attempt.clone())
+                .map_err(SessionError::NativeAudio)?;
+        }
+        Ok(Some(Pending {
             edit,
             prepared: Prepared::Verified {
                 attempt,
@@ -506,7 +564,7 @@ impl Session {
             cut_tracks: None,
             document_intent,
             plugin: None,
-        })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)] // Exact editor, audio and worker request inputs.
@@ -594,7 +652,7 @@ impl Session {
                     predecessor: installed,
                 })),
                 confirmation: None,
-                operation,
+                operation: Operation::Device(operation),
                 cut_devices: None,
                 cut_tracks: None,
                 document_intent,
