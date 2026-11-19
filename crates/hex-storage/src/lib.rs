@@ -84,7 +84,9 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LONG_INACTIVE_WARP_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = OUTER_CLIP_FADE_SCHEMA_VERSION;
+/// Schema122 preserves the instance fade's unwrapped destination clock.
+pub const OUTER_CLIP_FADE_SCHEMA_VERSION: u32 = 122;
 /// Schema121 stores long raw clips with retained inactive Warp settings.
 pub const LONG_INACTIVE_WARP_SCHEMA_VERSION: u32 = 121;
 /// Schema120 stores bounded long Tones/Texture roots over a valid prior document.
@@ -266,6 +268,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Free-running Steps uses schema107, or schema108 alongside those touches.
 /// Arrangement Steps uses schema109, or schema110 alongside those touches.
 /// Mutable Operator banks use schema111, or schema112 alongside those touches.
+/// Schema122 wraps the appropriate prior document for checked outer clip fades.
 /// Schema120 wraps a valid prior document and restores complete long granular edits.
 /// Schema119 wraps a prior document for full-source long pitch with a fade.
 /// Schema118 wraps the appropriate prior document for independent audio repeat periods.
@@ -275,6 +278,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::outer_clip_fades::contains(project) {
+        return OUTER_CLIP_FADE_SCHEMA_VERSION;
+    }
     if long_granular::contains(project, LongWarpSchema::Inactive) {
         return LONG_INACTIVE_WARP_SCHEMA_VERSION;
     }
@@ -563,6 +569,9 @@ impl From<serde_json::Error> for StorageError {
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::outer_clip_fades::contains(project) {
+        return schema::outer_clip_fades::encode(project);
+    }
     refuse_unsupported_fade_clocks(project)?;
     if long_granular::contains(project, LongWarpSchema::Inactive) {
         return long_granular::encode(project, LongWarpSchema::Inactive);
@@ -935,6 +944,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
+    }
+    if header.version == OUTER_CLIP_FADE_SCHEMA_VERSION && !inside_envelope {
+        return schema::outer_clip_fades::decode(bytes);
     }
     if header.version == LONG_INACTIVE_WARP_SCHEMA_VERSION && !inside_envelope {
         return long_granular::decode(bytes, LongWarpSchema::Inactive);

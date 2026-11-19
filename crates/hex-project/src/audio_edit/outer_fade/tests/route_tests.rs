@@ -130,3 +130,32 @@ fn direct_musical_lead_and_trim_keep_the_same_exact_authoring_context() {
     let extended_once = clip.with_musical_leading_silence(6_000, &tempo).unwrap();
     assert_eq!(extended_twice, extended_once);
 }
+
+#[test]
+fn frame_prefix_preserves_destination_age_when_anchored_or_source_retimed() {
+    let (mut clip, tempo) = one_shot(30_000);
+    Arc::make_mut(&mut clip.audio_edit_mut().unwrap().domain).fade_start = 600;
+    let before = clip.clone();
+    clip.audio_edit_mut()
+        .unwrap()
+        .anchor(30_000, &tempo)
+        .unwrap();
+    crate::audio_edit::project_clip(&mut clip, &tempo).unwrap();
+    assert_retained_samples(&before, &clip, &tempo);
+    let author = clip.audio_edit().unwrap().domain.fade_projection.clone();
+    let stretched = crate::preview_audio_clip_stretch(
+        &clip,
+        TrimEdge::Right,
+        clip.start() + clip.duration() * 2,
+        &tempo,
+        19_174,
+    )
+    .unwrap();
+    assert!(stretched.duration() > clip.duration());
+    assert_eq!(stretched.retained_fade(), clip.retained_fade());
+    assert_eq!(
+        stretched.audio_edit().unwrap().domain.fade_projection,
+        author
+    );
+    assert_retained_samples(&stretched, &clip, &tempo);
+}
