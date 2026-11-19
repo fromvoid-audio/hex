@@ -3,7 +3,7 @@
 //! Template construction and density admission are control-side operations.
 //! Queries borrow a prepared tempo map and write into fixed caller-owned
 //! storage. The template ignores finite Arrangement duration by design.
-use crate::{MidiTiming, midi_compile::MidiEventKind};
+use crate::{MidiTiming, NoteChase, midi_compile::MidiEventKind};
 mod current_sampler;
 mod density;
 mod origin;
@@ -166,6 +166,7 @@ pub(crate) struct SourceOccurrence {
 
 struct QueryContext<'a, T: MidiTiming + ?Sized> {
     origin: SessionMidiOrigin,
+    note_chase: NoteChase,
     timing: &'a T,
     start_frame: u64,
     end_frame: u64,
@@ -605,9 +606,31 @@ impl PreparedMidiSourceTemplate {
         end_frame: u64,
         buffer: &mut MidiEdgeBuffer,
     ) -> Result<(), MidiTemplateError> {
+        self.query_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start_frame, end_frame),
+            buffer,
+            NoteChase::On,
+        )
+    }
+
+    /// Query `[frames.0, frames.1)` with one explicit initial-gate policy.
+    /// Off excludes only occurrences clipped at the initial source-window start,
+    /// including their paired NoteOffs. Genuine boundary onsets and subsequent
+    /// repeats retain their original identity and timing. Origin cue floors and
+    /// conservative density admission are independent of this choice.
+    pub fn query_with_origin_and_note_chase<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        frames: (u64, u64),
+        buffer: &mut MidiEdgeBuffer,
+        note_chase: NoteChase,
+    ) -> Result<(), MidiTemplateError> {
         buffer.len = 0;
         buffer.onsets = 0;
-        let result = self.query_inner(origin, timing, start_frame, end_frame, buffer);
+        let result = self.query_inner(origin, timing, frames, buffer, note_chase);
         if result.is_err() {
             buffer.len = 0;
             buffer.onsets = 0;
@@ -619,10 +642,11 @@ impl PreparedMidiSourceTemplate {
         &self,
         origin: SessionMidiOrigin,
         timing: &T,
-        start_frame: u64,
-        end_frame: u64,
+        frames: (u64, u64),
         buffer: &mut MidiEdgeBuffer,
+        note_chase: NoteChase,
     ) -> Result<(), MidiTemplateError> {
+        let (start_frame, end_frame) = frames;
         if start_frame > end_frame {
             return Err(MidiTemplateError::InvalidFrameRange);
         }
@@ -654,6 +678,7 @@ impl PreparedMidiSourceTemplate {
 
         let mut context = QueryContext {
             origin,
+            note_chase,
             timing,
             start_frame,
             end_frame,
@@ -761,6 +786,9 @@ impl PreparedMidiSourceTemplate {
         elapsed: u128,
         context: &mut QueryContext<'_, T>,
     ) -> Result<(), MidiTemplateError> {
+        if context.note_chase == NoteChase::Off && edge.starts_inside_gate {
+            return Ok(());
+        }
         // NoteOff is admissible only if its paired onset belongs to this cue.
         // Ordinary launches need no lookup; cued offs reuse the prepared NoteId index.
         if context.origin.elapsed_at_anchor != BeatTime::ZERO && !edge.is_onset() {

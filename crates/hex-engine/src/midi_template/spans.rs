@@ -7,7 +7,9 @@ mod current_sampler;
 mod density;
 mod gates;
 mod volume;
-use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
+use crate::{
+    MidiTiming, NoteChase, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote,
+};
 pub(crate) use current_sampler::CurrentSamplerEventCustody;
 use density::{admit_held_voice_density, admit_voice_density};
 pub(crate) use gates::PreparedMidiGateTemplate;
@@ -573,6 +575,7 @@ impl MidiReleaseVoice {
 /// The context owns no buffers or graph state and performs no preparation.
 pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTempoMap> {
     origin: SessionMidiOrigin,
+    note_chase: NoteChase,
     timing: &'a T,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
@@ -597,10 +600,17 @@ impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
         Self {
             origin,
             timing,
+            note_chase: NoteChase::On,
             onset_floor_exclusive: None,
             suppressions: &[],
             continuations: &[],
         }
+    }
+
+    /// Select whether to admit gates clipped at the initial source-window
+    /// boundary. Later repeats, cue floors and owned continuations are unchanged.
+    pub fn with_note_chase(self, note_chase: NoteChase) -> Self {
+        Self { note_chase, ..self }
     }
 
     /// Skip source occurrences strictly before the handoff beat before converting
@@ -1064,7 +1074,27 @@ impl PreparedMidiInstrumentTemplate {
         end_frame: u64,
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
-        self.query_with_onset_floor(origin, timing, start_frame, end_frame, buffer, None)
+        self.query_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start_frame, end_frame),
+            buffer,
+            NoteChase::On,
+        )
+    }
+
+    /// Query `[frames.0, frames.1)` with an explicit initial-window gate policy.
+    /// Off excludes clipped intro occurrences before conversion and capacity
+    /// accounting; genuine boundary onsets and later repeats remain eligible.
+    pub fn query_with_origin_and_note_chase<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        frames: (u64, u64),
+        buffer: &mut MidiSpanBuffer,
+        note_chase: NoteChase,
+    ) -> Result<(), MidiTemplateError> {
+        self.query_with_onset_floor(origin, timing, frames, buffer, None, note_chase)
     }
 
     pub(crate) fn query_after_onset_with_origin<T: MidiTiming + ?Sized>(
@@ -1076,13 +1106,32 @@ impl PreparedMidiInstrumentTemplate {
         buffer: &mut MidiSpanBuffer,
         onset_floor_exclusive: BeatTime,
     ) -> Result<(), MidiTemplateError> {
+        self.query_after_onset_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start_frame, end_frame),
+            buffer,
+            onset_floor_exclusive,
+            NoteChase::On,
+        )
+    }
+
+    pub(crate) fn query_after_onset_with_origin_and_note_chase<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        frames: (u64, u64),
+        buffer: &mut MidiSpanBuffer,
+        onset_floor_exclusive: BeatTime,
+        note_chase: NoteChase,
+    ) -> Result<(), MidiTemplateError> {
         self.query_with_onset_floor(
             origin,
             timing,
-            start_frame,
-            end_frame,
+            frames,
             buffer,
             Some(onset_floor_exclusive),
+            note_chase,
         )
     }
 
@@ -1090,19 +1139,19 @@ impl PreparedMidiInstrumentTemplate {
         &self,
         origin: SessionMidiOrigin,
         timing: &T,
-        start_frame: u64,
-        end_frame: u64,
+        frames: (u64, u64),
         buffer: &mut MidiSpanBuffer,
         onset_floor_exclusive: Option<BeatTime>,
+        note_chase: NoteChase,
     ) -> Result<(), MidiTemplateError> {
         buffer.len = 0;
         let result = self.query_view().query_inner(
             origin,
             timing,
-            start_frame,
-            end_frame,
+            frames,
             buffer,
             onset_floor_exclusive,
+            note_chase,
         );
         if result.is_err() {
             buffer.len = 0;
@@ -1272,10 +1321,10 @@ impl PreparedMidiInstrumentTemplate {
         self.query_with_onset_floor(
             context.origin,
             context.timing,
-            start_frame,
-            end_frame,
+            (start_frame, end_frame),
             buffer,
             context.onset_floor_exclusive,
+            context.note_chase,
         )?;
         buffer.suppress_carried(context.suppressions, start_frame);
         Ok(())
@@ -1332,6 +1381,7 @@ impl PreparedMidiInstrumentTemplate {
 
 struct QueryContext<'a, T: MidiTiming + ?Sized> {
     origin: SessionMidiOrigin,
+    note_chase: NoteChase,
     timing: &'a T,
     start_frame: u64,
     end_frame: u64,

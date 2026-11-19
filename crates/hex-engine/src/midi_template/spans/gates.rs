@@ -143,6 +143,24 @@ impl PreparedMidiGateTemplate {
         end_frame: u64,
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
+        self.query_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start_frame, end_frame),
+            buffer,
+            NoteChase::On,
+        )
+    }
+
+    /// Fresh source query only; owned release queries retain the default law.
+    pub(crate) fn query_with_origin_and_note_chase<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        frames: (u64, u64),
+        buffer: &mut MidiSpanBuffer,
+        note_chase: NoteChase,
+    ) -> Result<(), MidiTemplateError> {
         let view = SpanQueryView {
             track: self.track,
             clip: self.clip,
@@ -164,7 +182,7 @@ impl PreparedMidiGateTemplate {
             event_source: true,
         };
         buffer.len = 0;
-        let result = view.query_inner(origin, timing, start_frame, end_frame, buffer, None);
+        let result = view.query_inner(origin, timing, frames, buffer, None, note_chase);
         if result.is_err() {
             buffer.len = 0;
         }
@@ -184,11 +202,12 @@ impl SpanQueryView<'_> {
         &self,
         origin: SessionMidiOrigin,
         timing: &T,
-        start_frame: u64,
-        end_frame: u64,
+        frames: (u64, u64),
         buffer: &mut MidiSpanBuffer,
         onset_floor_exclusive: Option<BeatTime>,
+        note_chase: NoteChase,
     ) -> Result<(), MidiTemplateError> {
+        let (start_frame, end_frame) = frames;
         if start_frame > end_frame {
             return Err(MidiTemplateError::InvalidFrameRange);
         }
@@ -220,6 +239,7 @@ impl SpanQueryView<'_> {
         let high = relative_end;
         let mut context = QueryContext {
             origin,
+            note_chase,
             timing,
             start_frame,
             end_frame,
@@ -379,6 +399,9 @@ impl SpanQueryView<'_> {
         iteration: u64,
         context: &mut QueryContext<'_, T>,
     ) -> Result<(), MidiTemplateError> {
+        if context.note_chase == NoteChase::Off && span.starts_inside_gate {
+            return Ok(());
+        }
         let start_relative = base
             .checked_add(u128::from(span.start))
             .ok_or(MidiTemplateError::BeatDomainExhausted)?;
