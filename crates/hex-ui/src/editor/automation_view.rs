@@ -13,26 +13,49 @@ pub(super) struct AutomationView {
 }
 impl EditorView {
     pub(super) fn toggle_automation_view(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.arrangement_view_change_available(cx) {
+        if !self.arrangement_view_change_available(cx)
+            || (self.selected_automation_trim().is_some()
+                && !super::device_panel::finalize_controls(self, cx))
+        {
             return false;
         }
         if self.automation_view.enabled {
             self.automation_view.enabled = false;
+            self.clear_automation_range();
             self.automation_view.gain_preview = self.gain_lane.track;
             if !self.automation_view.gain_panel_was_open {
                 self.gain_lane.track = None;
                 self.gain_lane.selected = None;
             }
         } else {
-            self.automation_view.gain_panel_was_open = self.gain_lane.track.is_some();
-            if self.gain_lane.track.is_none() {
-                self.gain_lane.track = self.automation_view.gain_preview.filter(|id| {
-                    self.state
-                        .as_ref()
-                        .is_some_and(|state| state.project.track(*id).is_some())
-                });
-            }
-            self.automation_view.enabled = true;
+            self.enable_automation_view();
+        }
+        self.track_scroll.remeasure();
+        cx.notify();
+        true
+    }
+
+    fn enable_automation_view(&mut self) {
+        self.automation_view.gain_panel_was_open = self.gain_lane.track.is_some();
+        if self.gain_lane.track.is_none() {
+            self.gain_lane.track = self.automation_view.gain_preview.filter(|id| {
+                self.state
+                    .as_ref()
+                    .is_some_and(|state| state.project.track(*id).is_some())
+            });
+        }
+        self.automation_view.enabled = true;
+    }
+
+    pub(super) fn reveal_arrangement_automation(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        self.automation_view
+            .devices
+            .reveal(&state.project, self.project_generation, None, false);
+        if !self.automation_view.enabled {
+            self.enable_automation_view();
         }
         self.track_scroll.remeasure();
         cx.notify();

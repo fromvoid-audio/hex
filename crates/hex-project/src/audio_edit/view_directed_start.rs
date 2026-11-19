@@ -47,6 +47,7 @@ pub(super) fn preview(
         .checked_add(clip.duration())
         .ok_or(Invalid("audio directed end overflow"))?;
     Ok(AudioViewResize {
+        repeat_period: None,
         view_start: edit.view_start,
         view_end: edit.view_end,
         reference_start_raw: edit.reference_start_raw(),
@@ -55,5 +56,6 @@ pub(super) fn preview(
         frame_end,
         play_start_position: Some(position),
         content_override: Some(content),
+        outer_start: None,
     })
 }

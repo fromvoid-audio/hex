@@ -438,8 +438,17 @@ fn shared_sampler_tuning_preview_cancel_keeps_actual_live_cursor_without_callbac
     let revision = control
         .publish_with_policy_and_context_generation(tuned, PublicationPolicy::InheritRuntime, 7)
         .unwrap();
-    for (i, frame) in block(&mut callback).iter().enumerate() {
-        assert_eq!(*frame, PCM[(7 + 2 * i) % 4].map(|sample| sample * 3.0));
+    // An octave up, the band-limited sampler (#4089) keeps only the 4-frame
+    // loop's mean; every other partial is at or above the output Nyquist.
+    // block() probes this pitched-up render for callback allocations. The
+    // cursor is checked by the unity segments on either side.
+    let mean: [f32; 2] = std::array::from_fn(|channel| {
+        PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 3.0
+    });
+    for frame in block(&mut callback) {
+        for channel in 0..2 {
+            assert!((frame[channel] - mean[channel]).abs() < 3e-3, "{frame:?}");
+        }
     }
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
     assert!(!input.is_cancelled());
@@ -473,7 +482,8 @@ fn shared_sampler_tuning_preview_cancel_keeps_actual_live_cursor_without_callbac
         block(&mut callback);
         control.reclaim();
     }
-    assert_eq!(control.status.position.load(Acquire), paused);
+    // The queued Pause ends after its 21-frame fade at 8 kHz (#4151).
+    assert_eq!(control.status.position.load(Acquire), paused + 21);
     assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
     input.set_key(0, Some((60, 127, 2))).unwrap();
     for (i, frame) in block(&mut callback).iter().enumerate() {
@@ -583,6 +593,7 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     );
     // Compatible edits use the ordinary same-output handoff. Repeated publication
     // must close the returned candidate's unused lease rather than accumulating it.
+    let mut current_gain = 1.0_f32;
     for (muted, gain) in [(true, 1.0), (false, 1.0), (false, 0.5), (false, 1.0)] {
         editor.execute(Command::Mute { track, muted }).unwrap();
         editor.execute(Command::Gain { track, gain }).unwrap();
@@ -594,13 +605,13 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
             )
             .unwrap();
         let output = block(&mut callback);
-        let expected = if muted { 0.0 } else { 0.25 * gain };
-        assert!(
-            output
-                .iter()
-                .flatten()
-                .all(|sample| (*sample - expected).abs() < 1e-6)
-        );
+        for (index, frame) in output.iter().enumerate() {
+            if current_gain != gain {
+                current_gain += (gain - current_gain) / (40 - index) as f32;
+            }
+            let expected = if muted { 0.0 } else { 0.25 * current_gain };
+            assert!(frame.iter().all(|sample| (*sample - expected).abs() < 1e-6));
+        }
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         assert_eq!(control.reclaim(), 1);
         assert_eq!(control.outstanding_device_resource_leases(), 1);
@@ -646,31 +657,28 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
             state: b_state.clone(),
         })
         .unwrap();
-    // A same-device resource change cannot clone an active retained source.
-    // Refusal returns the unused B lease while A's original PCM keeps playing.
-    let active_revision = control.status.applied_revision.load(Acquire);
-    let unsupported = control
+    // A same-device resource change cannot clone an active retained source,
+    // so the live handoff restarts audio at the cursor (Pulse #3784): B's
+    // runtime is installed and A's graph and lease retire on control.
+    let rejected_before = control.status.rejected_revision();
+    let restarted = control
         .publish_with_policy_and_context_generation(
             compile(&editor, &sources),
             PublicationPolicy::InheritRuntime,
             7,
         )
         .unwrap();
-    assert!(
-        block(&mut callback)
-            .iter()
-            .flatten()
-            .all(|sample| (*sample - 0.25).abs() < 1e-6)
-    );
-    assert_eq!(
-        control.status.applied_revision.load(Acquire),
-        active_revision
-    );
-    assert_eq!(control.status.rejected_revision().unwrap().0, unsupported);
+    block(&mut callback);
+    assert_eq!(control.status.applied_revision.load(Acquire), restarted);
+    assert_eq!(control.status.rejected_revision(), rejected_before);
     assert_eq!(control.reclaim(), 1);
     assert_eq!(control.outstanding_device_resource_leases(), 1);
-    // Explicit replacement has a new device/source identity and may retain A's
-    // finite release alongside B's fresh, untriggered current source.
+    // A's runtime retired with the restart; its PCM stays owned by the
+    // control-side source bank until that bank drops below.
+    #[cfg(feature = "allocation-probe")]
+    assert!(dropped.try_recv().is_err());
+    // Explicit replacement has a new device/source identity and may retain
+    // B's finite release alongside the new device's untriggered source.
     editor.execute(Command::RemoveInstrument { track }).unwrap();
     editor
         .execute(Command::InsertInstrument {
@@ -698,20 +706,24 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     assert_eq!(
         control.outstanding_device_resource_leases(),
         2,
-        "returning A cannot close the lease moved into B's tail"
+        "the replaced device's lease moved into the new graph's tail"
     );
     editor.execute(Command::RemoveInstrument { track }).unwrap();
     let c_graph = compile(&editor, &sources);
     drop(sources);
+    // No runtime retains A any more: dropping the bank drops it on control.
     #[cfg(feature = "allocation-probe")]
-    assert!(dropped.try_recv().is_err());
+    {
+        assert_eq!(dropped.try_recv().unwrap(), std::thread::current().id());
+        assert!(dropped.try_recv().is_err());
+    }
     let c_revision = control
         .publish_with_policy_and_context_generation(c_graph, PublicationPolicy::InheritRuntime, 7)
         .unwrap();
     let c_output = block(&mut callback);
     assert!(
-        c_output.iter().flatten().all(|value| *value > 0.0),
-        "source-free C renders positive A's old tail, not negative B"
+        c_output.iter().flatten().all(|value| *value < 0.0),
+        "source-free C renders B's retained release tail"
     );
     assert_eq!(control.status.applied_revision.load(Acquire), c_revision);
     let installed = callback
@@ -727,16 +739,13 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     assert_eq!(
         control.outstanding_device_resource_leases(),
         1,
-        "A physically lives in C; B's untriggered runtime returned on control"
+        "B physically lives in C; the untriggered runtime returned on control"
     );
     #[cfg(feature = "allocation-probe")]
-    {
-        assert_eq!(dropped.try_recv().unwrap(), std::thread::current().id());
-        assert!(
-            dropped.try_recv().is_err(),
-            "A cannot drop while C owns its tail"
-        );
-    }
+    assert!(
+        dropped.try_recv().is_err(),
+        "B cannot drop while C owns its tail"
+    );
     control.command(PlaybackCommand::Stop).unwrap();
     block(&mut callback);
     let empty = Playback::try_from_prepared_with_session(Arc::new(
@@ -1298,6 +1307,200 @@ fn clip_activation_releases_real_sampler_gates_and_retriggers_window_without_cal
     assert!(release[0][0] > 0.0);
     assert_eq!(release[31], [0.0; 2]);
     assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
+fn one_voice_sampler_retrigger_steals_its_release_without_callback_allocation() {
+    // A one-voice looping sampler with a 16-frame release retriggers at
+    // frame 4000 (one quarter at 120 bpm, 8 kHz). Prepare admits it by held
+    // density; the callback steals the release into the declick pool.
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let original =
+        hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+            1024, asset, 0.002,
+        )
+        .unwrap();
+    let mut state = hex_devices::sampler::state::SamplerState::from_native(&original).unwrap();
+    state.voices = 1;
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: state.replace_in(&original).unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(2).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    for (start, pitch) in [(BeatTime::ZERO, 60), (BeatTime::ONE, 72)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration: BeatTime::ONE,
+                pitch,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    let (mut control, mut callback) = channel(8000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control.publish(compile(&editor, &sources)).unwrap();
+    control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let held = block(&mut callback);
+    assert!(held.iter().all(|frame| frame[0] > 0.0));
+    for _ in 1..125 {
+        block(&mut callback);
+    }
+    let steal = block(&mut callback);
+    assert!(
+        steal.iter().all(|frame| frame[0] > 0.0),
+        "no gap at the steal"
+    );
+    assert!(
+        steal[0][0] > held[0][0],
+        "the declicked release sounds beside the new voice"
+    );
+    assert_eq!(
+        steal[31], held[31],
+        "the stolen release has retired beside the one new held voice"
+    );
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
+fn sampler_gain_modulation_renders_through_ordinary_publication_without_allocations() {
+    use hex_engine::lfo_modulator::{Rate, Settings, Waveform};
+    use hex_project::{
+        DeviceAutomationTarget, DeviceModulation, DeviceModulationRoute, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let state = hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+        1024, asset, 0.002,
+    )
+    .unwrap();
+    let device_type = state.type_id();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("sampler track");
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("arrangement clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let next = editor.project().next_identity();
+    let source = ModulationSourceId::new(next).unwrap();
+    let slot = Modulator {
+        id: source,
+        color: Default::default(),
+        enabled: true,
+        state: Settings {
+            rate: Rate::Hertz(2_000.0),
+            phase: 0.0,
+            waveform: Waveform::Square,
+        }
+        .encode()
+        .unwrap(),
+    };
+    let edit = |depth| Command::ReplaceDeviceModulation {
+        device,
+        modulation: DeviceModulation::new(
+            vec![slot.clone()],
+            vec![DeviceModulationRoute {
+                id: ModulationRouteId::new(next + 1).unwrap(),
+                source,
+                output: ModulationOutputId::MAIN,
+                destination: ModulationDestination::Device {
+                    device_type,
+                    target: DeviceAutomationTarget::Parameter(
+                        hex_lattice_contract::ParameterId::from_static(1),
+                    ),
+                    vst3_class: None,
+                },
+                amount: ModulationAmount::new(depth).unwrap(),
+                range: ModulationRange::default(),
+                enabled: true,
+            }],
+        )
+        .unwrap(),
+    };
+    editor.execute(edit(0.125)).unwrap();
+    let (mut control, mut callback) = channel(8_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control.publish(compile(&editor, &sources)).unwrap();
+    control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    assert_eq!(
+        block(&mut callback),
+        std::array::from_fn(|index| { [if index % 4 < 2 { 0.375 } else { 0.125 }; 2] })
+    );
+    editor.execute(edit(0.25)).unwrap();
+    let admitted = control.publish(compile(&editor, &sources)).unwrap();
+    assert_eq!(
+        block(&mut callback),
+        std::array::from_fn(|index| { [if index % 4 < 2 { 0.5 } else { 0.0 }; 2] })
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), admitted);
     control.request_shutdown();
     callback.begin_block();
     control.reclaim();

@@ -135,11 +135,11 @@ fn history(
             replay.insert(content, *event);
         }
         content += 1;
-        if let Some(region) = region {
-            if content == region.end() {
-                content = region.start();
-                pass += 1;
-            }
+        if let Some(region) = region
+            && content == region.end()
+        {
+            content = region.start();
+            pass += 1;
         }
     }
     panic!("finite chronological oracle")
@@ -368,6 +368,7 @@ fn every_page_is_validated_before_queries_and_legacy_wrapped_context_is_not_gues
         CompletedAutomationTake::open_on_control(&bad, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("discontinuous")
     );
     assert_eq!(fs::read(&bad).unwrap(), original);
@@ -379,6 +380,7 @@ fn every_page_is_validated_before_queries_and_legacy_wrapped_context_is_not_gues
         CompletedAutomationTake::open_on_control(&legacy, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("no captured loop context")
     );
     let known_linear = files.path("false-linear");
@@ -403,6 +405,7 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
         CompletedAutomationTake::open_on_control(&path, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("release clock")
     );
     let (source, target, mut stamp) = fixture();
@@ -422,6 +425,7 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
         CompletedAutomationTake::open_on_control(&path, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("sample rates differ")
     );
     let event = AppliedEvent {
@@ -444,6 +448,7 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
         CompletedAutomationTake::open_on_control(&path, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("overflow")
     );
     let (events, end, _) = history(10, 0, 40, None, &[0, 10, 30]);
@@ -1067,8 +1072,19 @@ fn profile_projected_scalar_ranges() {
 fn early_piece_sentinels_do_not_spend_the_fetch_budget_again_after_discarding_prefetch() {
     use std::sync::Arc;
     let files = Files::new();
-    let region = LoopRegion::new(100, 1000, true).unwrap();
-    let (events, end, _) = history(0, 0, 1901, Some(region), &(0..1901).collect::<Vec<_>>());
+    let loop_start = 3;
+    let loop_frames = 32;
+    let region = LoopRegion::new(loop_start, loop_start + loop_frames, true).unwrap();
+    // Two full passes and one frame of the final pass leave enough records
+    // for a full prefetch without many durable fixture writes.
+    let duration = loop_start + 2 * loop_frames + 1;
+    let (events, end, _) = history(
+        0,
+        0,
+        duration,
+        Some(region),
+        &(0..duration).collect::<Vec<_>>(),
+    );
     let path = files.path("prefetch-budget");
     write(
         &path,
@@ -1078,10 +1094,11 @@ fn early_piece_sentinels_do_not_spend_the_fetch_budget_again_after_discarding_pr
     );
     let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
     let destination = Arc::new(source.source().tempo_map().clone());
-    // Three effective pieces: intro99..100, final pass100..101, preceding
-    // pass101..102. The first/last need only one sentinel from a larger batch.
+    // Query one frame from each of the intro, final pass, and preceding pass.
+    // The first and last pieces need only one sentinel from a larger batch.
+    let first = loop_start - 1;
     let mut cursor = source
-        .begin_projected_spans_on_control(Arc::clone(&destination), 99..102)
+        .begin_projected_spans_on_control(Arc::clone(&destination), first..first + 3)
         .unwrap();
     let mut output = [None; MAX_SPANS_PER_STEP];
     let mut actual = [None; 3];
@@ -1097,7 +1114,8 @@ fn early_piece_sentinels_do_not_spend_the_fetch_budget_again_after_discarding_pr
         );
         assert!(progress.records_visited <= 64);
         for span in output[..progress.written].iter().flatten() {
-            actual[(span.start - 99) as usize..(span.end - 99) as usize].fill(Some(span.value));
+            actual[(span.start - first) as usize..(span.end - first) as usize]
+                .fill(Some(span.value));
         }
         if progress.state == SpanReadState::Finished {
             finished = true;
@@ -1107,7 +1125,11 @@ fn early_piece_sentinels_do_not_spend_the_fetch_budget_again_after_discarding_pr
     assert!(finished);
     let mut expected = [None; 3];
     source
-        .read_projected_preview_on_control(&destination, &[99, 100, 101], &mut expected)
+        .read_projected_preview_on_control(
+            &destination,
+            &[first, first + 1, first + 2],
+            &mut expected,
+        )
         .unwrap();
     assert_eq!(actual, expected.map(|event| event.map(|e| e.value)));
 }

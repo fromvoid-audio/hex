@@ -109,7 +109,7 @@ impl Search<'_, '_> {
                     .iter()
                     .enumerate()
                     .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
-                    .unwrap()
+                    .expect("peaks is a fixed eight-element array")
                     .0
             });
             if score > peaks[index].1 {
@@ -658,8 +658,10 @@ mod search_tests {
                     let mut work = Work {
                         cancel: &mut cancel,
                         used: 0,
+                        limit: MAX_WORK_UNITS,
                         scratch: 0,
                         base_scratch: 0,
+                        resampler: Resampler::V1,
                     };
                     let initial = search.score(nominal, nominal, &mut work).unwrap();
                     if pattern == 1 && statistics == 4 {
@@ -824,8 +826,10 @@ mod search_tests {
                     let mut work = Work {
                         cancel: &mut cancel,
                         used: 0,
+                        limit: MAX_WORK_UNITS,
                         scratch: 0,
                         base_scratch: 0,
+                        resampler: Resampler::V1,
                     };
                     let initial = search.score(1500.0, 1500.0, &mut work).unwrap();
                     work.used = 0;

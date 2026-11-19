@@ -16,6 +16,7 @@ impl RendererRuntime {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {
@@ -43,6 +44,7 @@ impl RendererRuntime {
                 compensation
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        authored_clock_epoch: None,
                         tempo_micro_bpm: project
                             .tempo_map
                             .as_ref()
@@ -53,6 +55,8 @@ impl RendererRuntime {
                         loop_pass: 0,
                         performance_beat_raw: beat.raw(),
                         arrangement_beat_raw: Some(beat.raw()),
+                        meter: None,
+                        cycle_beats_raw: None,
                     })
                     .map_err(error)?;
                 for scratch in &mut self.return_scratch {
@@ -76,6 +80,12 @@ impl RendererRuntime {
                                 end,
                                 &mut generator,
                                 volume_timing,
+                            )?;
+                            self.source_effects.process_isolated(
+                                project,
+                                index,
+                                frame,
+                                &mut generator,
                             )?;
                             let processed = compensation.process_track(
                                 index,
@@ -111,10 +121,9 @@ impl RendererRuntime {
                         Owner::Return(index) => {
                             let bus = &project.return_buses[index];
                             let mut returned = self.return_scratch[index][0];
-                            compensation.effects(
-                                &compensation.graph.returns[index].devices,
+                            compensation.process_return(
+                                index,
                                 &mut self.return_chains[index],
-                                0,
                                 &mut returned,
                                 offset,
                                 &mut None,
@@ -179,6 +188,7 @@ impl RendererRuntime {
         for chain in self
             .device_chains
             .iter_mut()
+            .chain(self.source_effects.chains_mut())
             .chain(self.return_chains.iter_mut())
             .chain(std::iter::once(&mut self.main_chain))
         {

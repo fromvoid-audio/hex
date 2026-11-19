@@ -9,11 +9,18 @@ pub(super) struct Pending {
     pub(super) owner: (ClipId, u64),
     pub(super) operation: AudioEventEdit,
     pub(super) preview: AudioEvents,
+    pub(super) placement: Option<std::sync::Arc<placement::Preview>>,
     receipt: Receipt,
     intent: Option<u64>,
     before: Selection,
     pub(super) clipboard: Option<Clipboard>,
     pub(super) waveform: Option<waveform_preview::Preview>,
+    /// Paint identity transfers with this exact receipt, never with input capture.
+    pub(super) fade_handle: Option<(u64, super::super::fade_handles::Handle)>,
+}
+pub(in crate::editor) enum PlacementSelection {
+    Range((u64, u64)),
+    Event { id: u64, start: u64 },
 }
 #[derive(Clone, Copy)]
 struct Selection {
@@ -35,16 +42,24 @@ impl EditorView {
         let Some(source) = self.state.as_ref().and_then(|s| s.project.clip(clip)) else {
             return;
         };
-        let preview = match source
-            .editable_audio_events()
-            .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
-        {
-            Ok(events) => events,
-            Err(error) => {
-                self.error = Some(error.0.into());
-                return;
+        let placement = self.placement_preview(&operation);
+        let preview = if let Some(placement) = &placement {
+            placement.clip().audio_events()
+        } else {
+            match source
+                .editable_audio_events()
+                .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
+            {
+                Ok(events) => events,
+                Err(error) => {
+                    self.error = Some(error.0.into());
+                    return;
+                }
             }
         };
+        if placement.is_some() && self.audio_event_editor.viewport.is_none() {
+            self.store_event_camera(self.event_frame_window(&root));
+        }
         self.advance_selection_intent();
         let before = Selection {
             cursor: self.audio_event_editor.cursor,
@@ -77,16 +92,30 @@ impl EditorView {
             self.audio_event_editor.retained_selection = None;
             self.audio_event_editor.cursor = *start;
         }
+        let fade_handle = self
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .and_then(|gesture| {
+                let Kind::Fade(capture) = gesture.kind else {
+                    return None;
+                };
+                let identity = capture.identity();
+                matches!(&operation, AudioEventEdit::SetFade { event, .. } if *event == identity.0)
+                    .then_some(identity)
+            });
         self.audio_event_editor.gesture = None;
         self.audio_event_editor.pending = Some(Pending {
             owner: (clip, self.project_generation),
             operation: operation.clone(),
             preview,
+            placement,
             receipt: Receipt::new(self.project_generation),
             intent: self.selection_intent_epoch,
             before,
             clipboard: None,
             waveform: None,
+            fade_handle,
         });
         if !self.enqueue(Request::Edit(Command::EditAudioEvents { clip, operation })) {
             self.retire_pending_audio_events();
@@ -113,6 +142,9 @@ impl EditorView {
         let Some(p) = self.audio_event_editor.pending.take() else {
             return false;
         };
+        if is_gain(&p.operation) {
+            self.service.retire_arrangement_gain_audition();
+        }
         if self.audio_event_editor.owner == Some(p.owner)
             && p.intent.is_some()
             && p.intent == self.selection_intent_epoch
@@ -123,10 +155,11 @@ impl EditorView {
         }
         true
     }
-    pub(in crate::editor) fn audio_events_request_complete(&mut self, event: &Event) {
-        let Some(p) = &mut self.audio_event_editor.pending else {
-            return;
-        };
+    pub(in crate::editor) fn audio_events_request_complete(
+        &mut self,
+        event: &Event,
+    ) -> Option<PlacementSelection> {
+        let p = self.audio_event_editor.pending.as_mut()?;
         match p.receipt.observe(
             self.project_generation,
             event.project_replaced,
@@ -137,18 +170,69 @@ impl EditorView {
                 self.retire_pending_audio_events();
             }
             Disposition::Terminal => {
-                if let Some(clipboard) = self
-                    .audio_event_editor
-                    .pending
-                    .take()
-                    .and_then(|p| p.clipboard)
-                {
+                let p = self.audio_event_editor.pending.take()?;
+                if is_gain(&p.operation) {
+                    self.service.retire_arrangement_gain_audition();
+                }
+                if let Some(clipboard) = p.clipboard {
                     self.audio_event_editor.clipboard = Some(clipboard);
+                }
+                if self.audio_event_editor.owner == Some(p.owner)
+                    && self.detail_clip_id() == Some(p.owner.0)
+                    && p.intent.is_some()
+                    && p.intent == self.selection_intent_epoch
+                {
+                    if let AudioEventEdit::Duplicate { event, start } = p.operation {
+                        // A negative destination becomes the new retained origin.
+                        let start = start.max(0) as u64;
+                        return p
+                            .preview
+                            .events
+                            .iter()
+                            .find(|item| item.start == start && item.id != event)
+                            .map(|item| PlacementSelection::Event { id: item.id, start });
+                    }
+                    return p
+                        .placement?
+                        .range(&p.operation)
+                        .map(PlacementSelection::Range);
                 }
             }
             Disposition::Invalidated => {
+                if is_gain(&p.operation) {
+                    self.service.retire_arrangement_gain_audition();
+                }
                 self.audio_event_editor.pending = None;
             }
         }
+        None
     }
+
+    pub(in crate::editor) fn install_audio_placement_selection(
+        &mut self,
+        selection: PlacementSelection,
+    ) {
+        self.sync_audio_navigation();
+        let editor = &mut self.audio_event_editor;
+        match selection {
+            PlacementSelection::Range(range) => {
+                editor.range = Some(range);
+                editor.cursor = range.0;
+                editor.selected = None;
+            }
+            PlacementSelection::Event { id, start } => {
+                editor.range = None;
+                editor.cursor = start;
+                editor.selected = Some(id);
+            }
+        }
+        editor.retained_selection = None;
+    }
+}
+
+fn is_gain(operation: &AudioEventEdit) -> bool {
+    matches!(
+        operation,
+        AudioEventEdit::SetGain { .. } | AudioEventEdit::SetRetainedGain { .. }
+    )
 }

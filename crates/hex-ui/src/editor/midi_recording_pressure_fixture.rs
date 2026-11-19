@@ -3,14 +3,10 @@ use super::*;
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, Command};
 use hex_session::service::{Event, Request, Service};
-use std::{
-    path::PathBuf,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, sync::mpsc, time::Instant};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -222,7 +218,12 @@ pub(crate) fn exercise(
         assert!(view.midi_recorder.mode == Mode::Interrupted);
         assert!(view.midi_recorder.blocks_edits());
         assert!(view.midi_recorder.pending_commit.is_none());
-        assert!(view.error.as_ref().unwrap().contains("receiptpressure"));
+        assert!(
+            view.error
+                .as_ref()
+                .unwrap()
+                .contains("recording events arrived faster than they could be saved")
+        );
         let notes = view.midi_recorder.take.as_ref().unwrap().notes();
         assert_eq!(notes.len(), 512);
         let first = notes[0].start_frame;

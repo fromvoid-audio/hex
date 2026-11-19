@@ -42,7 +42,7 @@ pub(super) struct StrokeContext {
     pub(super) effective_grid: MidiGrid,
     pub(super) snap_modifier: bool,
     pub(super) pitch_modifier: bool,
-    pub(super) view_start: u64,
+    pub(super) view_start: i128,
     pub(super) view_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -56,8 +56,8 @@ impl StrokeContext {
     /// previews only; canonical growth occurs once, through the typed edit.
     pub(super) fn authoring_length(self) -> Option<u64> {
         self.view_start
-            .checked_add(self.view_span)
-            .map(|end| end.max(self.clip_length))
+            .checked_add(i128::from(self.view_span))
+            .and_then(|end| u64::try_from(end.max(i128::from(self.clip_length))).ok())
     }
 
     fn is_valid(self) -> bool {
@@ -65,9 +65,11 @@ impl StrokeContext {
             && self.view_span > 0
             && self.clip_length > 0
             && self.view_span <= super::midi_scene::zoom_limit(self.clip_length)
-            && self.view_start
-                == super::midi_scene::clamp_start(self.view_start, self.clip_length, self.view_span)
-            && self.view_start.checked_add(self.view_span).is_some()
+            && self.view_start == super::midi_scene::clamp_start(self.view_start, self.view_span)
+            && self
+                .view_start
+                .checked_add(i128::from(self.view_span))
+                .is_some()
             && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
             && self.draw_mode
@@ -155,7 +157,7 @@ pub(super) struct MidiStroke {
 }
 
 impl MidiStroke {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-unit-tier"))]
     pub(super) fn begin(
         context: StrokeContext,
         clip_length: u64,
@@ -222,10 +224,10 @@ impl MidiStroke {
             baseline_probes: 0,
             cancelled: false,
         };
-        if let Some(id) = down_hit {
-            if !stroke.baseline_note_has_pitch(id, initial_cell.pitch) {
-                return Err(StrokeError::InvalidBaseline);
-            }
+        if let Some(id) = down_hit
+            && !stroke.baseline_note_has_pitch(id, initial_cell.pitch)
+        {
+            return Err(StrokeError::InvalidBaseline);
         }
         stroke
             .baseline_cache
@@ -711,7 +713,7 @@ fn interpolate_u8(start: u8, end: u8, step: u128, total: u128) -> Result<u8, Str
         .and_then(|value| u8::try_from(value).map_err(|_| StrokeError::InvalidPoint))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
     use hex_project::{BeatTime, Created, Editor, Project};
@@ -1623,19 +1625,25 @@ mod tests {
         let (_, clip) = fixture(beat(1));
         let base = context(clip, beat(1), MidiGrid::Sixteenth, false);
         let blank = StrokeContext {
-            view_start: beat(8),
+            view_start: i128::from(beat(8)),
             view_span: beat(4),
             ..base
         };
         assert!(blank.is_valid());
         assert_eq!(blank.authoring_length(), Some(beat(12)));
+        let distant = StrokeContext {
+            view_start: i128::from(beat(1024)),
+            ..blank
+        };
+        assert!(distant.is_valid());
+        assert_eq!(distant.authoring_length(), Some(beat(1028)));
         for invalid in [
             StrokeContext {
-                view_start: beat(16),
+                view_span: super::super::midi_scene::zoom_limit(blank.clip_length) + 1,
                 ..blank
             },
             StrokeContext {
-                view_start: u64::MAX,
+                view_start: i128::MAX,
                 view_span: 1,
                 ..blank
             },

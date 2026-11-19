@@ -12,12 +12,15 @@ per-event device-direction inversion flag; offer opt-in physical_delta() while
 keeping ordinary scroll delta unchanged; initialize the flag false on other
 platforms; clear rendered debug selector bounds between test-support frames.
 AppKit access stays inside GPUI's existing native boundary.
+Test-support also exposes completed path triangles with their actual fill and replay mask,
+so nonrectangular application surfaces can be checked without framebuffer claims.
 
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-explicit grid-literal and bounded accessibility decisions.
-view-cache epoch, scene replay and explicit grid-literal decisions.
+explicit grid-literal, bounded accessibility, text decoration storage,
+view-cache epoch, scene replay, retained path placement and macOS Blade layer
+ownership decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -75,6 +78,10 @@ live order of headroom, precedes any mutation. Source order differences and ties
 are translated without collapsing them; typed buffers and paint operations share
 the original append logic and paths receive fresh IDs. Contained Start/End
 operations remain in the stream. Refusal uses the unchanged per-operation replay.
+The scene records the outermost layer boundaries for both live and bulk-replayed
+paint operations. Replay tests for an enclosing layer at the requested start
+with a binary search. An unmatched earlier end still forces per-operation replay.
+
 No whole-row layer shortcut, native calls, unsafe code or new dependency is added.
 
 The implementation is confined to `src/scene.rs` and `src/bounds_tree.rs`;
@@ -100,6 +107,18 @@ graph test-support verifier checks insert/reserve/clear/overflow against a linea
 scan over deterministic mixed geometry at 1×/2× and a rounded-ancestor case,
 alongside the mixed-primitive replay oracle. No balancing, primitive/layer
 grouping, native API, allocation or dependency is added.
+
+Live ordering can reuse the nearest leaf when its clipped bounds exactly match
+the new rectangle. After the usual query, keep the largest order in the leaf
+and propagate the maximum along the usual ancestor path. Every primitive
+keeps its own assigned order and every future overlap has the same maximum.
+The locked verifier covers repeated overlap, reservation and disjoint reuse.
+
+Mac display requests still service dirty frames and explicit presentation.
+The optional recent-input replay of an unchanged scene skips drawable
+acquisition during a GPUI pointer drag. Release or cancellation restores the
+usual warm presentation cadence. The TestPlatform verifies that decision
+after dispatching real pan and clip drag inputs.
 
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
@@ -380,3 +399,77 @@ Test support may install an application's asset source and inspect completed
 monochrome sprite geometry. This is for deterministic SVG consumer tests; it
 does not change the native asset cache, create an OS window, or establish
 native framebuffer appearance.
+
+30 October text decoration storage: `ShapedLine`, `WrappedLine` and the two
+`WindowTextSystem` shaping accumulators keep up to four `DecorationRun`s inline
+instead of thirty-two, and spill beyond that to the existing dynamic storage. No
+span, text-length or project limit is added; run order, styles, glyph shaping,
+wrapping and painting are unchanged. Ordinary labels carry one to three runs, so
+each shaped line copies and caches far less inline storage. Only
+`src/text_system.rs` and `src/text_system/line.rs` change; provenance hashes and
+the cumulative patch were regenerated from the verified published 0.2.2 archive.
+Hex's `text_decoration_runs` regression shapes and paints 1/4/5/32/33/80-run
+mixed-UTF-8 lines across both inline boundaries.
+
+1 November should-terminate hook (Pulse #4092): the macOS app delegate also
+registers `applicationShouldTerminate:`. When the app installed a handler with
+`App::on_should_quit`, the delegate runs it and returns NSTerminateLater; the app
+answers once with `App::reply_to_quit(bool)`, which sends
+`replyToApplicationShouldTerminate:` on a later main run-loop turn so that a YES
+reply (and the synchronous `applicationWillTerminate:` shutdown) never runs
+inside an App borrow. Without a handler the delegate returns NSTerminateNow, so
+upstream behavior is unchanged; replies with no pending request are ignored and
+a repeated request while one is pending stays deferred. `App::quit` reaches the
+same handler through `terminate:`. New `Platform::on_should_quit`/`reply_to_quit`
+methods have no-op defaults, so Linux/Windows sources are untouched. The test
+platform records the request and each reply; `TestAppContext::simulate_should_quit`,
+`quit_request_pending` and `quit_replies` drive it headlessly (Hex regression:
+`crates/hex-widgets/tests/should_quit.rs`). Native code stays in the existing
+delegate class inside this excluded dependency; no new framework, FFI owner or
+unsafe Hex code. Changes are confined to `src/platform.rs`, `src/app.rs`,
+`src/platform/mac/platform.rs`, `src/platform/test/platform.rs` and
+`src/app/test_context.rs`; changed-source hashes and their cumulative patch
+blocks were regenerated against the hash-verified published 0.2.2 sources.
+Dock Quit/logout/restart prompting and AppKit's modal-panel run-loop delivery
+during NSTerminateLater remain native user acceptance items.
+
+3 November quit-reply correction: `App::quit` invokes AppKit termination from
+the main dispatch queue. During `NSTerminateLater`, AppKit can run a nested
+main run loop while that queue remains occupied, so dispatching the reply to
+the same queue deadlocks. Schedule a copied Objective-C block in the main run
+loop's common modes and wake it instead; this retains the deferred App-borrow
+and one-reply contracts. Core Foundation copies the block before returning.
+The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
+for acceptance and cancellation followed by acceptance; run it with
+`crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
+existing native dependency boundary and adds no unsafe Hex workspace code.
+
+6 November rotated device titles: the existing monochrome glyph raster cache
+and sprite transform support a bottom-to-top quarter turn at a shaped glyph's
+baseline. Scene admission and cached replay use the transformed sprite bounds
+for clipping and paint order. The app supplies the name and title hitbox, so
+normal text layout and pointer handling remain with their existing owners.
+Test support exposes the resulting rotated glyph bounds without GPU readback.
+
+6 November macOS Blade layer ownership: the backing-properties callback borrows
+the Metal layer retained by the Blade surface. Its accessor returns a
+`MetalLayerRef` tied to the renderer borrow. The previous owning wrapper released
+a reference on every scale update despite receiving only a borrowed pointer.
+The change stays in the existing external renderer and leaves surface custody,
+display-link behavior, and Hex's workspace unsafe prohibition intact.
+
+12 November retained path translation: add `Window::paint_path_with_offset`,
+which borrows a retained logical-pixel path and applies its logical offset to
+vertices, bounds and contour points before device scaling. The active content
+mask is scaled without translation; current element opacity and scene ordering
+are preserved. Existing `paint_path` and `Path::scale` remain unchanged. The
+translated scene path is built in one vertex pass without cloning the retained
+path or introducing a new public `Path` API.
+
+12 November disjoint waveform path reservation: two translated filled stereo
+paths may share one bounds-tree order if both clipped device-space bounds are
+finite, vertically separated by at least one device pixel and covered by their
+computed union. Otherwise each path uses ordinary insertion. The pair retains
+separate masks, primitive records and PathIds, and inherits any enclosing layer.
+Cached scene tests cover ordering, fallback and replay, and widget tests compare
+the completed triangles under the live clip mask.

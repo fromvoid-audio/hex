@@ -5,14 +5,20 @@
 //! search places native devices then plugins before files. Other sources and empty
 //! browsing retain file-first order. Row ranges are shared by virtualization,
 //! stable-key selection/history, activation, folder navigation and audition.
+mod audition_geometry;
+mod random_rank;
+mod scrollbar_geometry;
+
 mod audition;
 mod folder_places;
 mod history;
 mod insertion;
 mod place_icons;
 mod plugins;
+mod random;
 mod resize;
 mod samples;
+mod scrollbar;
 mod tree;
 
 use super::{EditorMode, EditorView, browser_input, drag};
@@ -24,22 +30,28 @@ use gpui::{
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::{BrowserBuiltin, BrowserPlaces};
-use hex_session::service::AudioPreview;
-use hex_session::service::Request;
+use hex_session::service::{
+    AudioPreview, BROWSER_PREVIEW_WINDOW_FRAMES, PreviewFailure, PreviewSources,
+    PreviewWindowSource, Request,
+};
 use hex_widgets::TextInput;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     path::PathBuf,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 mod layout;
+use layout::{result_label, result_row, selection_ink};
 
 // Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
 fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
-    let reason = error.to_string().to_lowercase();
+    let reason = hex_session::service::text::lowercase_outside_verbatim(&error.to_string());
     let mut message = format!(
         "{prefix} · {}",
         reason.chars().take(160).collect::<String>()
@@ -51,12 +63,11 @@ fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> Stri
 }
 
 pub(super) const DEFAULT_WIDTH: f32 = 480.0;
-const MIN_WIDTH: f32 = 220.0;
-pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
-const ROW_HEIGHT: f32 = 22.0;
+/// Uniform virtual height, including plugin groups and history scroll restoration.
+const ROW_HEIGHT: f32 = 18.0;
 const PREVIEW_CACHE_CAPACITY: usize = 16;
 const GAIN_SEARCH_ERROR: &str = "finish or cancel the gain value edit before search";
 
@@ -72,14 +83,29 @@ struct PlaybackPreviewRequest {
     output_generation: u64,
     output_identity: u64,
     start_fraction: f64,
-    path: PathBuf,
+    source: BrowserPlaybackSource,
     sample_rate: u32,
+}
+
+#[derive(Clone)]
+enum BrowserPlaybackSource {
+    File(PathBuf),
+    ProjectSample(BrowserItemKey, hex_engine::Audio),
+}
+
+enum WindowDelivery {
+    Accepted,
+    Full(hex_engine::Audio),
+    Stale,
+    Failed(String),
 }
 
 #[derive(Clone)]
 struct PreviewRequest {
     key: PreviewKey,
     slot: PreviewSlot,
+    /// Set when a different waveform request supersedes this one in flight.
+    cancel: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Default)]
@@ -97,51 +123,17 @@ pub(super) fn default_preferences_path() -> PathBuf {
 }
 
 fn clamped_panel_width(requested: f32, window_width: f32) -> f32 {
-    requested.clamp(
-        MIN_WIDTH,
-        (window_width - MIN_WORKSPACE_WIDTH - 4.0).max(MIN_WIDTH),
-    )
+    geometry::clamped_panel_width(requested, window_width, super::workspace_view::PANEL_GUTTER)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ScanRequest {
-    generation: u64,
-    directory: PathBuf,
-}
+#[path = "browser/geometry.rs"]
+mod geometry;
+pub(super) use geometry::MIN_WORKSPACE_WIDTH;
+use geometry::browser_audio_drag_ghost_position;
 
-#[derive(Default)]
-struct ScanCoordinator {
-    pub(super) generation: u64,
-    in_flight: bool,
-    pending: Option<ScanRequest>,
-}
-
-impl ScanCoordinator {
-    fn request(&mut self, directory: PathBuf) -> Option<ScanRequest> {
-        self.generation = self.generation.saturating_add(1);
-        let request = ScanRequest {
-            generation: self.generation,
-            directory,
-        };
-        if self.in_flight {
-            self.pending = Some(request);
-            None
-        } else {
-            self.in_flight = true;
-            Some(request)
-        }
-    }
-
-    fn complete(&mut self, generation: u64) -> (bool, Option<ScanRequest>) {
-        self.in_flight = false;
-        let current = generation == self.generation;
-        let next = self.pending.take();
-        if next.is_some() {
-            self.in_flight = true;
-        }
-        (current, next)
-    }
-}
+#[path = "browser/scan.rs"]
+mod scan;
+use scan::{ScanCoordinator, ScanRequest};
 
 /// The one selected source across all picker groups during this session. `directory` is only
 /// the current bounded folder location, never another selected source.
@@ -153,6 +145,7 @@ pub(super) enum BrowserSection {
     Instruments,
     Plugins,
     Projects,
+    ProjectSamples,
     Place(PathBuf),
     Collection(usize),
 }
@@ -162,6 +155,20 @@ enum BrowserItemKey {
     File(PathBuf),
     Plugin(PathBuf, Option<[u8; 16]>),
     Device(hex_engine::NativeDeviceClass, hex_engine::DeviceTypeId),
+    ProjectSample(u64, u64, hex_project::AssetId),
+}
+
+#[derive(Clone)]
+struct ProjectSample {
+    asset: hex_project::AssetId,
+    name: String,
+}
+
+struct ProjectSampleCache {
+    generation: u64,
+    revision: u64,
+    query: String,
+    rows: Arc<Vec<ProjectSample>>,
 }
 
 /// Global row ranges; existing projections retain their local order/identity.
@@ -207,8 +214,12 @@ pub(super) struct BrowserState {
     places_save_in_flight: bool,
     folder_bookmark_pending: bool,
     pending_places_save: Option<BrowserPlaces>,
+    /// Latest failure from a save that a queued save followed; reported when
+    /// the save chain ends so a later success cannot hide it.
+    unreported_places_save_error: Option<String>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
+    project_samples: RefCell<Option<ProjectSampleCache>>,
     plugins: plugins::Plugins,
     tree: tree::Tree,
     listing: Option<DirectoryListing>,
@@ -222,20 +233,29 @@ pub(super) struct BrowserState {
     // Selection/highlight activity, independent of actual query/navigation focus.
     results_focused: bool,
     selected_index: usize,
+    project_sample_selection: Option<BrowserItemKey>,
     scroll: gpui::UniformListScrollHandle,
+    scrollbar: scrollbar::State,
     _search_observer: gpui::Subscription,
     observed_query: String,
     history: history::History,
     playback_generation: u64,
-    playback_in_flight: bool,
+    /// Cancellation flag of the one in-flight audition preparation; set once
+    /// a newer request or a stop supersedes it.
+    playback_in_flight: Option<Arc<AtomicBool>>,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
+    audition_gain: f32,
+    audition_gain_dragging: bool,
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
+    playback_project_sample: Option<BrowserItemKey>,
     playback_fraction: f32,
     waveform_bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
+    /// Decoded sources shared by waveform and audition jobs.
+    preview_sources: PreviewSources,
     preview_selected: Option<PreviewKey>,
     #[cfg(test)]
     preview_preparations: usize,
@@ -293,8 +313,10 @@ impl BrowserState {
             places_save_in_flight: false,
             folder_bookmark_pending: false,
             pending_places_save: None,
+            unreported_places_save_error: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
+            project_samples: RefCell::new(None),
             plugins: plugins::Plugins::default(),
             tree: tree::Tree::default(),
             listing: None,
@@ -307,20 +329,26 @@ impl BrowserState {
             results_focus: cx.focus_handle(),
             results_focused: false,
             selected_index: 0,
+            project_sample_selection: None,
             scroll: gpui::UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
             _search_observer: observer,
             observed_query: String::new(),
             history: history::History::default(),
             playback_generation: 0,
             auto_audition: true,
+            audition_gain: 1.0,
+            audition_gain_dragging: false,
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
+            playback_project_sample: None,
             playback_fraction: 0.0,
             waveform_bounds: Rc::new(Cell::new(None)),
-            playback_in_flight: false,
+            playback_in_flight: None,
             playback_pending: None,
             preview_cache: HashMap::new(),
+            preview_sources: PreviewSources::default(),
             preview_selected: None,
             #[cfg(test)]
             preview_preparations: 0,
@@ -330,9 +358,22 @@ impl BrowserState {
         }
     }
 
+    /// Pure configured application-data location; performs no filesystem work.
+    pub(super) fn data_directory(&self) -> Option<&std::path::Path> {
+        self.preferences_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_preferences_path(&self) -> &std::path::Path {
         &self.preferences_path
+    }
+
+    /// Redirects later saves; an in-flight save keeps its captured path.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_preferences_path(&mut self, path: PathBuf) {
+        self.preferences_path = path;
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -345,7 +386,9 @@ impl BrowserState {
         self.auto_audition = false;
     }
     fn reset_results(&mut self) {
+        self.scrollbar.invalidate();
         self.selected_index = 0;
+        self.project_sample_selection = None;
         self.results_focused = false;
         self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
     }
@@ -355,7 +398,7 @@ impl BrowserState {
     }
 }
 
-struct BrowserAudioDragGhost;
+pub(super) struct BrowserAudioDragGhost;
 
 impl gpui::Render for BrowserAudioDragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl gpui::IntoElement {
@@ -373,6 +416,7 @@ struct BrowserGhostGeometry {
 
 struct BrowserGhostDecor {
     selector: &'static str,
+    notched: bool,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     waveform_visual: Option<Div>,
 }
@@ -391,6 +435,7 @@ fn browser_audio_drag_ghost(
     } = geometry;
     let BrowserGhostDecor {
         selector,
+        notched,
         grid,
         waveform_visual,
     } = decor;
@@ -408,6 +453,7 @@ fn browser_audio_drag_ghost(
         },
     );
     let stroke = 1.0 / scale.max(1.0);
+    let fill = theme::color(theme::PaletteRole::ClipFill);
     let width = width.max(3.0);
     let height = height.max(3.0);
     let mut ghost = div()
@@ -421,7 +467,7 @@ fn browser_audio_drag_ghost(
         .border_1()
         .border_l(px(stroke))
         .border_r(px(0.0))
-        .border_color(rgb(0x000000))
+        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children(super::tracks::aligned_clip_grid_layer(
@@ -429,43 +475,54 @@ fn browser_audio_drag_ghost(
         ));
     }
     if let Some(waveform) = waveform_visual {
-        ghost = ghost.children([waveform]);
+        ghost = ghost.children([super::tracks::clip_waveform_body(waveform)]);
     } else if let Some(metadata) = metadata {
-        ghost = ghost.children([super::waveform::waveform_summary_view(Arc::clone(
-            &metadata.waveform,
-        ))]);
+        ghost = ghost.children([super::tracks::clip_waveform_body(
+            super::waveform::waveform_summary_view(
+                Arc::clone(&metadata.waveform),
+                crate::theme::color(crate::theme::PaletteRole::Waveform),
+            ),
+        )]);
     } else {
-        ghost = ghost.child(
-            div()
-                .absolute()
-                .top(relative(0.5))
-                .left(px(4.0))
-                .right(px(4.0))
-                .h(px(1.0))
-                .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
-        );
+        ghost = ghost.child(super::tracks::clip_waveform_body(
+            div().child(
+                div()
+                    .absolute()
+                    .top(relative(0.5))
+                    .left(px(4.0))
+                    .right(px(4.0))
+                    .h(px(1.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
+            ),
+        ));
     }
     let ghost = ghost.child(
-        div()
-            .absolute()
-            .left(px(4.0))
-            .top_0()
-            .right(px(3.0))
-            .h(px(12.0))
-            .flex()
+        super::clip_name::passive_name_header(&payload.label, fill, true)
+            .debug_selector(|| "browser-drag-name".into())
             .gap_1()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::ClipText)))
-            .line_clamp(1)
-            .child(theme::text(payload.label.clone()))
-            .child(theme::text(status)),
+            .child(div().flex_shrink_0().child(theme::text(status))),
     );
-    super::tracks::pixel_boundary_shell(ghost, left, top, width, height, stroke, 0x000000, true)
-        .opacity(0.9)
-}
-
-fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
-    (pointer.0 + 12.0, pointer.1 + 12.0)
+    super::clip_boundary::pixel_backdrop_shell(
+        ghost,
+        gpui::Bounds::new(
+            gpui::point(px(left), px(top)),
+            gpui::size(px(width), px(height)),
+        ),
+        super::clip_boundary::Backdrop {
+            body: fill,
+            header: fill,
+            outline: theme::color(theme::PaletteRole::ClipOutline),
+            hover_outline: theme::color(theme::PaletteRole::ClipOutline),
+            stroke,
+            bottom_radius: 0.0,
+            header_height: super::clip_name::CLIP_NAME_HEIGHT,
+            header_gradient: None,
+            notch: super::clip_boundary::Notch::new(notched),
+        },
+        true,
+        move || format!("{selector}-trailing"),
+    )
+    .opacity(0.9)
 }
 
 impl EditorView {
@@ -583,6 +640,7 @@ impl EditorView {
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
         let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            places.vst3_scan_sources = self.browser.source_preferences.vst3_scan_sources.clone();
             for source in [
                 BrowserBuiltin::Music,
                 BrowserBuiltin::Home,
@@ -657,14 +715,25 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.browser.places_save_in_flight = false;
+        let error = result
+            .err()
+            .map(|error| places_error("could not save browser places", &error));
         if self.browser.pending_places_save.is_some() {
+            // A queued save supersedes the data, not the user's notice: show
+            // the failure now and keep the latest one until it is reported.
+            if let Some(error) = error {
+                self.browser.places_status = Some(error.clone());
+                self.browser.unreported_places_save_error = Some(error);
+            }
             self.start_browser_places_save(cx);
-        } else {
-            self.browser.places_status = Some(match result {
-                Ok(()) => "browser places saved".into(),
-                Err(error) => places_error("could not save browser places", &error),
-            });
+            return;
         }
+        let earlier = self.browser.unreported_places_save_error.take();
+        self.browser.places_status = Some(match (error, earlier) {
+            (Some(error), _) => error,
+            (None, Some(earlier)) => format!("{earlier} · a later save succeeded"),
+            (None, None) => "browser places saved".into(),
+        });
     }
 
     fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
@@ -744,13 +813,41 @@ impl EditorView {
 
     pub(super) fn cancel_browser_sample_playback(&mut self) {
         self.browser.playback_generation = self.browser.playback_generation.saturating_add(1);
+        self.cancel_browser_playback_preparation();
         self.browser.playback_pending = None;
         self.browser.playback_phase = Phase::Idle;
-        self.browser.playback_output = None;
+        let output = self.browser.playback_output.take();
         self.browser.playback_path = None;
+        self.browser.playback_project_sample = None;
         self.browser.playback_fraction = 0.0;
-        if let Some(audio) = self.audio.as_mut() {
+        if let Some((identity, generation)) = output
+            && let Some(audio) = self.audio.as_mut().filter(|audio| {
+                audio.control.output_identity() == Some(identity)
+                    && audio
+                        .control
+                        .preview_snapshot()
+                        .is_some_and(|snapshot| snapshot.generation == generation)
+            })
+        {
             audio.control.preview_cancel();
+        }
+    }
+
+    /// Stop the in-flight audition preparation within bounded work; its
+    /// result is already stale because the playback generation moved on.
+    fn cancel_browser_playback_preparation(&self) {
+        if let Some(cancel) = &self.browser.playback_in_flight {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// A completed sample drop (admitted into a device, track, Arrangement,
+    /// Session or new track) ends that browser interaction, so it stops the
+    /// active preview through the ordinary cancellation. A cancelled or refused
+    /// drop leaves the preview playing, as in Live, until the user moves on.
+    pub(super) fn stop_browser_preview_for_drop(&mut self) {
+        if self.browser.playback_output.is_some() || self.browser.playback_pending.is_some() {
+            self.cancel_browser_sample_playback();
         }
     }
 
@@ -760,9 +857,59 @@ impl EditorView {
 
     fn play_browser_sample_from(&mut self, path: PathBuf, fraction: f64, cx: &mut Context<Self>) {
         // Previously painted controls can retain a path across source validation.
-        if self.browser_place_unavailable() {
+        if self.browser_place_unavailable()
+            || self.browser.section == BrowserSection::ProjectSamples
+        {
             return;
         }
+        self.play_browser_audio(BrowserPlaybackSource::File(path), fraction, cx);
+    }
+
+    fn play_browser_project_sample_from(
+        &mut self,
+        key: &BrowserItemKey,
+        fraction: f64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.browser.section != BrowserSection::ProjectSamples {
+            return;
+        }
+        let source = self.state.as_ref().and_then(|state| {
+            let BrowserItemKey::ProjectSample(generation, revision, asset) = key else {
+                return None;
+            };
+            if !self.project_sample_current(key) {
+                return None;
+            }
+            let snapshot = state.canonical_audio_source.as_ref()?;
+            let context = snapshot.context();
+            if context.project_generation != *generation || context.editor_revision != *revision {
+                return None;
+            }
+            match snapshot.sources().get(asset)? {
+                hex_session::AudioSourceBinding::Resident(audio) => Some(audio.clone()),
+                hex_session::AudioSourceBinding::VerifiedFile(_) => None,
+            }
+        });
+        let Some(source) = source else {
+            self.cancel_browser_sample_playback();
+            self.error =
+                Some("sample preview unavailable · current resident source required".into());
+            return;
+        };
+        self.play_browser_audio(
+            BrowserPlaybackSource::ProjectSample(key.clone(), source),
+            fraction,
+            cx,
+        );
+    }
+
+    fn play_browser_audio(
+        &mut self,
+        source: BrowserPlaybackSource,
+        fraction: f64,
+        cx: &mut Context<Self>,
+    ) {
         let fraction = if fraction.is_finite() {
             fraction.clamp(0.0, 1.0)
         } else {
@@ -790,13 +937,27 @@ impl EditorView {
             self.error = None;
         }
         self.browser.playback_generation = generation;
-        self.browser.playback_path = Some(path.clone());
+        self.cancel_browser_playback_preparation();
+        match &source {
+            BrowserPlaybackSource::File(path) => {
+                self.browser.playback_path = Some(path.clone());
+                self.browser.playback_project_sample = None;
+            }
+            BrowserPlaybackSource::ProjectSample(key, _) => {
+                self.browser.playback_path = None;
+                self.browser.playback_project_sample = Some(key.clone());
+            }
+        }
         self.browser.playback_pending = None;
         let Some(audio) = self.audio.as_mut() else {
             self.error = Some("sample preview unavailable · no audio output".into());
             return;
         };
-        let output_generation = match audio.control.preview_request() {
+        let output_generation = match audio
+            .control
+            .preview_set_gain(self.browser.audition_gain)
+            .and_then(|()| audio.control.preview_request())
+        {
             Ok(token) => token,
             Err(error) => {
                 self.error = Some(format!("sample preview failed · {error}").into());
@@ -811,14 +972,14 @@ impl EditorView {
             generation,
             output_generation,
             output_identity,
-            path,
+            source,
             sample_rate: audio.sample_rate,
             start_fraction: fraction,
         };
         self.browser.playback_phase = Phase::Preparing;
         self.browser.playback_output = Some((output_identity, output_generation));
         self.status = "sample preview preparing".into();
-        if self.browser.playback_in_flight {
+        if self.browser.playback_in_flight.is_some() {
             self.browser.playback_pending = Some(request);
         } else {
             self.start_browser_sample_playback(request, cx);
@@ -830,32 +991,66 @@ impl EditorView {
         request: PlaybackPreviewRequest,
         cx: &mut Context<Self>,
     ) {
-        self.browser.playback_in_flight = true;
+        if let BrowserPlaybackSource::File(path) = &request.source {
+            self.start_windowed_browser_sample_playback(request.clone(), path.clone(), cx);
+        } else {
+            self.start_resident_browser_sample_playback(request, cx);
+        }
+    }
+
+    fn start_resident_browser_sample_playback(
+        &mut self,
+        request: PlaybackPreviewRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.browser.playback_in_flight = Some(Arc::clone(&cancel));
+        let sources = self.browser.preview_sources.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
-            let path = request.path.clone();
+            let source = request.source.clone();
             let sample_rate = request.sample_rate;
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     let _test_environment = test_environment;
-                    hex_session::service::prepare_sample_preview(path, sample_rate)
+                    match source {
+                        BrowserPlaybackSource::File(path) => {
+                            sources.prepare_playback(path, sample_rate, &cancel)
+                        }
+                        BrowserPlaybackSource::ProjectSample(_, audio) => {
+                            PreviewSources::prepare_resident_playback(&audio, sample_rate, &cancel)
+                        }
+                    }
+                    .map_err(|failure| failure.to_string())
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.browser.playback_in_flight = false;
+                view.browser.playback_in_flight = None;
+                let source_current = match &request.source {
+                    BrowserPlaybackSource::File(_) => true,
+                    BrowserPlaybackSource::ProjectSample(key, _) => {
+                        view.project_sample_current(key)
+                    }
+                };
+                if request.generation == view.browser.playback_generation && !source_current {
+                    view.cancel_browser_sample_playback();
+                }
                 if request.generation == view.browser.playback_generation
+                    && source_current
                     && let Some(audio) = view.audio.as_mut().filter(|audio| {
                         audio.control.output_identity() == Some(request.output_identity)
                             && audio.sample_rate == request.sample_rate
                     })
                 {
                     let admitted = result.and_then(|pcm| {
-                        let frame =
-                            audition::frame_at_fraction(pcm.frames().len(), request.start_fraction);
+                        let frame = audition_geometry::frame_at_fraction(
+                            pcm.frames().len(),
+                            request.start_fraction,
+                        );
                         audio
                             .control
                             .preview_publish_from(request.output_generation, pcm, frame)
@@ -890,11 +1085,237 @@ impl EditorView {
         .detach();
     }
 
+    fn start_windowed_browser_sample_playback(
+        &mut self,
+        request: PlaybackPreviewRequest,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.browser.playback_in_flight = Some(Arc::clone(&cancel));
+        #[cfg(test)]
+        let test_environment = Arc::clone(&self.test_environment);
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            #[cfg(test)]
+            let _test_environment = test_environment;
+            let open_cancel = Arc::clone(&cancel);
+            let rate = request.sample_rate;
+            let opened = cx
+                .background_executor()
+                .spawn(async move { PreviewWindowSource::open(path, rate, &open_cancel) })
+                .await;
+            let mut source = match opened {
+                Ok(source) => source,
+                Err(PreviewFailure::Cancelled) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(None, &request, cx)
+                    });
+                    return;
+                }
+                Err(PreviewFailure::SourceChanged) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(
+                            Some(PreviewFailure::SourceChanged.to_string()),
+                            &request,
+                            cx,
+                        )
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.browser.playback_in_flight = None;
+                        if request.generation == view.browser.playback_generation
+                            && !cancel.load(Ordering::Relaxed)
+                        {
+                            view.start_resident_browser_sample_playback(request, cx);
+                        } else if let Some(pending) = view.browser.playback_pending.take() {
+                            view.start_browser_sample_playback(pending, cx);
+                        }
+                    });
+                    return;
+                }
+            };
+            let total = match usize::try_from(source.output_frames()) {
+                Ok(total) => total,
+                Err(_) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(
+                            Some("sample preview length is too large".into()),
+                            &request,
+                            cx,
+                        )
+                    });
+                    return;
+                }
+            };
+            let mut position = audition_geometry::frame_at_fraction(total, request.start_fraction);
+            let started = this.update(cx, |view, _| {
+                if cancel.load(Ordering::Relaxed)
+                    || request.generation != view.browser.playback_generation
+                {
+                    return Ok(false);
+                }
+                let Some(audio) = view.audio.as_mut().filter(|audio| {
+                    audio.control.output_identity() == Some(request.output_identity)
+                        && audio.sample_rate == request.sample_rate
+                        && audio.control.preview_snapshot().is_some_and(|snapshot| {
+                            snapshot.generation == request.output_generation
+                        })
+                }) else {
+                    return Ok(false);
+                };
+                audio
+                    .control
+                    .preview_begin_windows(request.output_generation, position, total)
+                    .map(|()| true)
+                    .map_err(|error| error.to_string())
+            });
+            match started {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) | Err(_) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(None, &request, cx)
+                    });
+                    return;
+                }
+                Ok(Err(error)) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(Some(error), &request, cx)
+                    });
+                    return;
+                }
+            }
+            let mut failure = None;
+            while position < total && !cancel.load(Ordering::Relaxed) {
+                let count = (total - position).min(BROWSER_PREVIEW_WINDOW_FRAMES);
+                let read_cancel = Arc::clone(&cancel);
+                let read = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let result = source.read_window(position as u64, count, &read_cancel);
+                        (source, result)
+                    })
+                    .await;
+                source = read.0;
+                let frames = match read.1 {
+                    Ok(frames) => frames,
+                    Err(PreviewFailure::Cancelled) => break,
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                };
+                let mut window = match hex_engine::Audio::new(rate, frames) {
+                    Ok(window) => window,
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                };
+                loop {
+                    let delivery = this.update(cx, |view, _| {
+                        if cancel.load(Ordering::Relaxed)
+                            || request.generation != view.browser.playback_generation
+                        {
+                            return WindowDelivery::Stale;
+                        }
+                        let Some(audio) = view.audio.as_mut().filter(|audio| {
+                            audio.control.output_identity() == Some(request.output_identity)
+                                && audio.sample_rate == request.sample_rate
+                                && audio.control.preview_snapshot().is_some_and(|snapshot| {
+                                    snapshot.generation == request.output_generation
+                                })
+                        }) else {
+                            return WindowDelivery::Stale;
+                        };
+                        audio.control.reclaim_preview();
+                        match audio.control.preview_publish_window(
+                            request.output_generation,
+                            position,
+                            window,
+                        ) {
+                            Ok(()) => WindowDelivery::Accepted,
+                            Err(refusal)
+                                if refusal.reason
+                                    == hex_audio::sample_preview::WindowRefusalReason::Full =>
+                            {
+                                WindowDelivery::Full(refusal.audio)
+                            }
+                            Err(refusal) => WindowDelivery::Failed(refusal.to_string()),
+                        }
+                    });
+                    match delivery {
+                        Ok(WindowDelivery::Accepted) => {
+                            position += count;
+                            break;
+                        }
+                        Ok(WindowDelivery::Full(returned)) => {
+                            window = returned;
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        Ok(WindowDelivery::Failed(error)) => {
+                            failure = Some(error);
+                            break;
+                        }
+                        Ok(WindowDelivery::Stale) | Err(_) => {
+                            cancel.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+                if failure.is_some() {
+                    break;
+                }
+            }
+            let _ = this.update(cx, |view, cx| {
+                view.finish_browser_window_preparation(failure, &request, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn finish_browser_window_preparation(
+        &mut self,
+        failure: Option<String>,
+        request: &PlaybackPreviewRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.browser.playback_in_flight = None;
+        if request.generation == self.browser.playback_generation
+            && let Some(error) = failure
+            && let Some(audio) = self.audio.as_mut().filter(|audio| {
+                audio.control.output_identity() == Some(request.output_identity)
+                    && audio
+                        .control
+                        .preview_snapshot()
+                        .is_some_and(|snapshot| snapshot.generation == request.output_generation)
+            })
+        {
+            audio.control.preview_cancel();
+            self.browser.playback_output = None;
+            self.browser.playback_phase = Phase::Unavailable;
+            self.status = "sample preview failed".into();
+            self.error = Some(format!("sample preview failed · {error}").into());
+        }
+        if let Some(pending) = self.browser.playback_pending.take() {
+            self.start_browser_sample_playback(pending, cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         if !self.browser.results_focused || self.browser.section == BrowserSection::Instruments {
             return;
         }
-        if let Some(entry) = self.browser_selected_entry(cx) {
+        if self.browser.section == BrowserSection::ProjectSamples {
+            if let Some(key) = self.browser_selected_item(cx) {
+                self.play_browser_project_sample_from(&key, 0.0, cx);
+            }
+        } else if let Some(entry) = self.browser_selected_entry(cx) {
             match entry.kind {
                 EntryKind::WaveAudio => self.play_browser_sample(entry.path, cx),
                 EntryKind::Directory => self.expand_browser_folder(entry.path, cx),
@@ -908,6 +1329,15 @@ impl EditorView {
         let Some((identity, _)) = self.browser.playback_output else {
             return false;
         };
+        if self
+            .browser
+            .playback_project_sample
+            .as_ref()
+            .is_some_and(|key| !self.project_sample_current(key))
+        {
+            self.cancel_browser_sample_playback();
+            return true;
+        }
         let snapshot = self
             .audio
             .as_ref()
@@ -1076,6 +1506,7 @@ impl EditorView {
         let request = PreviewRequest {
             key,
             slot: slot.clone(),
+            cancel: Arc::new(AtomicBool::new(false)),
         };
         if let Some(in_flight) = self
             .browser
@@ -1100,8 +1531,24 @@ impl EditorView {
         }
         if self.browser.preview_in_flight.is_some() {
             self.browser.preview_pending = Some(request);
+            self.cancel_superseded_browser_audio_preview();
         } else {
             self.start_browser_audio_preview(request, cx);
+        }
+    }
+
+    /// A newer waveform request replaced the pending one; stop the in-flight
+    /// job unless the selected row or an active drag still needs its result.
+    fn cancel_superseded_browser_audio_preview(&self) {
+        let Some(in_flight) = self.browser.preview_in_flight.as_ref() else {
+            return;
+        };
+        let needed = self.browser.preview_selected.as_ref() == Some(&in_flight.key)
+            || self.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+                drag.path == in_flight.key.path && drag.sample_rate == in_flight.key.sample_rate
+            });
+        if !needed {
+            in_flight.cancel.store(true, Ordering::Relaxed);
         }
     }
 
@@ -1111,18 +1558,20 @@ impl EditorView {
             self.browser.preview_preparations += 1;
         }
         self.browser.preview_in_flight = Some(request.clone());
+        let sources = self.browser.preview_sources.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.key.path.clone();
             let sample_rate = request.key.sample_rate;
+            let cancel = Arc::clone(&request.cancel);
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     let _test_environment = test_environment;
-                    hex_session::service::prepare_audio_preview(path, sample_rate)
+                    sources.prepare_waveform(path, sample_rate, &cancel)
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
@@ -1136,7 +1585,7 @@ impl EditorView {
     fn browser_audio_preview_finished(
         &mut self,
         request: PreviewRequest,
-        result: Result<AudioPreview, String>,
+        result: Result<AudioPreview, PreviewFailure>,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -1149,7 +1598,9 @@ impl EditorView {
         }
         match result {
             Ok(preview) => *request.slot.metadata.borrow_mut() = Some(Rc::new(preview)),
-            Err(_) => {
+            // A superseded job leaves its slot empty, so a later request retries.
+            Err(PreviewFailure::Cancelled) => {}
+            Err(PreviewFailure::Failed(_) | PreviewFailure::SourceChanged) => {
                 *request.slot.error.borrow_mut() =
                     Some("audio preview could not be prepared".into());
             }
@@ -1214,6 +1665,7 @@ impl EditorView {
                     },
                     BrowserGhostDecor {
                         selector: "browser-audio-append-preview",
+                        notched: false,
                         grid: None,
                         waveform_visual: None,
                     },
@@ -1249,6 +1701,7 @@ impl EditorView {
                 },
                 BrowserGhostDecor {
                     selector: "browser-audio-append-preview",
+                    notched: visible_end == end,
                     grid: Some((
                         super::musical_time::grid_lines(
                             &state.project,
@@ -1265,11 +1718,13 @@ impl EditorView {
                         .as_ref()
                         .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
                         .map(|metadata| {
-                            super::waveform::waveform_source_segment_view(
+                            super::waveform::waveform_source_segment_view_cached(
                                 Arc::clone(&metadata.waveform),
                                 start,
                                 visible_start,
                                 visible_end,
+                                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                                crate::theme::color(crate::theme::PaletteRole::Waveform),
                             )
                         }),
                 },
@@ -1299,6 +1754,7 @@ impl EditorView {
             },
             BrowserGhostDecor {
                 selector: "browser-audio-floating-preview",
+                notched: true,
                 grid: None,
                 waveform_visual: None,
             },
@@ -1363,7 +1819,9 @@ impl EditorView {
                 }
                 Err(error) => {
                     self.browser.listing = None;
-                    self.browser.error = Some(error.to_string().to_lowercase());
+                    self.browser.error = Some(
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+                    );
                     self.browser.loading = false;
                 }
             }
@@ -1375,13 +1833,14 @@ impl EditorView {
     }
 
     pub(super) fn browser_content_width(&self, window: &Window) -> f32 {
-        if !self.browser.open {
+        let content = if !self.browser.open {
             COLLAPSED_WIDTH
         } else {
             let base =
                 clamped_panel_width(self.browser.width, f32::from(window.bounds().size.width));
             base + self.browser.layout.editor_width(base) + 4.0
-        }
+        };
+        content + 2.0 * hex_widgets::PANEL_FRAME_INSET
     }
 
     pub(super) fn browser_key_context(&self, window: &Window, cx: &App) -> &'static str {
@@ -1470,32 +1929,63 @@ impl EditorView {
     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
         self.checkpoint_browser_history(cx);
         let previous = (self.browser.results_focused, self.browser.selected_index);
-        let count = self.browser_visible_entries(cx).len()
-            + self.browser_visible_devices(cx).len()
-            + self.browser_visible_plugins(cx).len();
-        self.browser.selected_index = if !self.browser.results_focused || count == 0 {
-            0
-        } else if next {
-            self.browser.selected_index.saturating_add(1).min(count - 1)
+        let count = self.browser_result_count(cx);
+        let project_samples = self.browser.section == BrowserSection::ProjectSamples;
+        let current = if project_samples {
+            self.browser
+                .project_sample_selection
+                .as_ref()
+                .and_then(|key| self.browser_history_index(key, cx))
         } else {
-            self.browser.selected_index.saturating_sub(1).min(count - 1)
+            self.browser
+                .results_focused
+                .then_some(self.browser.selected_index)
         };
+        self.browser.selected_index = current.filter(|_| count > 0).map_or(0, |index| {
+            let index = if next {
+                index.saturating_add(1)
+            } else {
+                index.saturating_sub(1)
+            };
+            index.min(count - 1)
+        });
         self.browser.results_focused = count > 0;
-        if previous != (self.browser.results_focused, self.browser.selected_index) {
+        if project_samples {
+            let selection = self.browser_item_at(self.browser.selected_index, cx);
+            if self.browser.project_sample_selection != selection {
+                self.select_project_sample(selection, cx);
+            }
+        } else if previous != (self.browser.results_focused, self.browser.selected_index) {
             let path = self
                 .browser_selected_entry(cx)
                 .filter(|entry| entry.kind == EntryKind::WaveAudio)
                 .map(|entry| entry.path);
             self.browser_selection_audition(path, cx);
         }
-        self.browser
-            .scroll
-            .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
+        self.browser.scroll.scroll_to_item(
+            self.browser_scroll_row(self.browser.selected_index, cx),
+            gpui::ScrollStrategy::Top,
+        );
         cx.notify();
     }
 
     pub(super) fn browser_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.checkpoint_browser_history(cx);
+        if self.browser.section == BrowserSection::ProjectSamples {
+            if let Some(BrowserItemKey::ProjectSample(generation, revision, asset)) =
+                self.browser_selected_item(cx)
+                && !self
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            {
+                self.insert_browser_project_sample(generation, revision, asset, cx);
+            }
+            cx.notify();
+            return;
+        }
         if let Some(BrowserItemKey::Plugin(module, cid)) = self.browser_selected_item(cx) {
             if !self
                 .browser
@@ -1504,7 +1994,7 @@ impl EditorView {
                 .focus_handle()
                 .is_focused(window)
             {
-                self.activate_browser_plugin(&module, cid);
+                self.activate_browser_plugin(&module, cid, cx);
             }
             cx.notify();
             return;
@@ -1529,11 +2019,20 @@ impl EditorView {
                 cx.notify();
                 return;
             };
+            let gain = match self.track_defaults.captured_gain() {
+                Ok(gain) => gain,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    cx.notify();
+                    return;
+                }
+            };
             self.enqueue(Request::InsertBrowserInstrumentTrack {
                 project_generation: self.project_generation,
                 revision: state.revision,
                 class: hex_engine::NativeDeviceClass::Instrument,
                 type_id,
+                new_track_gain: Some(gain),
             });
             cx.notify();
             return;
@@ -1600,7 +2099,44 @@ impl EditorView {
         if !self.browser.results_focused {
             return None;
         }
-        self.browser_item_at(self.browser.selected_index, cx)
+        if self.browser.section == BrowserSection::ProjectSamples {
+            self.browser.project_sample_selection.clone()
+        } else {
+            self.browser_item_at(self.browser.selected_index, cx)
+        }
+    }
+
+    fn project_sample_current(&self, key: &BrowserItemKey) -> bool {
+        matches!(key, BrowserItemKey::ProjectSample(generation, revision, _)
+            if *generation == self.project_generation
+                && self.state.as_ref().is_some_and(|state| *revision == state.revision))
+            && self.browser.section == BrowserSection::ProjectSamples
+            && self.browser.results_focused
+            && self.browser.project_sample_selection.as_ref() == Some(key)
+    }
+
+    fn project_sample_waveform(
+        &self,
+        key: &BrowserItemKey,
+    ) -> Option<Arc<hex_session::CachedWaveform>> {
+        let BrowserItemKey::ProjectSample(_, _, asset) = key else {
+            return None;
+        };
+        if !self.project_sample_current(key) {
+            return None;
+        }
+        self.state.as_ref()?.waveforms.get(asset).cloned()
+    }
+
+    fn select_project_sample(&mut self, key: Option<BrowserItemKey>, cx: &mut Context<Self>) {
+        self.browser.project_sample_selection = key.clone();
+        if let Some(key) = key
+            && self.browser.auto_audition
+        {
+            self.play_browser_project_sample_from(&key, 0.0, cx);
+        } else {
+            self.stop_browser_preview_for_drop();
+        }
     }
 
     fn browser_selected_sample(&self, cx: &App) -> Option<PathBuf> {
@@ -1639,12 +2175,35 @@ impl EditorView {
         if let Some(index) = index {
             self.browser.selected_index = index;
             self.browser.results_focused = true;
-            self.browser
-                .scroll
-                .scroll_to_item(index, gpui::ScrollStrategy::Top);
+            self.browser.project_sample_selection =
+                selection.filter(|key| matches!(key, BrowserItemKey::ProjectSample(..)));
+            self.browser.scroll.scroll_to_item(
+                self.browser_scroll_row(index, cx),
+                gpui::ScrollStrategy::Top,
+            );
         } else {
             self.reset_browser_results();
         }
+    }
+
+    /// The current sample catalog for relink lookups, and whether a scan is
+    /// still running (so results may be incomplete). Callers search a clone on a
+    /// background worker.
+    pub(super) fn sample_catalog_snapshot(&self) -> (hex_library::catalog::SampleCatalog, bool) {
+        (
+            self.browser.samples.catalog.clone(),
+            self.browser.samples.history_loading(),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_replace_sample_catalog(
+        &mut self,
+        catalog: hex_library::catalog::SampleCatalog,
+    ) -> bool {
+        let settled = !self.browser.samples.history_loading();
+        self.browser.samples.replace(catalog);
+        settled
     }
 
     fn browser_place_unavailable(&self) -> bool {
@@ -1658,12 +2217,22 @@ impl EditorView {
     }
 
     fn browser_rows(&self, cx: &App) -> BrowserRows {
+        let file_count = if self.browser.section == BrowserSection::ProjectSamples {
+            self.browser_project_samples(cx).len()
+        } else {
+            self.browser_visible_entries(cx).len()
+        };
         BrowserRows::new(
-            self.browser_visible_entries(cx).len(),
+            file_count,
             self.browser_visible_devices(cx).len(),
             self.browser_visible_plugins(cx).len(),
             self.browser_devices_first(cx),
         )
+    }
+
+    fn browser_result_count(&self, cx: &App) -> usize {
+        let rows = self.browser_rows(cx);
+        rows.files.len() + rows.devices.len() + rows.plugins.len()
     }
 
     fn browser_selected_entry(&self, cx: &App) -> Option<LibraryEntry> {
@@ -1674,7 +2243,49 @@ impl EditorView {
         self.browser_visible_entries(cx).get(local).cloned()
     }
 
+    fn browser_project_samples(&self, cx: &App) -> Arc<Vec<ProjectSample>> {
+        let Some(state) = &self.state else {
+            self.browser.project_samples.borrow_mut().take();
+            return Arc::new(Vec::new());
+        };
+        let query = self.browser.search.read(cx).text().to_lowercase();
+        let mut cache = self.browser.project_samples.borrow_mut();
+        if let Some(cached) = cache.as_ref().filter(|cached| {
+            cached.generation == self.project_generation
+                && cached.revision == state.revision
+                && cached.query == query
+        }) {
+            return Arc::clone(&cached.rows);
+        }
+        let mut rows: Vec<_> = state
+            .project
+            .assets()
+            .filter_map(|asset| {
+                state.project.existing_import_frames(asset.id()).ok()?;
+                let name = asset.path().file_name()?.to_string_lossy().into_owned();
+                name.to_lowercase()
+                    .contains(&query)
+                    .then_some(ProjectSample {
+                        asset: asset.id(),
+                        name,
+                    })
+            })
+            .collect();
+        rows.sort_by_cached_key(|row| (row.name.to_lowercase(), row.asset));
+        let rows = Arc::new(rows);
+        *cache = Some(ProjectSampleCache {
+            generation: self.project_generation,
+            revision: state.revision,
+            query,
+            rows: Arc::clone(&rows),
+        });
+        rows
+    }
+
     fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
+        if self.browser.section == BrowserSection::ProjectSamples {
+            return Arc::new(Vec::new());
+        }
         if self.browser_place_unavailable() {
             return Arc::new(Vec::new());
         }
@@ -1707,7 +2318,9 @@ impl EditorView {
                 .samples
                 .visible_with_listing(&query, None, listing),
             BrowserSection::Projects => self.browser.samples.folder(&query, listing, true),
-            BrowserSection::Instruments | BrowserSection::Plugins => Arc::new(Vec::new()),
+            BrowserSection::Instruments
+            | BrowserSection::Plugins
+            | BrowserSection::ProjectSamples => Arc::new(Vec::new()),
         };
         self.browser.tree.visible(
             base,
@@ -1746,6 +2359,15 @@ impl EditorView {
     }
 
     pub(super) fn browser_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let width = self.browser_content_width(window);
+        let content = self.browser_content_view(window, cx);
+        hex_widgets::panel_frame(theme::workspace_panel_style(), content)
+            .w(px(width))
+            .flex_shrink_0()
+    }
+
+    fn browser_content_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        self.browser.scrollbar.begin_render();
         if !self.browser.open {
             let rail = div()
                 .w(px(COLLAPSED_WIDTH))
@@ -1756,8 +2378,6 @@ impl EditorView {
                 .pt_1()
                 .gap_1()
                 .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                .border_r_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .child(self.browser_icon(
                     "▤",
                     "open browser · cmd+alt+b",
@@ -1775,6 +2395,13 @@ impl EditorView {
         self.restore_browser_history_position(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
+        let control = self.browser_random_button(cx);
+        let folder_dialog = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(folder_dialog)
+            .child(control);
         let section = self.browser.section.clone();
         if matches!(section, BrowserSection::All | BrowserSection::Instruments)
             && self.browser.device_catalog.is_none()
@@ -1788,7 +2415,11 @@ impl EditorView {
                 ] {
                     entries.extend(
                         hex_engine::native_device_catalog_for_class(class)
-                            .map_err(|error| error.to_string().to_lowercase())?
+                            .map_err(|error| {
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                            })?
                             .into_iter()
                             .map(|entry| (class, entry)),
                     );
@@ -1806,10 +2437,25 @@ impl EditorView {
         } else {
             Vec::new()
         };
-        let file_count = entries.len();
+        let project_samples =
+            (section == BrowserSection::ProjectSamples).then(|| self.browser_project_samples(cx));
+        let file_count = project_samples
+            .as_ref()
+            .map_or(entries.len(), |rows| rows.len());
         let device_count = devices.len();
         let plugins = self.browser_visible_plugins(cx);
-        let row_count = file_count + device_count + plugins.len();
+        let project_context = self
+            .state
+            .as_ref()
+            .map(|state| (self.project_generation, state.revision));
+        let plugin_groups =
+            (section == BrowserSection::Plugins).then(|| plugins::PluginGroups::new(&plugins));
+        let row_count = file_count
+            + device_count
+            + plugins.len()
+            + plugin_groups
+                .as_ref()
+                .map_or(0, plugins::PluginGroups::heading_count);
         let positions = BrowserRows::new(
             file_count,
             device_count,
@@ -1822,11 +2468,34 @@ impl EditorView {
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        if positions.files.contains(&index) {
-                            entries
-                                .get(index - positions.files.start)
-                                .cloned()
-                                .map(|entry| view.browser_row(index, entry, cx))
+                        if let Some(groups) = &plugin_groups {
+                            match groups.line(index)? {
+                                plugins::PluginLine::Heading(group, _) => {
+                                    Some(Self::browser_plugin_heading(group))
+                                }
+                                plugins::PluginLine::Plugin(logical) => plugins
+                                    .get(logical)
+                                    .cloned()
+                                    .map(|row| view.browser_plugin_row(logical, row, cx)),
+                            }
+                        } else if positions.files.contains(&index) {
+                            if let (Some(samples), Some((generation, revision))) =
+                                (&project_samples, project_context)
+                            {
+                                samples
+                                    .get(index - positions.files.start)
+                                    .cloned()
+                                    .map(|row| {
+                                        view.browser_project_sample_row(
+                                            index, generation, revision, row, cx,
+                                        )
+                                    })
+                            } else {
+                                entries
+                                    .get(index - positions.files.start)
+                                    .cloned()
+                                    .map(|entry| view.browser_row(index, entry, cx))
+                            }
                         } else if positions.devices.contains(&index) {
                             devices.get(index - positions.devices.start).cloned().map(
                                 |(class, entry)| view.browser_device_row(index, class, entry, cx),
@@ -1854,9 +2523,7 @@ impl EditorView {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .border_r_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
         let toolbar = self.browser_toolbar(cx);
         if section == BrowserSection::Samples {
             panel = panel.child(self.sample_filters(cx));
@@ -1874,14 +2541,6 @@ impl EditorView {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .child(self.browser_icon(
-                            "↻",
-                            "refresh browser source",
-                            |view, _, cx| {
-                                view.refresh_browser_tree(cx);
-                            },
-                            cx,
-                        ))
                         .child(div().flex_1().min_w_0().overflow_hidden().text_xs().child(
                             theme::text(if section == BrowserSection::All {
                                 "all folders"
@@ -1930,7 +2589,9 @@ impl EditorView {
         match section {
             BrowserSection::Plugins => {
                 let controls = self.plugin_controls(cx);
-                panel = panel.child(controls).child(rows.flex_1());
+                panel = panel
+                    .child(controls)
+                    .child(self.browser_results(rows, row_count, cx));
             }
             BrowserSection::Collection(_) => {
                 panel = panel.child(
@@ -1964,32 +2625,27 @@ impl EditorView {
                             );
                         } else {
                             let count = entries.len();
-                            panel = panel.child(
-                                uniform_list(
-                                    "native-device-browser-entries",
-                                    count,
-                                    cx.processor(
-                                        move |view, range: std::ops::Range<usize>, _window, cx| {
-                                            range
-                                                .filter_map(|index| {
-                                                    entries.get(index).cloned().map(
-                                                        |(class, entry)| {
-                                                            view.browser_device_row(
-                                                                index, class, entry, cx,
-                                                            )
-                                                        },
-                                                    )
+                            let list = uniform_list(
+                                "native-device-browser-entries",
+                                count,
+                                cx.processor(
+                                    move |view, range: std::ops::Range<usize>, _window, cx| {
+                                        range
+                                            .filter_map(|index| {
+                                                entries.get(index).cloned().map(|(class, entry)| {
+                                                    view.browser_device_row(index, class, entry, cx)
                                                 })
-                                                .collect()
-                                        },
-                                    ),
-                                )
-                                .h_full()
-                                .min_h_0()
-                                .w_full()
-                                .track_scroll(self.browser.scroll.clone())
-                                .flex_1(),
-                            );
+                                            })
+                                            .collect()
+                                    },
+                                ),
+                            )
+                            .h_full()
+                            .min_h_0()
+                            .w_full()
+                            .track_scroll(self.browser.scroll.clone())
+                            .flex_1();
+                            panel = panel.child(self.browser_results(list, count, cx));
                         }
                     }
                     Err(error) => {
@@ -2022,7 +2678,7 @@ impl EditorView {
                             )),
                     );
                 } else {
-                    panel = panel.child(rows.flex_1());
+                    panel = panel.child(self.browser_results(rows, row_count, cx));
                 }
             }
             _ if row_count == 0
@@ -2081,7 +2737,7 @@ impl EditorView {
                 );
             }
             _ => {
-                panel = panel.child(rows.flex_1());
+                panel = panel.child(self.browser_results(rows, row_count, cx));
                 if self
                     .browser
                     .listing
@@ -2226,6 +2882,131 @@ impl EditorView {
             )
     }
 
+    fn with_browser_audio_drag(
+        row: gpui::Stateful<Div>,
+        payload: drag::BrowserAudioDrag,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let drag_entity = cx.entity();
+        let mut row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
+            let position = window.mouse_position();
+            payload.snap_modifier.set(window.modifiers().platform);
+            payload.copy_modifier.set(window.modifiers().alt);
+            cx.set_active_drag_cursor_style(drag::copy_cursor(payload.copy_modifier.get()), window);
+            payload
+                .last_pointer
+                .set(Some((f32::from(position.x), f32::from(position.y))));
+            let (preview, lane_hovered) = drag_entity.update(cx, |view, cx| {
+                view.begin_browser_audio_drag(payload);
+                if payload.project_asset.is_none() {
+                    view.request_browser_audio_preview_for_drag(payload, cx);
+                }
+                view.browser_audio_drop_position(
+                    payload,
+                    f32::from(position.x),
+                    f32::from(position.y),
+                )
+            });
+            payload.preview.set(preview);
+            payload.lane_hovered.set(lane_hovered);
+            drag_entity.update(cx, |_, cx| cx.notify());
+            cx.new(|_| BrowserAudioDragGhost)
+        });
+        let move_entity = cx.entity();
+        row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, window, cx| {
+            let Some(payload) = event
+                .dragged_item()
+                .downcast_ref::<drag::BrowserAudioDrag>()
+            else {
+                return;
+            };
+            let pointer = event.event.position;
+            let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
+            payload.last_pointer.set(Some(pointer_xy));
+            payload.snap_modifier.set(event.event.modifiers.platform);
+            payload.copy_modifier.set(event.event.modifiers.alt);
+            cx.set_active_drag_cursor_style(drag::copy_cursor(payload.copy_modifier.get()), window);
+            let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
+                view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
+            });
+            payload.preview.set(preview);
+            payload.lane_hovered.set(lane_hovered);
+            move_entity.update(cx, |_, cx| cx.notify());
+        });
+        let release_entity = cx.entity();
+        let release_payload = payload.clone();
+        row = row.on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+            release_entity.update(cx, |view, cx| {
+                view.clear_browser_audio_drag(&release_payload);
+                cx.notify();
+            });
+        });
+        row
+    }
+
+    fn browser_project_sample_row(
+        &mut self,
+        index: usize,
+        generation: u64,
+        revision: u64,
+        row: ProjectSample,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let key = BrowserItemKey::ProjectSample(generation, revision, row.asset);
+        let selected = self.project_sample_current(&key);
+        let payload = self.state.as_ref().and_then(|state| {
+            if generation != self.project_generation || revision != state.revision {
+                return None;
+            }
+            let asset = state.project.asset(row.asset)?;
+            let frames = state.project.existing_import_frames(row.asset).ok()?;
+            let metadata = Rc::new(RefCell::new(state.waveforms.get(&row.asset).map(
+                |waveform| {
+                    Rc::new(AudioPreview {
+                        playback_frames: frames,
+                        sample_rate: state.project.sample_rate(),
+                        waveform: waveform.clone(),
+                    })
+                },
+            )));
+            let mut payload = self.audio_file_drag_payload(
+                asset.path().to_path_buf(),
+                row.name.clone(),
+                None,
+                metadata,
+                Default::default(),
+            )?;
+            payload.project_asset = Some(row.asset);
+            Some(payload)
+        });
+        let row = result_row(selected)
+            .id(("browser-project-sample", row.asset.value()))
+            .debug_selector(move || format!("browser-project-sample-{index}"))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    view.browser.results_focus.focus(window);
+                    window.prevent_default();
+                    let Some(current) = view.browser_history_index(&key, cx) else {
+                        return;
+                    };
+                    view.checkpoint_browser_history(cx);
+                    view.browser.selected_index = current;
+                    view.browser.results_focused = true;
+                    view.select_project_sample(Some(key.clone()), cx);
+                    cx.notify();
+                }),
+            )
+            .child(result_label(row.name, selected, theme::PaletteRole::Text));
+        if let Some(payload) = payload {
+            Self::with_browser_audio_drag(row, payload, cx)
+        } else {
+            row
+        }
+    }
+
     fn browser_row(
         &mut self,
         index: usize,
@@ -2246,85 +3027,35 @@ impl EditorView {
         };
         let path = entry.path.clone();
         let name = entry.name.clone();
-        let drag_context = self.state.as_ref().map(|state| {
-            (
-                state.project.sample_rate(),
-                state.revision,
-                state.timeline_frames,
-                self.project_generation,
-                self.browser.scans.generation,
-                self.snap_grid,
-            )
-        });
         let drag_payload = if entry.kind == EntryKind::WaveAudio {
-            drag_context.map(
-                |(
-                    sample_rate,
-                    revision,
-                    timeline_frames,
-                    project_generation,
-                    browser_generation,
-                    snap_grid,
-                )| {
-                    // Rendering a row must not fill/evict the metadata cache.
-                    // Hover/drag admission owns preparation, not composition.
-                    let slot = self
-                        .browser
-                        .preview_cache
-                        .get(&PreviewKey {
-                            path: path.clone(),
-                            sample_rate,
-                        })
-                        .cloned()
-                        .unwrap_or_default();
-                    let viewport = self.visible_viewport(timeline_frames);
-                    drag::BrowserAudioDrag {
-                        project_generation,
-                        revision,
-                        browser_generation,
-                        sample_rate,
+            self.state.as_ref().and_then(|state| {
+                // Rendering a row reads only the existing metadata cache.
+                let slot = self
+                    .browser
+                    .preview_cache
+                    .get(&PreviewKey {
                         path: path.clone(),
-                        label: name.clone(),
-                        viewport_start: viewport.start,
-                        viewport_length: viewport.length,
-                        scroll: Default::default(),
-                        snap_grid,
-                        snap_modifier: Rc::new(Cell::new(false)),
-                        copy_modifier: Rc::new(Cell::new(false)),
-                        metadata: slot.metadata,
-                        metadata_error: slot.error,
-                        preview: Rc::new(Cell::new(None)),
-                        destination: Rc::new(Cell::new(None)),
-                        insertion_line_y: Rc::new(Cell::new(None)),
-                        lane_hovered: Rc::new(Cell::new(false)),
-                        last_pointer: Rc::new(Cell::new(None)),
-                    }
-                },
-            )
+                        sample_rate: state.project.sample_rate(),
+                    })
+                    .cloned()
+                    .unwrap_or_default();
+                self.audio_file_drag_payload(
+                    path.clone(),
+                    name.clone(),
+                    Some(self.browser.scan_generation()),
+                    slot.metadata,
+                    slot.error,
+                )
+            })
         } else {
             None
         };
         let selected = self.browser.results_focused && self.browser.selected_index == index;
         let click_path = path.clone();
         let click_kind = entry.kind;
-        let mut row = div()
+        let mut row = result_row(selected)
             .id(gpui::SharedString::from(tree::row_id(&path)))
             .debug_selector(|| format!("browser-entry-{index}"))
-            .w_full()
-            .min_w_0()
-            .overflow_hidden()
-            .h(px(ROW_HEIGHT))
-            .px_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .bg(rgb(if selected {
-                theme::color(theme::PaletteRole::Hover)
-            } else {
-                theme::color(theme::PaletteRole::Surface)
-            }))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -2402,65 +3133,7 @@ impl EditorView {
                     });
                 }
             });
-            let drag_entity = cx.entity();
-            row = row.on_drag(payload.clone(), move |payload, _, window, cx| {
-                let position = window.mouse_position();
-                payload.snap_modifier.set(window.modifiers().platform);
-                payload.copy_modifier.set(window.modifiers().alt);
-                cx.set_active_drag_cursor_style(
-                    drag::copy_cursor(payload.copy_modifier.get()),
-                    window,
-                );
-                payload
-                    .last_pointer
-                    .set(Some((f32::from(position.x), f32::from(position.y))));
-                let (preview, lane_hovered) = drag_entity.update(cx, |view, cx| {
-                    view.begin_browser_audio_drag(payload);
-                    view.request_browser_audio_preview_for_drag(payload, cx);
-                    view.browser_audio_drop_position(
-                        payload,
-                        f32::from(position.x),
-                        f32::from(position.y),
-                    )
-                });
-                payload.preview.set(preview);
-                payload.lane_hovered.set(lane_hovered);
-                drag_entity.update(cx, |_, cx| cx.notify());
-                cx.new(|_| BrowserAudioDragGhost)
-            });
-            let move_entity = cx.entity();
-            row = row.on_drag_move::<drag::BrowserAudioDrag>(move |event, window, cx| {
-                let Some(payload) = event
-                    .dragged_item()
-                    .downcast_ref::<drag::BrowserAudioDrag>()
-                else {
-                    return;
-                };
-                let pointer = event.event.position;
-                let pointer_xy = (f32::from(pointer.x), f32::from(pointer.y));
-                payload.last_pointer.set(Some(pointer_xy));
-                payload.snap_modifier.set(event.event.modifiers.platform);
-                payload.copy_modifier.set(event.event.modifiers.alt);
-                cx.set_active_drag_cursor_style(
-                    drag::copy_cursor(payload.copy_modifier.get()),
-                    window,
-                );
-                let (preview, lane_hovered) = move_entity.update(cx, |view, _| {
-                    view.browser_audio_drop_position(payload, pointer_xy.0, pointer_xy.1)
-                });
-                payload.preview.set(preview);
-                payload.lane_hovered.set(lane_hovered);
-                move_entity.update(cx, |_, cx| cx.notify());
-            });
-            let release_entity = cx.entity();
-            let release_payload = payload.clone();
-            row = row.on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-                release_entity.update(cx, |view, cx| {
-                    view.clear_browser_audio_drag(&release_payload);
-                    cx.notify();
-                });
-            });
+            row = Self::with_browser_audio_drag(row, payload, cx);
         }
         if entry.kind == EntryKind::Directory && !self.browser_place_unavailable() {
             let payload = self.browser_folder_drag(path.clone(), name);
@@ -2472,14 +3145,18 @@ impl EditorView {
         let mut control = div()
             .w(px(16.0))
             .flex_shrink_0()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            .h(px(ROW_HEIGHT))
+            .flex()
+            .items_center()
+            .text_size(px(10.0))
+            .line_height(px(ROW_HEIGHT))
+            .text_color(rgb(selection_ink(selected, theme::PaletteRole::Muted)))
             .children(disclosure.map(theme::text))
             .children(icon.map(|path| {
                 gpui::svg()
                     .path(path)
                     .size(px(14.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .text_color(rgb(selection_ink(selected, theme::PaletteRole::Muted)))
             }));
         if icon.is_some() && entry.kind != EntryKind::Directory {
             control = control.debug_selector(move || format!("browser-file-icon-{index}"));
@@ -2500,7 +3177,12 @@ impl EditorView {
         }
         let tooltip = self.browser.tree.error(&path).map_or_else(
             || path.to_string_lossy().into_owned(),
-            |error| format!("{} · {error}", path.display()),
+            |error| {
+                format!(
+                    "{} · {error}",
+                    hex_session::service::text::verbatim(path.display())
+                )
+            },
         );
         row.tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
             .child(
@@ -2511,16 +3193,8 @@ impl EditorView {
             )
             .child(control)
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .debug_selector(move || format!("browser-entry-label-{index}"))
-                    .child(theme::text(entry.name)),
+                result_label(entry.name, selected, theme::PaletteRole::Text)
+                    .debug_selector(move || format!("browser-entry-label-{index}")),
             )
     }
 
@@ -2545,28 +3219,16 @@ impl EditorView {
             destination: Rc::new(Cell::new(None)),
             return_destination: Rc::new(Cell::new(None)),
         });
-        let row = div()
+        let label_id = format!("browser-device-label-{class_label}-{debug_type}");
+        let selected = self.browser.results_focused && self.browser.selected_index == index;
+        let row = result_row(selected)
             .id(gpui::SharedString::from(format!(
                 "browser-device-{class_label}-{debug_type}"
             )))
             .debug_selector(move || format!("browser-device-{class_label}-{debug_type}"))
-            .h(px(ROW_HEIGHT))
-            .px_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .bg(rgb(theme::color(
-                if self.browser.results_focused && self.browser.selected_index == index {
-                    theme::PaletteRole::Hover
-                } else {
-                    theme::PaletteRole::Surface
-                },
-            )))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     let Some(current) =
                         view.browser_history_index(&BrowserItemKey::Device(class, type_id), cx)
                     else {
@@ -2577,14 +3239,37 @@ impl EditorView {
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
+                    if event.click_count == 2 {
+                        let request = view
+                            .selected_track
+                            .ok_or("select a track before adding a device")
+                            .and_then(|track| {
+                                view.browser_device_append_request(track, class, type_id, cx)
+                            });
+                        match request {
+                            Ok(request) => {
+                                if view.enqueue_device_barrier(request) {
+                                    view.error = None;
+                                    view.status = "adding device to track".into();
+                                }
+                            }
+                            Err(reason) => view.error = Some(reason.into()),
+                        }
+                        cx.stop_propagation();
+                    }
                     cx.notify();
                 }),
             )
             .child(
                 div()
                     .w(px(16.0))
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                    .h(px(ROW_HEIGHT))
+                    .text_size(px(10.0))
+                    .line_height(px(ROW_HEIGHT))
+                    .text_color(rgb(selection_ink(
+                        selected,
+                        theme::PaletteRole::SecondaryText,
+                    )))
                     .child(theme::text(
                         if class == hex_engine::NativeDeviceClass::Instrument {
                             "⌘"
@@ -2594,16 +3279,17 @@ impl EditorView {
                     )),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(name)),
+                result_label(name, selected, theme::PaletteRole::Text)
+                    .debug_selector(move || label_id.clone()),
             );
+        Self::with_browser_device_drag(row, payload, cx)
+    }
+
+    fn with_browser_device_drag(
+        row: gpui::Stateful<Div>,
+        payload: Option<drag::NativeDeviceDrag>,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let Some(payload) = payload else {
             return row;
         };
@@ -2718,7 +3404,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();
@@ -2736,48 +3429,6 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        MIN_WIDTH, PathBuf, ScanCoordinator, browser_audio_drag_ghost_position, clamped_panel_width,
-    };
-
-    #[test]
-    fn browser_drag_ghost_position_uses_window_relative_pointer_coordinates() {
-        // Window::bounds().origin is global screen space; it is intentionally not
-        // accepted by this helper because GPUI pointer events are window-relative.
-        assert_eq!(
-            browser_audio_drag_ghost_position((317.0, 129.0)),
-            (329.0, 141.0)
-        );
-    }
-
-    #[test]
-    fn browser_width_preserves_minimum_workspace_and_panel() {
-        assert_eq!(clamped_panel_width(280.0, 1_240.0), 280.0);
-        assert_eq!(clamped_panel_width(500.0, 880.0), 316.0);
-        assert_eq!(clamped_panel_width(100.0, 880.0), MIN_WIDTH);
-    }
-
-    #[test]
-    fn stale_directory_scan_results_are_not_current() {
-        let mut scans = ScanCoordinator::default();
-        let first = scans
-            .request(PathBuf::from("/one"))
-            .expect("first scan starts");
-        assert!(scans.request(PathBuf::from("/two")).is_none());
-        assert!(scans.request(PathBuf::from("/three")).is_none());
-        let (first_is_current, next) = scans.complete(first.generation);
-        assert!(!first_is_current);
-        assert_eq!(
-            next.expect("latest scan starts next").directory,
-            PathBuf::from("/three")
-        );
-        assert!(scans.in_flight);
-        assert!(scans.pending.is_none());
-    }
-}
-
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "browser_ui_test.rs"]
 mod ui_test;
@@ -2789,3 +3440,61 @@ mod console_drop_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "browser/folder_places_ui_test.rs"]
 mod folder_places_ui_test;
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod unit_tests {
+    use gpui::{point, px};
+
+    #[test]
+    fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta() {
+        let cases = [
+            (
+                gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
+                false,
+                (12.0, 24.0),
+            ),
+            (
+                gpui::ScrollDelta::Pixels(point(px(12.0), px(24.0))),
+                true,
+                (-12.0, -24.0),
+            ),
+            (
+                gpui::ScrollDelta::Lines(point(2.0, -3.0)),
+                false,
+                (2.0, -3.0),
+            ),
+            (
+                gpui::ScrollDelta::Lines(point(2.0, -3.0)),
+                true,
+                (-2.0, 3.0),
+            ),
+        ];
+        for (raw, inverted, (expected_x, expected_y)) in cases {
+            let event = gpui::ScrollWheelEvent {
+                delta: raw,
+                direction_inverted_from_device: inverted,
+                ..Default::default()
+            };
+            match event.physical_delta() {
+                gpui::ScrollDelta::Pixels(delta) => {
+                    assert_eq!(f32::from(delta.x), expected_x);
+                    assert_eq!(f32::from(delta.y), expected_y);
+                }
+                gpui::ScrollDelta::Lines(delta) => {
+                    assert_eq!(delta.x, expected_x);
+                    assert_eq!(delta.y, expected_y);
+                }
+            }
+            match (raw, event.delta) {
+                (gpui::ScrollDelta::Pixels(before), gpui::ScrollDelta::Pixels(after)) => {
+                    assert_eq!(before, after);
+                }
+                (gpui::ScrollDelta::Lines(before), gpui::ScrollDelta::Lines(after)) => {
+                    assert_eq!(before.x, after.x);
+                    assert_eq!(before.y, after.y);
+                }
+                _ => panic!("raw scroll delta variant changed"),
+            }
+        }
+    }
+}

@@ -541,7 +541,7 @@ fn browser_hidden_source_picker_restores_same_path_visibility_and_preferences(
         });
         assert!(visual.debug_bounds(row).is_some());
         assert_eq!(std::fs::read(&wav).unwrap(), bytes);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             visual.run_until_parked();
             let saved = hex_preferences::load(&config).unwrap();
@@ -603,7 +603,7 @@ fn browser_hidden_source_picker_cancel_and_refusal_keep_visible_selection(cx: &m
     visual.simulate_click(custom_row.center(), Modifiers::default());
     right_click(visual, "browser-place-2");
     choose(visual, 8);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         let ready = editor.update(visual, |view, cx| {

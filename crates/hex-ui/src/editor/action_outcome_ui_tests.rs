@@ -4,6 +4,29 @@ use gpui::TestAppContext;
 use hex_engine::{PlaybackAction, SessionPlaybackCommand, playback::Playback};
 use std::sync::Arc;
 
+/// Poll as the editor tick does (Pulse #3857). A receipt drained just before
+/// the reader observes retirement leaves the reader retained and one batch
+/// waiting for display; polling never advances until that batch is shown. The
+/// error keeps the displayed text for the caller's assertions.
+fn wait_for_retired_outcomes(cx: &mut TestAppContext, editor: &gpui::Entity<super::EditorView>) {
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        let done = editor.update(cx, |view, _| {
+            view.poll_retired_action_outcomes();
+            view.retired_action_message = None;
+            view.retired_action_outcomes.is_none()
+        });
+        if done {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "output did not retire"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[gpui::test]
 fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut TestAppContext) {
     let (_window, editor) = editor_window(
@@ -67,21 +90,7 @@ fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut Te
     });
     backend.close();
     drop(output);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let done = editor.update(cx, |view, _| {
-            view.poll_retired_action_outcomes();
-            view.retired_action_outcomes.is_none()
-        });
-        if done {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "output did not retire"
-        );
-        std::thread::yield_now();
-    }
+    wait_for_retired_outcomes(cx, &editor);
     editor.update(cx, |view, _| {
         assert!(
             view.error
@@ -152,21 +161,7 @@ fn occupied_retirement_slot_keeps_the_closed_current_reader(cx: &mut TestAppCont
     });
     backend.close();
     drop(output);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let done = editor.update(cx, |view, _| {
-            view.poll_retired_action_outcomes();
-            view.retired_action_outcomes.is_none()
-        });
-        if done {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "output did not retire"
-        );
-        std::thread::yield_now();
-    }
+    wait_for_retired_outcomes(cx, &editor);
     editor.update(cx, |view, _| {
         assert!(
             view.error

@@ -6,8 +6,6 @@ use gpui::{Context, Window};
 
 #[path = "midi_draw_pointer.rs"]
 mod pointer;
-#[cfg(test)]
-use hex_project::BeatTime;
 use hex_project::{ClipId, MidiNote, NoteId};
 use std::sync::Arc;
 
@@ -201,7 +199,7 @@ impl EditorView {
             effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
             snap_modifier: modifiers.snap,
             pitch_modifier: modifiers.pitch,
-            view_start: self.piano_beat_start.raw(),
+            view_start: self.piano_beat_start,
             view_span: self.piano_beat_span.raw(),
             pitch_low: self.piano_pitch_low,
             pitch_rows: self.piano_pitch_rows,
@@ -259,7 +257,7 @@ fn stroke_point(
     }
     let fraction = f64::from(local_x / bounds.width);
     let offset = (fraction * context.view_span as f64) as u64;
-    let beat_raw = context.view_start.checked_add(offset)?;
+    let beat_raw = u64::try_from(context.view_start.checked_add(i128::from(offset))?).ok()?;
     let length = context.authoring_length()?;
     let beat_raw = if clamp_to_bounds {
         beat_raw.min(length.checked_sub(1)?)
@@ -323,10 +321,10 @@ pub(super) fn created_range_ids(
     Ok(Some(created))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
-    use hex_project::{Command, Created, Editor, Project};
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
 
     #[test]
     fn draw_coordinate_mapping_clamps_during_motion_and_rejects_offroll_release() {

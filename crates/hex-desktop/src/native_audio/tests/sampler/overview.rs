@@ -269,7 +269,7 @@ pub(super) fn fresh(
             loop_end,
         );
         let play = visual
-            .debug_bounds("play or pause · space")
+            .debug_bounds("play or pause · space · right-click for history playback")
             .unwrap()
             .center();
         visual.simulate_click(play, Modifiers::default());
@@ -401,6 +401,7 @@ fn bounds(
         hex_engine::SamplerParameter::LoopEnabled,
         hex_engine::SamplerParameter::LoopStartFrame,
         hex_engine::SamplerParameter::LoopEndFrame,
+        hex_engine::SamplerParameter::LoopCrossfadeMs,
         hex_engine::SamplerParameter::AttackMs,
         hex_engine::SamplerParameter::DecayMs,
         hex_engine::SamplerParameter::SustainPercent,

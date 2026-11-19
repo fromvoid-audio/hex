@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 pub(crate) struct Controls {
     key: Option<(ClipId, u64, u64)>,
     capture: Option<ClipWindow>,
+    gain_preview: Option<(ClipWindow, hex_project::ClipGain)>,
     numbers: BTreeMap<Field, Number>,
     toggles: BTreeMap<bool, Switch>,
     pending: Option<Pending>,
@@ -64,6 +65,7 @@ impl Controls {
         changed
     }
     fn retire_bindings(&mut self) {
+        self.gain_preview = None;
         self.retired_focus
             .extend(self.numbers.iter().map(|(field, n)| RetiredFocus {
                 focus: n.focus.clone(),
@@ -106,6 +108,16 @@ impl Controls {
     }
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.is_some()
+    }
+    pub(crate) fn has_gain_preview(&self) -> bool {
+        self.gain_preview.is_some()
+    }
+    pub(in crate::editor) fn gain_preview(
+        &self,
+        view: &EditorView,
+    ) -> Option<(ClipId, hex_project::ClipGain, hex_project::ClipGain)> {
+        let (window, gain) = self.gain_preview?;
+        clip_window_is_current(view, window).then_some((window.clip, window.gain, gain))
     }
 }
 fn same_command(a: &Command, b: &Command) -> bool {
@@ -348,7 +360,9 @@ fn spec(window: ClipWindow, field: Field, horizon: u64) -> Option<NumericSpec> {
     .ok()
     .map(|s| {
         s.with_codec(
-            move |v| frame_value(v).map_or_else(String::new, |v| format_frame_time(v, rate)),
+            move |v| {
+                frame_value(v).map_or_else(String::new, |v| format_frame_time(i128::from(v), rate))
+            },
             move |s| {
                 let s = s.trim();
                 let frames = if let Some(seconds) = s.strip_suffix('s').filter(|_| !s.contains('·'))
@@ -414,6 +428,32 @@ pub(super) fn number(
         });
         entity.update(cx, |n, cx| n.set_tab_navigation(true, cx));
         let sub = cx.subscribe(&entity, move |view, _, e: &NumericControlEvent, cx| {
+            if field == Field::Gain {
+                match e.phase {
+                    NumericEventPhase::Change | NumericEventPhase::Commit
+                        if clip_window_is_current(view, window)
+                            && !view.audio_clip_controls.has_pending()
+                            && e.value.is_finite() =>
+                    {
+                        view.audio_clip_controls.gain_preview =
+                            hex_project::ClipGain::new((e.value * 1000.0).round() as i32)
+                                .ok()
+                                .map(|gain| (window, gain));
+                        if e.phase == NumericEventPhase::Change && e.gesture.is_some() {
+                            let audition =
+                                view.audio_clip_controls.gain_preview.and_then(|(_, gain)| {
+                                    view.clip_gain_audition_edit(window.clip, window.gain, gain)
+                                });
+                            view.set_held_gain_audition(audition);
+                        }
+                    }
+                    NumericEventPhase::Cancel => {
+                        view.audio_clip_controls.gain_preview = None;
+                        view.set_held_gain_audition(None);
+                    }
+                    _ => {}
+                }
+            }
             if e.phase == NumericEventPhase::Commit {
                 if !view.edit_pending() && clip_window_is_current(view, window) {
                     let multiple = view.selected_clip_ids().len() > 1;
@@ -440,6 +480,9 @@ pub(super) fn number(
                         absolute_command(window, field, e.value, multiple)
                     };
                     if let Some(command) = command {
+                        if field == Field::Gain {
+                            view.finish_gain_audition();
+                        }
                         submit(view, window, command);
                     } else {
                         view.retire_clip_detail();
@@ -622,6 +665,10 @@ pub(super) fn toggle(
 }
 impl EditorView {
     pub(crate) fn retire_clip_detail(&mut self) -> bool {
+        if self.audio_clip_controls.has_gain_preview() {
+            self.set_held_gain_audition(None);
+            self.service.retire_arrangement_gain_audition();
+        }
         let changed = self.audio_clip_controls.reset();
         self.retire_sample_bpm_control();
         changed
@@ -698,7 +745,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
@@ -734,6 +781,15 @@ mod tests {
             absolute_command(window, Field::Gain, -6.1, false),
             Some(Command::SetAudioClipGain { millidb: -6100, .. })
         ));
+        for (gain_db, delta) in [(-0.1, -100), (1.0, 1_000)] {
+            assert!(matches!(
+                absolute_command(window, Field::Gain, gain_db, true),
+                Some(Command::EditClips {
+                    clips,
+                    edit: hex_project::ClipEdit::GainBy { millidb },
+                }) if clips == vec![window.clip] && millidb == delta
+            ));
+        }
         assert!(absolute_command(window, Field::Gain, 24.001, false).is_none());
     }
 }

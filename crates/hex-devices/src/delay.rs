@@ -8,12 +8,45 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{DeviceContractError, NativeDeviceState};
 use std::{any::Any, sync::Arc};
+mod automation;
 mod state;
 pub use state::*;
 use state::{Settings, decode};
 pub struct DelayDefinition;
 pub static DEFINITION: DelayDefinition = DelayDefinition;
+impl DelayDefinition {
+    /// Prepare the existing owned transaction without constructing either ring.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[hex_lattice_contract::ParameterId],
+    ) -> Result<PreparedDelay, DeviceContractError> {
+        automation::prepare_factory(state, sample_rate, parameters)
+    }
+}
 impl NativeDeviceDefinition for DelayDefinition {
+    fn source_effect_factory_bytes(&self) -> Option<usize> {
+        // The prepared factory contains only inline settings and coefficients.
+        Some(crate::source_effect_arc_bytes::<runtime::Factory>())
+    }
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        id: hex_lattice_contract::ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(automation::slot(id).is_some())
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        ids: &[hex_lattice_contract::ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        automation::prepare(state, context, ids)
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -41,20 +74,16 @@ impl NativeDeviceDefinition for DelayDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        if !(8000..=192000).contains(&context.sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        let settings = decode(state)?;
-        Ok(Some(PreparedProcessorFactory::Owned(Arc::new(Factory {
-            settings,
-            rate: context.sample_rate,
-        }))))
+        Ok(Some(PreparedProcessorFactory::Owned(Arc::new(
+            Self::prepare_owned(state, context.sample_rate, &[])?,
+        ))))
     }
 }
 mod filter;
 mod lfo;
 mod runtime;
 use runtime::Factory;
+pub use runtime::{Factory as PreparedDelay, Runtime as DelayRuntime};
 #[cfg(test)]
 mod tests;
 

@@ -3,6 +3,13 @@ use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use std::sync::Arc;
 
+fn option() -> Modifiers {
+    Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    }
+}
+
 #[gpui::test]
 fn g_groups_midi_clips_with_different_legacy_curves(cx: &mut TestAppContext) {
     use super::drag::group_drag_ui_test::{click, fixture, pump};
@@ -84,6 +91,55 @@ fn midi_clip_has_no_audio_gain_handle(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn plain_audio_top_edge_drag_moves_the_clip_without_changing_gain(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = clip_drag_ui_test::audio_project();
+    let (window, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_ne!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::ResizeUpDown)
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.active_clip_drag.is_some());
+        assert!(!view.clip_gain.held());
+    });
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let up = point(lane.origin.x + lane.size.width * 0.57, lane.center().y);
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::MoveClipWithOverwrite { clip: moved, track: target, start })
+                    if moved == clip && target == track && start > 0
+            ),
+            "unexpected release: {:?}, {:?}",
+            view.last_enqueued_edit,
+            view.error
+        );
+        assert!(view.displayed_clip_gain(clip).is_none());
+    });
+}
+
+#[gpui::test]
 fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestAppContext) {
     let (project, _, _, clip) = clip_drag_ui_test::audio_project();
     let original = project.clip(clip).unwrap().clone();
@@ -95,17 +151,19 @@ fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestA
         .debug_bounds(selector)
         .expect("top edge gain handle")
         .center();
-    visual.simulate_mouse_move(from, None, Modifiers::default());
+    visual.simulate_modifiers_change(option());
+    visual.simulate_mouse_move(from, None, option());
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_cursor_style(),
         Some(gpui::CursorStyle::ResizeUpDown),
         "gain edge hit cursor"
     );
-    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(from, MouseButton::Left, option());
     editor.read_with(&visual, |v, _| {
         assert!(v.clip_gain.held(), "gain pointer admitted")
     });
+    visual.simulate_modifiers_change(Modifiers::default());
     let to = point(from.x, from.y + px(60.0));
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -135,7 +193,7 @@ fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestA
 }
 
 fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let ready = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -155,15 +213,15 @@ fn terminal(
     editor: &gpui::Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
-        if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
-            if event.request_complete {
-                return event;
-            }
-            // Deliberately withhold installation until the request terminal.
-            // The offline refusal fixture also retains its initial worker event.
+        if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event())
+            && event.request_complete
+        {
+            return event;
         }
+        // Deliberately withhold installation until the request terminal.
+        // The offline refusal fixture also retains its initial worker event.
         assert!(std::time::Instant::now() < until, "gain worker terminal");
         std::thread::yield_now();
     }
@@ -199,6 +257,17 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     let (files, window, editor) = clip_drag_ui_test::upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(window, cx);
     visual.run_until_parked();
+    let painted_height = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let cache = view.waveform_geometry_cache.borrow();
+            let paint = cache.painted_waveforms().back().unwrap();
+            let center = f32::from(paint.bounds.top() + paint.bounds.size.height * 0.25);
+            let (top, bottom) = paint.ordinates[0];
+            (center - top).abs().max((center - bottom).abs())
+        })
+    };
+    let original_height = painted_height(&visual);
+    assert!(original_height > 0.0);
     let (clip, before, original, pcm) = editor.read_with(&visual, |v, _| {
         let state = v.state.as_ref().unwrap();
         let clip = state.project.tracks()[0].clips()[0].clone();
@@ -212,7 +281,8 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     let handle = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
     let value = Box::leak(format!("clip-gain-value-{}", clip.value()).into_boxed_str());
     let down = visual.debug_bounds(handle).unwrap().center();
-    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.simulate_modifiers_change(option());
+    visual.simulate_mouse_move(down, None, option());
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_cursor_style(),
@@ -220,23 +290,26 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     );
     let up = point(down.x, down.y + px(60.0));
     // Escape cancels held input; the later mouse-up must not enqueue it.
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(down, MouseButton::Left, option());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!((painted_height(&visual) - original_height).abs() < 0.01);
     editor.read_with(&visual, |v, _| {
         assert!(!v.clip_gain.held());
         assert!(v.displayed_clip_gain(clip).is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert_eq!(v.worker_requests_pending, 0);
     });
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(down, MouseButton::Left, option());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual
         .debug_bounds(value)
         .expect("held numeric gain preview");
+    let held_height = painted_height(&visual);
+    assert!(held_height > 0.0 && held_height < original_height * 0.65);
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     let event = terminal(&editor, &mut visual);
     assert!(event.error.is_none(), "{:?}", event.error);
@@ -251,6 +324,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
         });
         visual.run_until_parked();
         assert_eq!(visual.debug_bounds(value), Some(held));
+        assert!((painted_height(&visual) - held_height).abs() < 0.01);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert_eq!(v.displayed_clip_gain(clip).unwrap().millidb(), -6_000);
@@ -262,6 +336,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds(value).is_none());
+    assert!((painted_height(&visual) - held_height).abs() < 0.01);
     let after = editor.read_with(&visual, |v, _| {
         assert!(v.displayed_clip_gain(clip).is_none());
         let state = v.state.as_ref().unwrap();
@@ -328,7 +403,7 @@ fn audio_gain_shift_segments_bounds_and_noop_use_the_actual_handle(cx: &mut Test
         visual.run_until_parked();
         let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
         let down = visual.debug_bounds(selector).unwrap().center();
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(down, MouseButton::Left, option());
         let mut up = down;
         for (dy, fine) in segments {
             up = point(down.x, down.y + px(dy));
@@ -376,8 +451,8 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
         if context == "selection" {
             editor.update(&mut visual, |v, cx| {
                 v.time_selection = Some(time_selection::TimeSelection {
-                    anchor_track: track,
-                    end_track: track,
+                    anchor_track: Some(track),
+                    end_track: Some(track),
                     anchor_frame: 0,
                     end_frame: 96_000,
                 });
@@ -385,7 +460,7 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
             });
             visual.run_until_parked();
         }
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(down, MouseButton::Left, option());
         let up = point(down.x, down.y + px(20.0));
         visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -425,7 +500,7 @@ fn audio_gain_real_refusal_retires_the_frozen_value_with_canonical_state(cx: &mu
     let label = Box::leak(format!("clip-gain-value-{}", clip.value()).into_boxed_str());
     let down = visual.debug_bounds(selector).unwrap().center();
     let up = point(down.x, down.y + px(20.0));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(down, MouseButton::Left, option());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual.debug_bounds(label).unwrap();
@@ -465,7 +540,7 @@ fn momentary_tools_preserve_a_gain_drag_already_in_custody(cx: &mut TestAppConte
         let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
         let down = visual.debug_bounds(selector).unwrap().center();
         let up = point(down.x, down.y + px(20.0));
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(down, MouseButton::Left, option());
         visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
         visual.simulate_event(gpui::KeyDownEvent {
             keystroke: gpui::Keystroke::parse(key).unwrap(),
@@ -542,7 +617,7 @@ fn selected_audio_gain_preserves_offsets_and_owns_the_expanded_command_receipt(
     let label = Box::leak(format!("clip-gain-value-{}", first.value()).into_boxed_str());
     let down = visual.debug_bounds(selector).unwrap().center();
     let up = point(down.x, down.y + px(60.0));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(down, MouseButton::Left, option());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual.debug_bounds(label).unwrap();
@@ -578,7 +653,7 @@ fn selected_audio_gain_preserves_offsets_and_owns_the_expanded_command_receipt(
     assert!(visual.debug_bounds(label).is_none());
     // No tick/abandonment cleanup is needed before the next admitted gesture.
     let down = visual.debug_bounds(selector).unwrap().center();
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(down, MouseButton::Left, option());
     editor.read_with(&visual, |v, _| {
         assert!(
             v.clip_gain.held(),

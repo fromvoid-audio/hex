@@ -61,6 +61,69 @@ fn exchange(instance: &mut Prepared, n: u64) {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn saved_vst_state_does_not_claim_to_clone_pending_dsp_history() {
+    let original_case = Case::new();
+    let restored_case = Case::new();
+    let selected = source();
+    let saved = startup_state(&selected, true, 3);
+    let prepare = |source: Source, state: NativeDeviceState, case: &Case| {
+        Pending::prepare_with_restore(
+            &build(),
+            source,
+            options().preparation,
+            Some(state),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(37),
+        )
+        .unwrap()
+        .complete_on_control(Some(options().presentation))
+        .unwrap()
+    };
+    let mut original = prepare(selected, saved, &original_case);
+    let mut impulse = request(original.configuration(), 0);
+    impulse.pcm.fill([0.0; 2]);
+    impulse.pcm[7] = [1.0, -0.5];
+    assert!(
+        original.exchange_on_worker(impulse).unwrap().pcm[..8]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+
+    original.begin_state_capture_on_worker().unwrap();
+    let captured = poll_complete(&mut original);
+    let mut restored = prepare(source(), captured.clone(), &restored_case);
+    assert!(restored.ready().restored);
+    assert_eq!(restored.configuration().restore.as_ref(), Some(&captured));
+    let mut next_original = request(original.configuration(), 1);
+    next_original.pcm.fill([0.0; 2]);
+    let mut next_restored = request(restored.configuration(), 0);
+    next_restored.pcm.fill([0.0; 2]);
+    let original_output = original.exchange_on_worker(next_original).unwrap();
+    let restored_output = restored.exchange_on_worker(next_restored).unwrap();
+    assert_eq!(original_output.pcm[2], [0.375, -0.1875]);
+    assert!(
+        restored_output.pcm[..8]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    assert!(
+        original
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        restored
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_live_capture_keeps_same_processing_instance_and_historical_startup() {
     let case = Case::new();
     let mut instance = Prepared::prepare(
@@ -323,4 +386,120 @@ fn actual_live_capture_refusal_exception_cancel_and_deadline_keep_confirmed_stat
         instance.cancel_and_reap_on_control().unwrap().status.code(),
         Some(9)
     );
+}
+
+fn overflow_capture_recovers(variant: u32) {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(variant),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    exchange(&mut instance, 0);
+    instance.begin_state_capture_on_worker().unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match instance.poll_state_capture_on_worker() {
+            Err(crate::Error::CaptureRefused(
+                crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes },
+            )) => {
+                assert_eq!(observed_bytes, if variant == 95 { 524288 } else { 524320 });
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < until);
+                thread::sleep(Duration::from_millis(1));
+            }
+            other => panic!("expected overflow refusal, got {other:?}"),
+        }
+    }
+    assert_eq!(instance.child_id_on_control(), child);
+    exchange(&mut instance, 1);
+    instance.begin_state_capture_on_worker().unwrap();
+    assert!(
+        decode(&poll_complete(&mut instance))
+            .unwrap()
+            .component
+            .is_some()
+    );
+    exchange(&mut instance, 2);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_component_overflow_live_capture_keeps_instance() {
+    overflow_capture_recovers(95);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_controller_overflow_live_capture_keeps_instance() {
+    overflow_capture_recovers(96);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_overflow_with_invalid_stream_use_is_still_terminal_when_live() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(97),
+    )
+    .unwrap();
+    instance.begin_state_capture_on_worker().unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match instance.poll_state_capture_on_worker() {
+            Err(Error::Worker(6)) => break,
+            Ok(None) => {
+                assert!(Instant::now() < until);
+                thread::sleep(Duration::from_millis(1));
+            }
+            other => panic!("expected terminal capture error, got {other:?}"),
+        }
+    }
+    let retired = instance.cancel_and_reap_on_control().unwrap();
+    assert!(!retired.status.success() && retired.terminal.is_none());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_overflow_with_unrelated_sdk_error_is_still_terminal_when_live() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(98),
+    )
+    .unwrap();
+    instance.begin_state_capture_on_worker().unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match instance.poll_state_capture_on_worker() {
+            Err(Error::Worker(6)) => break,
+            Ok(None) => {
+                assert!(Instant::now() < until);
+                thread::sleep(Duration::from_millis(1));
+            }
+            other => panic!("expected terminal capture error, got {other:?}"),
+        }
+    }
+    let retired = instance.cancel_and_reap_on_control().unwrap();
+    assert!(!retired.status.success() && retired.terminal.is_none());
 }

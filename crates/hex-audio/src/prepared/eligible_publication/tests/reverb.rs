@@ -108,6 +108,99 @@ fn actual_native_reverb_track_return_pcm_freeze_tail_moves_and_control_reclamati
 fn grouped_native_reverb_tail_moves_through_group_without_callback_allocation() {
     native_reverb_case(true);
 }
+
+#[test]
+fn disconnect_return_send_keeps_real_tail_in_callback_without_allocation() {
+    let _serial = serial();
+    let (base, track) = project(false);
+    let mut edit = Editor::new(base, 16).unwrap();
+    let track_device = edit.project().track(track).unwrap().devices()[0].id();
+    edit.execute(Command::RemoveDevice(track_device)).unwrap();
+    edit.execute(Command::InsertMainDevice {
+        before: None,
+        state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.limiter",
+        ))
+        .unwrap(),
+    })
+    .unwrap();
+    let a_project = edit.project().clone();
+    let bus = a_project.return_tracks()[0].id();
+    let device = a_project.return_tracks()[0].devices()[0].id();
+    edit.execute(Command::RemoveDevice(device)).unwrap();
+    let b_project = edit.project().clone();
+    edit.execute(Command::SetReturnSend {
+        track,
+        return_track: bus,
+        gain: 0.0,
+    })
+    .unwrap();
+    let c_project = edit.project().clone();
+    let asset = a_project.assets().next().unwrap().id();
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48000, vec![[0.25, -0.1]; 8]).unwrap(),
+    )]);
+    let prepare = |project: &hex_project::Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                project,
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let playback = |project: &hex_project::Project| {
+        hex_engine::playback::Playback::try_from_prepared_with_session(prepare(project)).unwrap()
+    };
+    let mut reference = playback(&a_project);
+    reference.apply(PlaybackCommand::Play);
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(playback(&a_project)).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0; 2]; 4096];
+    let mut expected = actual.clone();
+    reference.render(&mut expected).unwrap();
+    zero_counts(allocation_counter::measure(|| {
+        callback.begin_block();
+        for block in actual.chunks_mut(127) {
+            callback.render(block).unwrap();
+        }
+    }));
+    assert_eq!(actual, expected);
+    control.reclaim();
+
+    let b_revision = control.publish(playback(&b_project)).unwrap();
+    let mut actual = [[0.0; 2]; 127];
+    let mut expected = actual;
+    reference.render(&mut expected).unwrap();
+    zero_counts(allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    }));
+    assert_eq!(control.status.applied_revision.load(Acquire), b_revision);
+    assert_eq!(actual, expected);
+    assert!(control.reclaim() > 0);
+
+    let c_revision = control.publish(playback(&c_project)).unwrap();
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    reference.render(&mut expected).unwrap();
+    zero_counts(allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    }));
+    assert_eq!(control.status.applied_revision.load(Acquire), c_revision);
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    assert!(control.reclaim() > 0);
+    control.request_shutdown();
+    zero_counts(allocation_counter::measure(|| callback.begin_block()));
+    assert!(control.reclaim() > 0);
+}
+
 fn native_reverb_case(grouped: bool) {
     use hex_lattice_contract::ParameterValue;
     let _serial = serial();
@@ -240,8 +333,11 @@ fn native_reverb_case(grouped: bool) {
     control.command(PlaybackCommand::Stop).unwrap();
     zero_counts(allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|callback, _| {
-            callback.begin_block();
-            callback.render(&mut block).unwrap();
+            // The queued Stop fades over 128 frames before it resets (#4151).
+            for _ in 0..2 {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            }
         })
     }));
     assert_eq!(block, [[0.0; 2]; 127]);

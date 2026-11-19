@@ -118,6 +118,13 @@ user and contributor instructions only. research/ contains recorded reference
 observations, reproducible measurements and provenance, not implementation plans or task logs.
 Preserve licenses, raw evidence, private analyses, original media and user data.
 
+The user-requested `.engineering/` workspace is the narrow exception to the local
+backlog/checkpoint rule below. Read `.engineering/README.md` when continuing its
+mission. It retains the mission, recovery pointer, measured health and a small
+ranked index of Pulse work; live Pulse remains authoritative for issue state and
+acceptance, and source doc comments remain authoritative for technical contracts.
+Goal activation is manual; do not create scheduled tasks for this mission.
+
 ### User guide presentation
 
 Use the Ableton Live 12 reference manual supplied by the user
@@ -274,6 +281,21 @@ checks. Record the scope, exact source/base, commands, results and omissions wit
 reasons in the canonical PR. A small diff or passing mock alone does not establish
 isolation; tests do not mathematically guarantee unrelated code.
 
+Owner boundaries carry merge verification (user decision, 1 November 2026). A
+merge runs the test suites of the packages that own the change, plus reviewed
+runtime consumers with no Cargo edge. Every Cargo consumer must still compile and
+lint, but consumer test suites are not rerun. Rely on the owner's boundary tests
+to guarantee behaviour downstream. When a consumer later breaks, the defect is a
+missing owner boundary test: add the regression at the owner instead of widening
+merge checks. Within an owner crate, merges test only the changed modules'
+own test subtrees (a module without tests falls back to its nearest tested
+ancestor), so give each module its own boundary tests and split large modules
+along their responsibilities. Keep each merge's test setup and execution,
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
+budget as a warning, not a merge failure (user decision, 1 November 2026; see
+`docs/local-ci.md`). Merge when every other check is green. A recurring
+over-budget owner suite is a test-design bug: record it in Pulse.
+
 Broaden only for a documented concrete impact or unresolved risk. Explain unknown
 selection, then resolve it by inspecting owners/consumers or conservatively check
 the uncertain area. Never silently count an unknown omission as covered. Neither
@@ -322,37 +344,37 @@ the agent's responsibility. For persistence/recording, test
 round trips, missing assets, interrupted writes, and recoverable failures. Never
 substitute automated checks for manual acceptance they cannot establish.
 
-### Shared user-test checklist
+### User-run checks in Pulse
 
-Keep the reusable, user-edited Markdown checklist at
-`/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md`. This explicit exception
-to the local-backlog prohibition is for user-run acceptance and reproduction
-steps only; Pulse remains the authority for issue status, scope and dependencies.
-The ignored, shared path keeps user checkmarks available across worktrees without
-dirtying an exact-source build. Do not replace it with a per-worktree checklist.
+User-run acceptance and reproduction checks live in the owning issue's Pulse
+review checklist. On 30 October 2026 every check in the former shared file
+`/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md` was migrated there with its
+checked state; that file is a historical migration source only. Do not add to it
+or create another local checklist. Pulse remains the authority for issue status,
+scope and dependencies.
 
-After a focused PR passes its required checks and its merge is authenticated,
-mark its issue `ready_for_review`, then add any applicable user-run checks to the
-shared file. Group checks under a link to their Pulse issue and write each as a
-single independently completable, observable `- [ ]` line. Split distinct
-outcomes so the user can record partial progress; retain context needed to run
-each check. Explicitly requested reproduction may appear before a fix is merged;
-identify its actual status. Include applicable checks
-already in review without resetting their issue state. Do not invent manual checks
-for an internal-only change. State the qualified running build/source and any
-prerequisites or limits; neither a disk installation nor a headless test proves
-native acceptance. Keep the checklist aligned with the finite delivery checklist
-in `docs/test-builds.md`.
+After a focused PR passes its required checks and its merge is authenticated, add
+the applicable user-run checks to its issue as review checklist items, then mark it
+`ready_for_review`; Pulse requires at least one item before a review state. Add one
+item per `review_checklist_change`, each with a fresh revision, and change the
+checklist and the status in separate updates. Write each item as a single
+independently completable, observable check. Split distinct outcomes so the user
+can record partial progress. Record the context needed to run the checks (qualified
+running build/source, prerequisites, limits) as an issue note. Explicitly
+requested reproduction may be added before a fix is merged; identify its actual
+status. Include applicable checks already in review without resetting their issue
+state. Do not invent manual product checks for an internal-only change; give it one
+reviewer item such as "Review merged PR #N diff and its recorded verification
+evidence". Neither a disk installation nor a headless test proves native
+acceptance. Keep the items aligned with the finite delivery checklist in
+`docs/test-builds.md`.
 
-The user marks completed checks `- [x]` and personally marks the issue done
-after all its checks are complete. Do not mark an issue done merely because
-checkboxes are checked, or infer acceptance from a merge. Before editing the file,
-read its current contents and fresh Pulse state. Remove a completed issue's
-checked group only when every check is marked and the user has marked that issue
-done; retain partial groups, failures, unchecked items and unrelated user edits.
-Preserve entries if the issue state cannot be confirmed. Avoid overwriting a
-concurrent user edit; re-read and reconcile it. Do not use the file as a second
-source of implementation tasks, status changes or project requirements.
+The user ticks completed items in Pulse and personally marks the issue done after
+all its items are complete. Do not tick, edit or remove a user's item, mark an issue
+done because items are ticked, or infer acceptance from a merge. Read the issue's
+current checklist and revision before every change and reconcile concurrent edits.
+Do not use checklist items as a second source of implementation tasks, status
+changes or project requirements.
 
 Inspect the final diff when Git exists; otherwise review the changed files against
 known starting content. Preserve unrelated work. Update technical contracts in the
@@ -488,8 +510,8 @@ are unavailable, report the limitation and keep a clearly labeled temporary
 plan in chat; do not silently switch trackers or claim that unsaved tickets were
 created.
 
-Pulse is the sole planning and issue authority. Apart from the shared user-test
-checklist described above, do not create or maintain local TODO files,
+Pulse is the sole planning and issue authority, including user-run review
+checklists. Do not create or maintain local TODO files, checklists,
 task/status lists, request queues or parallel milestone backlogs. Put
 new requirements, dependencies, priorities, acceptance criteria, next actions and
 progress in the corresponding live Pulse tickets and goals. Do not append task

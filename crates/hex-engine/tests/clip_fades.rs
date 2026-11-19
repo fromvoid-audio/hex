@@ -10,6 +10,15 @@ fn fixture(
     looping: bool,
     loop_region: (u64, u64),
 ) -> (hex_engine::Project, ClipFade) {
+    fixture_with(cuts, looping, loop_region, None)
+}
+
+fn fixture_with(
+    cuts: &[u64],
+    looping: bool,
+    loop_region: (u64, u64),
+    envelope: Option<ClipFade>,
+) -> (hex_engine::Project, ClipFade) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
         .execute(Command::AddTrack {
@@ -53,6 +62,11 @@ fn fixture(
             fade_out: 5,
         })
         .unwrap();
+    if let Some(fade) = envelope {
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+    }
     let fade = editor.project().clip(clip).unwrap().fade();
     match cuts {
         [] => {}
@@ -125,6 +139,51 @@ fn compiled_split_keeps_source_fade_samples_and_neutral_legacy_constructors() {
     let mut frames = [[0.0; 2]; 4];
     renderer.render(&mut frames).unwrap();
     assert_eq!(frames, [[1.0, -1.0]; 4]);
+}
+
+fn render_in_blocks(project: &hex_engine::Project, block: usize) -> Vec<Frame> {
+    let mut renderer = Renderer::new(project);
+    renderer.play();
+    let mut frames = vec![[0.0; 2]; 11];
+    for chunk in frames.chunks_mut(block) {
+        renderer.render(chunk).unwrap();
+    }
+    frames
+}
+
+#[test]
+fn cuts_through_fades_move_ramps_inside_parts_and_keep_pcm_at_every_block_size() {
+    let shaped = ClipFade::new(11, 0, 4, 3)
+        .unwrap()
+        .with_shape(1, 1, 600, -400)
+        .unwrap()
+        .with_curve_positions(300, 800)
+        .unwrap();
+    let overlapping = ClipFade::new(11, 0, 8, 7).unwrap();
+    let smooth = shaped.with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
+    for envelope in [None, Some(shaped), Some(overlapping), Some(smooth)] {
+        let (whole, _) = fixture_with(&[], false, (0, 11), envelope);
+        let expected = render_in_blocks(&whole, 11);
+        // Inside each ramp, on a ramp boundary, between ramps and on silence.
+        for cut in [1, 2, 4, 5, 6, 8, 10] {
+            let (split, _) = fixture_with(&[cut], false, (0, 11), envelope);
+            for block in [1, 2, 3, 11] {
+                let actual = render_in_blocks(&split, block);
+                for (frame, (a, e)) in actual.iter().zip(&expected).enumerate() {
+                    for channel in 0..2 {
+                        // Overlapping ramps multiply once per factor (f32).
+                        assert!(
+                            (a[channel] - e[channel]).abs() <= 1e-6,
+                            "{envelope:?} cut {cut} block {block} frame {frame}: {a:?} {e:?}"
+                        );
+                    }
+                }
+                if envelope != Some(overlapping) {
+                    assert_eq!(actual, expected, "{envelope:?} cut {cut} block {block}");
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -485,4 +544,43 @@ fn two_axis_fades_render_independent_anchor_gains_in_both_players() {
     }
     assert_eq!(actual, chunked);
     assert_ne!(actual[250][0], 0.125); // x has changed actual PCM from the linear ramp.
+}
+
+#[test]
+fn new_selection_fades_render_the_s_curve_in_both_directions() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "constant.wav".into(),
+            sample_rate: 48_000,
+            frames: 202,
+        })
+        .unwrap()
+    else {
+        panic!("import");
+    };
+    for (start, end) in [(0, 101), (101, 202)] {
+        editor
+            .execute(Command::CreateArrangementFades {
+                range: hex_project::TimeRange::new(vec![track], start, end).unwrap(),
+            })
+            .unwrap();
+    }
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[1.0, -1.0]; 202]).unwrap())]);
+    let compiled = compile::project(editor.project(), &media).unwrap();
+    let mut renderer = Renderer::new(&compiled);
+    renderer.play();
+    let mut output = [[0.0; 2]; 202];
+    renderer.render(&mut output).unwrap();
+    for (frame, gain) in [
+        (0, 0.0),
+        (25, 0.15625),
+        (50, 0.5),
+        (75, 0.84375),
+        (100, 1.0),
+    ] {
+        assert_eq!(output[frame], [gain, -gain]);
+        assert_eq!(output[201 - frame], [gain, -gain]);
+    }
 }

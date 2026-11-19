@@ -1,4 +1,5 @@
-//! Typed ordinary/Return header focus and one view-only name draft over canonical rename edits.
+//! Typed header focus and one bounded text draft over canonical name/tag edits.
+//! Existing draft barriers, cancellation and open finalization own both text domains.
 use super::{
     CancelTrackName, CommitTrackName, EditorView, RemoveHeaderTracks, RenameTrack, browser_input,
 };
@@ -29,6 +30,12 @@ impl Target {
                 .map(ReturnTrack::name),
         }
     }
+    fn name_editing_supported(self, mode: super::EditorMode) -> bool {
+        match mode {
+            super::EditorMode::Arrangement => true,
+            super::EditorMode::Session => matches!(self, Self::Return(_)),
+        }
+    }
     fn rename(self, name: String) -> Command {
         match self {
             Self::Track(track) => Command::RenameTrack { track, name },
@@ -48,12 +55,46 @@ struct NameEdit {
     generation: u64,
     revision: u64,
     original: String,
+    tags: Option<Vec<hex_project::TrackTag>>,
     input: Entity<TextInput>,
     _blur: Subscription,
+}
+impl NameEdit {
+    fn matches(&self, project: &Project) -> bool {
+        match &self.tags {
+            Some(tags) => {
+                matches!(self.target, Target::Track(id) if project.track(id).is_some_and(|track| track.tags() == tags.as_slice()))
+            }
+            None => self.target.name(project) == Some(self.original.as_str()),
+        }
+    }
+}
+pub(super) fn parse_tags(text: &str) -> Result<Vec<hex_project::TrackTag>, hex_project::Invalid> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tags = Vec::new();
+    for value in text.split(',') {
+        if tags.len() == hex_project::MAX_TRACK_TAGS {
+            return Err(hex_project::Invalid("a track supports at most 16 tags"));
+        }
+        tags.push(hex_project::TrackTag::new(value)?);
+    }
+    Ok(tags)
 }
 impl TrackNameState {
     pub(super) fn is_editing(&self) -> bool {
         self.edit.is_some()
+    }
+    pub(super) fn pending_return(&self, generation: u64) -> Option<ReturnId> {
+        let edit = self
+            .edit
+            .as_ref()
+            .filter(|edit| edit.generation == generation)?;
+        match edit.target {
+            Target::Return(id) => Some(id),
+            Target::Track(_) => None,
+        }
     }
 }
 pub(super) fn bind_keys(cx: &mut App) {
@@ -73,6 +114,18 @@ pub(super) fn bind_keys(cx: &mut App) {
             RemoveHeaderTracks,
             Some("hex_track_header && !hex_text_editing"),
         ),
+        KeyBinding::new(
+            "x",
+            RemoveHeaderTracks,
+            Some("hex_track_header && !hex_text_editing && !hex_text_input"),
+        ),
+        // Forward-delete owns the same header deletion; it must not fall
+        // through to the editor's clip deletion.
+        KeyBinding::new(
+            "delete",
+            RemoveHeaderTracks,
+            Some("hex_track_header && !hex_text_editing"),
+        ),
         KeyBinding::new("enter", CommitTrackName, Some("hex_track_name")),
         KeyBinding::new("escape", CancelTrackName, Some("hex_track_name")),
     ]);
@@ -85,6 +138,9 @@ impl EditorView {
         };
         let tracks = self.selected_track_ids();
         if tracks.is_empty() || !tracks.contains(&focused) {
+            return true;
+        }
+        if self.selection_delete_blocked() {
             return true;
         }
         if self.edit_pending()
@@ -159,11 +215,10 @@ impl EditorView {
             self.track_name.scope = current;
         }
         if let Some(edit) = &self.track_name.edit
-            && (self.mode != super::EditorMode::Arrangement
+            && ((edit.tags.is_none() && !edit.target.name_editing_supported(self.mode))
                 || edit.generation != self.project_generation
                 || !self.state.as_ref().is_some_and(|state| {
-                    state.revision == edit.revision
-                        && edit.target.name(&state.project) == Some(edit.original.as_str())
+                    state.revision == edit.revision && edit.matches(&state.project)
                 }))
         {
             let focused = edit.input.read(cx).focus_handle().is_focused(window);
@@ -171,6 +226,14 @@ impl EditorView {
             if focused {
                 self.focus.focus(window);
             }
+        }
+        // An inline tag input can lose actual window focus before GPUI delivers
+        // its deferred blur notification. Retire only this current tag draft;
+        // no hidden edit may keep the shared header/loop guards active.
+        if self.track_name.edit.as_ref().is_some_and(|edit| {
+            edit.tags.is_some() && !edit.input.read(cx).focus_handle().is_focused(window)
+        }) {
+            self.commit_track_name(false, cx);
         }
     }
     pub(super) fn begin_track_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -201,8 +264,37 @@ impl EditorView {
             self.begin_name_target(target, window, cx);
         }
     }
+    pub(super) fn begin_captured_track_tags(
+        &mut self,
+        track: TrackId,
+        generation: u64,
+        revision: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if generation == self.project_generation
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == revision && state.project.track(track).is_some()
+            })
+        {
+            self.begin_header_text(Target::Track(track), true, window, cx);
+        }
+    }
     fn begin_name_target(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != super::EditorMode::Arrangement
+        self.begin_header_text(target, false, window, cx);
+    }
+    fn begin_header_text(
+        &mut self,
+        target: Target,
+        tags: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if tags && !self.track_view_change_available(cx) {
+            self.error = Some("finish or cancel the current edit before editing tags".into());
+            return;
+        }
+        if (!tags && !target.name_editing_supported(self.mode))
             || self.edit_pending()
             || self.track_name.edit.is_some()
             || self.clip_name_edit.is_some()
@@ -213,29 +305,73 @@ impl EditorView {
         {
             return;
         }
+        if matches!(target, Target::Return(_))
+            && self.mode == super::EditorMode::Session
+            && self.track_gain_controls.has_pending_draft(cx)
+        {
+            self.error = Some("finish the current numeric edit before renaming the return".into());
+            cx.notify();
+            return;
+        }
         let Some(state) = &self.state else {
             return;
         };
-        let Some(original) = target.name(&state.project).map(str::to_owned) else {
+        let original_tags = if tags {
+            let Target::Track(track) = target else { return };
+            let Some(track) = state.project.track(track) else {
+                return;
+            };
+            Some(track.tags().to_vec())
+        } else {
+            None
+        };
+        let Some(original) = original_tags
+            .as_ref()
+            .map(|tags| {
+                tags.iter()
+                    .map(|tag| tag.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .or_else(|| target.name(&state.project).map(str::to_owned))
+        else {
             return;
         };
         let revision = state.revision;
         // This existing name-input mode preserves case/Unicode and selects all.
-        let input = cx.new(|cx| browser_input::name(original.clone(), cx));
+        let input = cx.new(|cx| {
+            if tags {
+                browser_input::tags(original.clone(), cx)
+            } else {
+                browser_input::name(original.clone(), cx)
+            }
+        });
         let focus = input.read(cx).focus_handle().clone();
-        let blur = cx.on_blur(&focus, window, |view, _, cx| view.commit_track_name(cx));
+        let input_id = input.entity_id();
+        let blur = cx.on_blur(&focus, window, move |view, _, cx| {
+            // A late notification from a retired input cannot commit its successor.
+            if view
+                .track_name
+                .edit
+                .as_ref()
+                .is_some_and(|edit| edit.input.entity_id() == input_id)
+            {
+                view.commit_track_name(false, cx);
+            }
+        });
         self.track_name.edit = Some(NameEdit {
             target,
             generation: self.project_generation,
             revision,
             original,
+            tags: original_tags,
             input,
             _blur: blur,
         });
         focus.focus(window);
         cx.notify();
     }
-    fn commit_track_name(&mut self, cx: &mut Context<Self>) {
+    fn commit_track_name(&mut self, keep_invalid: bool, cx: &mut Context<Self>) {
         let Some(edit) = self.track_name.edit.take() else {
             return;
         };
@@ -243,12 +379,27 @@ impl EditorView {
         if edit.generation == self.project_generation
             && !self.edit_pending()
             && self.state.as_ref().is_some_and(|state| {
-                state.revision == edit.revision
-                    && edit.target.name(&state.project) == Some(edit.original.as_str())
+                state.revision == edit.revision && edit.matches(&state.project)
             })
             && name != edit.original
         {
-            if name.trim().is_empty() {
+            if edit.tags.is_some() {
+                match (edit.target, parse_tags(&name)) {
+                    (Target::Track(track), Ok(tags)) => {
+                        self.enqueue_device_barrier(Request::Edit(Command::SetTrackTags {
+                            track,
+                            tags,
+                        }));
+                    }
+                    (_, Err(error)) => {
+                        self.error = Some(error.to_string().into());
+                        if keep_invalid {
+                            self.track_name.edit = Some(edit);
+                        }
+                    }
+                    _ => {}
+                }
+            } else if name.trim().is_empty() {
                 self.error = Some("track name must not be empty".into());
             } else {
                 self.enqueue(Request::Edit(edit.target.rename(name)));
@@ -272,12 +423,15 @@ impl EditorView {
             || self.pending_open_path.is_some()
             || edit.generation != self.project_generation
             || !self.state.as_ref().is_some_and(|state| {
-                state.revision == edit.revision
-                    && edit.target.name(&state.project) == Some(edit.original.as_str())
+                state.revision == edit.revision && edit.matches(&state.project)
             })
-            || name.trim().is_empty()
-            || name.len() > hex_project::MAX_NAME_BYTES
-            || name.chars().any(char::is_control)
+            || if edit.tags.is_some() {
+                parse_tags(name).is_err()
+            } else {
+                name.trim().is_empty()
+                    || name.len() > hex_project::MAX_NAME_BYTES
+                    || name.chars().any(char::is_control)
+            }
         {
             self.error =
                 Some("finish or cancel the current name edit before opening a project".into());
@@ -294,9 +448,14 @@ impl EditorView {
     ) {
         let track = self.track_name.edit.as_ref().map(|edit| edit.target);
         if commit {
-            self.commit_track_name(cx);
+            self.commit_track_name(true, cx);
         } else {
             self.track_name.edit = None;
+        }
+        if let Some(edit) = &self.track_name.edit {
+            edit.input.read(cx).focus_handle().focus(window);
+            cx.notify();
+            return;
         }
         track
             .and_then(|id| self.track_name.focuses.get(&id))
@@ -304,19 +463,35 @@ impl EditorView {
             .focus(window);
         cx.notify();
     }
+    pub(super) fn track_tags_input(&self, track: TrackId) -> Option<Entity<TextInput>> {
+        self.track_name
+            .edit
+            .as_ref()
+            .filter(|edit| edit.target == Target::Track(track) && edit.tags.is_some())
+            .map(|edit| edit.input.clone())
+    }
     /// Existing header geometry and tooltip remain owned by tracks.rs.
     pub(super) fn track_header_focus(
         &mut self,
         track: TrackId,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
+        self.header_name_focus(Target::Track(track), cx)
+    }
+
+    /// Allocate one stable header focus owner, including before its Console
+    /// page is painted during keyboard navigation.
+    pub(super) fn header_name_focus(
+        &mut self,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
         self.track_name
             .focuses
-            .entry(Target::Track(track))
+            .entry(target)
             .or_insert_with(|| cx.focus_handle())
             .clone()
     }
-
     /// One inline label/input renderer for both stable naming owners. Row geometry
     /// and ordinary header focus remain with their existing callers.
     pub(super) fn track_name_label(
@@ -325,12 +500,7 @@ impl EditorView {
         name: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let focus = self
-            .track_name
-            .focuses
-            .entry(target)
-            .or_insert_with(|| cx.focus_handle())
-            .clone();
+        let focus = self.header_name_focus(target, cx);
         let click_focus = focus.clone();
         let (element_id, input_selector): (gpui::ElementId, &str) = match target {
             Target::Track(id) => (("track-name-focus", id.value()).into(), "track-name-input"),
@@ -341,6 +511,7 @@ impl EditorView {
         };
         let content = if let Some(edit) = &self.track_name.edit
             && edit.target == target
+            && edit.tags.is_none()
         {
             div()
                 .debug_selector(move || input_selector.into())
@@ -353,7 +524,13 @@ impl EditorView {
             .min_w_0()
             .flex_1()
             .when(matches!(target, Target::Return(_)), |label| {
-                label.track_focus(&focus).key_context("hex_return_header")
+                label
+                    .track_focus(&focus)
+                    .key_context(if self.mode == super::EditorMode::Session {
+                        "hex_return_header hex_console_return_header"
+                    } else {
+                        "hex_return_header"
+                    })
             })
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
@@ -398,7 +575,7 @@ mod tests {
         visual.run_until_parked();
     }
     fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);

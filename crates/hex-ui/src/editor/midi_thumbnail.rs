@@ -1,6 +1,55 @@
 //! Display-only geometry for control-prepared Arrangement note samples.
 //! Source projection and tempo conversion never run here.
-pub(super) const ROW_NOTE_SHAPE_LIMIT: usize = 128;
+
+/// A one-pitch clip draws its notes one third of the body tall, centred.
+const MIN_FIT_ROWS: u8 = 3;
+
+/// Vertical zoom of an Arrangement MIDI thumbnail onto the pitches its clip
+/// actually uses, like Live: a wide range draws thin notes, a single pitch
+/// draws thick ones. Derive it from the clip's whole prepared samples, not the
+/// visible crop, so the zoom stays put while scrolling and during gestures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PitchFit {
+    low: u8,
+    rows: u8,
+}
+
+impl PitchFit {
+    pub(super) fn from_pitches(pitches: impl IntoIterator<Item = u8>) -> Self {
+        let mut used: Option<(u8, u8)> = None;
+        for pitch in pitches.into_iter().filter(|pitch| *pitch <= 127) {
+            used = Some(used.map_or((pitch, pitch), |(low, high)| {
+                (low.min(pitch), high.max(pitch))
+            }));
+        }
+        let Some((low, high)) = used else {
+            return Self { low: 0, rows: 128 };
+        };
+        let span = high - low + 1;
+        let rows = span.max(MIN_FIT_ROWS);
+        // Centre a short range, keeping every row inside 0..=127.
+        let low = low.saturating_sub((rows - span) / 2).min(128 - rows);
+        Self { low, rows }
+    }
+
+    /// Top and height of `pitch`'s row as fractions of the note body.
+    fn row(self, pitch: u8) -> Option<(f32, f32)> {
+        let index = pitch
+            .checked_sub(self.low)
+            .filter(|index| *index < self.rows)?;
+        let rows = f32::from(self.rows);
+        Some((f32::from(self.rows - 1 - index) / rows, 1.0 / rows))
+    }
+}
+
+/// Note rectangle top and height in body pixels, with a 1px gap between rows
+/// once rows are tall enough and a 1px minimum for dense ranges.
+pub(super) fn note_rows(fit: PitchFit, pitch: u8, body_height: f32) -> Option<(f32, f32)> {
+    let (top, height) = fit.row(pitch)?;
+    let row = height * body_height;
+    let gap = if row >= 4.0 { 1.0 } else { 0.0 };
+    Some((top * body_height, (row - gap).max(1.0)))
+}
 
 /// Snap display samples to physical pixels just as the former layout leaves
 /// did. The enclosing body still clips notes below the clip name and at edges.
@@ -9,6 +58,7 @@ pub(super) fn paint_bounds(
     x: f32,
     width: f32,
     pitch: u8,
+    fit: PitchFit,
     scale: f32,
 ) -> Option<gpui::Bounds<gpui::Pixels>> {
     let left = f32::from(bounds.left());
@@ -28,16 +78,18 @@ pub(super) fn paint_bounds(
     {
         return None;
     }
+    let (row_top, row_height) = note_rows(fit, pitch, body_height)?;
     let snap = |value: f32| (value * scale).round() / scale;
     let start = snap(left + x * body_width);
     let end = snap(left + (x + width) * body_width);
-    let y = snap(top + f32::from(127 - pitch) / 128.0 * body_height);
-    if ![start, end, y].iter().all(|v| v.is_finite()) || end <= start {
+    let y = snap(top + row_top);
+    let bottom = snap(top + row_top + row_height).max(y + 1.0 / scale);
+    if ![start, end, y, bottom].iter().all(|v| v.is_finite()) || end <= start {
         return None;
     }
     Some(gpui::Bounds::new(
         gpui::point(gpui::px(start), gpui::px(y)),
-        gpui::size(gpui::px(end - start), gpui::px(2.0)),
+        gpui::size(gpui::px(end - start), gpui::px(bottom - y)),
     ))
 }
 
@@ -73,14 +125,24 @@ pub(super) fn rendered_notes(
     clip: hex_project::ClipId,
     dragging: bool,
 ) -> Vec<(gpui::Bounds<gpui::Pixels>, gpui::Background)> {
-    let selector = Box::leak(
-        format!(
+    rendered_note_layer(
+        visual,
+        &format!(
             "clip-{}notes-{}",
             if dragging { "drag-" } else { "" },
             clip.value()
-        )
-        .into_boxed_str(),
-    );
+        ),
+    )
+}
+
+/// Completed note rectangles of the note layer named `selector`, in logical
+/// pixels.
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn rendered_note_layer(
+    visual: &mut gpui::VisualTestContext,
+    selector: &str,
+) -> Vec<(gpui::Bounds<gpui::Pixels>, gpui::Background)> {
+    let selector: &'static str = Box::leak(selector.to_owned().into_boxed_str());
     let scale = visual.update(|window, _| window.scale_factor());
     visual
         .rendered_filled_quads(selector)
@@ -102,48 +164,4 @@ pub(super) fn rendered_notes(
             )
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn malformed_display_geometry_never_reaches_the_scene() {
-        let bounds = gpui::Bounds::new(
-            gpui::point(gpui::px(1.0), gpui::px(2.0)),
-            gpui::size(gpui::px(100.0), gpui::px(50.0)),
-        );
-        assert!(paint_bounds(bounds, 0.1, 0.2, 60, 2.0).is_some());
-        for (x, width, pitch, scale) in [
-            (f32::NAN, 0.2, 60, 2.0),
-            (0.1, f32::INFINITY, 60, 2.0),
-            (0.9, 0.2, 60, 2.0),
-            (-0.1, 0.2, 60, 2.0),
-            (0.1, 0.0, 60, 2.0),
-            (0.1, 0.2, 128, 2.0),
-            (0.1, 0.2, 60, 0.0),
-            (0.1, 0.2, 60, f32::NAN),
-        ] {
-            assert!(paint_bounds(bounds, x, width, pitch, scale).is_none());
-        }
-    }
-
-    #[test]
-    fn cropped_view_uses_visible_clip_coordinates_and_excludes_hidden_notes() {
-        assert_eq!(note_shape(90, 120, 60, 100, 200), Some((0.0, 0.2, 60)));
-        assert_eq!(note_shape(175, 225, 62, 100, 200), Some((0.75, 0.25, 62)));
-        assert_eq!(note_shape(0, 100, 60, 100, 200), None);
-        assert_eq!(note_shape(200, 220, 60, 100, 200), None);
-    }
-
-    #[test]
-    fn tiny_samples_at_large_endpoints_stay_positive_and_inside_the_clip() {
-        let (x, width, _) = note_shape(u64::MAX - 1, u64::MAX, 127, 0, u64::MAX).unwrap();
-        assert!(x.is_finite() && width.is_finite());
-        assert!((0.0..1.0).contains(&x) && width > 0.0 && x + width <= 1.0);
-        assert_eq!(note_shape(10, 10, 60, 0, 20), None);
-        assert_eq!(note_shape(0, 10, 128, 0, 20), None);
-        assert_eq!(note_shape(0, 10, 60, 10, 10), None);
-    }
 }

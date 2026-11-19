@@ -14,10 +14,17 @@ fn output_unavailable_export(grouped: bool) {
     let files = Files::new();
     let original = files.wav(24_000, 8192);
     let original_bytes = fs::read(&original).unwrap();
-    let (events, _audio_events) = mpsc::sync_channel(8);
+    let (events, audio_events) = mpsc::sync_channel(8);
     let mut sink = NativeAudioSink::new(events);
     sink.output_factory = Some(Box::new(|_| Err("fixture output unavailable".into())));
-    let service = Service::with_audio_sink(16, 0, None, Box::new(sink)).unwrap();
+    let service = Service::with_audio_sink_and_native_reservation(
+        16,
+        0,
+        None,
+        Box::new(sink),
+        AudioPolicy::new().unwrap().resident_native,
+    )
+    .unwrap();
     let next = || {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -31,9 +38,14 @@ fn output_unavailable_export(grouped: bool) {
             std::thread::yield_now();
         }
     };
+    assert!(next().error.is_none());
     assert!(
-        next().error.is_some(),
-        "injected output failure stays visible"
+        matches!(
+            audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
+            EditorAudioEvent::Unavailable { error, .. }
+                if error.to_string().contains("fixture output unavailable")
+        ),
+        "injected output failure stays visible asynchronously"
     );
     service
         .submit(Request::NewWithAudioMode {
@@ -173,9 +185,9 @@ fn varied(files: &Files, name: &str, rate: u32, frames: u32) -> PathBuf {
 }
 fn tiny(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::render_with_config(request, StreamConfig::with_pool_pages(3))
-        .map_err(|error| error.to_string())
+        .map_err(Into::into)
 }
 
 #[test]
@@ -206,7 +218,10 @@ fn verified_export_turns_over_a_two_page_cache_and_refuses_overlapping_demand_wi
     let refused = files.0.join("over-capacity.wav");
     run(&streamed, Request::Export(refused.clone()));
     let error = exported(&streamed).result.unwrap_err();
-    assert!(error.contains("simultaneous cache capacity"), "{error}");
+    assert!(
+        error.message().contains("simultaneous cache capacity"),
+        "{error}"
+    );
     assert!(!refused.exists());
     let after = run(
         &streamed,
@@ -261,6 +276,7 @@ fn verified_export_refuses_missing_changed_and_short_sources_preserving_existing
                 frames: None,
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: true,
             },
         );
@@ -303,6 +319,7 @@ fn verified_export_cancellation_preserves_destination_and_allows_retry() {
             frames: None,
             signal: ExportSignal::Main,
             control,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: true,
         },
     );
@@ -333,12 +350,14 @@ fn verified_export_never_overwrites_its_original_source_even_with_export_overwri
                 frames: None,
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: true,
             },
         );
         let error = exported(&service).result.unwrap_err();
         assert!(
-            error.contains("original media") || error.contains("existing regular file"),
+            error.message().contains("original media")
+                || error.message().contains("existing regular file"),
             "{error}"
         );
         assert_eq!(fs::read(&source).unwrap(), original);
@@ -347,7 +366,7 @@ fn verified_export_never_overwrites_its_original_source_even_with_export_overwri
 
 fn replace_at_finish(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::test_support::finish_action(request, || {
         let AudioSourceBinding::VerifiedFile(file) =
             request.source().required_sources().next().unwrap().1
@@ -363,7 +382,7 @@ fn replace_at_finish(
 }
 fn cancel_at_finish(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::test_support::finish_action(request, || {
         assert!(
             request.control().cancel(),
@@ -394,12 +413,13 @@ fn verified_export_rechecks_cached_sources_and_cancellation_before_publication()
                 frames: None,
                 signal: ExportSignal::Main,
                 control: control.clone(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: true,
             },
         );
         let error = exported(&service).result.unwrap_err();
         assert!(
-            error.contains("changed") || error.contains("cancel"),
+            error.message().contains("changed") || error.message().contains("cancel"),
             "{error}"
         );
         assert_eq!(
@@ -415,7 +435,7 @@ type ExportGate = (SyncSender<u64>, mpsc::Receiver<()>);
 static EXPORT_GATE: Mutex<Option<ExportGate>> = Mutex::new(None);
 fn gated_export(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     let (entered, release) = EXPORT_GATE.lock().unwrap().take().unwrap();
     entered
         .send(request.source().context().editor_revision)
@@ -446,7 +466,10 @@ fn verified_export_keeps_captured_revision_through_later_edit_and_new_document()
     assert!(
         matches!(
             service.submit(Request::Export(files.0.join("busy.wav"))),
-            Err(hex_session::service::SubmitError::Busy(Request::Export(_)))
+            Err(hex_session::service::SubmitError::Busy(
+                Request::Export(_),
+                hex_session::service::BusyReason::ExportPending
+            ))
         ),
         "a blocked offline job still owns the single export lane"
     );
@@ -473,7 +496,7 @@ fn verified_export_keeps_captured_revision_through_later_edit_and_new_document()
 
 fn cancel_after_first_chunk(
     request: &hex_session::service::StreamedExportRequest<'_>,
-) -> Result<hex_export::ExportReport, String> {
+) -> Result<hex_export::ExportReport, hex_session::service::ExportFailure> {
     crate::streamed_export::test_support::chunk_action(request, || {
         assert!(request.control().cancel());
     })
@@ -496,10 +519,17 @@ fn verified_export_cancellation_during_page_backed_render_discards_staging() {
             frames: None,
             signal: ExportSignal::Main,
             control: control.clone(),
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         },
     );
-    assert!(exported(&service).result.unwrap_err().contains("cancel"));
+    assert!(
+        exported(&service)
+            .result
+            .unwrap_err()
+            .message()
+            .contains("cancel")
+    );
     let progress = control.progress();
     assert!(progress.processed_frames > 0);
     assert!(progress.processed_frames < progress.total_frames);
@@ -515,6 +545,48 @@ fn verified_export_unexpected_render_page_miss_cannot_publish_engine_fallback_si
     let output = files.0.join("must-not-be-silence.wav");
     run(&service, Request::Export(output.clone()));
     let error = exported(&service).result.unwrap_err();
-    assert!(error.contains("unexpected media page miss"), "{error}");
+    assert!(
+        error.message().contains("unexpected media page miss"),
+        "{error}"
+    );
     assert!(!output.exists());
+}
+
+#[test]
+fn verified_export_writes_the_requested_format_through_streamed_pages() {
+    use hex_session::service::{ExportControl, ExportFormat, ExportSignal};
+    let files = Files::new();
+    let source = varied(&files, "source.wav", 48000, 4096);
+    let service = offline(48000, crate::streamed_export::render);
+    run(&service, Request::Import(source));
+    let export = |name: &str, format: ExportFormat| {
+        let path = files.0.join(name);
+        run(
+            &service,
+            Request::ExportRange {
+                path: path.clone(),
+                start: 0,
+                frames: Some(2048),
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                format,
+                overwrite: false,
+            },
+        );
+        let report = exported(&service).result.unwrap();
+        assert_eq!(report.data_bytes, 2048 * format.frame_bytes());
+        fs::read(path).unwrap()
+    };
+    let float = export("float.wav", ExportFormat::Float32);
+    let pcm16 = export("pcm16.wav", ExportFormat::Pcm16);
+    assert_eq!(u16::from_le_bytes([float[20], float[21]]), 3);
+    assert_eq!(float.len(), 58 + 2048 * 8);
+    for (float, pcm) in float[58..].chunks_exact(4).zip(pcm16[44..].chunks_exact(2)) {
+        let float = f32::from_le_bytes([float[0], float[1], float[2], float[3]]);
+        let pcm = i16::from_le_bytes([pcm[0], pcm[1]]);
+        assert!(
+            (f64::from(float) * 32_767.0 - f64::from(pcm)).abs() <= 1.5,
+            "{float} vs {pcm}"
+        );
+    }
 }

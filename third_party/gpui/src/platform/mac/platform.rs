@@ -35,6 +35,9 @@ use core_foundation::{
     runloop::CFRunLoopRun,
     string::{CFString, CFStringRef},
 };
+use core_foundation_sys::runloop::{
+    CFRunLoopGetMain, CFRunLoopRef, CFRunLoopWakeUp, kCFRunLoopCommonModes,
+};
 use ctor::ctor;
 use futures::channel::oneshot;
 use itertools::Itertools;
@@ -62,6 +65,11 @@ use std::{
 };
 use strum::IntoEnumIterator;
 use util::ResultExt;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRunLoopPerformBlock(run_loop: CFRunLoopRef, mode: CFTypeRef, block: *const c_void);
+}
 
 #[allow(non_upper_case_globals)]
 const NSUTF8StringEncoding: NSUInteger = 4;
@@ -158,6 +166,10 @@ unsafe fn build_classes() {
                 should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
             );
             decl.add_method(
+                sel!(applicationShouldTerminate:),
+                should_terminate as extern "C" fn(&mut Object, Sel, id) -> NSUInteger,
+            );
+            decl.add_method(
                 sel!(applicationWillTerminate:),
                 will_terminate as extern "C" fn(&mut Object, Sel, id),
             );
@@ -231,6 +243,8 @@ pub(crate) struct MacPlatformState {
     reopen: Option<Box<dyn FnMut()>>,
     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
     quit: Option<Box<dyn FnMut()>>,
+    should_quit: Option<Box<dyn FnMut() -> bool>>,
+    quit_request_pending: bool,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     will_open_menu: Option<Box<dyn FnMut()>>,
@@ -291,6 +305,8 @@ impl MacPlatform {
             metadata_pasteboard_type: unsafe { ns_string("zed-metadata") },
             reopen: None,
             quit: None,
+            should_quit: None,
+            quit_request_pending: false,
             menu_command: None,
             validate_menu_command: None,
             will_open_menu: None,
@@ -983,6 +999,39 @@ impl Platform for MacPlatform {
         self.0.lock().quit = Some(callback);
     }
 
+    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.lock().should_quit = Some(callback);
+    }
+
+    fn reply_to_quit(&self, terminate: bool) {
+        let mut lock = self.0.lock();
+        if !std::mem::replace(&mut lock.quit_request_pending, false) {
+            return;
+        }
+        drop(lock);
+        // Termination may already be running on the main dispatch queue, so a
+        // queued dispatch block cannot run while AppKit waits for this reply.
+        // A later main run-loop turn also releases the App borrow before a YES
+        // reply synchronously invokes the quit observers.
+        let reply = ConcreteBlock::new(move || unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            let answer = if terminate { YES } else { NO };
+            let _: () = msg_send![app, replyToApplicationShouldTerminate: answer];
+        })
+        .copy();
+        // Core Foundation copies the block before returning. The main run loop
+        // and its common-modes constant remain valid for the application's life.
+        unsafe {
+            let run_loop = CFRunLoopGetMain();
+            CFRunLoopPerformBlock(
+                run_loop,
+                kCFRunLoopCommonModes as CFTypeRef,
+                &*reply as *const _ as *const c_void,
+            );
+            CFRunLoopWakeUp(run_loop);
+        }
+    }
+
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
         self.0.lock().reopen = Some(callback);
     }
@@ -1541,6 +1590,36 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
             callback();
             platform.0.lock().reopen.get_or_insert(callback);
         }
+    }
+}
+
+// NSApplicationTerminateReply values.
+const NS_TERMINATE_NOW: NSUInteger = 1;
+const NS_TERMINATE_LATER: NSUInteger = 2;
+
+/// Hex patch: defer termination to the app's should-quit handler when one
+/// answers via `reply_to_quit`; otherwise terminate now, as before.
+extern "C" fn should_terminate(this: &mut Object, _: Sel, _: id) -> NSUInteger {
+    let platform = unsafe { get_mac_platform(this) };
+    let mut lock = platform.0.lock();
+    if lock.quit_request_pending {
+        // AppKit does not re-ask while a reply is outstanding; stay deferred.
+        return NS_TERMINATE_LATER;
+    }
+    let Some(mut callback) = lock.should_quit.take() else {
+        return NS_TERMINATE_NOW;
+    };
+    // Pending first: the handler may request its reply before returning.
+    lock.quit_request_pending = true;
+    drop(lock);
+    let deferred = callback();
+    let mut lock = platform.0.lock();
+    lock.should_quit.get_or_insert(callback);
+    if deferred {
+        NS_TERMINATE_LATER
+    } else {
+        lock.quit_request_pending = false;
+        NS_TERMINATE_NOW
     }
 }
 

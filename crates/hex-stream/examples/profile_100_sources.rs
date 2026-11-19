@@ -8,7 +8,7 @@ use hex_stream::{SourceDefinition, StreamConfig, StreamRuntime};
 use std::{
     error::Error,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufWriter, Write},
     path::PathBuf,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -50,7 +50,8 @@ fn write_source(
     let riff_size = 36_usize
         .checked_add(data_bytes)
         .ok_or("fixture riff size overflow")?;
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut file = BufWriter::new(file);
     file.write_all(b"RIFF")?;
     file.write_all(&u32::try_from(riff_size)?.to_le_bytes())?;
     file.write_all(b"WAVEfmt ")?;
@@ -73,8 +74,60 @@ fn write_source(
         file.write_all(&(right as i16).to_le_bytes())?;
         source.push([left as f32 / 32768.0, right as f32 / 32768.0]);
     }
-    file.sync_all()?;
+    file.flush()?;
+    file.get_ref().sync_all()?;
     Ok(source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffered_fixtures_match_original_files_and_pcm() {
+        // Full-file SHA-256 values and selected PCM samples were measured from
+        // the original unbuffered writer, before changing its construction.
+        let cases = [
+            (
+                0,
+                "26814d83d4ecc50416fed5fc04de0ffe2bdec1e98d17336211a556467b2b2655",
+                [[-25200, 18900], [-22000, 16500], [-19200, 14400]],
+            ),
+            (
+                25,
+                "d5659d1d93263a9030ad3bee37c4ff2922f2289c7e5177564f2fee3b3b084408",
+                [[-6000, 12600], [-2800, 10200], [0, 8100]],
+            ),
+            (
+                51,
+                "74e67197f0891f12f0948208986c8dd128f9191d74e7b7e96c51cee32e2a9c42",
+                [[16000, 3000], [19200, 600], [22000, -1500]],
+            ),
+        ];
+        let fixture = FixtureDirectory::create().unwrap();
+        for (index, expected_hash, samples) in cases {
+            let path = fixture.path().join(format!("source-{index:03}.wav"));
+            let oracle = write_source(&path, index).unwrap();
+            let limits = VerifiedWavReaderLimits::new(
+                WavReaderLimits::new(2 * 1024 * 1024, SOURCE_FRAMES as u64, 128, 65_536),
+                1024 * 1024,
+            );
+            let reader = VerifiedWavReader::open(&path, limits).unwrap();
+            let hash: String = reader
+                .fingerprint()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(hash, expected_hash);
+            assert_eq!(oracle.len(), SOURCE_FRAMES);
+            for (frame, expected) in [0, 131_072, 262_143].into_iter().zip(samples) {
+                assert_eq!(
+                    oracle[frame],
+                    expected.map(|sample| sample as f32 / 32768.0)
+                );
+            }
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

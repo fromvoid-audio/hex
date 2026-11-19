@@ -3,7 +3,10 @@
 use super::*;
 use crate::prepared::PublicationControl;
 use hex_engine::{AudioCandidateEffects, ProcessorChainOwner};
-use hex_plugin_host::{native, protocol::PresentationLatency};
+use hex_plugin_host::{
+    native,
+    protocol::{PresentationLatency, PresentationPlan},
+};
 use hex_plugin_scan::macos::{build_identity::InstanceBuild, package::InstancePackage};
 use hex_plugin_state::{BinaryIdentity, ClassId};
 use std::{path::Path, time::Duration};
@@ -37,13 +40,28 @@ impl EffectSelection<'_> {
     }
 }
 
-/// Caller-derived graph/device contributions. None remains explicit unknown;
-/// a native interface requiring these facts must refuse it. Backend buffer
-/// duration alone does not establish total device presentation latency.
+/// Both caller-derived graph/device contributions in project frames. Use a
+/// presentation plan for independently known or unknown directions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectPresentation {
     pub input_frames: u32,
     pub output_frames: u32,
+}
+
+impl EffectPresentation {
+    pub fn plan(self) -> PresentationPlan {
+        PresentationPlan::Known(PresentationLatency {
+            input_frames: self.input_frames,
+            output_frames: self.output_frames,
+        })
+    }
+}
+
+/// Fixed audio-bus shape for the selected project device slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginProfile {
+    Effect,
+    Instrument,
 }
 
 /// Checked helper artifact held by the canonical worker. Actual native source,
@@ -51,8 +69,97 @@ pub struct EffectPresentation {
 pub struct Hosting {
     build: InstanceBuild,
     limits: native::Limits,
+    grouped_editor_callbacks: bool,
+    transport_space: bool,
 }
 impl Hosting {
+    /// Prepare a private offline source. Its reserved root is never admitted
+    /// by the live output. The owner must join the instance before publishing.
+    #[allow(clippy::too_many_arguments)] // Exact offline source, destination, and authored program.
+    pub fn prepare_offline_processor_on_control(
+        &self,
+        selection: EffectSelection<'_>,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        sample_rate: u32,
+        profile: PluginProfile,
+        state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
+    ) -> Result<NativeEffect, String> {
+        let identity =
+            ProcessorInstanceIdentity::new(owner, device_id).map_err(|e| e.to_string())?;
+        let pending = native::Pending::prepare_offline_restored_on_control(
+            &self.build,
+            selection.inspect_on_control()?,
+            native::Preparation {
+                binding: Binding {
+                    root: u64::MAX,
+                    instance: device_id,
+                    graph: 1,
+                    epoch: 1,
+                },
+                sample_rate: f64::from(sample_rate),
+                quantum: MAX_FRAMES as u16,
+                input_channels: match profile {
+                    PluginProfile::Effect => 2,
+                    PluginProfile::Instrument => 0,
+                },
+                output_channels: 2,
+                limits: self.limits,
+            },
+            state.clone(),
+            native::PreparationCancellation::new_on_control().map_err(|e| e.to_string())?,
+            native::TrustUserCode::Acknowledged,
+        )
+        .map_err(|e| e.to_string())?;
+        // A private bounce has no device presentation and this source is
+        // configured before the isolated downstream graph has been compiled.
+        let instance = pending
+            .complete_with_plan_on_control(PresentationPlan::AllowUnknown)
+            .map_err(|e| e.to_string())?;
+        let data_limit = Self::source_data_reservation()?.max_retained_data_bytes;
+        NativeEffect::prepare_with_renewal_on_control(
+            identity,
+            instance,
+            data_limit,
+            authored.map(AuthoredSelection::parameters),
+            None,
+            authored.and_then(AuthoredSelection::dense_parameter),
+        )
+        .map_err(|e| e.finish_on_control().to_string())
+    }
+    /// Hold a real private offline source at zero PCM while its sole graph is
+    /// compiled. Completion applies graph timing and constructs the final pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_offline_effect_on_control(
+        &self,
+        selection: EffectSelection<'_>,
+        owner: ProcessorChainOwner,
+        device_id: u64,
+        sample_rate: u32,
+        profile: PluginProfile,
+        state: &NativeDeviceState,
+        authored: Option<&AuthoredSelection>,
+        bypassed: bool,
+    ) -> Result<OfflineEffectPreparation, String> {
+        let effect = self.prepare_offline_processor_on_control(
+            selection,
+            owner,
+            device_id,
+            sample_rate,
+            profile,
+            state,
+            authored,
+        )?;
+        OfflineEffectPreparation::from_effect_on_control(
+            effect,
+            Self::source_data_reservation()?.max_retained_data_bytes,
+            authored.cloned(),
+            bypassed,
+        )
+    }
+    /// Maximum payload for the single pending native capture response.
+    pub const CAPTURE_RESPONSE_DATA_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
     /// Inspect the saved envelope's copied class/binary identity. This resolves
     /// no file, grants no native source and never replaces opaque state.
     pub fn saved_identity_on_control(
@@ -71,7 +178,7 @@ impl Hosting {
             .retained_storage()?
             .data_bytes
             .checked_add(std::mem::size_of::<Self>())?
-            .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)
+            .checked_add(Self::CAPTURE_RESPONSE_DATA_BYTES)
     }
     /// Initial finite source profile. Listed control/transport DATA is capped
     /// at4MiB per source; opaque plugin/OS memory is not an RSS claim. Reserve
@@ -90,8 +197,8 @@ impl Hosting {
             max_construction_peak_data_bytes: peak,
         })
     }
-    /// Enable production hosting only from the qualified fixed running app.
-    /// No raw executable, environment, checkout or SDK fallback starts code.
+    /// Enable production hosting from the running app or independently
+    /// verified source-launch tools. Inspection precedes any helper startup.
     pub fn current_on_control() -> Result<Self, String> {
         Ok(Self::from_package(InstancePackage::current_on_control()?))
     }
@@ -100,13 +207,22 @@ impl Hosting {
     pub fn inspect_package_on_control(app: &Path) -> Result<Self, String> {
         Ok(Self::from_package(InstancePackage::inspect(app)?))
     }
+    /// Use the source-launch verifier with an explicit headless fixture app.
+    #[cfg(feature = "allocation-probe")]
+    pub fn inspect_source_launch_fixture_on_control(app: &Path) -> Result<Self, String> {
+        Ok(Self::from_package(InstancePackage::inspect_source_launch(
+            app,
+        )?))
+    }
     /// Nondefault headless integration control. Explicit original fixture
     /// receipts retain normal InstanceBuild validation; production discovery
-    /// never calls this or falls back from its fixed running-app package.
+    /// never calls this or falls back to an original bootstrap receipt.
     #[cfg(feature = "allocation-probe")]
     pub fn inspect_fixture_on_control(receipt: &Path) -> Result<Self, String> {
         Ok(Self {
             build: InstanceBuild::inspect(receipt)?,
+            grouped_editor_callbacks: false,
+            transport_space: false,
             limits: native::Limits {
                 startup: Duration::from_secs(3),
                 exchange: Duration::from_secs(1),
@@ -133,6 +249,8 @@ impl Hosting {
     fn from_package(package: InstancePackage) -> Self {
         Self {
             build: package.build,
+            grouped_editor_callbacks: false,
+            transport_space: false,
             limits: native::Limits {
                 startup: Duration::from_secs(30),
                 exchange: Duration::from_secs(1),
@@ -142,7 +260,22 @@ impl Hosting {
     }
     #[cfg(test)]
     pub(crate) fn from_test_build(build: InstanceBuild, limits: native::Limits) -> Self {
-        Self { build, limits }
+        Self {
+            build,
+            limits,
+            grouped_editor_callbacks: false,
+            transport_space: false,
+        }
+    }
+    /// Opt in before a live SDK controller is constructed. This grants no
+    /// recorder scope and does not affect the isolated offline constructor.
+    pub fn with_grouped_editor_callbacks(mut self) -> Self {
+        self.grouped_editor_callbacks = true;
+        self
+    }
+    pub fn with_transport_space(mut self) -> Self {
+        self.transport_space = true;
+        self
     }
     /// Begin an explicit user-selected effect, including restoration of its
     /// saved identity from a user-opened project, on a configured output.
@@ -158,10 +291,11 @@ impl Hosting {
         device_id: u64,
         graph: u64,
         sample_rate: u32,
+        profile: PluginProfile,
         restore: Option<NativeDeviceState>,
     ) -> Result<Binding, String> {
         let quantum = output
-            .requested_physical_callback_frames_on_control()
+            .plugin_callback_quantum_on_control()
             .ok_or("vst3 hosting requires the plugin output profile")?;
         let root = output
             .output_identity()
@@ -169,6 +303,16 @@ impl Hosting {
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|error| error.to_string())?;
         let source = selection.inspect_on_control()?;
+        let source = if self.grouped_editor_callbacks {
+            source.with_grouped_editor_callbacks()
+        } else {
+            source
+        };
+        let source = if self.transport_space {
+            source.with_transport_space()
+        } else {
+            source
+        };
         output
             .begin_native_source_preparation(
                 identity,
@@ -185,7 +329,10 @@ impl Hosting {
                     },
                     sample_rate: f64::from(sample_rate),
                     quantum,
-                    input_channels: 2,
+                    input_channels: match profile {
+                        PluginProfile::Effect => 2,
+                        PluginProfile::Instrument => 0,
+                    },
                     output_channels: 2,
                     limits: self.limits,
                 },
@@ -201,16 +348,10 @@ impl Hosting {
         &self,
         output: &mut PublicationControl,
         binding: Binding,
-        presentation: Option<EffectPresentation>,
+        presentation: PresentationPlan,
     ) -> Result<(), String> {
         output
-            .complete_native_source_preparation(
-                binding,
-                presentation.map(|p| PresentationLatency {
-                    input_frames: p.input_frames,
-                    output_frames: p.output_frames,
-                }),
-            )
+            .complete_native_source_preparation(binding, presentation)
             .map_err(str::to_owned)
     }
     /// Borrow actual Root-held definitions through the ordinary compiler facade.
@@ -227,6 +368,28 @@ impl Hosting {
         output.with_native_effect_definition(bindings, |definition| {
             let definition = definition
                 .including_unavailable(unavailable)
+                .map_err(|error| error.to_string())?;
+            AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Borrow isolated canonical facts only through this synchronous compiler
+    /// call. Facts grant no worker/endpoint custody or graph publication.
+    pub fn prepare_with_canonical_bases_on_control(
+        output: &PublicationControl,
+        bindings: &[Binding],
+        unavailable: &[super::UnavailableEffect<'_>],
+        canonical: &[CapturedCanonicalBases],
+        prepare: &mut dyn FnMut(
+            &AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        output.with_native_effect_definition(bindings, |definition| {
+            let definition = definition
+                .including_unavailable(unavailable)
+                .and_then(|definition| definition.including_canonical_bases(canonical))
                 .map_err(|error| error.to_string())?;
             AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
                 .map_err(|error| error.to_string())

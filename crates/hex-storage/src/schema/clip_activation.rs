@@ -136,8 +136,9 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     })?;
     let legacy =
         Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let base = crate::encode_document(&super::midi_one_shot::encode(&legacy)?)?;
-    let mut value: serde_json::Value = serde_json::from_slice(&base)?;
+    // The predecessor already produced a checked JSON object. Extend it in
+    // memory; the initial base and final document retain their size checks.
+    let mut value = super::midi_one_shot::encode(&legacy)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid clip activation envelope"))?;
@@ -146,8 +147,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid clip activation envelope"))?;
@@ -158,7 +161,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         StorageError::Invalid("clip activation inventory is missing"),
     )?)?;
     object.insert("version".into(), 39.into());
-    let project = super::midi_one_shot::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::midi_one_shot::decode_value(value)?;
     let mut rows = BTreeMap::new();
     for row in inventory.0 {
         if rows.insert(row.clip, row).is_some() {
@@ -281,6 +284,10 @@ mod tests {
         let old = crate::encode_document(&super::super::midi_one_shot::encode(&neutral).unwrap())
             .unwrap();
         assert_eq!(crate::decode(&old).unwrap(), neutral);
+        let mut base = value;
+        base.as_object_mut().unwrap().remove("clip_activation");
+        base["version"] = 39.into();
+        assert_eq!(crate::encode_document(&base).unwrap(), old);
     }
     #[test]
     fn activation40_refuses_nonbijective_malformed_and_exhausted_windows() {

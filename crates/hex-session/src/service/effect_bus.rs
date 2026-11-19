@@ -27,7 +27,7 @@ pub(super) fn insertion_command(
         return Err("effect insertion anchor no longer belongs to its destination".into());
     }
     let state = hex_engine::default_native_device_state_for_class(class, type_id)
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     Ok(match destination {
         EffectBusDestination::Main => Command::InsertMainDevice { before, state },
         EffectBusDestination::Return(return_track) => Command::InsertReturnDevice {

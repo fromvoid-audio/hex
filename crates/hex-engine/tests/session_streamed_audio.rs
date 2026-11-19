@@ -22,16 +22,21 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 10,
         assets: vec![
             AssetSnapshot {
@@ -64,6 +69,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -83,6 +90,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -897,11 +906,16 @@ fn streamed_session_audio_remains_frame_anchored_across_arrangement_loop_wrap() 
     for (offset, frame) in across_wrap.iter().enumerate() {
         let mut expected = sample(4_094 + offset as u64);
         if offset >= 2 {
+            // The wrapped Arrangement bed retains its full attack; the
+            // Session clip continues on its independent frame clock.
             let bed = sample((offset - 2) as u64 + 2);
             expected[0] += bed[0];
             expected[1] += bed[1];
         }
-        assert_eq!(*frame, expected, "loop-crossing frame {offset}");
+        assert!(
+            (frame[0] - expected[0]).abs() < 1e-6 && (frame[1] - expected[1]).abs() < 1e-6,
+            "loop-crossing frame {offset}: {frame:?} != {expected:?}"
+        );
     }
     assert_eq!(playback.position(), 8);
     assert_eq!(playback.performance_frame(), 96_008);
@@ -950,6 +964,11 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         let bed = sample(timeline_frame + 2);
         expected[0] += bed[0];
         expected[1] += bed[1];
+        // A three-frame loop has a one-frame end fade. Both Arrangement
+        // sources fade together; source offsets and page requests stay put.
+        if timeline_frame == 3 {
+            expected = [0.0; 2];
+        }
         assert_eq!(*frame, expected, "looped finite Playback frame {index}");
     }
     assert!(pages.requests.is_empty());
@@ -1675,7 +1694,9 @@ fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
     cold.render_with_pages(&mut output, &mut pages).unwrap();
     for (offset, actual) in output.iter().enumerate() {
         let source = sample(5_596 + offset as u64);
-        let gain = (999 - offset) as f32 / 999.0;
+        // Selection-fitted crossfades use the default centered S curve.
+        let progress = offset as f64 / 999.0;
+        let gain = (1.0 - progress * progress * (3.0 - 2.0 * progress)) as f32;
         for channel in 0..2 {
             assert!((actual[channel] - source[channel] * gain).abs() < 1e-7);
         }

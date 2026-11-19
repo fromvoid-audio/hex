@@ -476,7 +476,7 @@ fn main_utility_width_popup_dispatches_actual_mode_action_and_history(cx: &mut T
 }
 
 fn pump_control(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let end = crate::test_wait::hang_deadline();
     let mut idle = 0;
     while idle < 2 {
         let done = editor.update(&mut *visual, |view, cx| {
@@ -487,13 +487,16 @@ fn pump_control(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         });
         visual.run_until_parked();
         idle = if done { idle + 1 } else { 0 };
-        assert!(std::time::Instant::now() < end);
+        assert!(
+            std::time::Instant::now() < end,
+            "pump_control: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let end = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -505,7 +508,7 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         if done {
             break;
         }
-        assert!(std::time::Instant::now() < end);
+        assert!(std::time::Instant::now() < end, "pump: hang guard expired");
         std::thread::yield_now();
     }
 }
@@ -697,7 +700,7 @@ fn console_main_parameter_banks_presets_and_project_roundtrip(cx: &mut TestAppCo
         })))
     });
     pump(&editor, &mut visual);
-    let mode = visual.debug_bounds("show console view · tab").unwrap();
+    let mode = visual.debug_bounds("workspace-view-toggle").unwrap();
     visual.simulate_click(mode.center(), Modifiers::default());
     visual.run_until_parked();
     let main = visual.debug_bounds("console-main-header").unwrap();

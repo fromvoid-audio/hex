@@ -9,25 +9,25 @@ Supply optimized exact-source builds for user testing. Save and quit hex first;
 never force-quit, discard unsaved projects or claim replacing a file reloads a
 running process. Preserve projects, media, preferences and historical artifacts.
 
-## Update and open
+## Run from source
 
 ```sh
-./launch          # verify/open installed app only
-./launch --update # fetch/fast-forward clean main, optimized build/install/open
-./launch --test   # add full exact-source local CI
-./launch --open   # verify/open installed app only
-./launch --help
+./launch                    # git pull, then cargo run -r
+./launch --diagnostics=off  # forward arguments to hex
 ```
 
-Normal update refuses dirty/non-main/ahead/divergent source and running installed
-or raw desktop processes. Without `--test`, it records source-only verification
-and tests as not run. `--open` does not update or build.
+The launcher runs in the checkout containing it. It stops on a failed pull and
+forwards all arguments to the release binary. It does not install an app bundle,
+run local CI, or terminate an existing process. Git and Cargo use their normal
+configuration, including `CARGO_TARGET_DIR` when set.
 
-`--force-restart` is a separate explicit destructive opt-in: it can terminate the
-verified development app after normal quit fails. Never infer that authorization
-from a build request. `--recover-release-target` handles supported recreated or
-pending targets without terminating hex; read its exact diagnostic and help first.
-Do not edit release ownership markers or delete uncertain installation custody.
+On macOS arm64, `./launch` also makes VST3 discovery available in the source
+build. Set `HEX_VST3_SDK` to a pinned clean SDK checkout, or place it at
+`artifacts/vst3-sdk` in the primary checkout. The first preparation for a new
+native helper source needs a clean Hex checkout and the configured Developer ID
+signing identity. Later launches reuse the verified tools from
+`artifacts/launch-discovery`. If preparation fails, the source app still opens.
+Use **scan trusted standard folders** in the plug-in browser to run a scan.
 
 ## Qualified user-test delivery
 
@@ -49,21 +49,29 @@ sh scripts/bundle-macos.sh \
   --checklist artifacts/USER-TEST.md
 ```
 
-Use the shared user-edited `/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md`
-as the source of applicable pending interaction and listening checks. It is a
-reusable file in
-the primary checkout's ignored `artifacts/` directory, shared across worktrees;
-it is not a source-tracked backlog. Prepare the candidate's finite checklist
-from the current shared entries, with exact build provenance and explicit scope,
-and supply that snapshot to `--checklist`. The user checks each successful item
-and marks its Pulse issue done after all checks for it are complete. On a later
-edit, agents remove a fully checked group only after confirming its issue is
-done; partial checks and user notes remain. See `AGENTS.md` for the full contract.
+Use the open Pulse review-checklist items of the issues in the candidate as the
+source of applicable pending interaction and listening checks. Prepare the
+candidate's finite checklist snapshot from those items, with exact build
+provenance and explicit scope, write it to the ignored `artifacts/USER-TEST.md`
+and supply it to `--checklist`. The snapshot is a read-only copy for the build;
+the user ticks each item in Pulse and marks the issue done after all its items
+are complete. See `AGENTS.md` for the full contract.
 
 Use `sh scripts/bundle-macos.sh --help` for supported options. Only an explicitly
 requested development delivery may use `--dev-profile` with its resolved scoped
 merge report; identify it as scoped development evidence, not full qualification.
 Build-only delivery is source-only and does not claim passing tests.
+
+For an explicitly fresh release target, create an empty directory at an
+absolute path before starting delivery, set `CARGO_TARGET_DIR` to that path and
+set `CARGO_CACHE_RUSTC_INFO=0`, then add `--fresh-release-target` to the command.
+Set `CARGO_CACHE_RUSTC_INFO=0` for the qualifying CI run too: the cache setting
+is part of the recorded build environment and must match delivery. The target
+directory may differ from the CI target. Delivery reserves the existing empty
+directory before Cargo metadata and retains its lock through release ownership
+and artifact consumption. Missing, populated, replaced or mismatched targets
+are refused without cleanup. This option cannot adopt or recover an owner;
+creating an absent target as part of admission is not supported.
 
 The configured stable target is `artifacts/hex.app` in the primary checkout,
 identity `org.portalsurfer.hex.dev`. `HEX_DEV_APP_PATH` may configure one persistent
@@ -90,15 +98,20 @@ starting a build or CI while recording: preparation is not evidence of audio
 deadline safety. A restart request is not proof that the new process launched;
 check its build identity and the displayed update status separately.
 
-For explicit VST3 helper packaging, build the pinned clean SDK inputs with
-`crates/hex-plugin-scan/native/macos_bootstrap.py build --help`. The
-`--discovery-only` and `--instance-only` profiles are separate minimal bundles;
-the latter requires its owned duplex protocol and has no command-line self-test.
-Pass their clean exact-candidate receipts to `scripts/bundle-macos.sh` with
-`--vst3-discovery-receipt PATH` and `--vst3-instance-receipt PATH`, respectively.
-Delivery signs the nested helpers and records their final inventories. Including
-an instance executable does not establish track integration or plug-in support;
-use the current Pulse acceptance checklist for the supported workflow.
+The development app includes VST3 discovery by default. Set `HEX_VST3_SDK` to
+the [pinned clean SDK checkout](local-ci.md#controlled-macos-vst3-fixtures) or
+pass its path with `--vst3-sdk` when running `scripts/bundle-macos.sh`.
+Delivery builds and signs the discovery helper and
+scanner inside `hex.app`. Open the packaged app and use **scan trusted standard
+folders** in the plug-in browser when you want to discover installed VST3s.
+You can supply a prebuilt exact-candidate helper with `--vst3-discovery-receipt PATH`
+or explicitly omit discovery with `--without-vst3-discovery`.
+
+For the separate instance helper, build the native `--instance-only` profile
+with `crates/hex-plugin-scan/native/macos_bootstrap.py` and pass its exact-candidate
+receipt with `--vst3-instance-receipt PATH`. Delivery signs nested helpers and
+records their final inventories. Use the current Pulse acceptance checklist for
+the supported plug-in hosting workflow.
 
 Read the actual installer result and retained `hex-test-build-receipt.json`.
 Report candidate/merge mapping, full source, included revisions, CI report,

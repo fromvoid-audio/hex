@@ -181,6 +181,7 @@ impl EditorView {
         }
         if self.edit_pending()
             || self.gain_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.midi_step.enabled
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
@@ -466,9 +467,17 @@ impl EditorView {
                 continue;
             }
             match receipt {
-                Receipt::Armed { target, clock } => {
-                    match MidiTake::new(target.capture.first_frame, target.capture.end_frame, clock)
-                    {
+                Receipt::Armed {
+                    target,
+                    clock,
+                    latency_frames,
+                } => {
+                    match MidiTake::new_with_latency(
+                        target.capture.first_frame,
+                        target.capture.end_frame,
+                        clock,
+                        latency_frames,
+                    ) {
                         Ok(take) => {
                             self.midi_recorder.take = Some(take);
                             self.status = "midi recording · next-block input timing".into();
@@ -506,10 +515,7 @@ impl EditorView {
                     let result = clock
                         .zip(self.midi_recorder.take.as_mut())
                         .ok_or("midi take completion is missing delivered notes")
-                        .and_then(|(clock, take)| {
-                            take.finish(clock)?;
-                            Ok(clock.content_frame)
-                        });
+                        .and_then(|(clock, take)| take.finish(clock));
                     match result {
                         Ok(end) => {
                             self.midi_recorder.stop_frame = Some(end);
@@ -534,7 +540,13 @@ impl EditorView {
                         take.interrupt();
                     }
                     self.midi_recorder.mode = Mode::Interrupted;
-                    self.error = Some(format!("midi recording interrupted · {reason:?} · take retained; discard explicitly").to_lowercase().into());
+                    self.error = Some(
+                        format!(
+                            "midi recording interrupted · {} · take retained; discard explicitly",
+                            super::user_errors::midi_abort(reason)
+                        )
+                        .into(),
+                    );
                 }
             }
         }
@@ -546,7 +558,7 @@ impl EditorView {
 mod tests {
     use super::super::midi_canvas::creation_tests::{fixture, pump};
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[gpui::test]
     fn midi_take_survives_delayed_commit_and_refusal_while_document_actions_are_blocked(
@@ -613,7 +625,7 @@ mod tests {
                 cx.notify();
             });
             visual.run_until_parked();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             let event = loop {
                 if let Ok(event) = editor.update(&mut visual, |view, _| view.service.try_event()) {
                     break event;
@@ -668,13 +680,13 @@ mod tests {
 mod lifecycle_tests {
     use super::super::midi_canvas::creation_tests::{fixture, pump};
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn open_output() -> (
         hex_audio::WorkerPreparedOutput,
         hex_audio::worker_fixture::HeadlessBackend,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok((mut output, backend)) => {

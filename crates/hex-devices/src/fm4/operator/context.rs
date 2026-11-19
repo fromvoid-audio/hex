@@ -11,6 +11,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_CONFIGURATION_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_CONFIGURATION_ID: u64 = u64::MAX >> 1;
 
+fn next_configuration_id() -> Result<u64, Invalid> {
+    NEXT_CONFIGURATION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current < MAX_CONFIGURATION_ID {
+                current.checked_add(1)
+            } else {
+                None
+            }
+        })
+        .map_err(|_| Invalid("operator configuration identity exhausted"))
+}
+
 /// Immutable rate-specific original Operator configuration, with no heap owners.
 /// The caller keeps it alive for every note prepared against it. Native host
 /// identity, ownership and retirement are separate Lattice responsibilities.
@@ -19,7 +31,8 @@ pub struct PreparedOperatorConfiguration {
     sample_rate: u32,
     configuration_id: u64,
     ratios: [f64; OPERATORS],
-    tuning: [OperatorTuning; OPERATORS],
+    tuning: super::keytrack::Prepared,
+    fine_offsets_hz: [f32; OPERATORS],
     configuration: PreparedFmConfiguration,
     oscillator_levels: [f64; OPERATORS],
     envelopes: PreparedOperatorEnvelopes,
@@ -131,20 +144,13 @@ impl PreparedOperatorConfiguration {
         } else {
             None
         };
-        let configuration_id = NEXT_CONFIGURATION_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                if current < MAX_CONFIGURATION_ID {
-                    current.checked_add(1)
-                } else {
-                    None
-                }
-            })
-            .map_err(|_| Invalid("operator configuration identity exhausted"))?;
+        let configuration_id = next_configuration_id()?;
         Ok(Self {
             sample_rate,
             configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
-            tuning,
+            tuning: super::keytrack::Prepared::legacy(tuning),
+            fine_offsets_hz: [0.0; OPERATORS],
             configuration: PreparedFmConfiguration::new(oscillators, routing),
             oscillator_levels: oscillators.map(|oscillator| oscillator.level),
             envelopes,
@@ -155,6 +161,45 @@ impl PreparedOperatorConfiguration {
             oscillator_velocity: [0.0; OPERATORS],
             oscillator_quantize: [false; OPERATORS],
         })
+    }
+
+    /// Prepare independent 0–100% note-pitch tracking. Every anchor must be a
+    /// validated `Fixed` tuning: 0% uses it exactly, 100% uses note Hz × ratio.
+    /// Fractional amounts interpolate base frequency and multiplier in log space;
+    /// velocity/quantization then modify the multiplier, followed by fine Hz.
+    /// A changed policy receives a new configuration identity before publication.
+    pub fn with_pitch_keytrack(
+        mut self,
+        amounts_percent: [f32; OPERATORS],
+        fixed_anchors: [OperatorTuning; OPERATORS],
+    ) -> Result<Self, Invalid> {
+        let prepared = super::keytrack::prepare(amounts_percent, fixed_anchors)?;
+        if self.tuning != prepared {
+            self.configuration_id = next_configuration_id()?;
+            self.tuning = prepared;
+        }
+        Ok(self)
+    }
+
+    /// Control/history identity for retuning held voices after a tracking edit.
+    pub(crate) fn pitch_keytrack_percent(&self) -> [f32; OPERATORS] {
+        self.tuning.percentages()
+    }
+
+    /// Add signed Hz after ratio/fixed multiplication during control-side note preparation.
+    pub(crate) fn with_fine_offsets(mut self, offsets: [f32; OPERATORS]) -> Result<Self, Invalid> {
+        if offsets
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > super::tuning::FINE_LIMIT_HZ)
+        {
+            return Err(Invalid("invalid operator fine frequency offset"));
+        }
+        self.fine_offsets_hz = offsets;
+        Ok(self)
+    }
+
+    pub(crate) const fn fine_offsets_hz(&self) -> [f32; OPERATORS] {
+        self.fine_offsets_hz
     }
 
     /// Control-prepared modifiers retain the existing compact note payload.
@@ -202,13 +247,16 @@ impl PreparedOperatorConfiguration {
         pitch: u8,
         velocity: u8,
         table: Option<&hex_lattice::TuningTable>,
-    ) -> Result<[u64; 4], Invalid> {
-        if self.oscillator_velocity == [0.0; 4] {
+    ) -> Result<super::tuning::NoteSteps, Invalid> {
+        if self.oscillator_velocity == [0.0; 4]
+            && self.fine_offsets_hz == [0.0; 4]
+            && !self.tuning.fractional()
+        {
             return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
                 &self.ratios,
-                &self.tuning,
+                &self.tuning.legacy_modes(),
                 table,
             );
         }
@@ -221,7 +269,7 @@ impl PreparedOperatorConfiguration {
                 .map_err(|_| Invalid("invalid operator pitch"))?,
             None => 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0),
         };
-        let mut steps = [0; 4];
+        let mut steps = [None; 4];
         for (i, step) in steps.iter_mut().enumerate() {
             let amount = f64::from(self.oscillator_velocity[i]);
             let factor = if amount == 0.0 {
@@ -229,32 +277,23 @@ impl PreparedOperatorConfiguration {
             } else {
                 2.0_f64.powf(4.0 * amount * f64::from(velocity) / 127.0)
             };
-            let (base, multiplier) = match self.tuning[i] {
-                OperatorTuning::Ratio => (note_hz, self.ratios[i]),
-                OperatorTuning::Fixed {
-                    frequency_hz,
-                    multiplier,
-                } => (frequency_hz, multiplier),
-            };
+            let (base, multiplier) = self.tuning.base_and_multiplier(i, note_hz, self.ratios[i]);
             let mut multiplier = multiplier * factor;
             if amount != 0.0 && self.oscillator_quantize[i] {
                 multiplier = multiplier.round().max(1.0);
             }
-            let frequency = base * multiplier;
-            if !frequency.is_finite()
-                || frequency <= 0.0
-                || frequency >= f64::from(self.sample_rate) * 0.5
-            {
-                return Err(Invalid(
-                    "velocity-modulated operator frequency must be below nyquist",
-                ));
-            }
-            *step = crate::quantized_phase_step(self.sample_rate, frequency)?;
+            let frequency = base * multiplier + f64::from(self.fine_offsets_hz[i]);
+            *step = if frequency <= 0.0 {
+                None
+            } else {
+                super::tuning::oscillator_step(self.sample_rate, frequency)?
+            };
         }
         Ok(steps)
     }
 
-    /// Validate every oscillator's Nyquist limit and compute pitch on control.
+    /// Compute pitch on control. An oscillator at/below zero or at/above Nyquist is silenced
+    /// for this note only; the note and its other oscillators are still admitted.
     pub fn prepare_note(&self, pitch: u8, velocity: u8) -> Result<PreparedOperatorNote, Invalid> {
         self.prepare_note_with_tuning(pitch, velocity, None)
     }
@@ -269,6 +308,9 @@ impl PreparedOperatorConfiguration {
             return Err(Invalid("invalid operator note-on velocity"));
         }
         let steps = self.modified_steps(pitch, velocity, table)?;
+        let mut amplitude_velocity_scales =
+            super::amplitude_velocity_scales(self.amplitude_velocity, f64::from(velocity) / 127.0);
+        let steps = super::silence_unrepresentable(steps, &mut amplitude_velocity_scales);
         let mut caps = [0_u8; OPERATORS];
         for index in 0..OPERATORS {
             if self.waveforms[index] != OperatorWaveform::Sine {
@@ -277,8 +319,6 @@ impl PreparedOperatorConfiguration {
                 ))?;
             }
         }
-        let mut amplitude_velocity_scales =
-            super::amplitude_velocity_scales(self.amplitude_velocity, f64::from(velocity) / 127.0);
         let key_scaling = self.key_amounts.iter().any(|amount| *amount != 0.0);
         if key_scaling {
             for (i, scale) in amplitude_velocity_scales.iter_mut().enumerate() {
@@ -340,7 +380,8 @@ impl PreparedOperatorConfiguration {
     }
 
     /// Bounded sequential pitch integration, sharing the existing FM/envelope law.
-    /// Harmonic caps conservatively cover the full one-octave LFO excursion.
+    /// Harmonic caps conservatively cover the full one-octave LFO excursion; an
+    /// oscillator whose excursion could reach Nyquist is silenced for this note.
     pub(crate) fn prepare_lfo_note(
         &self,
         pitch: u8,
@@ -356,8 +397,10 @@ impl PreparedOperatorConfiguration {
         table: Option<&hex_lattice::TuningTable>,
     ) -> Result<PreparedOperatorNote, Invalid> {
         let mut note = self.prepare_note_with_tuning(pitch, velocity, table)?;
-        if note.steps.iter().any(|step| *step >= (1_u64 << 62)) {
-            return Err(Invalid("LFO excursion must remain below nyquist"));
+        for index in 0..OPERATORS {
+            if note.steps[index] >= (1_u64 << 62) {
+                note.silence_oscillator(index);
+            }
         }
         let mut caps = [0; OPERATORS];
         for (i, cap) in caps.iter_mut().enumerate() {
@@ -441,9 +484,19 @@ impl PreparedOperatorConfiguration {
         self.envelopes.uniform_levels(age, gate)
     }
 
+    pub(crate) fn has_modulation(&self) -> bool {
+        self.configuration
+            .routing
+            .modulation
+            .iter()
+            .flatten()
+            .any(|amount| *amount != 0.0)
+    }
+
     /// Borrow a provider-owned waveform law while preserving original routing,
     /// envelope, velocity and phase arithmetic. No preparation occurs here.
-    // Specialize the render loop for its borrowed waveform sampler.
+    // Specialize the render loop for its borrowed waveform sampler. The caller
+    // computes `has_modulation` once from this immutable configuration.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample_with_waveform_sampler(
@@ -455,6 +508,7 @@ impl PreparedOperatorConfiguration {
         levels: [f64; 4],
         carriers: [f64; 4],
         feedback: [f64; 4],
+        has_modulation: bool,
         filter: Option<(
             &mut [crate::operator_filter::Carrier; 4],
             crate::operator_filter::Frame,
@@ -470,13 +524,17 @@ impl PreparedOperatorConfiguration {
             if levels[target] == 0.0 {
                 continue;
             }
-            let mut modulation: f64 = signals
-                .iter()
-                .enumerate()
-                .map(|(source, signal)| {
-                    signal * self.configuration.routing.modulation[source][target]
-                })
-                .sum();
+            let mut modulation: f64 = if has_modulation {
+                signals
+                    .iter()
+                    .enumerate()
+                    .map(|(source, signal)| {
+                        signal * self.configuration.routing.modulation[source][target]
+                    })
+                    .sum()
+            } else {
+                0.0
+            };
             if feedback[target] != 0.0 {
                 modulation += feedback[target] * previous[target];
             }
@@ -554,11 +612,20 @@ impl PreparedOperatorConfiguration {
         if !self.feedback_amounts_are_valid(feedback_turns) {
             return Err(Invalid("invalid Operator feedback retarget values"));
         }
-        Ok(OperatorFeedbackParameters {
+        Ok(self.validated_feedback_parameters(feedback_turns))
+    }
+
+    /// Build parameters for feedback already accepted by `feedback_parameters`
+    /// on control. Render paths use this so they never revalidate or fail.
+    pub(crate) fn validated_feedback_parameters(
+        &self,
+        feedback_turns: [f64; OPERATORS],
+    ) -> OperatorFeedbackParameters {
+        OperatorFeedbackParameters {
             oscillator_levels: self.oscillator_levels,
             carrier_weights: self.configuration.routing.carriers,
             feedback_turns,
-        })
+        }
     }
 
     /// Immutable enable continuation: borrow the unchanged note and override
@@ -608,6 +675,7 @@ impl PreparedOperatorConfiguration {
         self.sample_rate == target.sample_rate
             && self.ratios == target.ratios
             && self.tuning == target.tuning
+            && self.fine_offsets_hz == target.fine_offsets_hz
             && self.configuration.phases == target.configuration.phases
             && self.configuration.routing.modulation == target.configuration.routing.modulation
             && self.configuration.routing.order == target.configuration.routing.order
@@ -716,6 +784,13 @@ impl PreparedOperatorConfiguration {
 }
 
 impl PreparedOperatorNote {
+    /// Leave one oscillator out of this note with a legal stand-in step.
+    fn silence_oscillator(&mut self, index: usize) {
+        self.steps[index] = super::tuning::SILENCED_STEP;
+        self.amplitude_velocity_scales[index] = 0.0;
+        self.amplitude_velocity_active = true;
+    }
+
     pub(crate) fn midi_origin(self) -> (u8, u8) {
         (self.pitch, self.midi_velocity)
     }

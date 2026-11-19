@@ -392,6 +392,11 @@ fn resident_compensated_windows_match_independent_loop_pcm() {
         } else {
             source[timeline]
         };
+        if (19..24).contains(&timeline) {
+            let gain = (23 - timeline) as f32 / 4.0;
+            output[0] *= gain;
+            output[1] *= gain;
+        }
     }
     assert_eq!(actual, expected);
     for partition in [1, 17, 64, 256] {
@@ -558,7 +563,18 @@ fn resident_session_batch_stops_at_quantized_relaunch_boundary() {
         } else {
             [0.0; 2]
         };
-        *output = [others[0] + first[0], others[1] + first[1]];
+        // The replaced first clip fades over the shared 128-frame declick
+        // until its own 32-frame end.
+        let release = if (10..32).contains(&elapsed) {
+            let gain = (128 - (elapsed - 10)) as f32 / 128.0;
+            [0.125 * gain, -0.25 * gain]
+        } else {
+            [0.0; 2]
+        };
+        *output = [
+            others[0] + first[0] + release[0],
+            others[1] + first[1] + release[1],
+        ];
     }
     for partition in [1, 7, 17, 48] {
         let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
@@ -816,13 +832,17 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
         } else {
             let origin = (index - 7) % 8;
             let gain = if origin < 3 { 0.5 } else { 1.0 };
-            [f.samples[origin][0] * gain, f.samples[origin][1] * gain]
+            let fade = if origin == 7 { 0.0 } else { 1.0 };
+            [
+                f.samples[origin][0] * fade * gain,
+                f.samples[origin][1] * fade * gain,
+            ]
         };
         assert_eq!(*frame, expected, "frame {index}");
     }
 }
 #[test]
-fn compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_refuses() {
+fn compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_restarts() {
     let mut f = fixture(&[&[], &[7]], 32);
     let revision = prepare(&f).unwrap();
     let mut old = SessionPlayback::new(revision).unwrap();
@@ -846,10 +866,12 @@ fn compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_refuse
             state: state(8).unwrap(),
         })
         .unwrap();
+    let frame = candidate.performance_frame();
     let mut changed = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
-    assert!(changed.try_inherit_state_from(&mut candidate).is_err());
-    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+    // Changed latency while playing restarts audio at the cursor (Pulse #3769).
     changed.try_inherit_state_from(&mut candidate).unwrap();
+    assert!(changed.playing());
+    assert_eq!(changed.performance_frame(), frame);
 }
 #[test]
 fn unknown_latency_and_cumulative_overflow_refuse_actual_preparation() {
@@ -959,6 +981,100 @@ impl hex_lattice::PreparedSharedAnalyticContext for Instrument {
     }
 }
 #[test]
+fn printed_audio_bypasses_source_chain_and_aligns_before_fader() {
+    let mut f = fixture(&[&[7]], 32);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut project = (**revision.arrangement()).clone();
+    let track = &mut project.tracks[0];
+    track.instrument_position = 0;
+    track.instrument_latency = Some(5);
+    track.instrument_runtime_latency = Some(5);
+    track.instrument_output_gain = 0.5;
+    track.mix = crate::PreparedTrackMix::new(0.5, 0.0, false).unwrap();
+    let graph =
+        Arc::new(SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0]).unwrap());
+    assert!(SignalGraph::prepare_value(&project, &[], f.editor.project(), &[1]).is_err());
+    assert!(SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0, 0]).is_err());
+    for block in [1, 3, 7, 16] {
+        let mut runtime = SignalRuntime::new(Arc::clone(&graph)).unwrap();
+        let track = &project.tracks[0];
+        let mut chain = track.new_device_runtime().unwrap();
+        let mut actual = Vec::new();
+        for start in (0..24).step_by(block) {
+            runtime.delays.begin_transaction().unwrap();
+            chain.begin_block();
+            for frame in start..(start + block).min(24) {
+                runtime
+                    .delays
+                    .push_transport_stamp(TransportStamp {
+                        authored_clock_epoch: None,
+                        tempo_micro_bpm: None,
+                        performance_frame: frame as u64,
+                        transport_is_running: true,
+                        arrangement_frame: frame as u64,
+                        loop_pass: 0,
+                        performance_beat_raw: 0,
+                        arrangement_beat_raw: Some(0),
+                        meter: None,
+                        cycle_beats_raw: None,
+                    })
+                    .unwrap();
+                let audio = if frame == 0 { [0.25, -0.5] } else { [0.0; 2] };
+                let generator = if frame == 5 { [1.0, -1.0] } else { [0.0; 2] };
+                let mixed = runtime
+                    .process_track(
+                        0,
+                        track,
+                        &mut chain,
+                        audio,
+                        generator,
+                        frame - start,
+                        false,
+                        &mut None,
+                    )
+                    .unwrap();
+                actual.push(runtime.fader(track, 0, None, mixed).unwrap());
+            }
+            runtime.delays.commit_transaction().unwrap();
+            chain.commit_block();
+        }
+        let mut expected = vec![[0.0; 2]; 24];
+        expected[12] = [0.375, -0.5];
+        assert_eq!(actual, expected, "block {block}");
+    }
+}
+
+#[test]
+fn zero_latency_printed_branch_still_requires_compensated_routing() {
+    let mut f = fixture(&[&[0]], 8);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut project = (**revision.arrangement()).clone();
+    let ordinary = SignalGraph::prepare_value(&project, &[], f.editor.project(), &[]).unwrap();
+    let printed = SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0]).unwrap();
+    assert!(!ordinary.needs_runtime());
+    assert!(printed.needs_runtime());
+    assert!(printed.needs_upstream_frame_routing());
+    assert!(!printed.supports_closed_group_stream());
+    assert!(!printed.history_compatible(&ordinary));
+    project.tracks[0].instrument_bypassed = true;
+    let bypassed = SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0]).unwrap();
+    assert!(bypassed.needs_runtime());
+    assert!(bypassed.tracks[0].generator.is_none());
+}
+
+#[test]
 fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     let mut f = fixture(&[&[3]], 32);
     let mut snapshot = f.editor.project().snapshot();
@@ -966,6 +1082,8 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        modulation: Default::default(),
+        parent: None,
         automation: Vec::new(),
         comparison: None,
         id: next,
@@ -1393,7 +1511,50 @@ fn zero_latency_audio_feed_and_device_insertion_adopt_fresh_empty_delay_layouts_
 }
 
 #[test]
-fn zero_latency_routed_tempo_edit_preserves_pcm_while_positive_history_refuses_atomically() {
+fn zero_latency_device_edits_preserve_track_compensation_history() {
+    for partition in [1, 257] {
+        let mut f = fixture(&[&[7], &[]], 1024);
+        let revision = prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 7);
+        let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut oracle = SessionPlayback::new(revision).unwrap();
+        for runtime in [&mut donor, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        }
+        let Created::Device(device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[1],
+                before: None,
+                state: state(0).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        for remove in [false, true] {
+            if remove {
+                f.editor.execute(Command::RemoveDevice(device)).unwrap();
+            }
+            let mut candidate = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            candidate.try_inherit_state_from(&mut donor).unwrap();
+            let mut actual = [[0.0; 2]; 257];
+            let mut expected = actual;
+            for chunk in actual.chunks_mut(partition) {
+                candidate.render(chunk).unwrap();
+            }
+            for chunk in expected.chunks_mut(partition) {
+                oracle.render(chunk).unwrap();
+            }
+            assert_eq!(actual, expected, "partition={partition} remove={remove}");
+            donor = candidate;
+        }
+    }
+}
+
+#[test]
+fn routed_tempo_edit_keeps_the_current_beat_and_queued_pcm() {
     for latency in [0, 7] {
         let mut f = fixture(&[&[latency], &[]], 17);
         f.editor
@@ -1410,27 +1571,29 @@ fn zero_latency_routed_tempo_edit_preserves_pcm_while_positive_history_refuses_a
             runtime.apply(SessionPlaybackCommand::Play).unwrap();
             runtime.render(&mut [[0.0; 2]; 4]).unwrap();
         }
+        let beat = f.editor.project().tempo_map().frame_to_beat(4).unwrap();
         f.editor
             .execute(Command::SetTempoPoint {
                 beat: hex_project::BeatTime::ZERO,
                 tempo: hex_project::Tempo::new(90_000_000).unwrap(),
             })
             .unwrap();
-        let mut candidate = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
-        if latency == 0 {
-            candidate.try_inherit_state_from(&mut old).unwrap();
-        } else {
-            assert!(candidate.try_inherit_state_from(&mut old).is_err());
-            assert_eq!(old.performance_frame(), 4);
-        }
+        let new_revision = prepare(&f).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let mapped = f.editor.project().tempo_map().beat_to_frame(beat).unwrap();
+        assert_eq!(candidate.arrangement_frame(), mapped);
+        assert_eq!(candidate.performance_frame(), 4);
+
+        let mut expected = [[0.0; 2]; 24];
+        let mut fresh = SessionPlayback::new(new_revision).unwrap();
+        fresh.play_from(mapped).unwrap();
+        fresh.render(&mut expected).unwrap();
+        // Previously queued audio still sounds through the original routing.
+        let kept = usize::try_from(latency).unwrap();
+        reference.render(&mut expected[..kept]).unwrap();
         let mut actual = [[0.0; 2]; 24];
-        let mut expected = actual;
-        if latency == 0 {
-            candidate.render(&mut actual).unwrap();
-        } else {
-            old.render(&mut actual).unwrap();
-        }
-        reference.render(&mut expected).unwrap();
+        candidate.render(&mut actual).unwrap();
         assert_eq!(actual, expected);
     }
 }
@@ -1442,6 +1605,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(unknown.performance_frame_at_offset(0), None);
     assert_eq!(unknown.transport_is_running(), None);
     let source = TransportStamp {
+        authored_clock_epoch: None,
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: 900,
         transport_is_running: true,
@@ -1449,8 +1613,10 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         loop_pass: 7,
         performance_beat_raw: 5 << 32,
         arrangement_beat_raw: Some(1 << 32),
+        meter: None,
+        cycle_beats_raw: None,
     };
-    let clock = OriginClock(Some(source));
+    let clock = OriginClock(Some(&source));
     assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
     assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
     assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
@@ -1461,14 +1627,14 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(clock.arrangement_beat_at_offset(0), Some(1 << 32));
     assert_eq!(clock.transport_is_running(), Some(true));
     assert_eq!(clock.performance_frame_at_offset(1), None);
-    let unavailable_beat = OriginClock(Some(TransportStamp {
+    let unavailable_beat = OriginClock(Some(&TransportStamp {
         arrangement_beat_raw: None,
         ..source
     }));
     assert_eq!(unavailable_beat.arrangement_beat_at_offset(0), None);
     assert_eq!(unavailable_beat.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(unavailable_beat.beat_at_offset(0), Some(5 << 32));
-    let stopped = OriginClock(Some(TransportStamp {
+    let stopped = OriginClock(Some(&TransportStamp {
         transport_is_running: false,
         ..source
     }));
@@ -2101,4 +2267,252 @@ fn group_gain_automation_tracks_delayed_content_across_render_partitions() {
     assert_eq!(whole, session(revision, 11, 1));
     assert_eq!(whole[3], f.samples[0].map(|value| value * 0.5));
     assert_eq!(whole[10], f.samples[7]);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompressorDestination {
+    Track,
+    Return,
+    Main,
+}
+
+fn insert_test_compressor(
+    f: &mut Fixture,
+    destination: CompressorDestination,
+) -> hex_project::DeviceId {
+    let main = f.tracks[0];
+    let state = hex_devices::compressor::COMPRESSOR_DEFINITION
+        .default_state()
+        .unwrap();
+    let insert = match destination {
+        CompressorDestination::Track => Command::InsertDevice {
+            track: main,
+            before: None,
+            state,
+        },
+        CompressorDestination::Return => {
+            let Created::ReturnTrack(return_track) = f
+                .editor
+                .execute(Command::AddReturnTrack {
+                    name: "parallel".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return");
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track: main,
+                    return_track,
+                    gain: 1.0,
+                })
+                .unwrap();
+            Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            }
+        }
+        CompressorDestination::Main => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+    };
+    let Created::Device(device) = f.editor.execute(insert).unwrap() else {
+        panic!("compressor");
+    };
+    device
+}
+
+fn prepare_with_compressor(f: &Fixture) -> Arc<PreparedRevision> {
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&Definition, &hex_devices::compressor::COMPRESSOR_DEFINITION];
+    let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    Arc::new(
+        PreparedRevision::prepare_with_registries(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
+    const FRAMES: usize = 1_024;
+    const DELAY: usize = 7;
+    let render = |destination: CompressorDestination, key_late: bool, connected: bool| {
+        let delay = [DELAY as u32];
+        let mut f = if key_late {
+            fixture(&[&[], &delay], FRAMES)
+        } else {
+            fixture(&[&delay, &[]], FRAMES)
+        };
+        let main = f.tracks[0];
+        let key = f.tracks[1];
+        for (track, samples) in [
+            (main, vec![[0.0625, -0.03125]; FRAMES]),
+            (key, vec![[0.0, 0.75]; FRAMES]),
+        ] {
+            let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            f.media.insert(asset, Audio::new(48_000, samples).unwrap());
+        }
+        let device = insert_test_compressor(&mut f, destination);
+        if connected {
+            f.editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(key),
+                })
+                .unwrap();
+        }
+        let revision = prepare_with_compressor(&f);
+        assert_eq!(revision.arrangement().main_latency_frames(), DELAY as u32);
+        let expected = session(Arc::clone(&revision), FRAMES + DELAY, 17);
+        assert_eq!(&expected[..DELAY], &[[0.0; 2]; DELAY]);
+        assert_eq!(
+            session(Arc::clone(&revision), FRAMES + DELAY, 256),
+            expected
+        );
+        let mut legacy = vec![[0.0; 2]; FRAMES + DELAY];
+        let mut renderer = Renderer::new(revision.arrangement());
+        renderer.play();
+        renderer.render(&mut legacy).unwrap();
+        assert_eq!(legacy, expected);
+        if connected && key_late && destination == CompressorDestination::Track {
+            let seek = |warm| {
+                let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                if warm {
+                    playback.apply(SessionPlaybackCommand::Play).unwrap();
+                    playback.render(&mut [[0.0; 2]; 768]).unwrap();
+                }
+                playback.apply(SessionPlaybackCommand::Seek(201)).unwrap();
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut pcm = [[0.0; 2]; 128];
+                playback.render(&mut pcm).unwrap();
+                pcm
+            };
+            assert_eq!(seek(false), seek(true));
+
+            f.editor
+                .execute(Command::SetLoopRegion {
+                    start: 17,
+                    end: 397,
+                    enabled: true,
+                })
+                .unwrap();
+            let looping = prepare_with_compressor(&f);
+            assert_eq!(
+                session(Arc::clone(&looping), FRAMES, 1),
+                session(looping, FRAMES, 63)
+            );
+        }
+        expected
+    };
+
+    for destination in [
+        CompressorDestination::Track,
+        CompressorDestination::Return,
+        CompressorDestination::Main,
+    ] {
+        let delayed_key = render(destination, true, true);
+        assert_eq!(delayed_key, render(destination, false, true));
+        let internal = render(destination, true, false);
+        assert_ne!(
+            delayed_key[900], internal[900],
+            "destination {destination:?}"
+        );
+    }
+}
+
+#[test]
+fn empty_track_edits_retain_compensated_sidechain_history() {
+    const CUT: usize = 768;
+    const BLOCK: usize = 257;
+    for destination in [
+        CompressorDestination::Track,
+        CompressorDestination::Return,
+        CompressorDestination::Main,
+    ] {
+        for partition in [1, BLOCK] {
+            let mut f = fixture(&[&[], &[7], &[]], 2_048);
+            let [main, key, alternate] = f.tracks.as_slice() else {
+                panic!("tracks")
+            };
+            let (main, key, alternate) = (*main, *key, *alternate);
+            for (track, frame) in [
+                (main, [0.0625, -0.03125]),
+                (key, [0.0, 0.75]),
+                (alternate, [0.0; 2]),
+            ] {
+                let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+                f.media
+                    .insert(asset, Audio::new(48_000, vec![frame; 2_048]).unwrap());
+            }
+            let device = insert_test_compressor(&mut f, destination);
+            let unkeyed = session(prepare_with_compressor(&f), CUT + 1, BLOCK);
+            f.editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(key),
+                })
+                .unwrap();
+            let original = prepare_with_compressor(&f);
+            assert_eq!(original.arrangement().main_latency_frames(), 7);
+            let expected = session(Arc::clone(&original), CUT + BLOCK * 2, BLOCK);
+            assert_ne!(expected[CUT], unkeyed[CUT], "active sidechain");
+
+            let mut current = SessionPlayback::new(original).unwrap();
+            current.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut warm = [[0.0; 2]; CUT];
+            current.render(&mut warm).unwrap();
+            assert_eq!(&warm, &expected[..CUT]);
+            let insert = || Command::InsertTrack {
+                name: "empty".into(),
+                before_track: Some(main),
+            };
+            let Created::Track(empty) = f.editor.execute(insert()).unwrap() else {
+                panic!("empty track");
+            };
+            for (index, expected) in expected[CUT..].chunks_exact(BLOCK).enumerate() {
+                if index == 1 {
+                    f.editor.execute(Command::RemoveTrack(empty)).unwrap();
+                }
+                let mut next = SessionPlayback::new(prepare_with_compressor(&f)).unwrap();
+                next.try_inherit_state_from(&mut current).unwrap();
+                let mut actual = [[0.0; 2]; BLOCK];
+                for chunk in actual.chunks_mut(partition) {
+                    next.render(chunk).unwrap();
+                }
+                for (frame, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+                    assert_eq!(
+                        &actual, expected,
+                        "{destination:?}, partition {partition}, edit {index}, frame {frame}"
+                    );
+                }
+                current = next;
+            }
+
+            f.editor.execute(insert()).unwrap();
+            f.editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(alternate),
+                })
+                .unwrap();
+            let mut rerouted = SessionPlayback::new(prepare_with_compressor(&f)).unwrap();
+            rerouted.try_inherit_state_from(&mut current).unwrap();
+            let mut output = [[0.0; 2]; 16];
+            for chunk in output.chunks_mut(partition) {
+                rerouted.render(chunk).unwrap();
+            }
+            assert_eq!(output[..7], [[0.0; 2]; 7]);
+            assert_ne!(output[7], [0.0; 2]);
+        }
+    }
 }

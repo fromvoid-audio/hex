@@ -12,6 +12,7 @@ pub(super) struct SourceInputState {
     pub(super) id: LiveInputId,
     pub(super) capacity: usize,
     pub(super) mutable: bool,
+    pub(super) note_pressure: bool,
     pub(super) context: Option<Arc<crate::shared_analytic::SharedContextOwner>>,
     pub(super) events: [NativeInstrumentEvent; 259],
     pub(super) len: usize,
@@ -38,6 +39,9 @@ impl SourceInputState {
             id: LiveInputId { track, generation },
             capacity: source.capacity,
             mutable: source.runtime.is_some(),
+            note_pressure: source
+                .runtime
+                .is_some_and(MutableInstrumentTrackRuntime::supports_note_pressure),
             context: source.context.clone(),
             events: [NativeInstrumentEvent::NoteOff {
                 frame_offset: 0,
@@ -206,6 +210,93 @@ impl ComputerKeyboardRuntime {
             .as_ref()
             .map_or(&[], |source| &source.events[..source.len])
     }
+    /// Retain only a physical press the muted source actually suppressed.
+    /// The speculative voice pool commits or rolls back with keyboard input;
+    /// this is not proof that a later source owns the same live runtime.
+    pub(crate) fn mark_muted_source_onset(&mut self, id: u64) {
+        if let Some(voice) = self.scratch.iter_mut().flatten().find(|voice| {
+            voice.id == id
+                && voice.source == VoiceSource::Physical
+                && voice.gate.is_none()
+                && !voice.muted_source_onset
+        }) {
+            voice.muted_source_onset = true;
+        }
+    }
+    /// One held physical input suppressed by mute; more than one is not
+    /// admitted by the bounded shared-source continuation.
+    pub(crate) fn single_muted_source_onset(&self) -> Result<Option<u64>, ()> {
+        let mut held = self.primary.iter().flatten().filter(|voice| {
+            voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        });
+        let first = held.next().map(|voice| voice.id);
+        if held.next().is_some() {
+            Err(())
+        } else {
+            Ok(first)
+        }
+    }
+    pub(crate) fn has_muted_source_onset(&self) -> bool {
+        self.primary.iter().flatten().any(|voice| {
+            voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        })
+    }
+
+    pub(crate) fn muted_source_onset_event(&self, id: u64) -> Option<NativeInstrumentEvent> {
+        let voice = self.scratch.iter().flatten().find(|voice| {
+            voice.id == id
+                && voice.muted_source_onset
+                && voice.gate.is_none()
+                && voice.source == VoiceSource::Physical
+        })?;
+        Some(NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: id,
+            pitch: ((voice.token & 255) as u8).saturating_sub(1),
+            velocity: ((voice.token >> 8) & 255) as u8,
+        })
+    }
+
+    pub(crate) fn clear_muted_source_onset(&mut self, id: u64) {
+        if let Some(voice) = self
+            .scratch
+            .iter_mut()
+            .flatten()
+            .find(|voice| voice.id == id)
+        {
+            voice.muted_source_onset = false;
+        }
+    }
+    pub(crate) fn clear_muted_source_onsets(&mut self) {
+        for voice in self.scratch.iter_mut().flatten() {
+            voice.muted_source_onset = false;
+        }
+    }
+    pub(crate) fn clear_committed_muted_source_onsets(&mut self) {
+        for voice in self.primary.iter_mut().chain(&mut self.scratch).flatten() {
+            voice.muted_source_onset = false;
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn muted_source_held_count(&self) -> usize {
+        self.primary
+            .iter()
+            .flatten()
+            .filter(|voice| voice.muted_source_onset && voice.gate.is_none())
+            .count()
+    }
+    #[cfg(test)]
+    pub(crate) fn held_physical_id(&self) -> Option<u64> {
+        self.primary
+            .iter()
+            .flatten()
+            .find(|voice| voice.source == VoiceSource::Physical && voice.gate.is_none())
+            .map(|voice| voice.id)
+    }
     pub(crate) fn take_source_input_release(&mut self) -> bool {
         self.source_input
             .as_mut()
@@ -314,10 +405,12 @@ mod tests {
         );
     }
     #[test]
-    fn stopped_preroll_freezes_until_live_activation_then_releases_clips_once() {
+    fn stopped_seek_monitors_live_input_without_destination_clip_history() {
         use crate::playback::PlaybackCommand;
         use hex_project::{BeatTime, Created};
         let (project, track) = short_operator_project();
+        // Oracle: the same graph without the clip, so only live input sounds.
+        let silent_clip_revision = crate::computer_keyboard::tests::prepared(&project);
         let mut editor = Editor::new(project, 8).unwrap();
         let Created::Clip(clip) = editor
             .execute(Command::PlaceMidiClip {
@@ -353,10 +446,10 @@ mod tests {
         let mut frozen = [[1.0; 2]; 19];
         actual.render(&mut frozen).unwrap();
         assert_eq!(frozen, [[0.0; 2]; 19]);
-        let mut expected = Playback::from_prepared(revision);
-        expected.apply(PlaybackCommand::Play);
-        expected.render(&mut [[0.0; 2]; 512]).unwrap();
-        expected.apply(PlaybackCommand::Pause);
+        // A stopped seek starts voices empty; the held clip note is chased on
+        // Play, not released into live monitoring.
+        let mut expected = Playback::from_prepared(silent_clip_revision);
+        expected.apply(PlaybackCommand::Seek(512));
         let input = Arc::new(ComputerKeyboardInput::default());
         let reference = Arc::new(ComputerKeyboardInput::default());
         input.set_key(0, Some((64, 100, 1))).unwrap();
@@ -371,10 +464,8 @@ mod tests {
         let mut b = a;
         actual.render(&mut a).unwrap();
         expected.render(&mut b).unwrap();
-        assert_eq!(
-            a, b,
-            "live activation releases the frozen clip through the same kernel"
-        );
+        assert_eq!(a, b, "only the live input sounds while stopped");
+        assert!(a.iter().flatten().any(|sample| sample.abs() > 0.000_001));
         assert_eq!(actual.performance_frame(), 512);
         assert_eq!(expected.performance_frame(), 512);
     }

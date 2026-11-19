@@ -1,14 +1,10 @@
 use super::*;
-use std::time::{Duration, Instant};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(event) = service.try_event() {
-            return event;
-        }
-        assert!(Instant::now() < deadline, "worker response");
-        std::thread::sleep(Duration::from_millis(2));
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("next: worker event absent: {error}"),
     }
 }
 fn fixture() -> (
@@ -47,6 +43,7 @@ fn request(
     before_track: Option<hex_project::TrackId>,
 ) -> Request {
     Request::CopyArrangementClipToConsoleTrack {
+        initial_gain: Some(0.25),
         project_generation: 0,
         revision,
         source,
@@ -66,6 +63,7 @@ fn console_clip_column_worker_prepares_one_stamped_birth_and_one_undo_redo() {
         panic!("new column")
     };
     assert_eq!(created.state.project.tracks()[0].id(), track);
+    assert_eq!(created.state.project.track(track).unwrap().gain(), 0.25);
     assert_eq!(created.state.revision, before.revision + 1);
     assert_eq!(created.state.project.scenes().len(), 1);
     assert!(
@@ -108,6 +106,7 @@ fn console_clip_column_stale_generation_or_revision_is_rejected_without_births()
     for (generation, revision) in [(1, before.revision), (0, before.revision - 1)] {
         service
             .submit(Request::CopyArrangementClipToConsoleTrack {
+                initial_gain: None,
                 project_generation: generation,
                 revision,
                 source: clip,
@@ -157,4 +156,27 @@ fn console_clip_column_queued_after_an_edit_uses_captured_revision_and_keeps_tha
     assert_eq!(refused.state.revision, changed.state.revision);
     assert_eq!(refused.state.project.tracks().len(), 1);
     assert_eq!(refused.state.project.scenes().len(), 1);
+}
+
+#[test]
+fn console_clip_column_rejects_invalid_gain_without_birth_or_history() {
+    let (service, track, clip, before) = fixture();
+    service
+        .submit(Request::CopyArrangementClipToConsoleTrack {
+            project_generation: 0,
+            revision: before.revision,
+            source: clip,
+            before_track: Some(track),
+            scene: hex_project::SessionSceneTarget::Insert { before: None },
+            initial_gain: Some(f32::NAN),
+        })
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, before.project);
+    assert_eq!(refused.state.revision, before.revision);
+    assert_eq!(
+        (refused.state.can_undo, refused.state.can_redo),
+        (before.can_undo, before.can_redo)
+    );
 }

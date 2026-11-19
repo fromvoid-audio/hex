@@ -28,7 +28,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     auto& e=host_evidence;
     hex_instance::Instance instance;
     PClassInfo info{};
-    if (factory->getClassInfo(0,&info)!=kResultOk || !instance.open(factory,info.cid) || !instance.configure_stereo(48000,64,false)) {
+    if (factory->getClassInfo(0,&info)!=kResultOk || !instance.open(factory,info.cid,e.scenario==0) || !instance.configure_stereo(48000,64,false)) {
         lifecycle_evidence.closed=instance.close(); return false;
     }
     const bool baseline=action(0,hex_instance::Host::supported_restarts)==kResultOk &&
@@ -58,7 +58,7 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
                 if (e.scenario==10) e.worker_dispatch=static_cast<int>(instance.dispatch_host_callbacks().disposition);
                 std::unique_lock<std::mutex> lock(mutex);
                 reached=true; changed.notify_all(); changed.wait(lock,[&] { return resume; });
-                if(e.scenario==13) {
+                if(e.scenario==13 || e.scenario==15) {
                     lock.unlock();e.edit_order=1;
                     for(int wave=0;wave<2;++wave) {
                         for(int n=0;n<8;++n) {
@@ -97,7 +97,12 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     } else if (e.scenario==10) {
         e.processing_callback=action(4,0); e.processing_message=action(7,0);
     } else if (e.scenario==11) e.message=messages(1);
-    else if(e.scenario==13) {
+    else if(e.scenario==14) {
+        // Independent of both the main thread and the original PCM reader.
+        std::thread background([&] {e.message=messages(2);});
+        background.join();
+    }
+    else if(e.scenario==13 || e.scenario==15) {
         const auto wave=[&](uint32 id) {
             bool ok=edit(1,id,0)==kResultOk;
             for(int n=0;n<6;++n) ok=edit(2,id,0.75)==kResultOk && ok;
@@ -106,6 +111,13 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
         e.callback=wave(7)?kResultOk:kResultFalse;
         for(int n=0;n<8;++n) if(instance.dispatch_host_callbacks().disposition==hex_instance::HostDisposition::EditQueued) ++e.enqueued;
         e.callback=wave(11) && e.callback==kResultOk?kResultOk:kResultFalse;
+        if(e.scenario==15) {
+            // The actual SDK controller has admitted two complete gestures.
+            // Sealing must not disturb the queued second one or poison Host.
+            e.known=instance.seal_editor_edits_on_control();
+            e.unknown=edit(1,7,0);
+            e.message=instance.pending_parameter_edits();
+        }
         const auto pending=instance.dispatch_host_callbacks();
         e.edit_backpressure=pending.disposition==hex_instance::HostDisposition::Pending && pending.sequence==10;
         {
@@ -128,11 +140,22 @@ static bool host_case(CFBundleRef bundle,Steinberg::IPluginFactory* factory) {
     { std::lock_guard<std::mutex> lock(mutex); resume=true; changed.notify_all(); }
     worker.join();
     e.pcm=e.pcm && processed && stopped;
+    const auto* trace=instance.message_diagnostics_on_control();
+    // Scenario zero exercises accepted, oversized, missing and off-lane
+    // binary calls while PCM is active. Scenario 14 uses the disabled path.
+    const bool diagnostics=e.scenario==0?
+        trace && trace->messages==18 && trace->binary_attempts==5 && trace->binary_writes==3 &&
+        trace->max_binary_bytes==32769 && trace->binary_oversize==1 && trace->binary_reads==3 &&
+        trace->binary_misses==1 && trace->wrong_thread_reads==3:
+        trace && trace->messages==0 && trace->binary_attempts==0 && trace->binary_reads==0;
     e.closed=instance.close(); lifecycle_evidence.closed=e.closed;
     int observation[135]{};
     const int size=observe(observation,135);
     if (size>=7) e.violations=observation[0];
-    return e.pcm && e.violations==0 && (e.scenario!=13 || (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk));
+    return diagnostics && e.pcm && e.violations==0 &&
+        ((e.scenario!=13 && e.scenario!=15) ||
+            (e.edit_count==16 && e.edit_order && e.edit_backpressure && e.enqueued==16 && e.callback==kResultOk)) &&
+        (e.scenario!=15 || (e.known && e.unknown==kResultFalse && e.message==16 && !e.refusals));
 }
 static void print_host() {
     const auto& e=host_evidence;

@@ -6,6 +6,32 @@ fn oscillator(ratio: f64, level: f64, phase: f64) -> Oscillator {
 }
 
 #[test]
+fn fractional_phase_matches_euclidean_wrap_at_feedback_and_float_boundaries() {
+    let expected = |turns: f64| (turns.rem_euclid(1.0) * PHASE_SCALE).round() as u64;
+    for numerator in -8192..=8192 {
+        let turns = f64::from(numerator) / 257.0;
+        assert_eq!(phase_from_turns(turns), expected(turns), "{turns}");
+    }
+    for boundary in [
+        0.0_f64,
+        f64::MIN_POSITIVE,
+        f64::EPSILON,
+        1.0,
+        32.0,
+        2.0_f64.powi(52),
+        f64::MAX,
+        f64::INFINITY,
+        f64::NAN,
+    ] {
+        for turns in [boundary.next_down(), boundary, boundary.next_up()] {
+            for signed in [turns, -turns] {
+                assert_eq!(phase_from_turns(signed), expected(signed), "{signed}");
+            }
+        }
+    }
+}
+
+#[test]
 fn packed_analytic_note_matches_standalone_kernel_through_release() {
     let table = SineTable::new();
     let oscillators = [

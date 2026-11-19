@@ -1,29 +1,29 @@
-//! Clip-local loop-brace view. Shares the source ruler's single immutable
+//! Clip-local scope-bar view. Shares the source ruler's single immutable
 //! capture/preview/edit owner; no transport, source-growth or Arrangement loop API.
 //! Disabled loops retain editable bounds. Edge drags preserve the opposite edge;
 //! body drags preserve length, constrained by the existing source and playback start.
 use super::*;
 
-fn x_at(start: u64, span: u64, bounds: CanvasBounds, beat: u64) -> Option<f32> {
-    let offset = beat.checked_sub(start)?;
-    (span > 0 && offset <= span)
+fn x_at(start: i128, span: u64, bounds: CanvasBounds, beat: u64) -> Option<f32> {
+    let offset = i128::from(beat).checked_sub(start)?;
+    (span > 0 && offset >= 0 && offset <= i128::from(span))
         .then(|| bounds.x + (offset as f64 / span as f64) as f32 * bounds.width)
 }
 fn interval(
-    start: u64,
+    start: i128,
     span: u64,
     bounds: CanvasBounds,
     values: SourceValues,
 ) -> Option<(f32, f32)> {
-    let end = start.checked_add(span)?;
-    let first = values.loop_start.max(start);
-    let last = values.loop_end.min(end);
+    let end = start.checked_add(i128::from(span))?;
+    let first = i128::from(values.loop_start).max(start);
+    let last = i128::from(values.loop_end).min(end);
     if first >= last {
         return None;
     }
     Some((
-        x_at(start, span, bounds, first)?,
-        x_at(start, span, bounds, last)?,
+        x_at(start, span, bounds, u64::try_from(first).ok()?)?,
+        x_at(start, span, bounds, u64::try_from(last).ok()?)?,
     ))
 }
 fn hit(context: Context, x: f32) -> Option<Handle> {
@@ -89,7 +89,7 @@ impl EditorView {
         let Some(values) = values else {
             return div();
         };
-        let start = self.piano_beat_start.raw();
+        let start = self.piano_beat_start;
         let span = self.piano_beat_span.raw();
         let active = self
             .midi_ruler
@@ -102,7 +102,7 @@ impl EditorView {
             beat_text(values.loop_end - values.loop_start)
         );
         let identification = format!(
-            "clip loop {} · {}",
+            "scope bar · looping {} · {}",
             if values.looping {
                 "on"
             } else {
@@ -111,7 +111,7 @@ impl EditorView {
             label
         );
         let description = format!(
-            "clip loop {} · {} · drag either end or move brace · hold cmd/control to invert snapping",
+            "clip scope · looping {} · {} · drag either end or move scope bar · hold cmd/control to invert snapping",
             if values.looping {
                 "on"
             } else {
@@ -132,8 +132,8 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .children(super::super::timeline_strip::loop_range(
-                ((i128::from(values.loop_start) - i128::from(start)) as f64) / span.max(1) as f64,
-                ((i128::from(values.loop_end) - i128::from(start)) as f64) / span.max(1) as f64,
+                ((i128::from(values.loop_start) - start) as f64) / span.max(1) as f64,
+                ((i128::from(values.loop_end) - start) as f64) / span.max(1) as f64,
                 values.looping,
                 ["midi-loop-start-marker", "midi-loop-end-marker"],
             ))
@@ -286,7 +286,7 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     #[test]
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(hit(c, 300.0), Some(Handle::LoopBody));
         assert_eq!(hit(c, 100.0), None);
         let clipped = Context {
-            start: 2 * beat,
+            start: i128::from(2 * beat),
             span: 2 * beat,
             ..c
         };
