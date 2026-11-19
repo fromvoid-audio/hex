@@ -827,7 +827,7 @@ fn reverse_musical_repeat_filter_uses_neighbor_occurrences_at_internal_joins() {
     .unwrap();
     let faded = render(&prepared, 0, 48_000, 79);
     for frame in [
-        0, 1, 2_999, 7_999, 8_000, 13_251, 15_999, 16_000, 31_999, 32_000, 47_999,
+        0_u64, 1, 2_999, 7_999, 8_000, 13_251, 15_999, 16_000, 31_999, 32_000, 47_999,
     ] {
         let cycle_age = if frame < 16_000 {
             frame % 8_000
