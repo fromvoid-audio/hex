@@ -5253,14 +5253,13 @@ impl SessionPlayback {
                 continue;
             }
             if old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
-                // A completed foreign suffix with distinct endpoints needs no
-                // retained tail. Keep other runtimes on their normal history path.
-                if suffix_start < old_chain.len()
-                    && old_chain
-                        .storage_view()
-                        .entries()
-                        .skip(suffix_start)
-                        .all(|entry| entry.foreign_processor().is_some())
+                // An already drained suffix needs no tail. Leave its foreign
+                // endpoints for retirement and inherit compatible native stages.
+                if old_chain
+                    .storage_view()
+                    .entries()
+                    .skip(suffix_start)
+                    .any(|entry| entry.foreign_processor().is_some())
                     && validate_foreign_tail_sources(self, old_chain, suffix_start).is_ok()
                 {
                     *completed_foreign_suffixes
@@ -6230,16 +6229,15 @@ impl SessionPlayback {
                 } else {
                     None
                 };
-                let excluded_old_range = excluded_old_range.or_else(|| {
-                    completed_foreign_suffixes
-                        .get(old_index)
-                        .copied()
-                        .flatten()
-                        .map(|start| start..old.len())
-                });
                 if let Some(range) = excluded_old_range {
                     candidate
                         .transfer_history_excluding_old_range(old, range)
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                } else if let Some(start) =
+                    completed_foreign_suffixes.get(old_index).copied().flatten()
+                {
+                    candidate
+                        .transfer_history_with_completed_foreign_range(old, start..old.len())
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else if let Some(transition) =
                     track_insert_transitions.get(old_index).copied().flatten()
