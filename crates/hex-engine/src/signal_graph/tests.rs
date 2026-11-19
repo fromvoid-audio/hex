@@ -40,6 +40,41 @@ fn track_cut_proof_requires_every_retained_stage_at_the_current_origin() {
     assert!(!graph.track_prefix_has_unbuffered_input(3, 0));
 }
 
+#[test]
+fn return_cut_proof_rejects_delayed_sends_and_delayed_stages() {
+    let mut f = fixture(&[&[], &[3]], 32);
+    for (track, latency) in [(f.tracks[0], 0), (f.tracks[1], 0), (f.tracks[0], 5)] {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "delay".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: state(latency).unwrap(),
+            })
+            .unwrap();
+    }
+    let revision = prepare(&f).unwrap();
+    let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+    assert!(graph.return_chain_has_unbuffered_input(0));
+    assert!(!graph.return_chain_has_unbuffered_input(1));
+    assert!(!graph.return_chain_has_unbuffered_input(2));
+}
+
 pub(crate) struct Definition;
 impl NativeDeviceMetadata for Definition {
     fn type_id(&self) -> DeviceTypeId {

@@ -824,7 +824,19 @@ impl SignalGraph {
         };
         track.generator.is_none()
             && track.printed_merge.is_none()
-            && !stages.is_empty()
+            && self.stages_use_current_origin(stages)
+    }
+
+    /// All Return stages can run immediately after a delay epoch reset when
+    /// neither the send alignment nor the chain needs older origin stamps.
+    pub(crate) fn return_chain_has_unbuffered_input(&self, index: usize) -> bool {
+        self.returns
+            .get(index)
+            .is_some_and(|bus| self.stages_use_current_origin(&bus.devices))
+    }
+
+    fn stages_use_current_origin(&self, stages: &[usize]) -> bool {
+        !stages.is_empty()
             && stages.iter().all(|&index| {
                 self.key_stages.get(index).is_none_or(Option::is_none)
                     && self.plan.nodes().get(index).is_some_and(|stage| {

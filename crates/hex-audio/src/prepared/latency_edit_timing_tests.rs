@@ -720,7 +720,7 @@ fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
 }
 
 #[test]
-fn approved_return_limiter_append_preserves_a_buffered_delay_repeat() {
+fn approved_return_limiter_append_preserves_buffered_repeats_on_both_returns() {
     assert_approved_limiter_append_preserves_repeat(LimiterAppendTarget::Return);
 }
 
@@ -757,46 +757,9 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
     let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
     let mut source = vec![[0.0; 2]; 2048];
     source[0] = [0.125, -0.0625];
-    let ([before, after], old_latency) = if matches!(target, LimiterAppendTarget::Return) {
-        let (mut editor, track, prepare) = resident_input(source);
-        editor
-            .execute(Command::InsertMainDevice {
-                before: None,
-                state: limiter.clone(),
-            })
-            .unwrap();
-        let Created::ReturnTrack(bus) = editor
-            .execute(Command::AddReturnTrack {
-                name: "delay return".into(),
-            })
-            .unwrap()
-        else {
-            panic!("return")
-        };
-        editor
-            .execute(Command::SetReturnSend {
-                track,
-                return_track: bus,
-                gain: 1.0,
-            })
-            .unwrap();
-        editor
-            .execute(Command::InsertReturnDevice {
-                return_track: bus,
-                before: None,
-                state: delay,
-            })
-            .unwrap();
-        let before = prepare(editor.project());
-        editor
-            .execute(Command::InsertReturnDevice {
-                return_track: bus,
-                before: None,
-                state: limiter,
-            })
-            .unwrap();
-        ([before, prepare(editor.project())], DELAY)
-    } else if matches!(target, LimiterAppendTarget::Track) {
+    let ([before, after], old_latency) = if matches!(target, LimiterAppendTarget::Main) {
+        (main_append_revisions(Some(delay), limiter, source).0, 0)
+    } else {
         let (mut editor, track, prepare) = resident_input(source);
         let asset = editor.project().tracks()[0].clips()[0].asset();
         let Created::Track(other) = editor
@@ -821,30 +784,59 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
                 before: None,
                 state: limiter.clone(),
             },
-            Command::InsertDevice {
-                track,
-                before: None,
-                state: delay.clone(),
-            },
-            Command::InsertDevice {
-                track: other,
-                before: None,
-                state: delay,
-            },
         ] {
             editor.execute(command).unwrap();
         }
-        let before = prepare(editor.project());
-        editor
-            .execute(Command::InsertDevice {
+        let append_limiter = if matches!(target, LimiterAppendTarget::Return) {
+            let mut add_delayed_return = |track, name: &str, state| {
+                let Created::ReturnTrack(bus) = editor
+                    .execute(Command::AddReturnTrack { name: name.into() })
+                    .unwrap()
+                else {
+                    panic!("return");
+                };
+                editor
+                    .execute(Command::SetReturnSend {
+                        track,
+                        return_track: bus,
+                        gain: 1.0,
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::InsertReturnDevice {
+                        return_track: bus,
+                        before: None,
+                        state,
+                    })
+                    .unwrap();
+                bus
+            };
+            let bus = add_delayed_return(track, "edited return", delay.clone());
+            add_delayed_return(other, "independent return", delay);
+            Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: limiter,
+            }
+        } else {
+            for track in [track, other] {
+                editor
+                    .execute(Command::InsertDevice {
+                        track,
+                        before: None,
+                        state: delay.clone(),
+                    })
+                    .unwrap();
+            }
+            Command::InsertDevice {
                 track,
                 before: None,
                 state: limiter,
-            })
-            .unwrap();
+            }
+        };
+        let before = prepare(editor.project());
+        editor.execute(append_limiter).unwrap();
         ([before, prepare(editor.project())], DELAY)
-    } else {
-        (main_append_revisions(Some(delay), limiter, source).0, 0)
     };
     assert_eq!(
         before.arrangement().main_latency_frames() as usize,
@@ -872,8 +864,8 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
             .unwrap();
     assert!(onset >= CUT + QUANTUM);
     assert_eq!(onset, 480 + old_latency + DELAY);
-    if matches!(target, LimiterAppendTarget::Track) {
-        assert_ne!(oracle[onset + 31], [0.0; 2], "independent track repeat");
+    if !matches!(target, LimiterAppendTarget::Main) {
+        assert_ne!(oracle[onset + 31], [0.0; 2], "independent repeat");
     }
 
     for partition in [1, BLOCK] {
@@ -991,6 +983,13 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
             Some(onset - CUT),
             "delayed impulse should survive the approved cut, partition {partition}"
         );
+        if !matches!(target, LimiterAppendTarget::Main) {
+            assert_eq!(
+                actual[onset + 31 - CUT],
+                oracle[onset + 31],
+                "independent repeat should survive the approved cut, partition {partition}"
+            );
+        }
         assert_eq!(actual, oracle[CUT..], "partition {partition}");
     }
 }
