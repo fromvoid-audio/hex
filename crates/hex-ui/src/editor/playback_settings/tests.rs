@@ -115,7 +115,27 @@ fn loading_start_refuses_changed_revision_and_real_applied_source_loss(cx: &mut 
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
         view.queue_normal_play(123);
-        Arc::make_mut(view.state.as_mut().unwrap()).revision += 1;
+        let revision = view.state.as_ref().unwrap().revision;
+        view.service
+            .submit(hex_session::service::Request::Edit(
+                hex_project::Command::AddScene {
+                    name: "later".into(),
+                },
+            ))
+            .unwrap();
+        let deadline = crate::test_wait::hang_deadline();
+        let event = loop {
+            if let Ok(event) = view.service.try_event() {
+                break event;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert!(event.state.revision > revision);
+        // Supply the real next canonical snapshot at this intent boundary.
+        // ViewState deliberately is not cloneable or mutable through its Arc.
+        view.state = Some(event.state);
     });
     finish_load(&editor, cx);
     editor.read_with(cx, |view, _| {
