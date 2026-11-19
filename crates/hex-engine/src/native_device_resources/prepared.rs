@@ -315,7 +315,7 @@ impl PreparedDeviceResources {
             ledger.shared(
                 configuration.arc(),
                 configuration.parts(),
-                crate::audio_storage::Owner::exclusive(self),
+                crate::audio_storage::Owner::exclusive(configuration),
                 *handle,
                 None,
             )?;
