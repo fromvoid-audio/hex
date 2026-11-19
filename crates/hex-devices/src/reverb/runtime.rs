@@ -218,6 +218,17 @@ impl PreparedReverb {
         coefficients[31] = 1.0 / settings.get(p::HI_Q);
         coefficients[28] = 10.0_f32.powf(settings.get(p::REFLECT) / 20.0);
         coefficients[29] = 10.0_f32.powf(settings.get(p::DIFFUSE) / 20.0);
+        let capacities =
+            TIMES.map(|t| ((t * std::f32::consts::SQRT_2 + 0.004) * tank_rate).ceil() as usize + 4);
+        let allpass_capacities =
+            [0.005_f32, 0.0017].map(|t| (t * 2.0 * tank_rate).ceil() as usize + 4);
+        // Each ring advances once per tank tick. The input rings must finish
+        // their first wrap last so they can prove the whole bank is warm.
+        let input_capacity = capacities
+            .iter()
+            .chain(&allpass_capacities)
+            .copied()
+            .fold((0.4 * tank_rate).ceil() as usize + 4, usize::max);
         Ok(Self {
             rate,
             factor,
@@ -225,11 +236,9 @@ impl PreparedReverb {
             settings,
             coefficients,
             settled_tank: TankDesign::new(settings, coefficients),
-            input_capacity: (0.4 * tank_rate).ceil() as usize + 4,
-            capacities: TIMES
-                .map(|t| ((t * std::f32::consts::SQRT_2 + 0.004) * tank_rate).ceil() as usize + 4),
-            allpass_capacities: [0.005_f32, 0.0017]
-                .map(|t| (t * 2.0 * tank_rate).ceil() as usize + 4),
+            input_capacity,
+            capacities,
+            allpass_capacities,
             silence_limit: silence_deadline_frames(rate, settings.get(p::DECAY)),
             decay_admitted: false,
             freeze_admitted: false,
@@ -371,7 +380,7 @@ impl Ring {
             filled: false,
         }
     }
-    fn read(&self, delay: f32) -> f32 {
+    fn read<const MATURE: bool>(&self, delay: f32) -> f32 {
         let delay = delay.clamp(1.0, (self.samples.len() - 2) as f32);
         let whole = delay.floor() as usize;
         let fraction = delay - whole as f32;
@@ -388,7 +397,7 @@ impl Ring {
         } else {
             a - 1
         };
-        let (newer, older) = if self.filled || whole < self.cursor {
+        let (newer, older) = if MATURE || self.filled || whole < self.cursor {
             (self.samples[a], self.samples[b])
         } else if whole == self.cursor {
             (self.samples[a], 0.0)
@@ -648,7 +657,7 @@ impl ReverbRuntime {
         self.silent_frames = 0;
         self.active = false;
     }
-    fn tank(&mut self, input: StereoFrame, output: AutomatedValues) {
+    fn tank<const MATURE: bool>(&mut self, input: StereoFrame, output: AutomatedValues) {
         let freeze = output.freeze.unwrap_or_else(|| self.v(p::FREEZE));
         let flat = output.flat.unwrap_or_else(|| self.v(p::FLAT));
         let cut = output.cut.unwrap_or_else(|| self.v(p::CUT));
@@ -702,7 +711,7 @@ impl ReverbRuntime {
             let low = low_filter.apply(&mut self.input_high[c], x, false);
             x += (low - x) * output.hi_cut.unwrap_or_else(|| self.v(p::HI_CUT));
             self.inputs[c].push(x);
-            late_input[c] = self.inputs[c].read(predelay + 1.0);
+            late_input[c] = self.inputs[c].read::<MATURE>(predelay + 1.0);
             for (i, seconds) in TAPS.into_iter().enumerate() {
                 let phase = self.spin_phase + c as f32 * 0.25 + i as f32 * 0.137;
                 let spin = (std::f32::consts::TAU * phase).sin()
@@ -714,8 +723,9 @@ impl ReverbRuntime {
                     + (seconds * size * (0.75 + 0.5 * shape) * self.tank_rate + spin).max(0.0)
                     + 1.0;
                 let weight = (1.0 - shape + shape * (i as f32 / 7.0)) * 0.125;
-                early[c] +=
-                    self.inputs[c].read(delay) * weight * if i % 3 == 2 { -1.0 } else { 1.0 };
+                early[c] += self.inputs[c].read::<MATURE>(delay)
+                    * weight
+                    * if i % 3 == 2 { -1.0 } else { 1.0 };
             }
             late_input[c] += early[c] * 0.25;
         }
@@ -729,7 +739,7 @@ impl ReverbRuntime {
                 (std::f32::consts::TAU * (self.chorus_phase + i as f32 * 0.173)).sin() * depth;
             let base = TIMES[i] * size * self.tank_rate;
             let delay = base + freeze * (base.round() - base);
-            self.lines[i].read(delay + modulation)
+            self.lines[i].read::<MATURE>(delay + modulation)
         });
         let rotations = if output.diffusion.is_some() || output.density.is_some() {
             self.scatter_cache.resolve(diffusion, density)
@@ -800,7 +810,7 @@ impl ReverbRuntime {
             for (i, seconds) in [0.005, 0.0017].into_iter().enumerate() {
                 let a = diffusion * 0.006;
                 let old = self.allpasses[c][i]
-                    .read(seconds * (0.5 + 1.5 * scale * 0.01) * self.tank_rate);
+                    .read::<MATURE>(seconds * (0.5 + 1.5 * scale * 0.01) * self.tank_rate);
                 let output = old - a * diffuse;
                 self.allpasses[c][i].push(diffuse + a * output);
                 diffuse = output;
@@ -861,7 +871,12 @@ impl ReverbRuntime {
             self.phase += 1;
             if self.phase == self.factor {
                 self.phase = 0;
-                self.tank(self.sum.map(|v| v / self.factor as f32), output);
+                let input = self.sum.map(|v| v / self.factor as f32);
+                if self.inputs[0].filled {
+                    self.tank::<true>(input, output);
+                } else {
+                    self.tank::<false>(input, output);
+                }
                 self.sum = [0.0; 2];
             }
         }
@@ -1077,7 +1092,8 @@ mod tests {
                 let b = (a + 8) % 9;
                 let expected = ring.samples[a]
                     + (clamped - whole as f32) * (ring.samples[b] - ring.samples[a]);
-                assert_eq!(ring.read(delay).to_bits(), expected.to_bits());
+                assert_eq!(ring.read::<true>(delay).to_bits(), expected.to_bits());
+                assert_eq!(ring.read::<false>(delay).to_bits(), expected.to_bits());
             }
         }
     }
@@ -1108,8 +1124,8 @@ mod tests {
                 let newer = read(whole);
                 let older = read(whole + 1);
                 let expected = newer + (delay - whole as f32) * (older - newer);
-                assert_eq!(source.read(delay), expected);
-                assert_eq!(target.read(delay), expected);
+                assert_eq!(source.read::<false>(delay), expected);
+                assert_eq!(target.read::<false>(delay), expected);
             }
             let new_sample = i as f32 * -0.25;
             source.push(new_sample);
