@@ -45,6 +45,7 @@ struct Ledger {
     loop_pass: Option<u64>,
     route: Option<RouteOwner>,
     cut: bool,
+    retimed_cursor: bool,
     live: live_keys::Gates,
     hardware: hardware::Gates,
     quantum_offset: u16,
@@ -101,9 +102,11 @@ impl Generator {
     }
 }
 
-/// Index mapping only. No borrowed or owned endpoint crosses this boundary.
+/// Maps retained generators and identifies deadlines staged in candidate scratch.
+/// No borrowed or owned endpoint crosses this boundary.
 pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
+    retimed_cursor: bool,
     pub(super) requires_clock_continuity: bool,
     pub(super) keeps_first_pass_loop_clock: bool,
     pub(super) keeps_unautomated_loop_clock: bool,
@@ -288,21 +291,23 @@ impl ForeignArrangement {
     }
 
     pub(super) fn plan_handoff(
-        &self,
+        &mut self,
         old: &Self,
         tracks: &[Track],
         cut: FrameContext,
         fresh: Option<TrackId>,
         loops: [Option<hex_project::LoopRegion>; 2],
+        tempo_cut: Option<(u64, u64)>,
     ) -> Result<Handoff, SessionPlaybackError> {
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
+            retimed_cursor: tempo_cut.is_some(),
             requires_clock_continuity: false,
             keeps_first_pass_loop_clock: true,
             keeps_unautomated_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
-        for (index, candidate) in self.generators.iter().enumerate() {
+        for (index, candidate) in self.generators.iter_mut().enumerate() {
             let Some(candidate) = candidate else { continue };
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
                 let old = old.as_ref()?;
@@ -310,7 +315,7 @@ impl ForeignArrangement {
                     .then_some((index, old))
             });
             let Some((old_index, donor)) = matched else {
-                if cut.playing && fresh != Some(candidate.track) {
+                if cut.playing && (tempo_cut.is_some() || fresh != Some(candidate.track)) {
                     return Err(INCOMPATIBLE_HANDOFF);
                 }
                 continue;
@@ -356,7 +361,25 @@ impl ForeignArrangement {
             {
                 return Err(INCOMPATIBLE_HANDOFF);
             }
-            if !ledger.cut
+            if let Some((arrangement, pass)) = tempo_cut {
+                // Authored VST3 automation also needs to prove the worker's
+                // partially filled quantum across the retimed origin.
+                if candidate.has_authored_automation || donor.has_authored_automation {
+                    return Err(INCOMPATIBLE_HANDOFF);
+                }
+                let notes = &mut candidate.scratch.notes;
+                notes.clear();
+                notes.extend_from_slice(&ledger.notes);
+                if !ledger.cut
+                    && ledger.route == Some(RouteOwner::Arrangement)
+                    && ledger.loop_pass == Some(pass)
+                {
+                    let track = tracks
+                        .get(index)
+                        .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                    retime_held_gates(track, candidate.track, notes, &cut, arrangement)?;
+                }
+            } else if !ledger.cut
                 && ledger.route == Some(RouteOwner::Arrangement)
                 && ledger.loop_pass == Some(cut.loop_pass)
             {
@@ -396,6 +419,13 @@ impl ForeignArrangement {
             ) {
                 if keep_clock {
                     std::mem::swap(&mut candidate.committed, &mut donor.committed);
+                    if plan.retimed_cursor {
+                        std::mem::swap(
+                            &mut candidate.committed.notes,
+                            &mut candidate.scratch.notes,
+                        );
+                        candidate.committed.retimed_cursor = true;
+                    }
                     if !same_keyboard {
                         candidate.committed.live.disconnect();
                         candidate.committed.hardware.disconnect();
@@ -431,6 +461,7 @@ impl ForeignArrangement {
             scratch.loop_pass = committed.loop_pass;
             scratch.route = committed.route;
             scratch.cut = committed.cut;
+            scratch.retimed_cursor = committed.retimed_cursor;
             scratch.live = committed.live;
             scratch.hardware = committed.hardware;
             scratch.quantum_offset = committed.quantum_offset;
@@ -545,6 +576,7 @@ impl ForeignArrangement {
             && ledger
                 .loop_pass
                 .is_some_and(|pass| pass != context.loop_pass);
+        let retimed_cursor = std::mem::take(&mut ledger.retimed_cursor);
         if ledger.cut || wrapped || route_changed {
             for occurrence in ledger.notes.drain(..).filter(|note| !note.note_off_sent) {
                 emit(AuthoredGate::release_now(occurrence))
@@ -574,15 +606,26 @@ impl ForeignArrangement {
                             {
                                 return;
                             }
+                            let key = MutableOccurrenceKey::new(
+                                id,
+                                span.clip,
+                                span.note,
+                                span.iteration,
+                                context.loop_pass,
+                            );
+                            // A faster tempo can round a held occurrence's
+                            // start to the new cursor. It already has a gate.
+                            if retimed_cursor
+                                && ledger
+                                    .notes
+                                    .iter()
+                                    .any(|note| !note.note_off_sent && note.signature.key() == key)
+                            {
+                                return;
+                            }
                             overflow |= onsets
                                 .push(MutableNoteOnset {
-                                    key: MutableOccurrenceKey::new(
-                                        id,
-                                        span.clip,
-                                        span.note,
-                                        span.iteration,
-                                        context.loop_pass,
-                                    ),
+                                    key,
                                     onset_beat: span.onset_beat,
                                     gate_end_beat: span.gate_end_beat,
                                     source_start: span.start.max(context.arrangement),
@@ -707,20 +750,7 @@ fn validate_held_gates(
         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
     track
         .for_each_mutable_midi_span(cut.arrangement, end, |span| {
-            let signature = MutableOccurrenceSignature::from_parts(
-                MutableOccurrenceKey::new(
-                    track_id,
-                    span.clip,
-                    span.note,
-                    span.iteration,
-                    cut.loop_pass,
-                ),
-                span.onset_beat,
-                span.gate_end_beat,
-                span.pitch,
-                span.channel,
-                span.velocity,
-            );
+            let signature = arrangement_signature(track_id, cut.loop_pass, span);
             let deadline = span
                 .gate_end
                 .checked_sub(cut.arrangement)
@@ -733,6 +763,69 @@ fn validate_held_gates(
         })
         .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
     if unmatched.contains(&true) {
+        return Err(INCOMPATIBLE_HANDOFF);
+    }
+    Ok(())
+}
+
+fn arrangement_signature(
+    track: TrackId,
+    loop_pass: u64,
+    span: &crate::midi_compile::CompiledNoteSpan,
+) -> MutableOccurrenceSignature {
+    MutableOccurrenceSignature::from_parts(
+        MutableOccurrenceKey::new(track, span.clip, span.note, span.iteration, loop_pass),
+        span.onset_beat,
+        span.gate_end_beat,
+        span.pitch,
+        span.channel,
+        span.velocity,
+    )
+}
+
+fn retime_held_gates(
+    track: &Track,
+    track_id: TrackId,
+    notes: &mut [MutableOccurrence],
+    cut: &FrameContext,
+    arrangement: u64,
+) -> Result<(), SessionPlaybackError> {
+    let mut unmatched = [false; MAX_FOREIGN_NOTES];
+    for (flag, note) in unmatched.iter_mut().zip(notes.iter()) {
+        *flag = !note.note_off_sent && note.gate_end_frame >= cut.performance;
+    }
+    if !unmatched.contains(&true) {
+        return Ok(());
+    }
+    let end = arrangement
+        .checked_add(1)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    // Include the preceding frame so a note ending exactly at the new
+    // cursor can send its original NoteOff at the first candidate sample.
+    track
+        .for_each_mutable_midi_span(arrangement.saturating_sub(1), end, |span| {
+            let signature = arrangement_signature(track_id, cut.loop_pass, span);
+            if let Some(deadline) = span
+                .gate_end
+                .checked_sub(arrangement)
+                .and_then(|remaining| cut.performance.checked_add(remaining))
+            {
+                for (flag, note) in unmatched.iter_mut().zip(notes.iter_mut()) {
+                    if *flag && note.signature == signature {
+                        note.gate_end_frame = deadline;
+                        // Foreign authored gates have no engine release tail.
+                        note.quiet_deadline_frame = deadline;
+                        *flag = false;
+                    }
+                }
+            }
+        })
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    if unmatched
+        .iter()
+        .zip(notes)
+        .any(|(unmatched, note)| *unmatched && note.gate_end_frame > cut.performance)
+    {
         return Err(INCOMPATIBLE_HANDOFF);
     }
     Ok(())

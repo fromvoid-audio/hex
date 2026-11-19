@@ -942,6 +942,12 @@ fn instrument_insertion_plays_authored_midi_in_the_desktop_audio_graph() {
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
+fn arrangement_tempo_edit_keeps_the_original_sdk_instrument_gate() {
+    instrument_entrypoint(InstrumentWorkflow::ArrangementTempo);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
 fn session_play_from_releases_old_sdk_instrument_gate() {
     instrument_entrypoint(InstrumentWorkflow::SessionRestart);
 }
@@ -1210,6 +1216,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 #[derive(Clone, Copy)]
 enum InstrumentWorkflow {
     Playback,
+    ArrangementTempo,
     SessionRestart,
     SessionLoop,
     SessionPause,
@@ -1228,6 +1235,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
     let shared_authoring = !matches!(
         workflow,
         InstrumentWorkflow::Playback
+            | InstrumentWorkflow::ArrangementTempo
             | InstrumentWorkflow::SessionRestart
             | InstrumentWorkflow::SessionLoop
             | InstrumentWorkflow::SessionPause
@@ -1400,7 +1408,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         }));
         (applied, _) = harness.applied(applied);
     }
-    let console = if shared_authoring {
+    let console = if shared_authoring || matches!(workflow, InstrumentWorkflow::ArrangementTempo) {
         None
     } else {
         let scene = harness.run(Request::Edit(Command::AddScene {
@@ -1587,6 +1595,14 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             if controlled_fixture { "gain" } else { "Output" },
             applied,
         );
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::ArrangementTempo) {
+        assert!(
+            controlled_fixture,
+            "this oracle requires the controlled SDK fixture"
+        );
+        verify_arrangement_tempo_edit(&mut harness, &accepted.state, applied);
         return;
     }
     if let Some(parameter) = automation_parameter {
@@ -2430,6 +2446,107 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         assert!(status.rejected_action().is_none());
         assert!(status.render_fault_snapshot().is_none());
     }
+}
+
+fn verify_arrangement_tempo_edit(
+    harness: &mut ResidentHarness,
+    source: &hex_session::service::ViewState,
+    donor_revision: u64,
+) {
+    fn status(harness: &ResidentHarness) -> &hex_audio::prepared::Status {
+        harness.audio.as_ref().unwrap().status().unwrap()
+    }
+    let amplitude = 112.0 / 127.0;
+    let assert_held = |pcm: &[hex_engine::Frame]| {
+        assert!(
+            pcm.iter()
+                .flatten()
+                .all(|sample| (sample - amplitude).abs() < 1e-5)
+        );
+    };
+    let output = harness.audio.as_ref().unwrap().control.output_identity();
+    harness
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..6 {
+        let pcm = render_completed_block(harness);
+        if block >= 2 {
+            assert_held(&pcm);
+        }
+    }
+    harness
+        .service
+        .submit(Request::Edit(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        }))
+        .unwrap();
+    let mut cut = None;
+    let mut edited = None;
+    let until = Instant::now() + Duration::from_secs(2);
+    while edited.is_none() || cut.is_none() {
+        harness.pump();
+        if let Ok(event) = harness.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.state.revision > source.revision {
+                edited = Some(event);
+            }
+        }
+        let performance = status(harness).performance_frame.load(Acquire);
+        let position = status(harness).position.load(Acquire);
+        let before = status(harness).applied_revision.load(Acquire);
+        assert_held(&render_completed_block(harness));
+        assert_eq!(
+            status(harness).performance_frame.load(Acquire),
+            performance + 256
+        );
+        if before == donor_revision && status(harness).applied_revision.load(Acquire) > before {
+            cut = Some((
+                performance,
+                position,
+                status(harness).position.load(Acquire),
+            ));
+        }
+        assert!(
+            Instant::now() < until,
+            "tempo edit did not reach the callback"
+        );
+    }
+    assert_eq!(
+        harness.audio.as_ref().unwrap().control.output_identity(),
+        output
+    );
+    let (performance, old_position, after) = cut.unwrap();
+    let edited = edited.unwrap();
+    let map = edited.state.project.tempo_map();
+    let cut_beat = source
+        .project
+        .tempo_map()
+        .frame_to_beat(old_position)
+        .unwrap();
+    let candidate_cut = map.beat_to_frame(cut_beat).unwrap();
+    assert_eq!(after, candidate_cut + 256);
+    let gate = map
+        .beat_to_frame(BeatTime::from_ratio(1, 2).unwrap())
+        .unwrap();
+    let audible_release = performance + (gate - candidate_cut) + 512;
+    assert!(status(harness).performance_frame.load(Acquire) < audible_release);
+    loop {
+        let start = status(harness).performance_frame.load(Acquire);
+        let pcm = render_completed_block(harness);
+        let held = audible_release.saturating_sub(start).min(256) as usize;
+        assert_held(&pcm[..held]);
+        assert_eq!(&pcm[held..], &[[0.0; 2]; 256][held..]);
+        if held == 0 {
+            break;
+        }
+    }
+    let status = status(harness);
+    assert!(status.playing.load(Acquire));
+    assert!(status.rejected_revision().is_none() && status.render_fault_snapshot().is_none());
 }
 
 fn verify_paced_instrument_authoring(
