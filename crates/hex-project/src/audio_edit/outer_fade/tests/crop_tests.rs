@@ -86,7 +86,7 @@ fn neutral_padding_stays_unity_and_repeat_context_application_is_idempotent() {
         1.0
     );
     let once = extended.clone();
-    crate::audio_edit::outer_fade::retain_crop_context(&clip, &mut extended, &tempo).unwrap();
+    crate::audio_edit::retain_outer_fade_crop_context(&clip, &mut extended, &tempo).unwrap();
     assert_eq!(extended, once);
 }
 
@@ -132,6 +132,16 @@ fn signed_frozen_directed_clock_and_crop_keep_forward_gain_once() {
     );
     let cut = 324_000;
     let cropped = trim_view(&clip, TrimEdge::Left, cut, &tempo).unwrap();
+    let (left, right) =
+        crate::clip_fade_split::split(&clip, cut, crate::ClipId(200), &tempo).unwrap();
+    assert_eq!(right.retained_fade(), cropped.retained_fade());
+    assert_eq!(right.audio_edit(), cropped.audio_edit());
+    let left = left.projected_outer_fade(&tempo).unwrap().unwrap();
+    let before = clip.projected_outer_fade(&tempo).unwrap().unwrap();
+    assert_eq!(
+        left.gain_at(cut - 1).unwrap(),
+        before.gain_at(cut - 1).unwrap()
+    );
     assert_eq!(
         cropped
             .audio_edit()
@@ -141,7 +151,6 @@ fn signed_frozen_directed_clock_and_crop_keep_forward_gain_once() {
             .unwrap(),
         i128::from(BeatTime::ONE.raw())
     );
-    let before = clip.projected_outer_fade(&tempo).unwrap().unwrap();
     let after = cropped.projected_outer_fade(&tempo).unwrap().unwrap();
     for frame in (cut..clip.start() + clip.duration()).step_by(997) {
         assert_eq!(
@@ -158,7 +167,7 @@ fn context_refusal_preserves_result_and_legacy_trim_path_is_unchanged() {
     missing.edit = None;
     let before = missing.clone();
     assert!(
-        crate::audio_edit::outer_fade::retain_crop_context(&clip, &mut missing, &tempo).is_err()
+        crate::audio_edit::retain_outer_fade_crop_context(&clip, &mut missing, &tempo).is_err()
     );
     assert_eq!(missing, before);
     let mut legacy = clip.clone();

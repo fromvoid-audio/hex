@@ -37,6 +37,18 @@ impl Clip {
         gate_start: u64,
         tempo: &TempoMap,
     ) -> Result<Self, Invalid> {
+        let mut result = self.with_musical_leading_silence_source(gate_start, tempo)?;
+        retain_outer_fade_crop_context(self, &mut result, tempo)?;
+        Ok(result)
+    }
+
+    // A retained trim can rewind the source first. Its outer caller carries the
+    // one context transfer from the original clip across both steps.
+    pub(super) fn with_musical_leading_silence_source(
+        &self,
+        gate_start: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
         let edit = self
             .audio_edit()
             .filter(|edit| {
