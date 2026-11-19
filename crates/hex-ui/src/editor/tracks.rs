@@ -332,54 +332,61 @@ pub(super) fn midi_note_canvas(
 }
 
 fn clip_fade_layer(
+    clip: hex_project::ClipId,
     samples: Vec<(f32, f32)>,
     editing: bool,
     clip_active: bool,
 ) -> impl IntoElement + use<> {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let left = f32::from(bounds.origin.x);
-            let top = f32::from(bounds.origin.y);
-            let width = f32::from(bounds.size.width);
-            let height = f32::from(bounds.size.height);
-            let mut shade = PathBuilder::fill();
-            if let Some((x, _)) = samples.first() {
-                shade.move_to(point(px(left + width * x), px(top)));
-            }
-            let mut path = editing.then(|| PathBuilder::stroke(px(1.25)));
-            for (index, (x, gain)) in samples.iter().copied().enumerate() {
-                let point = point(px(left + width * x), px(top + height * (1.0 - gain)));
-                if let Some(path) = path.as_mut() {
-                    if index == 0 {
-                        path.move_to(point);
-                    } else {
-                        path.line_to(point);
+    div()
+        .debug_selector(move || format!("clip-fade-shade-{}", clip.value()))
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let left = f32::from(bounds.origin.x);
+                    let top = f32::from(bounds.origin.y);
+                    let width = f32::from(bounds.size.width);
+                    let height = f32::from(bounds.size.height);
+                    let mut shade = PathBuilder::fill();
+                    if let Some((x, _)) = samples.first() {
+                        shade.move_to(point(px(left + width * x), px(top)));
                     }
-                }
-                shade.line_to(point);
-            }
-            if let Some((x, _)) = samples.last() {
-                shade.line_to(point(px(left + width * x), px(top)));
-            }
-            shade.close();
-            if let Ok(shade) = shade.build() {
-                let ink = gpui::Hsla::from(rgba(theme::CLIP_FADE_SHADE))
-                    .opacity(theme::clip_detail_opacity(clip_active));
-                window.paint_path(shade, ink);
-            }
-            if let Some(path) = path
-                && let Ok(path) = path.build()
-            {
-                window.paint_path(path, rgba(0x000000e0));
-            }
-        },
-    )
-    .absolute()
-    .top(px(super::clip_name::CLIP_NAME_HEIGHT))
-    .left_0()
-    .right_0()
-    .bottom_0()
+                    let mut path = editing.then(|| PathBuilder::stroke(px(1.25)));
+                    for (index, (x, gain)) in samples.iter().copied().enumerate() {
+                        let point = point(px(left + width * x), px(top + height * (1.0 - gain)));
+                        if let Some(path) = path.as_mut() {
+                            if index == 0 {
+                                path.move_to(point);
+                            } else {
+                                path.line_to(point);
+                            }
+                        }
+                        shade.line_to(point);
+                    }
+                    if let Some((x, _)) = samples.last() {
+                        shade.line_to(point(px(left + width * x), px(top)));
+                    }
+                    shade.close();
+                    if let Ok(shade) = shade.build() {
+                        let ink = gpui::Hsla::from(rgba(theme::CLIP_FADE_SHADE))
+                            .opacity(theme::clip_detail_opacity(clip_active));
+                        window.paint_path(shade, ink);
+                    }
+                    if let Some(path) = path
+                        && let Ok(path) = path.build()
+                    {
+                        window.paint_path(path, rgba(0x000000e0));
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .absolute()
+        .top(px(super::clip_name::CLIP_NAME_HEIGHT))
+        .left_0()
+        .right_0()
+        .bottom_0()
 }
 
 enum ClipPaintSource<'a> {
@@ -2657,6 +2664,7 @@ impl EditorView {
                 };
                 if !clip.retained_fade().is_neutral() && fade.len() >= 2 {
                     content = content.child(clip_fade_layer(
+                        clip.id(),
                         fade,
                         self.fade_curve_active(clip.id()),
                         clip.active(),
@@ -2997,8 +3005,7 @@ impl EditorView {
         let mut foreground = div().absolute().inset_0();
         let fade_preview = self.fade_preview(clip.id());
         let fade = fade_preview.unwrap_or(clip.retained_fade());
-        if !narrow
-            && !active_trim_preview
+        if !active_trim_preview
             && self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
             && clip_pixel_width > 0.0
             && !fade.is_neutral()
@@ -3017,6 +3024,7 @@ impl EditorView {
             if samples.len() >= 2 {
                 let layer = loop_handles::body(
                     div().absolute().inset_0().child(clip_fade_layer(
+                        clip.id(),
                         samples,
                         self.fade_key_held || self.fade_curve_active(clip_id),
                         active,

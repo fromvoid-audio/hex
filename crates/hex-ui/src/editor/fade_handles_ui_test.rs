@@ -1646,3 +1646,60 @@ fn fade_handle_hover_keeps_the_arrow_cursor(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert_style(&mut visual, selector, Idle);
 }
+
+#[gpui::test]
+fn clip_fade_shading_survives_idle_selection_and_narrow_repaints(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::TrimClip {
+            clip,
+            start: 0,
+            duration: 128,
+            source_offset: 0,
+            source_length: 128,
+        })
+        .unwrap();
+    model
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 32,
+            fade_out: 32,
+        })
+        .unwrap();
+    let (window, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let lane_width = editor.read_with(&visual, |v, _| v.drag_lanes.get(&track).unwrap().width);
+    let selector: &'static str =
+        Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
+    let shade: gpui::Background = gpui::rgba(theme::CLIP_FADE_SHADE).into();
+    for width in [160.0, 2.0] {
+        for selected in [true, false] {
+            editor.update(&mut visual, |v, cx| {
+                v.viewport = Some(Viewport {
+                    start: 0,
+                    length: (128.0 * lane_width / width) as u64,
+                });
+                v.selected_clip = selected.then_some(clip);
+                v.hovered_fade_clip = None;
+                v.fade_key_held = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let clip_selector: &'static str =
+                Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+            let actual_width = f32::from(visual.debug_bounds(clip_selector).unwrap().size.width);
+            assert!(
+                (actual_width - width).abs() < 1.0,
+                "expected width={width}, actual={actual_width}"
+            );
+            let paths = visual.rendered_path_triangles(selector);
+            assert!(
+                paths.iter().any(|path| path.color == shade),
+                "fade shade missing at width={width}, selected={selected}"
+            );
+        }
+    }
+}
