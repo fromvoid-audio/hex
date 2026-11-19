@@ -46,6 +46,7 @@ impl Projection {
             .map(Arc::new)
             .or_else(|| edit.domain.events.clone())
             .unwrap_or_else(|| Arc::new(AudioEvents::identity(edit.domain.clock.length())));
+        let placed = edit.placement.is_some();
         let clip = match fade {
             Some(fade) if project.arrangement_fade_edit_uses_outer(clip) => clip
                 .with_authored_outer_fade(project.tempo_map(), fade)
@@ -61,6 +62,12 @@ impl Projection {
             gain: gain.unwrap_or_else(|| clip.gain()),
             clip,
         };
+        // A placement with several independent roots must keep the established
+        // destination waveform, including its held clip fade. Validate the
+        // source and read geometry before selecting the event projection.
+        if placed {
+            projection.project(&[])?;
+        }
         Some((Arc::clone(&prepared.waveform), Arc::new(projection)))
     }
 
@@ -72,6 +79,10 @@ impl Projection {
             Clock::Arrangement => &self.events.events,
             Clock::Event(event) => std::slice::from_ref(event),
         };
+        self.project(events)
+    }
+
+    fn project(&self, events: &[AudioEvent]) -> Option<MusicalEventFadePreview<'_>> {
         MusicalEventFadePreview::new(
             &self.clip,
             &self.tempo,
