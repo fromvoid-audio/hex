@@ -64,15 +64,23 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<[f3
     frames
 }
 
-fn check(definition: &'static dyn NativeDeviceDefinition) {
-    check_rate(definition, 48_000);
+#[derive(Clone, Copy)]
+enum RestartHistory {
+    Warm,
+    Fresh,
 }
 
-fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
+fn check(definition: &'static dyn NativeDeviceDefinition) {
+    check_rate(definition, 48_000, RestartHistory::Warm);
+}
+
+fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32, restart: RestartHistory) {
     let ramp_frames = rate.div_ceil(200) as usize;
     for old_bypassed in [false, true] {
         let mut wet_reference = chain(definition, false, rate);
-        render(&mut wet_reference, 1024, 64);
+        if !old_bypassed || matches!(restart, RestartHistory::Warm) {
+            render(&mut wet_reference, 1024, 64);
+        }
         let wet = render(&mut wet_reference, ramp_frames + 60, 1);
         for block in [1, 7, 64, 256] {
             let mut old = chain(definition, old_bypassed, rate);
@@ -103,8 +111,12 @@ fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
 }
 
 #[test]
-fn auto_pan_bypass_transition_preserves_real_modulator_history() {
-    check(&crate::auto_pan::AUTO_PAN_DEFINITION);
+fn auto_pan_power_transition_uses_its_history_until_off_and_restarts_fresh() {
+    check_rate(
+        &crate::auto_pan::AUTO_PAN_DEFINITION,
+        48_000,
+        RestartHistory::Fresh,
+    );
 }
 #[test]
 fn gate_bypass_transition_preserves_real_detector_history() {
@@ -118,7 +130,11 @@ fn compressor_bypass_transition_preserves_real_detector_history() {
 #[test]
 fn reverb_bypass_transition_preserves_real_room_history_at_supported_rates() {
     for rate in [8_000, 44_100, 48_000, 192_000] {
-        check_rate(&crate::reverb::REVERB_DEFINITION, rate);
+        check_rate(
+            &crate::reverb::REVERB_DEFINITION,
+            rate,
+            RestartHistory::Warm,
+        );
     }
 }
 
