@@ -644,10 +644,11 @@ runner versions may still display stale holder information from that file.
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
-Development and release ownership are separate markers: a target populated by
-local CI has no release owner, so packaging refuses it unless it is empty or
-explicitly adopted. Set separate `CARGO_TARGET_DIR` values for local CI and
-release packaging when both are needed; see [native macOS builds](test-builds.md).
+Development and release ownership use separate markers. Packaging needs an empty
+target or a release owner that records an empty origin and matches the current
+checkout, exact source and build inputs. Explicit recovery can resume a matching
+pending owner. Set separate Cargo target paths for local CI and release packaging.
+See [native macOS builds](test-builds.md).
 
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across

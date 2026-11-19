@@ -732,7 +732,7 @@ def main(argv=None):
 def release_target_options(parser):
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--adopt-release-target", action="store_true",
-                        help="explicitly adopt an inspected Cargo cache for first release/recovery")
+                        help="recover a pending release target with verified empty origin and identical inputs")
     target.add_argument("--fresh-release-target", metavar="PATH",
                         help="reserve a separate existing empty optimized Cargo target before metadata")
 

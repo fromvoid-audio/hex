@@ -1326,7 +1326,7 @@ def main() -> int:
     parser.add_argument("--included", type=Path, required=True, help="JSON list of pr/head objects (ticket references optional)")
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
-                        help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+                        help="recover a pending release target with verified empty origin and identical inputs")
     parser.add_argument("--fresh-release-target", action="store_true",
                         help="reserve the explicit existing empty CARGO_TARGET_DIR before metadata")
     parser.add_argument("--vst3-instance-receipt", type=Path,

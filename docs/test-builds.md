@@ -62,7 +62,8 @@ requested development delivery may use `--dev-profile` with its resolved scoped
 merge report; identify it as scoped development evidence, not full qualification.
 Build-only delivery is source-only and does not claim passing tests.
 
-For an explicitly fresh release target, create an empty directory at an
+Use a fresh optimized target when source or build inputs change, or when the
+existing target has no verified empty origin. Create an empty directory at an
 absolute path before starting delivery, set `CARGO_TARGET_DIR` to that path and
 set `CARGO_CACHE_RUSTC_INFO=0`, then add `--fresh-release-target` to the command.
 Set `CARGO_CACHE_RUSTC_INFO=0` for the qualifying CI run too: the cache setting

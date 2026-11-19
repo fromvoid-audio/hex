@@ -2373,6 +2373,8 @@ class LocalCiRunner:
 
         An opt-in reservation holds the original lock and target inode through
         build completion. Its first pending owner is published create-only.
+        A release build with locked arguments may reuse only a target verified
+        empty at first admission under the same exact source and input witness.
         Ordinary callers acquire the same target-wide lock as before. Exceptions
         leave any published pending ownership for explicit recovery.
         """
@@ -2532,11 +2534,21 @@ class LocalCiRunner:
                        for p in entries):
                     raise TargetCacheError("fresh release target changed during preflight")
                 populated = False
-            reuse = bool(record and record["state"] == "ready" and not adopt
-                         and record.get("target_identity") == identity
-                         and record["workspace_owner"] == workspace
-                         and (record["source"] == source if requested_build_argv is None else
-                              cache_key is not None and record.get("build_cache_key") == cache_key))
+            same_owner = bool(record and record.get("target_identity") == identity
+                              and record["workspace_owner"] == workspace and record["source"] == source)
+            if cache_key is not None:
+                # Build scripts and proc macros can read tracked files from
+                # outside their package without declaring Cargo watches.
+                # Package cleanup cannot establish a new dependency lineage.
+                reuse = (same_owner and record.get("build_cache_origin") == "empty-target-v1"
+                         and record.get("build_cache_key") == cache_key)
+                if not reuse and (record is not None or populated or adopt):
+                    raise TargetCacheError(
+                        "release cache does not prove an empty origin for these inputs; "
+                        "choose a fresh release target with --fresh-release-target"
+                    )
+            else:
+                reuse = same_owner and record["state"] == "ready" and not adopt
             invalidated = self._provenance_cleanup(record) if record else []
             pending = {"schema_version": 1, "profile": "release", "state": "pending",
                        "target_directory": str(target), "target_identity": identity,
@@ -2544,6 +2556,7 @@ class LocalCiRunner:
                        "recorded_at": utc_now(), "cache_inputs": self._cache_provenance()}
             if cache_key is not None:
                 pending["build_cache_key"] = cache_key
+                pending["build_cache_origin"] = "empty-target-v1"
                 self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = cache_key
             report = {**pending, "owner_path": str(owner_path), "lock_path": str(lock_path),
                       "action": ("compiler-profile-handoff" if self._invalidate_dependency_profile else

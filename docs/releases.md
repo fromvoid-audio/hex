@@ -88,18 +88,13 @@ candidate and resume command:
 ./release install /absolute/candidate/directory/release.json
 ```
 
-A Cargo cache previously used only for development has no release-ownership
-receipt. Inspect that it belongs to this checkout and is inactive, then explicitly
-adopt it for the first optimized release build (or guarded recovery):
-
-```sh
-./release beta --adopt-release-target
-./release resume /absolute/candidate/directory --adopt-release-target
-```
-
-The option delegates to the existing guarded release owner. It never infers
-release ownership from a development receipt or changes the frozen candidate.
-Ordinary subsequent builds reuse their valid release ownership without the flag.
+Guarded optimized builds reuse a Cargo target only when its owner records an
+empty start and the same checkout, source and build inputs. A different
+candidate or a target without this history requires an empty optimized target.
+The first build in it recompiles dependencies. This protects against build
+scripts and proc macros that read changed tracked files without Cargo watches.
+The guard covers the recorded inputs and cooperating target owners. Arbitrary
+inputs outside the recorded source and build environment remain nonhermetic.
 
 To reserve a fresh optimized Cargo target before release preparation, give the
 full CI run and optimized build separate existing absolute directories. The
@@ -118,7 +113,10 @@ path. Both use `CARGO_CACHE_RUSTC_INFO=0` so their verification inputs agree.
 Use the same option and CI target when resuming a frozen candidate while the
 optimized target remains empty and unowned. After ownership has been
 published, set `CARGO_TARGET_DIR` to the optimized target and
-`CARGO_CACHE_RUSTC_INFO=0` for the ordinary resume or recovery workflow.
+`CARGO_CACHE_RUSTC_INFO=0` for ordinary resume. An inspected pending owner
+from the same checkout, source and build inputs can resume with
+`--adopt-release-target`. Preserve older targets and select a separate empty
+directory when their ownership cannot establish that history.
 The fresh option and `--adopt-release-target` are mutually exclusive.
 This uses the existing empty-target custody contract for cooperating runners.
 
