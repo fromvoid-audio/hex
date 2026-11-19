@@ -115,7 +115,7 @@ fn utility_power_reverses_warm_rolls_back_and_restarts_from_a_fresh_filter() {
                             0 | 1 => 1.0 - (off_frames + i + 1) as f32 / ramp as f32,
                             2 => reverse_from + (1.0 - reverse_from) * progress,
                             3 => 1.0 - progress,
-                            _ => 1.0,
+                            _ => progress,
                         };
                         for (lane, dry) in [0.25, -0.125].into_iter().enumerate() {
                             let expected = dry + (wet[lane] - dry) * mix;
