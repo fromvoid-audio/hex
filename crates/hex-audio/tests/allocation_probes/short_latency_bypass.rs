@@ -1,12 +1,37 @@
-//! Actual prepared publication, compared against independent uninterrupted wet
-//! and delayed-dry graphs, including a parallel room tail. No physical output.
+//! Actual callback publication against independent uninterrupted wet, aligned
+//! dry, and fresh-processor references, with a parallel room tail.
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::playback::{Playback, PlaybackCommand};
-use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
-use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, ParameterValue};
-use hex_project::{Command, Created, Editor, Project};
-use std::{collections::BTreeMap, sync::Arc};
+use hex_engine::{
+    Audio, Frame, NodeSignalPhase, PreparedRevision, SessionPlayback, SessionPlaybackCommand,
+    SineTable,
+};
+use hex_lattice::{
+    DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeParameterAutomation,
+    ProcessorInstanceIdentity, TuningTable,
+};
+use hex_lattice_contract::{
+    DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterId, ParameterValue,
+};
+use hex_project::{BeatTime, Command, Created, DeviceId, Editor, Project, TempoMap};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, atomic::Ordering},
+};
+
+const RATE: u32 = 48_000;
+const FADE: usize = RATE.div_ceil(200) as usize;
+const WARMUP: usize = 2048;
+const EARLY_OFF: usize = 13;
+const REPEAT_OFF: usize = 5;
+const REVERSE: usize = 300;
+const SETTLE: usize = 300;
+const RESTART: usize = WARMUP + EARLY_OFF + REPEAT_OFF + REVERSE + SETTLE;
+const END: usize = RESTART + 300;
+const DRIVE: ParameterId = hex_devices::rattle::parameter::DRIVE;
+const DRIVE_START: f32 = 0.2;
+const DRIVE_END: f32 = 0.9;
 
 #[test]
 fn aligned_provider_publications_preserve_routed_pcm_tails_and_callback_ownership() {
@@ -14,6 +39,7 @@ fn aligned_provider_publications_preserve_routed_pcm_tails_and_callback_ownershi
         ("hex.rattle", false),
         ("hex.rattle", true),
         ("hex.overdrive", false),
+        ("hex.saturator", false),
     ] {
         for location in 0..3 {
             for block in [64, 512] {
@@ -24,12 +50,12 @@ fn aligned_provider_publications_preserve_routed_pcm_tails_and_callback_ownershi
 }
 
 fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 32).unwrap();
     let Created::Imported { asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
             name: "excitation".into(),
             path: "memory/aligned-bypass.wav".into(),
-            source_sample_rate: 48_000,
+            source_sample_rate: RATE,
             source_frames: 8192,
             playback_frames: 8192,
             conversion_version: hex_project::IDENTITY_CONVERSION,
@@ -45,7 +71,7 @@ fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
         .execute(Command::ImportPreparedAudioTrack {
             name: "independent room excitation".into(),
             path: "memory/room-excitation.wav".into(),
-            source_sample_rate: 48_000,
+            source_sample_rate: RATE,
             source_frames: 8192,
             playback_frames: 8192,
             conversion_version: hex_project::IDENTITY_CONVERSION,
@@ -87,15 +113,24 @@ fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
             state: room_state,
         })
         .unwrap();
-    let state = hex_engine::default_native_device_state(DeviceTypeId::from_static(kind))
+    let mut state = hex_engine::default_native_device_state(DeviceTypeId::from_static(kind))
         .unwrap()
         .with_output_gain_db(6.0)
         .unwrap();
+    if kind == "hex.saturator" {
+        state = hex_devices::saturator::SATURATOR_DEFINITION
+            .patch_parameter(
+                &state,
+                hex_devices::saturator::parameter::DRIVE,
+                ParameterValue::Float(9.0),
+            )
+            .unwrap();
+    }
     let command = match location {
         0 => Command::InsertDevice {
             track,
             before: None,
-            state,
+            state: state.clone(),
         },
         1 => {
             let Created::ReturnTrack(target) = editor
@@ -116,12 +151,12 @@ fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
             Command::InsertReturnDevice {
                 return_track: target,
                 before: None,
-                state,
+                state: state.clone(),
             }
         }
         _ => Command::InsertMainDevice {
             before: None,
-            state,
+            state: state.clone(),
         },
     };
     let Created::Device(device) = editor.execute(command).unwrap() else {
@@ -131,39 +166,48 @@ fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
         editor
             .execute(Command::ReplaceDeviceAutomation {
                 device,
-                parameter: hex_lattice_contract::ParameterId::from_static(1),
+                parameter: DRIVE,
                 points: vec![
                     hex_project::AutomationPoint {
-                        beat: hex_project::BeatTime::ZERO,
-                        value: hex_project::AutomationValue::new(0.2).unwrap(),
+                        beat: BeatTime::ZERO,
+                        value: hex_project::AutomationValue::new(DRIVE_START).unwrap(),
                         outgoing: hex_project::AutomationInterpolation::Linear,
                     },
                     hex_project::AutomationPoint {
-                        beat: hex_project::BeatTime::from_raw(1 << 32),
-                        value: hex_project::AutomationValue::new(0.9).unwrap(),
+                        beat: BeatTime::ONE,
+                        value: hex_project::AutomationValue::new(DRIVE_END).unwrap(),
                         outgoing: hex_project::AutomationInterpolation::Linear,
                     },
                 ],
             })
             .unwrap();
     }
-    let audio = Audio::new(
-        48_000,
-        (0..8192)
-            .map(|i| {
-                if i < 2200 {
-                    [
-                        (i as f32 * 0.031).sin() * 0.2,
-                        (i as f32 * 0.023).cos() * -0.15,
-                    ]
-                } else {
-                    [0.0; 2]
-                }
-            })
-            .collect(),
-    )
-    .unwrap();
-    let media = BTreeMap::from([(asset, audio.clone()), (room_asset, audio)]);
+    let signal = |frame: usize| {
+        [
+            (frame as f32 * 0.031).sin() * 0.2,
+            (frame as f32 * 0.023).cos() * -0.15,
+        ]
+    };
+    let mut excitation: Vec<_> = (0..8192)
+        .map(|frame| {
+            if frame < 2200 {
+                signal(frame)
+            } else {
+                [0.0; 2]
+            }
+        })
+        .collect();
+    let room_audio = Audio::new(RATE, excitation.clone()).unwrap();
+    // Give the dry delay real input just before restart and give the new
+    // processor an independently verifiable transient on the same route.
+    let burst_start = RESTART - 23;
+    for (offset, sample) in excitation[burst_start..RESTART + 80].iter_mut().enumerate() {
+        *sample = signal(burst_start + offset);
+    }
+    let media = BTreeMap::from([
+        (asset, Audio::new(RATE, excitation).unwrap()),
+        (room_asset, room_audio),
+    ]);
     let table = Arc::new(SineTable::new());
     let prepare = |editor: &Editor| {
         Arc::new(
@@ -178,120 +222,214 @@ fn check(kind: &'static str, automated: bool, location: usize, block: usize) {
         })
         .unwrap();
     let dry_revision = prepare(&editor);
-    assert_eq!(
-        wet_revision.arrangement().main_latency_frames(),
-        dry_revision.arrangement().main_latency_frames()
-    );
+    let latency = dry_revision.arrangement().main_latency_frames();
+    assert_eq!(wet_revision.arrangement().main_latency_frames(), latency);
+    assert_ne!(latency, 0);
     let mut wet = SessionPlayback::new(Arc::clone(&wet_revision)).unwrap();
     let mut dry = SessionPlayback::new(Arc::clone(&dry_revision)).unwrap();
     wet.apply(SessionPlaybackCommand::Play).unwrap();
     dry.apply(SessionPlaybackCommand::Play).unwrap();
-    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    let mut wet_pcm = vec![[0.0; 2]; END];
+    let mut dry_pcm = vec![[0.0; 2]; END];
+    wet.render(&mut wet_pcm).unwrap();
+    dry.render(&mut dry_pcm[..RESTART]).unwrap();
+    let tempo = automated.then_some(editor.project().tempo_map());
+    let fresh_delta = fresh_effect_delta(&mut dry, &state, device, tempo, &mut dry_pcm[RESTART..]);
+    let distinguishes_fresh = fresh_delta.iter().enumerate().any(|(offset, delta)| {
+        let frame = RESTART + offset;
+        offset >= latency as usize
+            && (0..2).any(|lane| {
+                (dry_pcm[frame][lane] + delta[lane] - wet_pcm[frame][lane]).abs() > 0.001
+            })
+    });
+    assert!(
+        distinguishes_fresh,
+        "{kind}/{location}: restart must distinguish old history"
+    );
+
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
     control
         .publish(Playback::try_from_prepared_with_session(Arc::clone(&wet_revision)).unwrap())
         .unwrap();
     control.command(PlaybackCommand::Play).unwrap();
-    let mut actual = [[0.0; 2]; 512];
-    let mut wet_pcm = actual;
-    let mut dry_pcm = actual;
-    let mut position = 0;
-    while position < 2048 {
-        render(
-            &mut callback,
-            &mut wet,
-            &mut dry,
-            &mut actual[..64],
-            &mut wet_pcm[..64],
-            &mut dry_pcm[..64],
-        );
-        assert_eq!(&actual[..64], &wet_pcm[..64]);
-        position += 64;
+    let mut output = [[0.0; 2]; 512];
+    let mut cursor = 0;
+    for expected in wet_pcm[..WARMUP].chunks(64) {
+        let actual = &mut output[..expected.len()];
+        render(&mut callback, actual);
+        assert_eq!(actual, expected);
+        cursor += actual.len();
     }
-    let mut offset = 0;
+
     let mut contrast = 0.0_f32;
-    for (bypassed, count) in [
-        (true, 13),
-        (true, 5),
-        (false, 300),
-        (true, 300),
-        (false, 300),
-    ] {
+    for (phase, (bypassed, count)) in [
+        (true, EARLY_OFF),
+        (true, REPEAT_OFF),
+        (false, REVERSE),
+        (true, SETTLE),
+        (false, END - RESTART),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         editor
             .execute(Command::SetDeviceBypass { device, bypassed })
             .unwrap();
-        let next = prepare(&editor);
-        control
-            .publish(Playback::try_from_prepared_with_session(next).unwrap())
+        let applied = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
             .unwrap();
-        let mut rendered = 0;
-        while rendered < count {
-            let n = (count - rendered).min(block);
-            render(
-                &mut callback,
-                &mut wet,
-                &mut dry,
-                &mut actual[..n],
-                &mut wet_pcm[..n],
-                &mut dry_pcm[..n],
-            );
-            for local in 0..n {
-                let i = offset + rendered + local;
-                let mix = if i < 18 {
-                    1.0 - (i + 1) as f32 / 240.0
-                } else if i < 318 {
-                    0.925 + 0.075 * (i - 17).min(240) as f32 / 240.0
-                } else if i < 618 {
-                    1.0 - (i - 317).min(240) as f32 / 240.0
-                } else {
-                    (i - 617).min(240) as f32 / 240.0
+        let phase_start = cursor;
+        for requested in (0..count).step_by(block) {
+            let actual = &mut output[..(count - requested).min(block)];
+            render(&mut callback, actual);
+            for (local, value) in actual.iter().enumerate() {
+                let frame = cursor + local;
+                let phase_age = frame - phase_start + 1;
+                let progress = |age: usize| age.min(FADE) as f32 / FADE as f32;
+                let early_off = EARLY_OFF + REPEAT_OFF;
+                let mix = match phase {
+                    0 => 1.0 - progress(phase_age),
+                    1 => 1.0 - progress(EARLY_OFF + phase_age),
+                    2 => 1.0 - progress(early_off) + progress(early_off) * progress(phase_age),
+                    3 => 1.0 - progress(phase_age),
+                    4 => progress(phase_age.saturating_sub(latency as usize)),
+                    _ => unreachable!("test publication phase"),
                 };
-                for lane in 0..2 {
-                    contrast = contrast.max((wet_pcm[local][lane] - dry_pcm[local][lane]).abs());
-                    let expected =
-                        dry_pcm[local][lane] + (wet_pcm[local][lane] - dry_pcm[local][lane]) * mix;
+                if mix == 0.0 {
+                    assert_eq!(
+                        *value, dry_pcm[frame],
+                        "{kind}/{location} dry frame {frame}"
+                    );
+                }
+                for (lane, &actual_sample) in value.iter().enumerate() {
+                    let difference = if frame < RESTART {
+                        wet_pcm[frame][lane] - dry_pcm[frame][lane]
+                    } else {
+                        fresh_delta[frame - RESTART][lane]
+                    };
+                    contrast = contrast.max(difference.abs());
+                    let expected = dry_pcm[frame][lane] + difference * mix;
                     assert!(
-                        (actual[local][lane] - expected).abs() < 3e-6,
-                        "{kind}/{location} automated={automated} block={block} frame={i}: {:?} expected {expected}",
-                        actual[local]
+                        (actual_sample - expected).abs() < 3e-6,
+                        "{kind}/{location} automated={automated} block={block} frame={frame}: {value:?} expected {expected}",
                     );
                 }
             }
-            rendered += n;
-            position += n;
-            assert_eq!(control.status.recovery_position(), position as u64);
+            cursor += actual.len();
+            assert_eq!(control.status.recovery_position(), cursor as u64);
+            assert_eq!(
+                control.status.applied_revision.load(Ordering::Acquire),
+                applied
+            );
             assert!(control.status.rejected_action().is_none());
         }
-        offset += count;
-        control.reclaim();
+        assert_eq!(control.reclaim(), 1);
     }
+    assert_eq!(cursor, END);
     assert!(contrast > 0.01, "wet/dry fixture must be distinguishable");
-    // The source has been silent for over700 frames. A fully dry primary path
-    // is silent, while the independent parallel room still contributes a tail.
-    // Main placement processes that room too; only track/Return can isolate it.
+    // With the primary excitation silent, the independent room still rings.
     if location != 2 {
-        assert!(dry_pcm[..1].iter().flatten().any(|v| v.abs() > 1e-5));
+        assert!(dry_pcm[END - 1].iter().any(|v| v.abs() > 1e-5));
     }
     control.request_shutdown();
-    zero(measure(|| {
-        callback.begin_block();
-        callback.render(&mut actual).unwrap();
-    }));
+    render(&mut callback, &mut output);
     control.reclaim();
 }
 
-fn render(
-    callback: &mut prepared::Callback,
-    wet: &mut SessionPlayback,
+/// Read the target's routed input and aligned dry output from the always-off
+/// reference. A pristine factory sees just the new input, never the old pass.
+fn fresh_effect_delta(
     dry: &mut SessionPlayback,
-    actual: &mut [[f32; 2]],
-    wet_pcm: &mut [[f32; 2]],
-    dry_pcm: &mut [[f32; 2]],
-) {
-    wet.render(wet_pcm).unwrap();
-    dry.render(dry_pcm).unwrap();
+    state: &NativeDeviceState,
+    device: DeviceId,
+    tempo: Option<&TempoMap>,
+    output: &mut [Frame],
+) -> Vec<Frame> {
+    let mut input = vec![[0.0; 2]; output.len()];
+    let mut aligned_dry = input.clone();
+    let mut identity = None;
+    let mut next_input = 0;
+    let mut next_output = 0;
+    dry.render_with_node_signal_observer(
+        output,
+        Some(&mut |node, phase, offset, pcm| {
+            if node.device_id != device.value() {
+                return;
+            }
+            identity = Some(ProcessorInstanceIdentity::new(node.owner, node.device_id).unwrap());
+            let (samples, next) = match phase {
+                NodeSignalPhase::Input => (&mut input, &mut next_input),
+                NodeSignalPhase::Output => (&mut aligned_dry, &mut next_output),
+            };
+            assert_eq!(offset, *next, "continuous target tap");
+            *next += pcm.len();
+            samples[offset..*next].copy_from_slice(pcm);
+        }),
+    )
+    .unwrap();
+    assert_eq!((next_input, next_output), (output.len(), output.len()));
+    let registry = hex_devices::native_registry().unwrap();
+    let parameters = if tempo.is_some() { &[DRIVE][..] } else { &[] };
+    let prepared = registry
+        .prepare_runtime_instance_with_automation(
+            identity.unwrap(),
+            state,
+            &DevicePreparationContext {
+                sample_rate: RATE,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+            parameters,
+        )
+        .unwrap();
+    let mut fresh = prepared
+        .processor
+        .as_ref()
+        .and_then(|factory| factory.legacy())
+        .unwrap()
+        .create_runtime();
+    if let Some(tempo) = tempo {
+        fresh
+            .process_block_with_automation(
+                &mut input,
+                None,
+                &FreshDrive(tempo),
+                &EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+    } else {
+        fresh.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+    }
+    let gain = state.output_gain_linear();
+    for (wet, dry) in input.iter_mut().zip(aligned_dry) {
+        for (sample, dry) in wet.iter_mut().zip(dry) {
+            *sample = *sample * gain - dry;
+        }
+    }
+    input
+}
+
+struct FreshDrive<'a>(&'a TempoMap);
+
+impl NativeParameterAutomation for FreshDrive<'_> {
+    fn parameter_ids(&self) -> &[ParameterId] {
+        &[DRIVE]
+    }
+
+    fn value_at(&self, parameter: ParameterId, offset: usize) -> Option<ParameterValue> {
+        assert_eq!(parameter, DRIVE);
+        let beat = self.0.frame_to_beat((RESTART + offset) as u64).unwrap();
+        let fraction = beat.raw() as f64 / BeatTime::ONE.raw() as f64;
+        let drive =
+            f64::from(DRIVE_START) + (f64::from(DRIVE_END) - f64::from(DRIVE_START)) * fraction;
+        Some(ParameterValue::Float(drive as f32))
+    }
+}
+
+fn render(callback: &mut prepared::Callback, output: &mut [Frame]) {
     zero(measure(|| {
         callback.begin_block();
-        callback.render(actual).unwrap();
+        callback.render(output).unwrap();
     }));
 }
 
