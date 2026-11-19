@@ -1098,9 +1098,9 @@ fn assert_musical_outer_pcm(
                 max: expected_source[start],
             };
             for sample in &expected_source[start + 1..end] {
-                for channel in 0..2 {
-                    peak.min[channel] = peak.min[channel].min(sample[channel]);
-                    peak.max[channel] = peak.max[channel].max(sample[channel]);
+                for (channel, value) in sample.iter().copied().enumerate() {
+                    peak.min[channel] = peak.min[channel].min(value);
+                    peak.max[channel] = peak.max[channel].max(value);
                 }
             }
             peak
