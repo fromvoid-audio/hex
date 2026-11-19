@@ -14,12 +14,21 @@ pub const SOURCE: Frame = [0.25, -0.125];
 /// Two four-frame spans separated by a large gap, with a nonzero outer start.
 /// All construction, source ownership and destruction belong outside probes.
 pub fn sparse_project(fade: ClipFade, gain: ClipGain) -> Result<Project, Invalid> {
+    sparse_project_with_island_size(fade, gain, 4)
+}
+
+fn sparse_project_with_island_size(
+    fade: ClipFade,
+    gain: ClipGain,
+    island: u64,
+) -> Result<Project, Invalid> {
+    let duration = DESTINATION + island;
     let mut editor = Editor::new(hex_project::Project::new(48_000)?, 8)?;
     let Created::Imported { clip, asset, .. } = editor.execute(Command::ImportAudioTrack {
         name: "source".into(),
         path: "compiled-fade-fixture.wav".into(),
         sample_rate: 48_000,
-        frames: 8,
+        frames: island * 2,
     })?
     else {
         return Err(Invalid("compiled fade fixture import failed"));
@@ -30,7 +39,7 @@ pub fn sparse_project(fade: ClipFade, gain: ClipGain) -> Result<Project, Invalid
         fade_out: 0,
     })?;
     for operation in [
-        AudioEventEdit::Split { at: 4 },
+        AudioEventEdit::Split { at: island },
         AudioEventEdit::Place {
             event: 1,
             start: DESTINATION as i64,
@@ -41,9 +50,12 @@ pub fn sparse_project(fade: ClipFade, gain: ClipGain) -> Result<Project, Invalid
     editor.execute(Command::TrimClipEdge {
         clip,
         edge: TrimEdge::Right,
-        frame: DURATION,
+        frame: duration,
     })?;
-    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![SOURCE; 8])?)]);
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(48_000, vec![SOURCE; (island * 2) as usize])?,
+    )]);
     let compiled = crate::compile::project(editor.project(), &media)?;
     let mut clip: Clip = compiled
         .tracks
@@ -60,7 +72,7 @@ pub fn sparse_project(fade: ClipFade, gain: ClipGain) -> Result<Project, Invalid
         return Err(Invalid("compiled fade fixture is not sparse"));
     }
     clip.start = START;
-    clip.end = START + DURATION;
+    clip.end = START + duration;
     clip = clip.with_fade(fade)?.with_gain(gain);
     Project::new(48_000, vec![Track::new(vec![clip], 1.0, false)?])
 }
@@ -213,5 +225,46 @@ mod tests {
             ),
             (1, 4, true)
         );
+    }
+    /// Finite software timing only; no device deadline or host parity claim.
+    #[test]
+    #[ignore]
+    fn profile_sparse_fade_render_cost() {
+        use std::{hint::black_box, time::Instant};
+        const BLOCK: usize = 256;
+        const WARMUP: usize = 100;
+        const REPEATS: usize = 1_000;
+        for faded in [false, true] {
+            let duration = DESTINATION + BLOCK as u64;
+            let fade = if faded {
+                ClipFade::new(duration, 0, 0, BLOCK as u64).unwrap()
+            } else {
+                ClipFade::neutral(duration).unwrap()
+            };
+            let project =
+                sparse_project_with_island_size(fade, ClipGain::UNITY, BLOCK as u64).unwrap();
+            let mut renderer = crate::Renderer::new(&project);
+            renderer.play();
+            let mut output = [[0.0; 2]; BLOCK];
+            for _ in 0..WARMUP {
+                renderer.seek(START + DESTINATION);
+                renderer.render(&mut output).unwrap();
+                black_box(&output);
+            }
+            let mut nanos = [0_u128; 5];
+            for total in &mut nanos {
+                for _ in 0..REPEATS {
+                    renderer.seek(START + DESTINATION);
+                    let started = Instant::now();
+                    let result = renderer.render(&mut output);
+                    *total += started.elapsed().as_nanos();
+                    result.unwrap();
+                    black_box(&output);
+                }
+            }
+            println!(
+                "sparse-render rate=48000 block={BLOCK} warmup={WARMUP} repeats={REPEATS} faded={faded} timed-nanos={nanos:?}"
+            );
+        }
     }
 }
