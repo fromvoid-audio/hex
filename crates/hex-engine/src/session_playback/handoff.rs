@@ -1960,12 +1960,32 @@ impl SessionPlayback {
                     .map(hex_project::LoopRegion::start),
             }
         };
-        // A loop-only edit keeps the canonical base map, paused or playing.
-        // Delayed stamps already carry their own beats, and the candidate's
-        // anchor keeps new stamps continuous at the cut; the planner below
-        // still refuses incompatible sources and active tails. An edited base
-        // tempo map still needs the old guard once the clock has moved.
+        // In-flight audio retains the tempo, beat and frame stamps it had
+        // when rendered. When the linear Arrangement still has the same
+        // delay layout, copy that history and anchor new audio at the cut.
+        // Session routes, mutable gates and loop timing retain their existing
+        // change-specific handoff and restart rules.
+        let carries_linear_audio_tempo = !same_base
+            && previous.playing
+            && clock_transfer == 1
+            && fresh_history.is_none()
+            && same_periodic
+            && old_loop.is_none()
+            && new_loop.is_none()
+            && self
+                .routes
+                .iter()
+                .chain(&previous.routes)
+                .all(|route| route.owner == RouteOwner::Arrangement && route.pending.is_none())
+            && self
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .chain(previous.revision.arrangement().tracks())
+                .all(|track| track.instrument.is_none() && track.foreign_instrument.is_none());
         if !same_base
+            && !carries_linear_audio_tempo
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing

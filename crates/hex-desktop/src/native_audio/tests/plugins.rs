@@ -11,6 +11,7 @@ mod offline_bounce;
 mod paused_monitor;
 mod performance_profile;
 mod state;
+mod tempo;
 mod ui;
 mod unlaned_effect_commit;
 mod unsealed_admission;

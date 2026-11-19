@@ -277,21 +277,35 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
                 .any(|sample| *sample != 0.0)
         );
         assert_eq!(relocated.arrangement_frame(), 2848);
+        // The normal live publication keeps the PCM already in flight. The
+        // control-prepared restart above still reflects a deliberate reset.
         let mut ordinary_old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
-        ordinary_old.apply(SessionPlaybackCommand::Play).unwrap();
-        ordinary_old.render(&mut [[0.0; 2]; 600]).unwrap();
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        for playback in [&mut ordinary_old, &mut uninterrupted] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut [[0.0; 2]; 600]).unwrap();
+        }
         let mut ordinary = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
-        ordinary
+        let live = ordinary
             .try_inherit_state_live_from(&mut ordinary_old)
             .unwrap();
-        let mut ordinary_output = vec![[0.0; 2]; 2048];
+        assert!(!live.running_audio_restart());
+        assert_eq!(ordinary.performance_frame(), 600);
+        assert_eq!(ordinary.arrangement_frame(), 800);
+        let latency = old_revision.arrangement().main_latency_frames() as usize;
+        let mut uninterrupted_output = vec![[0.0; 2]; latency];
+        uninterrupted.render(&mut uninterrupted_output).unwrap();
+        assert!(
+            uninterrupted_output
+                .iter()
+                .any(|sample| *sample != [0.0; 2])
+        );
+        let mut ordinary_output = vec![[0.0; 2]; latency];
         for chunk in ordinary_output.chunks_mut(block) {
             ordinary.render(chunk).unwrap();
         }
-        assert_eq!(
-            ordinary_output, relocated_expected,
-            "unplanned block={block}"
-        );
+        assert_eq!(ordinary_output, uninterrupted_output, "live block={block}");
+        assert_eq!(ordinary.arrangement_frame(), 800 + latency as u64);
         let mut playback_old =
             crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&old_revision))
                 .unwrap();
