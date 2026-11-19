@@ -568,27 +568,34 @@ impl ReturnEffectTailPlan {
             } else {
                 false
             };
-            if inherits_current_bus
-                || old_bus.muted
-                || old_bus.gain == 0.0
-                || old_chain.committed_range_is_quiescent(0..old_chain.len())
-            {
+            if inherits_current_bus {
                 continue;
             }
-            if let Some(index) = new_index
-                && tail_policy
-                    .for_chain(&old_bus.device_chain, &new_buses[index].device_chain)
-                    .cut_obsolete_tail()?
-            {
-                // The cut retires the obsolete chain with its donor. Transfer
-                // only compatible stable device histories to the active Return.
-                let new_chain = new_chains
-                    .get(index)
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                if !new_chain.can_inherit_from(old_chain) {
-                    return Err(SessionPlaybackError::DeviceRuntime);
+            let no_outgoing_tail = old_bus.muted
+                || old_bus.gain == 0.0
+                || old_chain.committed_range_is_quiescent(0..old_chain.len());
+            if let Some(index) = new_index {
+                match tail_policy.for_chain(&old_bus.device_chain, &new_buses[index].device_chain) {
+                    DeviceEditTailPolicy::Cut => {
+                        // A muted Return still renders its devices. Retain
+                        // compatible survivors before ruling out a detached tail.
+                        let new_chain = new_chains
+                            .get(index)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        if new_chain.can_inherit_from(old_chain) {
+                            plan.bus_history[index] = ReturnBusHistory::Inherit;
+                        } else if !no_outgoing_tail {
+                            return Err(SessionPlaybackError::DeviceRuntime);
+                        }
+                        continue;
+                    }
+                    policy if !no_outgoing_tail => {
+                        policy.cut_obsolete_tail()?;
+                    }
+                    _ => {}
                 }
-                plan.bus_history[index] = ReturnBusHistory::Inherit;
+            }
+            if no_outgoing_tail {
                 continue;
             }
 
