@@ -1874,7 +1874,15 @@ impl SessionPlayback {
                 && !track.has_gain_automation()
                 && recording_override.is_none();
             let has_source_effects = self.source_effects.has_chain(index);
+            let power_off_slot = self.receiver_power_off_slots[index]
+                .map(usize::from)
+                .filter(|&slot| {
+                    self.tail_mutable_instruments[slot]
+                        .as_ref()
+                        .is_some_and(|tail| !tail.speculative_is_quiescent())
+                });
             let buffered = has_source_effects
+                || power_off_slot.is_some()
                 || shared_source
                 || live_target
                 || stateful_effects
@@ -1884,6 +1892,7 @@ impl SessionPlayback {
                 || smoothing
                 || self.device_metering;
             let ordered = has_source_effects
+                || power_off_slot.is_some()
                 || shared_source
                 || live_target
                 || smoothing
@@ -1915,6 +1924,7 @@ impl SessionPlayback {
             let has_current_route = (shared_source
                 && shared_source_has_route(&self.revision, &self.route_scratch, index)?)
                 || mutable_active
+                || power_off_slot.is_some()
                 || live_target
                 || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
                 || self.route_scratch[index].audio_release.is_some()
@@ -2136,6 +2146,19 @@ impl SessionPlayback {
                         keyboard
                             .render_with_resources(generator, None, &resources)
                             .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                    }
+                    if let Some(slot) = power_off_slot
+                        && let Some(tail) = self.tail_mutable_instruments[slot].as_mut()
+                    {
+                        process_mutable_tail(
+                            tail,
+                            &mut self.mutable_onsets,
+                            &mut self.mutable_events,
+                            performance_frame,
+                            generator,
+                            &timing,
+                            true,
+                        )?;
                     }
                     if let Some(generated) = isolated {
                         self.source_effects
@@ -2836,7 +2859,7 @@ impl SessionPlayback {
             else {
                 continue;
             };
-            if tail.speculative_is_quiescent() {
+            if tail.powers_off_through_receiver() || tail.speculative_is_quiescent() {
                 continue;
             }
             let mut tail_buffer = [[0.0; 2]; 256];

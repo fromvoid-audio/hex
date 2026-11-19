@@ -311,6 +311,7 @@ struct PowerOffFade {
     frames: u32,
     remaining: u32,
     scratch: u32,
+    receiver_gain: Option<f32>,
 }
 
 impl MutableInstrumentTail {
@@ -329,6 +330,7 @@ impl MutableInstrumentTail {
                 frames,
                 remaining: frames,
                 scratch: frames,
+                receiver_gain: None,
             }
         });
         Self {
@@ -337,6 +339,19 @@ impl MutableInstrumentTail {
             sends,
             power_off,
         }
+    }
+
+    pub(crate) fn with_power_off_receiver(mut self, gain: f32) -> Self {
+        if let Some(fade) = &mut self.power_off {
+            fade.receiver_gain = Some(gain);
+        }
+        self
+    }
+
+    pub(crate) fn powers_off_through_receiver(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.receiver_gain.is_some())
     }
 
     pub(crate) fn is_powering_off(&self) -> bool {
@@ -416,7 +431,10 @@ impl MutableInstrumentTail {
         }
         output_trim::render_contribution(
             &mut output[..width],
-            |offset| (fade.scratch - offset as u32) as f32 / fade.frames as f32,
+            |offset| {
+                let fade_gain = (fade.scratch - offset as u32) as f32 / fade.frames as f32;
+                fade_gain * fade.receiver_gain.unwrap_or(1.0)
+            },
             over_budget,
             |contribution| render(&mut self.runtime, contribution),
         )?;

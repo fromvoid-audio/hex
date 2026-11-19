@@ -66,6 +66,7 @@ impl SessionPlayback {
             has_tail_route_sends: _,
             tail_proven_grouped: _,
             tail_mutable_instruments,
+            receiver_power_off_slots: _,
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,

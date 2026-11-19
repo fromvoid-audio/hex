@@ -349,6 +349,20 @@ impl SessionPlayback {
                         frames,
                     )?;
                 }
+                if let Some(slot) = self.receiver_power_off_slots[index].map(usize::from)
+                    && let Some(tail) = self.tail_mutable_instruments[slot].as_mut()
+                    && !tail.speculative_is_quiescent()
+                {
+                    process_mutable_tail(
+                        tail,
+                        &mut self.mutable_onsets,
+                        &mut self.mutable_events,
+                        self.performance_frame,
+                        frames,
+                        &timing,
+                        false,
+                    )?;
+                }
                 if self.source_effects.has_chain(index) {
                     let clock = crate::effect_clock::ArrangementEffectClock::session(
                         self.revision.session().timing(),
