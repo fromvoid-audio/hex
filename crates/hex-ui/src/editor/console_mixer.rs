@@ -98,13 +98,19 @@ impl EditorView {
         let Some(state) = self.state.clone() else {
             return row;
         };
-        for track in page.columns.iter().filter_map(|column| {
-            state
+        for column in page.displayed_columns() {
+            let Some(column) = column else {
+                row = row.child(super::session_grid::pending_device_column(column_width));
+                continue;
+            };
+            let Some(track) = state
                 .project
                 .tracks()
                 .get(column.index)
                 .filter(|track| track.id() == column.id)
-        }) {
+            else {
+                continue;
+            };
             let id = track.id();
             let (muted, soloed) = self.displayed_track_switches(track);
             let (background, text) = super::track_gain::activator_colors(!muted);

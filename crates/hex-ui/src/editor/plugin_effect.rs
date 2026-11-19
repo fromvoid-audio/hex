@@ -120,7 +120,8 @@ pub(super) struct FailedPluginProposal {
 
 #[derive(Clone, Copy)]
 enum ProposalSurface {
-    Track,
+    ArrangementTrack,
+    SessionTrack,
     Slot,
 }
 
@@ -209,7 +210,14 @@ impl EditorView {
             return false;
         };
         match proposal.destination {
-            PluginEffectDestination::NewTrack { .. } => self.mode == EditorMode::Arrangement,
+            PluginEffectDestination::NewTrack { .. } => match self.mode {
+                EditorMode::Arrangement => true,
+                EditorMode::Session => self.state.as_ref().is_some_and(|state| {
+                    self.session_track_page(&state.project, self.session_visible_columns)
+                        .proposal_index()
+                        .is_some()
+                }),
+            },
             _ => {
                 self.clip_view_open
                     && self.device_panel_active
@@ -232,9 +240,23 @@ impl EditorView {
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .children(
-                self.proposed_plugin_surface(ProposalSurface::Track, cx)
+                self.proposed_plugin_surface(ProposalSurface::ArrangementTrack, cx)
                     .map(|header| header.w(px(self.track_header_width()))),
             )
+    }
+
+    pub(super) fn proposed_session_track(
+        &mut self,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        div()
+            .id("session-pending-device-track")
+            .debug_selector(|| "session-pending-device-track".into())
+            .w(px(width))
+            .h_full()
+            .flex_shrink_0()
+            .children(self.proposed_plugin_surface(ProposalSurface::SessionTrack, cx))
     }
 
     pub(super) fn proposed_plugin_slot_card(&mut self, cx: &mut Context<Self>) -> Div {
@@ -257,7 +279,12 @@ impl EditorView {
         let title = hex_session::service::text::verbatim(&proposal.name);
         let failed = error.is_some();
         let detail = error.unwrap_or(proposal.loading).to_owned();
-        let tooltip = super::display_error::DisplayError::from(detail.clone());
+        let caption = if matches!(surface, ProposalSurface::SessionTrack) {
+            if failed { "load failed" } else { "loading" }.to_owned()
+        } else {
+            detail.clone()
+        };
+        let tooltip = super::display_error::DisplayError::from(detail);
         let control = Arc::clone(control);
         let focus = self
             .proposed_plugin_action_focus
@@ -283,13 +310,21 @@ impl EditorView {
         };
         let key_action = action.clone();
         let (action_id, status_id) = match (surface, failed) {
-            (ProposalSurface::Track, true) => (
+            (ProposalSurface::ArrangementTrack, true) => (
                 "arrangement-pending-device-dismiss",
                 "arrangement-pending-device-status",
             ),
-            (ProposalSurface::Track, false) => (
+            (ProposalSurface::ArrangementTrack, false) => (
                 "arrangement-pending-device-cancel",
                 "arrangement-pending-device-status",
+            ),
+            (ProposalSurface::SessionTrack, true) => (
+                "session-pending-device-dismiss",
+                "session-pending-device-status",
+            ),
+            (ProposalSurface::SessionTrack, false) => (
+                "session-pending-device-cancel",
+                "session-pending-device-status",
             ),
             (ProposalSurface::Slot, true) => (
                 "device-chain-loading-dismiss",
@@ -328,6 +363,9 @@ impl EditorView {
                 .items_center()
                 .gap_2()
                 .px_2()
+                .when(matches!(surface, ProposalSurface::SessionTrack), |header| {
+                    header.h_full().line_height(px(11.0))
+                })
                 .bg(rgb(theme::color(theme::PaletteRole::Surface)))
                 .child(
                     div()
@@ -349,7 +387,7 @@ impl EditorView {
                                     cx.new(|_| super::display_error::ErrorTooltip(tooltip.clone()))
                                         .into()
                                 })
-                                .child(theme::text(detail)),
+                                .child(theme::text(caption)),
                         ),
                 )
                 .children([button]),
@@ -418,7 +456,52 @@ impl EditorView {
         }) else {
             return;
         };
+        if terminal.accepted
+            && !event.project_replaced
+            && self.mode == EditorMode::Session
+            && self.proposed_plugin_track_anchor().is_some()
+            && let Some(state) = &self.state
+        {
+            let page = self.session_track_page(&state.project, self.session_visible_columns);
+            if page.proposal_index().is_some() {
+                self.session_track_start = page.range.start;
+            }
+        }
         self.retire_plugin_effect(&terminal.control, terminal.accepted, event.error.as_deref());
+    }
+
+    pub(super) fn insert_plugin_track(
+        &mut self,
+        selection: &hex_plugin_catalog::PluginSelection,
+        before_track: Option<TrackId>,
+        cx: &App,
+    ) {
+        use hex_plugin_catalog::PluginRole;
+        use hex_project::TrackDeviceSlot;
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let gain = match self.track_defaults.captured_gain() {
+            Ok(gain) => gain,
+            Err(error) => {
+                self.error = Some(error.into());
+                return;
+            }
+        };
+        self.insert_plugin_effect(
+            selection,
+            PluginEffectDestination::NewTrack {
+                before_track,
+                slot: match selection.role {
+                    PluginRole::Instrument => TrackDeviceSlot::Instrument,
+                    PluginRole::Effect => TrackDeviceSlot::Effect,
+                },
+                gain,
+                track_identity: state.project.next_identity(),
+            },
+            None,
+            cx,
+        );
     }
 
     pub(super) fn retire_plugin_effect(

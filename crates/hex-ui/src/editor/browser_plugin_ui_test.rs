@@ -1139,25 +1139,40 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 
 #[gpui::test]
 fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut TestAppContext) {
-    check_vst_proposal(cx, false, false);
+    check_vst_proposal(cx, false, false, crate::editor::EditorMode::Arrangement);
 }
 
 #[gpui::test]
 fn cancel_vst_new_track_removes_the_proposal_before_the_worker_terminal(cx: &mut TestAppContext) {
-    check_vst_proposal(cx, true, false);
+    check_vst_proposal(cx, true, false, crate::editor::EditorMode::Arrangement);
+}
+
+#[gpui::test]
+fn cancel_vst_session_track_before_worker_terminal_restores_the_column(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, true, false, crate::editor::EditorMode::Session);
+}
+
+#[gpui::test]
+fn failed_vst_session_track_retains_its_column_until_dismissed(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, false, false, crate::editor::EditorMode::Session);
 }
 
 #[gpui::test]
 fn pending_vst_slot_retains_failed_load_at_the_requested_chain_position(cx: &mut TestAppContext) {
-    check_vst_proposal(cx, false, true);
+    check_vst_proposal(cx, false, true, crate::editor::EditorMode::Arrangement);
 }
 
 #[gpui::test]
 fn cancel_vst_slot_with_keyboard_preserves_the_existing_chain(cx: &mut TestAppContext) {
-    check_vst_proposal(cx, true, true);
+    check_vst_proposal(cx, true, true, crate::editor::EditorMode::Arrangement);
 }
 
-fn check_vst_proposal(cx: &mut TestAppContext, cancel_first: bool, existing_chain: bool) {
+fn check_vst_proposal(
+    cx: &mut TestAppContext,
+    cancel_first: bool,
+    existing_chain: bool,
+    mode: crate::editor::EditorMode,
+) {
     use hex_project::TrackDeviceSlot;
     use hex_session::service::{
         CanonicalAudioSourceSnapshot, PluginEffectDestination, Request, Service, WorkerAudioSink,
@@ -1257,7 +1272,9 @@ fn check_vst_proposal(cx: &mut TestAppContext, cancel_first: bool, existing_chai
         entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     }
     let prior = editor.read_with(&visual, |view, _| view.state.clone().unwrap());
+    let session = mode == crate::editor::EditorMode::Session;
     editor.update(&mut visual, |view, cx| {
+        view.set_mode(mode);
         let before = view.state.as_ref().unwrap().project.next_identity();
         view.selected_track = Some(track);
         let destination = if existing_chain {
@@ -1290,6 +1307,12 @@ fn check_vst_proposal(cx: &mut TestAppContext, cancel_first: bool, existing_chai
             "device-chain-loading-cancel",
             "device-chain-loading-dismiss",
         )
+    } else if session {
+        (
+            "session-pending-device-track",
+            "session-pending-device-cancel",
+            "session-pending-device-dismiss",
+        )
     } else {
         (
             "arrangement-pending-device-track",
@@ -1302,21 +1325,27 @@ fn check_vst_proposal(cx: &mut TestAppContext, cancel_first: bool, existing_chai
     let original = Box::leak(
         before_device
             .map_or_else(
-                || format!("arrangement-track-header-{}", track.value()),
+                || {
+                    if session {
+                        format!("session-track-{}", track.value())
+                    } else {
+                        format!("arrangement-track-header-{}", track.value())
+                    }
+                },
                 |id| format!("device-drop-card-{}", id.value()),
             )
             .into_boxed_str(),
     );
     let original_bounds = visual.debug_bounds(original).unwrap();
     assert!(pending.contains(&cancel_bounds.center()));
-    if existing_chain {
+    if existing_chain || session {
         assert!(pending.right() <= original_bounds.left());
     } else {
         assert!(pending.bottom() <= original_bounds.top());
     }
 
     if cancel_first {
-        if existing_chain {
+        if existing_chain || session {
             let focus = editor.read_with(&visual, |view, _| {
                 view.proposed_plugin_action_focus.as_ref().unwrap().clone()
             });
@@ -1370,7 +1399,7 @@ fn check_vst_proposal(cx: &mut TestAppContext, cancel_first: bool, existing_chai
     }
     assert!(visual.debug_bounds(surface).is_none());
     let original_bounds = visual.debug_bounds(original).unwrap();
-    if existing_chain {
+    if existing_chain || session {
         assert!(original_bounds.left() < pending.right());
     } else {
         assert!(original_bounds.top() < pending.bottom());
@@ -1394,6 +1423,11 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
         (
             crate::editor::EditorMode::Arrangement,
             true,
+            Some(TrackDeviceSlot::Instrument),
+        ),
+        (
+            crate::editor::EditorMode::Session,
+            false,
             Some(TrackDeviceSlot::Instrument),
         ),
     ] {
@@ -1450,6 +1484,8 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
                     "arrangement-lane"
                 } else if mode == crate::editor::EditorMode::Arrangement {
                     "arrangement-track-header"
+                } else if new_track_slot.is_some() {
+                    "console-column-header-before"
                 } else {
                     "session-track"
                 },
@@ -1458,9 +1494,10 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
             .into_boxed_str(),
         );
         let bounds = visual.debug_bounds(selector).unwrap();
-        let target = match new_track_slot {
-            Some(_) => point(bounds.center().x, bounds.origin.y),
-            None => bounds.center(),
+        let target = if lane && new_track_slot.is_some() {
+            point(bounds.center().x, bounds.origin.y)
+        } else {
+            bounds.center()
         };
         for refusal in 0..2 {
             visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());

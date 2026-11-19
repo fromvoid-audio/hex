@@ -1,7 +1,7 @@
 //! Painted Console column boundaries capture stable anchors. GPUI owns hover
-//! paint and hit testing; no model allocation, guessed IDs or retained ghost is
-//! needed. The same destination is bound to hover and release. Canonical birth,
-//! preparation and history stay with project/session, including async imports.
+//! paint and hit testing. The same destination is bound to hover and release.
+//! Canonical birth, preparation and history stay with project/session, including
+//! async imports and device loading.
 use super::{
     EditorMode, EditorView,
     drag::{BrowserAudioDrag, ClipDrag, NativeDeviceDrag, NativeDeviceDragSource},
@@ -9,10 +9,7 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, IntoElement, Stateful, Window, WindowId, div, prelude::*, px, rgb};
 use hex_project::{SessionSceneTarget, TrackId};
-use hex_session::{
-    import_batch::ConsoleDestination,
-    service::{ArrangementDeviceDestination, Request},
-};
+use hex_session::{import_batch::ConsoleDestination, service::ArrangementDeviceDestination};
 
 /// Regular columns may clip at very narrow sizes; Return/Main columns stay
 /// pinned and operable. Header, scene and mixer rows share this exact viewport.
@@ -264,11 +261,28 @@ impl EditorView {
                 let valid = frame.current(view, window) && view.console_column_device_valid(drag, before_track, cx);
                 view.clear_native_device_drag(drag);
                 cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-                if valid && let NativeDeviceDragSource::Browser {class, type_id} = drag.source {
-                    let destination = ArrangementDeviceDestination::NewTrack {before_track};
-                    match view.device_track_gain(destination) {
-                        Ok(new_track_gain) => { view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination, new_track_gain, control: None}); }
-                        Err(error) => view.error = Some(error.into()),
+                if valid {
+                    match &drag.source {
+                        NativeDeviceDragSource::Browser { class, type_id } => {
+                            let destination = ArrangementDeviceDestination::NewTrack { before_track };
+                            match view.device_track_gain(destination) {
+                                Ok(gain) => view.insert_builtin_arrangement_device(
+                                    hex_engine::AudioSourceContext {
+                                        project_generation: drag.project_generation,
+                                        editor_revision: drag.revision,
+                                    },
+                                    *class,
+                                    *type_id,
+                                    destination,
+                                    gain,
+                                ),
+                                Err(error) => view.error = Some(error.into()),
+                            }
+                        }
+                        NativeDeviceDragSource::PluginEffect(selection) => {
+                            view.insert_plugin_track(selection, before_track, cx);
+                        }
+                        NativeDeviceDragSource::Existing { .. } => {}
                     }
                 } else { view.error = Some("device drop canceled · target changed, editing is busy, or source is not a browser device".into()); }
                 cx.notify();
@@ -298,7 +312,8 @@ impl EditorView {
         cx: &gpui::App,
     ) -> bool {
         self.native_device_drag_is_current(drag)
-            && matches!(drag.source, NativeDeviceDragSource::Browser { .. })
+            && !matches!(drag.source, NativeDeviceDragSource::Existing { .. })
+            && self.pending_plugin_effect.is_none()
             && self
                 .active_native_device_drag
                 .as_ref()

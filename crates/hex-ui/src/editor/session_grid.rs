@@ -28,6 +28,17 @@ pub(super) const TRACK_HEADER_HEIGHT: f32 = 28.0;
 const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 110.0;
 
+/// The loading column has no cell, mixer, or drop actions until installation.
+pub(super) fn pending_device_column(width: f32) -> Div {
+    div()
+        .w(px(width))
+        .h_full()
+        .flex_shrink_0()
+        .border_l_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+}
+
 /// Paint occupies an inset surface; the cell keeps its original IDs, layout,
 /// rename/launch controls and drop targets. Console clips are one caption row,
 /// so their entire surface uses the header fill without an arrangement divider.
@@ -269,6 +280,25 @@ impl EditorView {
             && !self.saving_project
     }
 
+    pub(super) fn session_track_page(
+        &self,
+        project: &hex_project::Project,
+        visible_columns: usize,
+    ) -> Arc<TrackPage> {
+        self.pending_console_reorder_page().unwrap_or_else(|| {
+            let visible = &self.arrangement_focus.projection.console_indices;
+            let page =
+                TrackPage::capture(project, visible, self.session_track_start, visible_columns);
+            let page = match self.proposed_plugin_track_anchor() {
+                Some(before) => {
+                    page.with_device_proposal(project, visible, visible_columns, before)
+                }
+                None => page,
+            };
+            Arc::new(page)
+        })
+    }
+
     pub(super) fn session_grid(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let Some(state) = self.state.clone() else {
             return div().flex_1().min_h_0();
@@ -336,17 +366,10 @@ impl EditorView {
                 self.session_track_start = index.saturating_sub(visible_columns - 1);
             }
         }
-        let page = self.pending_console_reorder_page().unwrap_or_else(|| {
-            Arc::new(TrackPage::capture(
-                &state.project,
-                indices,
-                self.session_track_start,
-                visible_columns,
-            ))
-        });
+        let track_count = indices.len();
+        let page = self.session_track_page(&state.project, visible_columns);
         let column_start = page.range.start;
         let next_track = page.next;
-        let track_count = indices.len();
         let frame = ColumnFrame::capture(self, window, revision);
         let row_context = SessionRowContext {
             frame,
@@ -368,14 +391,18 @@ impl EditorView {
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .children(
-                page.columns
-                    .iter()
-                    .filter_map(|column| {
-                        tracks
+                page.displayed_columns()
+                    .filter_map(|column| match column {
+                        Some(column) => tracks
                             .get(column.index)
                             .filter(|track| track.id() == column.id)
+                            .map(Some),
+                        None => Some(None),
                     })
                     .map(|track| {
+                        let Some(track) = track else {
+                            return self.proposed_session_track(TRACK_COLUMN_WIDTH, cx);
+                        };
                         let track_id = track.id();
                         let selected = self.track_selection.contains(track_id);
                         let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
@@ -1066,13 +1093,19 @@ impl EditorView {
             .flex()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        for track in page.columns.iter().filter_map(|column| {
-            state
+        for column in page.displayed_columns() {
+            let Some(column) = column else {
+                row = row.child(pending_device_column(TRACK_COLUMN_WIDTH));
+                continue;
+            };
+            let Some(track) = state
                 .project
                 .tracks()
                 .get(column.index)
                 .filter(|track| track.id() == column.id)
-        }) {
+            else {
+                continue;
+            };
             let track_id = track.id();
             let content = state.project.session_cell(track_id, scene_id);
             let route = self.route_entry_for_track(track_id.value(), route_snapshot, routes_ready);
@@ -1570,13 +1603,19 @@ impl EditorView {
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         if let Some(state) = self.state.as_ref() {
-            for track in page.columns.iter().filter_map(|column| {
-                state
+            for column in page.displayed_columns() {
+                let Some(column) = column else {
+                    row = row.child(pending_device_column(TRACK_COLUMN_WIDTH));
+                    continue;
+                };
+                let Some(track) = state
                     .project
                     .tracks()
                     .get(column.index)
                     .filter(|track| track.id() == column.id)
-            }) {
+                else {
+                    continue;
+                };
                 let id = track.id();
                 let cell = div()
                     .id(("console-append-track", id.value()))

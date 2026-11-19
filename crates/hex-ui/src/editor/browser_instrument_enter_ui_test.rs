@@ -93,6 +93,55 @@ fn pump_instrument_enter(
 }
 
 #[gpui::test]
+fn browser_instrument_enter_reveals_the_session_append_on_a_full_page(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let directory = instrument_environment();
+    let (handle, editor, _) = instrument_enter_worker_window(cx, &directory);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.set_mode(crate::editor::EditorMode::Session);
+        assert!(
+            view.enqueue(hex_session::service::Request::Edit(Command::AddTrack {
+                name: "second".into(),
+            }))
+        );
+        cx.notify();
+    });
+    pump_instrument_enter(&editor, &mut visual, 2);
+    visual.simulate_resize(gpui::size(gpui::px(565.0), gpui::px(570.0)));
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.session_visible_columns, 1);
+        assert_eq!(view.session_track_start, 0);
+    });
+    let source = visual
+        .debug_bounds("browser-device-instrument-hex.instrument.fm4")
+        .unwrap()
+        .center();
+    visual.simulate_click(source, gpui::Modifiers::default());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let proposed = visual
+        .debug_bounds("session-pending-device-track")
+        .expect("append reveals its loading column");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 2)
+    });
+    pump_instrument_enter(&editor, &mut visual, 3);
+    let born = editor.read_with(&visual, |view, _| view.selected_track.unwrap());
+    let selector = Box::leak(format!("session-track-{}", born.value()).into_boxed_str());
+    assert_eq!(
+        visual.debug_bounds(selector).unwrap().left(),
+        proposed.left()
+    );
+    assert!(
+        visual
+            .debug_bounds("session-pending-device-track")
+            .is_none()
+    );
+}
+
+#[gpui::test]
 fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_undo(
     cx: &mut TestAppContext,
 ) {

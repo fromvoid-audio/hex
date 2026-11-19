@@ -470,14 +470,15 @@ impl EditorView {
             return None;
         }
         let local = x - left;
-        let index = (local / layout.column_width).floor() as usize;
+        let display_index = (local / layout.column_width).floor() as usize;
+        let index = layout.page.track_index(display_index)?;
+        let within = local - display_index as f32 * layout.column_width;
         let project = &self.state.as_ref()?.project;
         if let Some(column) = layout.page.columns.get(index) {
             let track = project
                 .tracks()
                 .get(column.index)
                 .filter(|t| t.id() == column.id)?;
-            let within = local - index as f32 * layout.column_width;
             if track.is_group() && within >= 12.0 && within < layout.column_width - 12.0 {
                 return source
                     .permits_group(column.id)
@@ -488,7 +489,7 @@ impl EditorView {
             }
         }
         let boundary = if let Some(column) = layout.page.columns.get(index) {
-            if local - index as f32 * layout.column_width < layout.column_width / 2.0 {
+            if within < layout.column_width / 2.0 {
                 Some(column.id)
             } else {
                 layout
@@ -550,7 +551,7 @@ impl EditorView {
                 None if page.next.is_none() => page.columns.len(),
                 None => return None,
             };
-            Some((destination, index))
+            Some((destination, page.display_index(index)))
         });
         let visual = drawn.map(|(destination, index)| {
             let base = div()
