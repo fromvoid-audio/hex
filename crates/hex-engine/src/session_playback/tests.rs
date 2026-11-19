@@ -6,6 +6,7 @@ mod frozen_instrument_parameters;
 mod instrument_matrix_ramp;
 mod interactive_start;
 mod release_timeline;
+mod session_note_chase;
 mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
@@ -4659,6 +4660,7 @@ fn mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger() {
     let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let track = playback.routes[0].id;
     playback.routes[0].pending = Some(PendingRoute {
+        note_chase: crate::NoteChase::On,
         frame: 8,
         beat: BeatTime::ZERO,
         target: RouteTarget::Silence,
@@ -9842,6 +9844,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
     failed.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(failed.release_voice_count(), 1);
     failed.routes[0].pending = Some(PendingRoute {
+        note_chase: crate::NoteChase::On,
         frame: 257,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
@@ -10059,6 +10062,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         })
         .unwrap();
     failed.routes[1].pending = Some(PendingRoute {
+        note_chase: crate::NoteChase::On,
         frame: 256,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,

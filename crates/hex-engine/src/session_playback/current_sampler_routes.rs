@@ -190,7 +190,7 @@ impl SessionPlayback {
                         return Err(e);
                     }
                 }
-                RouteOwner::Session { clip, origin } => {
+                RouteOwner::Session { clip, origin, .. } => {
                     let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                         self.revision.session(),
                         self.midi_admission.as_ref(),
@@ -204,7 +204,13 @@ impl SessionPlayback {
                     );
                     prepared
                         .instrument_template()
-                        .query_with_origin(origin, &timing, start, cut, &mut self.spans)
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            &timing,
+                            (start, cut),
+                            &mut self.spans,
+                            route.owner.note_chase(),
+                        )
                         .map_err(SessionPlaybackError::Midi)?;
                     for span in self.spans.spans() {
                         if span.start_frame < now || span.start_frame >= cut {
@@ -237,7 +243,7 @@ impl SessionPlayback {
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         let (incoming_voices, incoming_onsets) = match next {
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                     self.revision.session(),
                     self.midi_admission.as_ref(),
@@ -248,7 +254,13 @@ impl SessionPlayback {
                     timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
                 prepared
                     .instrument_template()
-                    .query_with_origin(origin, &timing, cut, end, &mut self.spans)
+                    .query_with_origin_and_note_chase(
+                        origin,
+                        &timing,
+                        (cut, end),
+                        &mut self.spans,
+                        next.note_chase(),
+                    )
                     .map_err(SessionPlaybackError::Midi)?;
                 (
                     // Held density when the instrument steals releases.
@@ -337,7 +349,8 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
-            let owner = self.owner_for_target(pending.target, beat, performance)?;
+            let owner =
+                self.owner_for_target(pending.target, beat, performance, pending.note_chase)?;
             if !proven_current {
                 if pending.current_reservation.is_some() {
                     return Err(SessionPlaybackError::InvalidCommand);
