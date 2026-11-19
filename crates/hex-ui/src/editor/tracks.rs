@@ -2651,21 +2651,39 @@ impl EditorView {
                     )
                 })
         };
-        let source = super::waveform_frame::Projection::for_display(
-            &state.project,
-            clip,
-            waveform,
-            prepared.and_then(|prepared| prepared.event_source.as_ref()?.frame_waveform()),
-            fade,
-            self.arrangement_event_amplitude(clip),
-            gain,
-        );
-        let displayed = match source {
-            Some((waveform, projection)) => Some((
+        let events = self.arrangement_event_amplitude(clip);
+        let event_source = prepared.and_then(|prepared| prepared.event_source.as_ref());
+        let musical_source = if event_source.is_some_and(|source| source.musical_clock.is_some()) {
+            super::waveform_musical_event::Projection::for_display(
+                &state.project,
+                clip,
+                event_source,
+                events.clone(),
+                gain,
+                fade,
+            )
+        } else {
+            None
+        };
+        let source = if musical_source.is_none() {
+            super::waveform_frame::Projection::for_display(
+                &state.project,
+                clip,
                 waveform,
-                WaveformMapping::Frame {
+                event_source.and_then(|source| source.frame_waveform()),
+                fade,
+                events,
+                gain,
+            )
+        } else {
+            None
+        };
+        let displayed = if let Some((waveform, projection)) = musical_source {
+            Some((
+                waveform,
+                WaveformMapping::MusicalEventFade {
                     projection,
-                    clock: super::waveform_frame::Clock::Arrangement,
+                    clock: super::waveform_musical_event::Clock::Arrangement,
                     fallback: fallback.map(|(waveform, mapping)| {
                         std::sync::Arc::new(WaveformWindow {
                             waveform,
@@ -2674,33 +2692,50 @@ impl EditorView {
                         })
                     }),
                 },
-            )),
-            None => prepared
-                .and_then(|prepared| {
-                    if let Some((waveform, view)) =
-                        super::waveform_prepared_fade::PreparedMusicalFade::for_clip(
+            ))
+        } else {
+            match source {
+                Some((waveform, projection)) => Some((
+                    waveform,
+                    WaveformMapping::Frame {
+                        projection,
+                        clock: super::waveform_frame::Clock::Arrangement,
+                        fallback: fallback.map(|(waveform, mapping)| {
+                            std::sync::Arc::new(WaveformWindow {
+                                waveform,
+                                mapping,
+                                visible: visible_start..visible_end,
+                            })
+                        }),
+                    },
+                )),
+                None => prepared
+                    .and_then(|prepared| {
+                        if let Some((waveform, view)) =
+                            super::waveform_prepared_fade::PreparedMusicalFade::for_clip(
+                                &state.project,
+                                clip,
+                                prepared,
+                                fade,
+                                gain.unwrap_or(clip.gain()),
+                            )
+                        {
+                            return Some((waveform, WaveformMapping::PreparedMusicalFade(view)));
+                        }
+                        let view = super::waveform_prepared_fade::PreparedFade::for_clip(
                             &state.project,
                             clip,
                             prepared,
                             fade,
                             gain.unwrap_or(clip.gain()),
-                        )
-                    {
-                        return Some((waveform, WaveformMapping::PreparedMusicalFade(view)));
-                    }
-                    let view = super::waveform_prepared_fade::PreparedFade::for_clip(
-                        &state.project,
-                        clip,
-                        prepared,
-                        fade,
-                        gain.unwrap_or(clip.gain()),
-                    )?;
-                    Some((
-                        std::sync::Arc::clone(&prepared.waveform),
-                        WaveformMapping::PreparedFade(view),
-                    ))
-                })
-                .or(fallback),
+                        )?;
+                        Some((
+                            std::sync::Arc::clone(&prepared.waveform),
+                            WaveformMapping::PreparedFade(view),
+                        ))
+                    })
+                    .or(fallback),
+            }
         };
         let body = match displayed {
             Some((waveform, mapping)) => super::waveform::timeline_waveform_view_cached(

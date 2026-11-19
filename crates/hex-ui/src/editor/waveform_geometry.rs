@@ -421,6 +421,10 @@ enum WaveformMappingKey {
     PreparedFade(PreparedFade),
     PreparedMusicalFade(Arc<PreparedMusicalFade>),
     Frame(Arc<waveform_frame::Key>, waveform_frame::Clock),
+    MusicalEventFade(
+        Arc<super::waveform_musical_event::Projection>,
+        Option<hex_project::AudioEvent>,
+    ),
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
@@ -753,6 +757,11 @@ pub(super) enum WaveformMapping {
         clock: waveform_frame::Clock,
         fallback: Option<Arc<WaveformWindow>>,
     },
+    MusicalEventFade {
+        projection: Arc<super::waveform_musical_event::Projection>,
+        clock: super::waveform_musical_event::Clock,
+        fallback: Option<Arc<WaveformWindow>>,
+    },
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
@@ -1034,6 +1043,17 @@ fn waveform_geometry_key(
         WaveformMapping::Frame {
             projection, clock, ..
         } => WaveformMappingKey::Frame(Arc::clone(&projection.key), *clock),
+        WaveformMapping::MusicalEventFade {
+            projection, clock, ..
+        } => WaveformMappingKey::MusicalEventFade(
+            Arc::clone(projection),
+            match clock {
+                super::waveform_musical_event::Clock::Arrangement => None,
+                // One event pane samples the held or pending descriptor
+                // directly, including its envelope and gain.
+                super::waveform_musical_event::Clock::Event(event) => Some(*event),
+            },
+        ),
         WaveformMapping::MusicalEvent(projection) => {
             WaveformMappingKey::MusicalEvent(projection.clone())
         }
@@ -1180,6 +1200,12 @@ fn build_waveform_geometry(
         _ => None,
     };
     let mut range_budget = waveform_frame::RANGE_BUDGET;
+    let event_fade = match mapping {
+        WaveformMapping::MusicalEventFade {
+            projection, clock, ..
+        } => Some(projection.query(clock)?),
+        _ => None,
+    };
     let musical = match mapping {
         WaveformMapping::PreparedMusicalFade(fade) => Some(fade.projection()?),
         _ => None,
@@ -1197,6 +1223,7 @@ fn build_waveform_geometry(
         WaveformMapping::Prepared { gain, .. } => gain.linear(),
         WaveformMapping::Source { .. }
         | WaveformMapping::Frame { .. }
+        | WaveformMapping::MusicalEventFade { .. }
         | WaveformMapping::PreparedFade(_)
         | WaveformMapping::PreparedMusicalFade(_) => 1.0,
     };
@@ -1238,6 +1265,15 @@ fn build_waveform_geometry(
                         waveform_frame::coarse(frame, waveform, start..end, &mut range_budget)?
                     };
                 Some(peaks)
+            }
+            WaveformMapping::MusicalEventFade { clock, .. } => {
+                Some(super::waveform_musical_event::peaks(
+                    event_fade.as_ref()?,
+                    *clock,
+                    waveform,
+                    start..end,
+                    &mut range_budget,
+                )?)
             }
             WaveformMapping::PreparedFade(fade) => {
                 Some(fade.peaks(waveform, start..end, layout.frame_detail_budget())?)

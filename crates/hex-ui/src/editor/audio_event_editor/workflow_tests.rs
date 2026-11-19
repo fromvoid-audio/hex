@@ -1797,6 +1797,7 @@ fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut Test
 
 #[gpui::test]
 fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut TestAppContext) {
+    use crate::editor::waveform_geometry::painted_clip_waveform_outline;
     let (_files, mut visual, editor, clip) = open(cx);
     editor.update(&mut visual, |v, _| {
         let settings = hex_project::default_audio_warp(
@@ -1824,6 +1825,13 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
             .length()
     });
     assert!(length > 96_000, "fixture must use Q32.32 beats");
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
+            beat: hex_project::BeatTime::from_raw(length / 2),
+            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
     edit(
         &mut visual,
         &editor,
@@ -1840,6 +1848,7 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
         },
     );
     editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(Viewport::fit(96_000));
         v.audio_event_editor.viewport = Some(crate::editor::viewport::Viewport {
             start: 24_000,
             length: 72_000,
@@ -1847,6 +1856,22 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
         cx.notify();
     });
     visual.run_until_parked();
+    let thumbnail =
+        |visual: &mut VisualTestContext| painted_clip_waveform_outline(&editor, visual, clip);
+    let event_outline = |visual: &mut VisualTestContext| {
+        let bounds = visual.debug_bounds("audio-event-waveform-1").unwrap();
+        editor.read_with(visual, |view, _| {
+            view.clip_waveform_geometry_cache
+                .borrow()
+                .painted_waveforms()
+                .iter()
+                .rev()
+                .find(|paint| paint.bounds == bounds)
+                .expect("completed warped event waveform")
+                .outline_fingerprint
+        })
+    };
+    let original = (thumbnail(&mut visual), event_outline(&mut visual));
     focus_events(&mut visual);
     fade_key(&mut visual, true);
     let before = editor.read_with(&visual, |v, _| {
@@ -1867,8 +1892,22 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = visual.debug_bounds("audio-event-fade-in-top-1").unwrap();
+    let preview = (thumbnail(&mut visual), event_outline(&mut visual));
+    assert_ne!(
+        preview.0, original.0,
+        "warped Arrangement waveform responds live"
+    );
+    assert_ne!(preview.1, original.1, "warped event waveform responds live");
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     fade_key(&mut visual, false);
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_some())
+    });
+    assert_eq!(
+        (thumbnail(&mut visual), event_outline(&mut visual)),
+        preview
+    );
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
     pump(&editor, &mut visual);
     repaint(&mut visual, &editor);
@@ -1891,6 +1930,22 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
         assert!(fade.shape().fade_in() > 0);
     });
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
+    assert_eq!(
+        (thumbnail(&mut visual), event_outline(&mut visual)),
+        preview
+    );
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    assert_eq!(
+        (thumbnail(&mut visual), event_outline(&mut visual)),
+        original
+    );
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    assert_eq!(
+        (thumbnail(&mut visual), event_outline(&mut visual)),
+        preview
+    );
 }
 #[gpui::test]
 fn event_fade_f_respects_computer_keyboard_and_search_focus(cx: &mut TestAppContext) {

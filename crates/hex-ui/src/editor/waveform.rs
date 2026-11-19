@@ -539,8 +539,11 @@ pub(super) fn waveform_canvas(
             };
             let geometry_for = |source, request: &WaveformGeometryRequest<'_>| {
                 if let Some(cache) = &cache {
-                    if matches!(request.mapping, WaveformMapping::Frame { .. }) {
-                        // A bounded frame query can refuse. Do not run it twice.
+                    if matches!(
+                        request.mapping,
+                        WaveformMapping::Frame { .. } | WaveformMapping::MusicalEventFade { .. }
+                    ) {
+                        // A bounded amplitude query can refuse. Do not run it twice.
                         return cached_waveform_geometry(cache, source, request);
                     }
                     if let Some(geometry) = cached_waveform_geometry(cache, source, request) {
@@ -551,12 +554,10 @@ pub(super) fn waveform_canvas(
                     .map(|geometry| (Arc::new(geometry), gpui::Point::default()))
             };
             let geometry = geometry_for(&waveform, &request).or_else(|| {
-                let WaveformMapping::Frame {
-                    fallback: Some(fallback),
-                    ..
-                } = &mapping
-                else {
-                    return None;
+                let fallback = match &mapping {
+                    WaveformMapping::Frame { fallback, .. }
+                    | WaveformMapping::MusicalEventFade { fallback, .. } => fallback.as_ref()?,
+                    _ => return None,
                 };
                 geometry_for(
                     &fallback.waveform,
