@@ -740,9 +740,6 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
 
-    const QUANTUM: usize = 128;
-    const CUT: usize = 3 * QUANTUM;
-    const TOTAL: usize = 1152;
     let mut delay = DEFINITION.default_state().unwrap();
     for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
         delay = DEFINITION
@@ -846,6 +843,125 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
         after.arrangement().main_latency_frames() as usize,
         old_latency + DELAY
     );
+    assert_approved_latency_cut(before, after, |partition, actual, oracle| {
+        if !matches!(target, LimiterAppendTarget::Return) {
+            assert!(oracle[..CUT].iter().all(|pcm| *pcm == [0.0; 2]));
+        }
+        let onset = CUT
+            + oracle[CUT..]
+                .iter()
+                .position(|pcm| *pcm != [0.0; 2])
+                .unwrap();
+        assert!(onset >= CUT + QUANTUM);
+        assert_eq!(onset, 480 + old_latency + DELAY);
+        if !matches!(target, LimiterAppendTarget::Main) {
+            assert_ne!(oracle[onset + 31], [0.0; 2], "independent repeat");
+        }
+        assert_eq!(
+            actual.iter().position(|pcm| *pcm != [0.0; 2]),
+            Some(onset - CUT),
+            "delayed impulse should survive the approved cut, partition {partition}"
+        );
+        if !matches!(target, LimiterAppendTarget::Main) {
+            assert_eq!(
+                actual[onset + 31 - CUT],
+                oracle[onset + 31],
+                "independent repeat should survive the approved cut, partition {partition}"
+            );
+        }
+        assert_eq!(actual, &oracle[CUT..], "partition {partition}");
+    });
+}
+
+#[test]
+fn approved_latency_cut_preserves_an_independent_native_instrument_voice() {
+    use hex_project::BeatTime;
+
+    let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
+    let (mut editor, audio_track, prepare) = resident_input(vec![[0.0; 2]; 2048]);
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "held native voice".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_devices::fm4::device::FM4_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(BeatTime::ONE.raw() / 32),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: limiter.clone(),
+        })
+        .unwrap();
+    let before = prepare(editor.project());
+    editor
+        .execute(Command::InsertDevice {
+            track: audio_track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let after = prepare(editor.project());
+    assert_eq!(before.arrangement().main_latency_frames() as usize, DELAY);
+    assert_eq!(
+        after.arrangement().main_latency_frames() as usize,
+        2 * DELAY
+    );
+
+    assert_approved_latency_cut(before, after, |partition, actual, oracle| {
+        // The approved cut may drain and refill compensation and fade in.
+        // Compare PCM through the held note and its subsequent release.
+        let settled = CUT + 2 * DELAY + QUANTUM;
+        // A 1/32-beat gate at 120 bpm and 48 kHz lasts 750 frames.
+        let note_off = 750 + 2 * DELAY;
+        for range in [settled..note_off, note_off..TOTAL] {
+            assert!(oracle[range.clone()].iter().any(|pcm| *pcm != [0.0; 2]));
+            let mismatch = actual[range.start - CUT..range.end - CUT]
+                .iter()
+                .zip(&oracle[range.clone()])
+                .position(|(actual, expected)| actual != expected);
+            assert_eq!(mismatch, None, "partition {partition}, frames {range:?}");
+        }
+    });
+}
+
+const QUANTUM: usize = 128;
+const CUT: usize = 3 * QUANTUM;
+const TOTAL: usize = 1152;
+
+fn assert_approved_latency_cut(
+    before: Arc<hex_engine::PreparedRevision>,
+    after: Arc<hex_engine::PreparedRevision>,
+    check: impl Fn(usize, &[Frame], &[Frame]),
+) {
     let mut original = Playback::try_from_prepared_with_session(Arc::clone(&before)).unwrap();
     original.apply(PlaybackCommand::Play);
     let mut before_approval = [[0.0; 2]; 2 * QUANTUM];
@@ -854,19 +970,6 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
     uninterrupted.apply(PlaybackCommand::Play);
     let mut oracle = [[0.0; 2]; TOTAL];
     uninterrupted.render(&mut oracle).unwrap();
-    if !matches!(target, LimiterAppendTarget::Return) {
-        assert!(oracle[..CUT].iter().all(|pcm| *pcm == [0.0; 2]));
-    }
-    let onset = CUT
-        + oracle[CUT..]
-            .iter()
-            .position(|pcm| *pcm != [0.0; 2])
-            .unwrap();
-    assert!(onset >= CUT + QUANTUM);
-    assert_eq!(onset, 480 + old_latency + DELAY);
-    if !matches!(target, LimiterAppendTarget::Main) {
-        assert_ne!(oracle[onset + 31], [0.0; 2], "independent repeat");
-    }
 
     for partition in [1, BLOCK] {
         let (mut control, mut callback) = channel(RATE).unwrap();
@@ -978,19 +1081,7 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
         );
         assert_eq!(control.status.position.load(Acquire), TOTAL as u64);
         assert_eq!(control.reclaim(), 1);
-        assert_eq!(
-            actual.iter().position(|pcm| *pcm != [0.0; 2]),
-            Some(onset - CUT),
-            "delayed impulse should survive the approved cut, partition {partition}"
-        );
-        if !matches!(target, LimiterAppendTarget::Main) {
-            assert_eq!(
-                actual[onset + 31 - CUT],
-                oracle[onset + 31],
-                "independent repeat should survive the approved cut, partition {partition}"
-            );
-        }
-        assert_eq!(actual, oracle[CUT..], "partition {partition}");
+        check(partition, &actual, &oracle);
     }
 }
 

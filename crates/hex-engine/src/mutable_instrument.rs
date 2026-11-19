@@ -295,6 +295,7 @@ pub(crate) struct MutableInstrumentTrackRuntime {
     scratch: Vec<MutableOccurrence>,
     next_id: u64,
     next_id_scratch: u64,
+    retained_at_latency_cut: Option<u64>,
     live: Option<Box<live::LiveLedger>>,
 }
 
@@ -544,6 +545,7 @@ impl MutableInstrumentTrackRuntime {
             scratch,
             next_id: _,
             next_id_scratch: _,
+            retained_at_latency_cut: _,
             live,
         } = self;
         if live.is_some() {
@@ -657,6 +659,7 @@ impl MutableInstrumentTrackRuntime {
             scratch,
             next_id: 0,
             next_id_scratch: 0,
+            retained_at_latency_cut: None,
             live: None,
         })
     }
@@ -828,6 +831,7 @@ impl MutableInstrumentTrackRuntime {
         self.expression = previous
             .expression
             .filter(|_| self.supports_live_expression());
+        self.retained_at_latency_cut = previous.retained_at_latency_cut;
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
         if let Some((next, old)) = self.live.as_mut().zip(previous.live.as_ref()) {
@@ -840,6 +844,22 @@ impl MutableInstrumentTrackRuntime {
             next.pending_len = 0;
         }
         Ok(())
+    }
+
+    /// Copy a continuously clocked generator, including its gate deadlines.
+    /// It has already processed the prefix that a fresh runtime would chase.
+    pub(crate) fn inherit_at_latency_cut(
+        &mut self,
+        previous: &Self,
+        frame: u64,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.inherit_from(previous)?;
+        self.retained_at_latency_cut = Some(frame);
+        Ok(())
+    }
+
+    pub(crate) fn retained_at_latency_cut(&self, frame: u64) -> bool {
+        self.retained_at_latency_cut == Some(frame)
     }
 
     /// Runtime history may carry only the same physical original-source bindings.
@@ -1532,6 +1552,7 @@ impl MutableInstrumentTrackRuntime {
         self.scratch.clear();
         self.next_id = 0;
         self.next_id_scratch = 0;
+        self.retained_at_latency_cut = None;
         if let Some(live) = &mut self.live {
             **live = Default::default();
         }

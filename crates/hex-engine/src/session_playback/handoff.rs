@@ -599,6 +599,80 @@ impl SessionPlayback {
         donors
     }
 
+    /// Copy isolated Arrangement generators at their unchanged input clock.
+    /// Only the candidate is touched until every compatible history is staged.
+    fn stage_instrument_history_at_latency_cut(
+        &mut self,
+        previous: &Self,
+    ) -> Result<[bool; MAX_TRACKS], SessionPlaybackError> {
+        let mut retained = [false; MAX_TRACKS];
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        let Some((old_graph, new_graph)) = old.signal_graph.as_ref().zip(new.signal_graph.as_ref())
+        else {
+            return Ok(retained);
+        };
+        if previous.interactive_start_frame == Some(previous.performance_frame) {
+            return Ok(retained);
+        }
+        for (index, ((next, runtime), retained)) in new
+            .tracks()
+            .iter()
+            .zip(&mut self.mutable_instruments)
+            .zip(&mut retained)
+            .enumerate()
+        {
+            let Some(runtime) = runtime else {
+                continue;
+            };
+            let Some((track, device)) = next.canonical_track_id().zip(next.instrument_id) else {
+                continue;
+            };
+            let Some(old_index) = old_graph.track_index(track) else {
+                continue;
+            };
+            let Some((old_track, old_runtime)) = old.tracks().get(old_index).zip(
+                previous
+                    .mutable_instruments
+                    .get(old_index)
+                    .and_then(Option::as_ref),
+            ) else {
+                continue;
+            };
+            if self
+                .route_scratch
+                .get(index)
+                .zip(previous.routes.get(old_index))
+                .is_some_and(|(next, old)| {
+                    next.owner == RouteOwner::Arrangement && old.owner == RouteOwner::Arrangement
+                })
+                && next.source_id() == old_track.source_id()
+                && next.source_input_enabled() == old_track.source_input_enabled()
+                && next.receives_source_audio() == old_track.receives_source_audio()
+                && !self.revision.source_routing().is_shared(index)
+                && !previous.revision.source_routing().is_shared(old_index)
+                && !old_runtime.has_committed_live_occurrences()
+                && previous
+                    .revision
+                    .mutable_arrangement_track_matches(&self.revision, track)
+                && [old_graph, new_graph].into_iter().all(|graph| {
+                    graph
+                        .processor_latency(device.value(), Some(track))
+                        .is_some_and(|latency| {
+                            latency.upstream_frames == 0 && latency.stage_frames == 0
+                        })
+                })
+                && runtime.can_inherit_from(old_runtime)
+            {
+                runtime
+                    .inherit_at_latency_cut(old_runtime, previous.performance_frame)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                *retained = true;
+            }
+        }
+        Ok(retained)
+    }
+
     /// Retain a compatible Return at a confirmed cut. An independent native
     /// chain can continue at the current origin while its new downstream
     /// alignment fills. Trailing edits have their own prefix proofs.
@@ -2219,16 +2293,19 @@ impl SessionPlayback {
                     running_audio_restart: running_restart || running_relocate,
                 });
             }
-            let restart_track_prefixes = if confirmed_insert
+            let (restart_track_prefixes, retained_instruments) = if confirmed_insert
                 && cursor.is_none()
                 && groups.is_none()
                 && donor_epoch_matches
                 && !self.revision.contains_streamed_sources()
                 && !previous.revision.contains_streamed_sources()
             {
-                self.plan_track_history_at_latency_cut(previous)
+                (
+                    self.plan_track_history_at_latency_cut(previous),
+                    self.stage_instrument_history_at_latency_cut(previous)?,
+                )
             } else {
-                [None; MAX_TRACKS]
+                ([None; MAX_TRACKS], [false; MAX_TRACKS])
             };
             self.routes.copy_from_slice(&self.route_scratch);
             self.capture_epoch = recipient_epoch;
@@ -2254,7 +2331,10 @@ impl SessionPlayback {
                 self.historical_floor = previous.historical_floor;
                 self.route_historical_floors = previous.route_historical_floors;
                 self.monitor_source_releases |= previous.monitor_source_releases;
-                self.restart_audio_history();
+                if confirmed_insert {
+                    self.interactive_onset_floor = previous.interactive_onset_floor;
+                }
+                self.restart_audio_history(&retained_instruments);
                 self.interactive_start_frame = Some(self.performance_frame);
                 self.playing = previous.playing;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
