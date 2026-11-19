@@ -16,6 +16,8 @@ mod capture;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod controller;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod deadline;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use controller::{
     NativeWorkerAuthoredParameterProgress, NativeWorkerControllerProgress,
     NativeWorkerControllerQuery,
@@ -688,12 +690,30 @@ fn transport_runner_with_setup(
         };
         let mut empty_since = None;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut deadline = if published.offline.is_none() {
+            guard
+                .owner_mut()
+                .and_then(|state| deadline::Deadline::for_native_pcm(state))
+        } else {
+            None
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut last_empty_poll: Option<Instant> = None;
         loop {
             let Some(state) = guard.owner_mut() else {
                 fault = Some(Fault::Protocol);
                 break;
             };
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Some(deadline) = &mut deadline
+                && let Err(error) = deadline.before_poll()
+            {
+                state.worker.revoke();
+                state.report_native_failure(&published, "deadline", &error);
+                state.native_error = Some(error);
+                fault = Some(Fault::Protocol);
+                break;
+            }
             match state.worker.receive_request() {
                 Ok(Some(hex_plugin_host::transport::WorkerRequest {
                     block,
@@ -704,6 +724,10 @@ fn transport_runner_with_setup(
                     editor_scope,
                 })) => {
                     empty_since = None;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some(deadline) = &mut deadline {
+                        deadline.enter();
+                    }
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let empty_poll_to_pickup_ns = last_empty_poll
                         .take()
@@ -839,6 +863,10 @@ fn transport_runner_with_setup(
                         break;
                     }
                     published.publish_blocks(state.worker.completed_blocks());
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some(deadline) = &mut deadline {
+                        deadline.replied();
+                    }
                 }
                 Ok(None) => {
                     if published.offline.is_some() {
@@ -871,7 +899,12 @@ fn transport_runner_with_setup(
                 break;
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            if let Err(error) = state.advance_native_control(&published) {
+            if let Err(error) = state.advance_native_control(&published, || {
+                if let Some(deadline) = &mut deadline {
+                    deadline.leave()?;
+                }
+                Ok(())
+            }) {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
                 state.worker.revoke();
                 if !refused {

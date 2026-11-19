@@ -72,12 +72,10 @@
          coreaudio::audio_unit::IOType::DefaultOutput
      } else {
          coreaudio::audio_unit::IOType::HalOutput
-@@ -240,6 +263,41 @@
-     )?;
- 
+@@ -242,6 +265,41 @@
      Ok(audio_unit)
-+}
-+
+ }
+ 
 +#[cfg(test)]
 +mod route_probe_regression {
 +    use super::*;
@@ -111,9 +109,11 @@
 +        let previous = get_io_buffer_frame_size_range(&unit).expect("Audio Unit buffer range");
 +        assert_eq!(*config.buffer_size(), previous);
 +    }
- }
- 
++}
++
  fn get_io_buffer_frame_size_range(
+     audio_unit: &AudioUnit,
+ ) -> Result<SupportedBufferSize, coreaudio::Error> {
 @@ -320,19 +378,18 @@
          sample_format: SampleFormat,
          data_callback: D,
@@ -137,7 +137,7 @@
          )
      }
  }
-@@ -342,12 +399,41 @@
+@@ -342,14 +399,43 @@
      pub(crate) audio_device_id: AudioDeviceID,
  }
  
@@ -147,8 +147,8 @@
 -
  fn is_default_output_device(device: &Device) -> bool {
      default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
-+}
-+
+ }
+ 
 +// The input stream is pinned to the selected device even when it is the
 +// system default. Its disconnection must reach the stream's error callback.
 +fn input_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
@@ -180,9 +180,11 @@
 +        disconnect(StreamError::DeviceNotAvailable);
 +        assert_eq!(observed.load(Ordering::Relaxed), 1);
 +    }
- }
- 
++}
++
  impl Device {
+     /// Construct a new device given its ID.
+     /// Useful for constructing hidden devices.
 @@ -688,8 +774,45 @@
                      description: format!("unexpected scope (neither input nor output): {scope:?}"),
                  }),
@@ -296,8 +298,8 @@
 +    /// Construct a fixed-buffer stream with a verified client-frame ceiling.
 +    /// The hardware rate is observed separately from the client rate.
 +    pub fn build_bounded_output_stream<T, D, E>(
-+        &self,
-+        config: &StreamConfig,
+         &self,
+         config: &StreamConfig,
 +        device_rate: SampleRate,
 +        client_limit: u16,
 +        mut data_callback: D,
@@ -322,8 +324,8 @@
 +    }
 +
 +    fn build_output_stream_with_limit<D, E>(
-         &self,
-         config: &StreamConfig,
++        &self,
++        config: &StreamConfig,
          sample_format: SampleFormat,
          mut data_callback: D,
          error_callback: E,
@@ -399,7 +401,7 @@
              let buffer_frames = len / channels as usize;
              // Use device buffer size for latency calculation if available
              let latency_frames = device_buffer_frames.unwrap_or(
-@@ -901,16 +1071,33 @@
+@@ -901,10 +1071,13 @@
                  // (may overestimate latency for BufferSize::Default)
                  buffer_frames,
              );
@@ -417,10 +419,10 @@
              let timestamp = crate::OutputStreamTimestamp { callback, playback };
  
              let info = OutputCallbackInfo { timestamp };
-             data_callback(&mut data, &info);
+@@ -912,6 +1085,20 @@
              Ok(())
          })?;
-+
+ 
 +        if let Some((_, client_limit)) = bounds {
 +            audio_unit.initialize()?;
 +            let maximum: u32 = audio_unit.get_property(
@@ -434,9 +436,10 @@
 +                ));
 +            }
 +        }
- 
++
          // Create error callback for stream - either dummy or real based on device type
          let error_callback_for_stream: super::ErrorCallback = if is_default_output_device(self) {
+             Box::new(|_: StreamError| {})
 @@ -925,6 +1112,7 @@
          let stream = Stream::new(
              StreamInner {
@@ -1495,6 +1498,166 @@
              if let Err(e) = self.audio_unit.stop() {
                  let description = format!("{e}");
                  let err = BackendSpecificError { description };
+@@ -364,6 +380,159 @@
+     fn write_silence<T: Sample>(data: &mut [T], _: &crate::OutputCallbackInfo) {
+         for sample in data.iter_mut() {
+             *sample = Sample::EQUILIBRIUM;
++        }
++    }
++}
++
++/// Current-thread time constraint for an auxiliary audio worker.
++///
++/// Construct on a dedicated, ordinarily scheduled worker. No call belongs on
++/// the device callback. The caller owns admission, deadlines and retirement.
++pub struct WorkerTimeConstraint {
++    thread: mach2::mach_types::thread_t,
++    policy: mach2::thread_policy::thread_time_constraint_policy_data_t,
++    active: bool,
++    _current_thread_only: std::marker::PhantomData<*mut ()>,
++}
++
++impl WorkerTimeConstraint {
++    /// Acquire the current thread and validate the time constraint without
++    /// changing its scheduling class. Existing real-time threads refuse.
++    pub fn for_current_thread(
++        period: std::time::Duration,
++        computation: std::time::Duration,
++        constraint: std::time::Duration,
++    ) -> Result<Self, BackendSpecificError> {
++        use mach2::{mach_init::mach_thread_self, port::MACH_PORT_NULL, thread_policy::*};
++
++        let refused = || BackendSpecificError {
++            description: "invalid auxiliary audio worker time constraint".into(),
++        };
++        if computation.is_zero() || computation > constraint / 2 || constraint > period {
++            return Err(refused());
++        }
++        let ratio = super::read_host_timebase()?;
++        let ticks = |duration: std::time::Duration| {
++            let numerator = duration.as_nanos().checked_mul(u128::from(ratio.denom))?;
++            u32::try_from(numerator.checked_div(u128::from(ratio.numer))?)
++                .ok()
++                .filter(|value| *value != 0)
++        };
++        let policy = thread_time_constraint_policy_data_t {
++            period: ticks(period).ok_or_else(refused)?,
++            computation: ticks(computation).ok_or_else(refused)?,
++            constraint: ticks(constraint).ok_or_else(refused)?,
++            preemptible: 1,
++        };
++        // SAFETY: this returns a send right for the calling thread. The
++        // non-Send owner deallocates it even when the policy check fails.
++        let thread = unsafe { mach_thread_self() };
++        if thread == MACH_PORT_NULL {
++            return Err(refused());
++        }
++        let owner = Self {
++            thread,
++            policy,
++            active: false,
++            _current_thread_only: std::marker::PhantomData,
++        };
++        if !owner.is_ordinary()? {
++            return Err(refused());
++        }
++        Ok(owner)
++    }
++
++    /// Apply the configured time constraint to the current worker.
++    pub fn enter(&mut self) -> Result<(), BackendSpecificError> {
++        use mach2::thread_policy::*;
++        if !self.active {
++            // SAFETY: the native record matches the flavor and count and the
++            // current worker still owns the acquired thread right.
++            let status = unsafe {
++                thread_policy_set(
++                    self.thread,
++                    THREAD_TIME_CONSTRAINT_POLICY,
++                    (&mut self.policy as *mut thread_time_constraint_policy_data_t).cast(),
++                    THREAD_TIME_CONSTRAINT_POLICY_COUNT,
++                )
++            };
++            super::check_os_status(status)?;
++            self.active = true;
++        }
++        Ok(())
++    }
++
++    /// Return to ordinary scheduling. The caller may reapply its own QoS.
++    pub fn leave(&mut self) -> Result<(), BackendSpecificError> {
++        use mach2::thread_policy::*;
++        if self.active {
++            // SAFETY: the standard-policy flavor takes a zero-word argument.
++            let status = unsafe {
++                thread_policy_set(
++                    self.thread,
++                    THREAD_STANDARD_POLICY,
++                    std::ptr::null_mut(),
++                    THREAD_STANDARD_POLICY_COUNT,
++                )
++            };
++            super::check_os_status(status)?;
++            self.active = false;
++        }
++        Ok(())
++    }
++
++    fn is_ordinary(&self) -> Result<bool, BackendSpecificError> {
++        use mach2::thread_policy::*;
++        let mut policy = self.policy;
++        let mut count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
++        let mut default = 0;
++        // SAFETY: the native getter writes into initialized storage for this
++        // flavor, count and status flag.
++        let status = unsafe {
++            thread_policy_get(
++                self.thread,
++                THREAD_TIME_CONSTRAINT_POLICY,
++                (&mut policy as *mut thread_time_constraint_policy_data_t).cast(),
++                &mut count,
++                &mut default,
++            )
++        };
++        super::check_os_status(status)?;
++        Ok(default != 0)
++    }
++}
++
++impl Drop for WorkerTimeConstraint {
++    fn drop(&mut self) {
++        let _ = self.leave();
++        // SAFETY: release exactly the owned current-thread send right.
++        unsafe {
++            mach2::mach_port::mach_port_deallocate(mach2::traps::mach_task_self(), self.thread);
++        }
++    }
++}
++
++#[cfg(test)]
++mod worker_time_constraint_regression {
++    use super::WorkerTimeConstraint;
++    use std::time::Duration;
++
++    #[test]
++    fn current_thread_repeatedly_enters_and_releases_time_constraint() {
++        let period = Duration::from_nanos(5_804_988);
++        let computation = Duration::from_micros(300);
++        let constraint = Duration::from_millis(4);
++        let mut worker =
++            WorkerTimeConstraint::for_current_thread(period, computation, constraint).unwrap();
++        assert!(worker.is_ordinary().unwrap());
++        for _ in 0..2 {
++            worker.enter().unwrap();
++            assert!(!worker.is_ordinary().unwrap());
++            assert!(
++                WorkerTimeConstraint::for_current_thread(period, computation, constraint).is_err()
++            );
++            worker.leave().unwrap();
++            assert!(worker.is_ordinary().unwrap());
+         }
+     }
+ }
 --- a/src/host/coreaudio/mod.rs
 +++ b/src/host/coreaudio/mod.rs
 @@ -25,7 +25,7 @@
@@ -1502,7 +1665,7 @@
  
  #[cfg(target_os = "macos")]
 -pub use self::macos::{Host, Stream};
-+pub use self::macos::{Host, OutputTiming, OutputTimingReceipt, Stream};
++pub use self::macos::{Host, OutputTiming, OutputTimingReceipt, Stream, WorkerTimeConstraint};
  
  // Common helper methods used by both macOS and iOS
  
@@ -1632,13 +1795,14 @@
  // Convert the given duration in frames at the given sample rate to a `std::time::Duration`.
 --- a/src/platform/mod.rs
 +++ b/src/platform/mod.rs
-@@ -732,6 +732,10 @@
+@@ -732,6 +732,11 @@
  mod platform_impl {
      #[cfg_attr(docsrs, doc(cfg(any(target_os = "macos", target_os = "ios"))))]
      pub use crate::host::coreaudio::Host as CoreAudioHost;
 +    #[cfg(target_os = "macos")]
 +    pub use crate::host::coreaudio::{
 +        OutputTiming as CoreAudioOutputTiming, OutputTimingReceipt as CoreAudioOutputTimingReceipt,
++        WorkerTimeConstraint as CoreAudioWorkerTimeConstraint,
 +    };
      #[cfg(all(feature = "jack", target_os = "macos"))]
      #[cfg_attr(docsrs, doc(cfg(all(feature = "jack", target_os = "macos"))))]
