@@ -23,7 +23,14 @@ pub(super) fn render_chain(
         })
         .collect();
     super::navigation::sync_rail_scroll(view);
-    view.device_panel.chain_window.prepare(&geometry);
+    let proposed = view.proposed_plugin_slot_index(
+        match owner {
+            EffectBusOwner::Main => DevicePanelOwner::Main,
+            EffectBusOwner::Return(id) => DevicePanelOwner::Return(id),
+        },
+        geometry.iter().map(|&(id, _)| id),
+    );
+    view.device_panel.chain_window.prepare(&geometry, proposed);
     let spectrum_identities: Vec<_> = devices
         .iter()
         .filter(|device| {
@@ -62,6 +69,9 @@ pub(super) fn render_chain(
             }
         });
     for (index, device) in devices.iter().enumerate() {
+        if proposed == Some(index) {
+            chain = chain.children([view.proposed_plugin_slot_card(cx)]);
+        }
         if chain_window::must_mount(view, device.id(), window, cx) {
             let focus = view.device_panel.chain_window.focus(device.id(), cx);
             let rendered =
@@ -101,6 +111,9 @@ pub(super) fn render_chain(
             .mr(px(DEVICE_CHAIN_PADDING));
             chain = chain.child(card);
         }
+    }
+    if proposed == Some(geometry.len()) {
+        chain = chain.children([view.proposed_plugin_slot_card(cx)]);
     }
     chain.child(render_return_drop_target(
         view,

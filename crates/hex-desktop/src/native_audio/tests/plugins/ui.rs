@@ -596,9 +596,10 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
         assert_eq!(fixture.records.load(Acquire), 0);
 
         begin_drag(&mut fixture.visual);
+        let anchor_selector: &'static str = Box::leak(selector.into_boxed_str());
         let card = fixture
             .visual
-            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .debug_bounds(anchor_selector)
             .expect("painted device-chain insertion target");
         let before = gpui::point(card.origin.x + gpui::px(10.0), card.center().y);
         fixture
@@ -622,6 +623,23 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             );
             fixture.facts.try_recv().is_ok()
         });
+        // The existing chain remains canonical while the original worker
+        // is held. The proposed card reserves the requested insertion point.
+        let pending = fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .expect("proposed VST3 card before worker completion");
+        let cancel = fixture
+            .visual
+            .debug_bounds("device-chain-loading-cancel")
+            .expect("cancel in the loading card");
+        let existing = fixture.visual.debug_bounds(anchor_selector).unwrap();
+        assert!(pending.contains(&cancel.center()));
+        assert!(pending.right() <= existing.left());
+        assert_eq!(
+            fixture.view(cx).state.unwrap().project,
+            fixture.state.project
+        );
         fixture.resume.send(()).unwrap();
         until("accepted drop and native endpoint", || {
             fixture.step(cx);
@@ -642,6 +660,14 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
         assert_eq!(ids[0].value(), fixture.state.project.next_identity());
         assert_eq!(ids[1], anchor);
         assert_eq!(fixture.records.load(Acquire), 1);
+        assert!(
+            fixture
+                .visual
+                .debug_bounds("device-chain-loading-slot")
+                .is_none()
+        );
+        let active = Box::leak(format!("device-vst3-active-{}", ids[0].value()).into_boxed_str());
+        assert!(fixture.visual.debug_bounds(active).is_some());
         fixture.visual.update(|window, _| window.remove_window());
         fixture.visual.run_until_parked();
     }

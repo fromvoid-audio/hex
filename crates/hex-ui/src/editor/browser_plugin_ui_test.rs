@@ -1139,18 +1139,28 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 
 #[gpui::test]
 fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut TestAppContext) {
-    check_vst_new_track_proposal(cx, false);
+    check_vst_proposal(cx, false, false);
 }
 
 #[gpui::test]
 fn cancel_vst_new_track_removes_the_proposal_before_the_worker_terminal(cx: &mut TestAppContext) {
-    check_vst_new_track_proposal(cx, true);
+    check_vst_proposal(cx, true, false);
 }
 
-fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
+#[gpui::test]
+fn pending_vst_slot_retains_failed_load_at_the_requested_chain_position(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, false, true);
+}
+
+#[gpui::test]
+fn cancel_vst_slot_with_keyboard_preserves_the_existing_chain(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, true, true);
+}
+
+fn check_vst_proposal(cx: &mut TestAppContext, cancel_first: bool, existing_chain: bool) {
     use hex_project::TrackDeviceSlot;
     use hex_session::service::{
-        CanonicalAudioSourceSnapshot, PluginEffectDestination, Service, WorkerAudioSink,
+        CanonicalAudioSourceSnapshot, PluginEffectDestination, Request, Service, WorkerAudioSink,
     };
     use std::{
         sync::{
@@ -1201,6 +1211,29 @@ fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
     .unwrap();
     let (mut visual, editor, tracks) =
         crate::editor::track_reorder_ui_test::live_tracks_on_service(cx, 1, 0, service);
+    let track = tracks[0];
+    let before_device = existing_chain.then(|| {
+        editor.update(&mut visual, |view, cx| {
+            let state = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap();
+            assert!(view.enqueue(Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })));
+            let event = crate::editor::track_reorder_ui_test::next(&view.service);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let id = event.state.project.track(track).unwrap().devices()[0].id();
+            view.receive(event);
+            view.clip_view_open = true;
+            view.device_panel_active = true;
+            cx.notify();
+            id
+        })
+    });
     let directory = PreferencesTestDirectory::new();
     let module = directory.0.canonicalize().unwrap().join("Original.vst3");
     let mut catalog = original_plugin_catalog(module.clone());
@@ -1226,18 +1259,18 @@ fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
     let prior = editor.read_with(&visual, |view, _| view.state.clone().unwrap());
     editor.update(&mut visual, |view, cx| {
         let before = view.state.as_ref().unwrap().project.next_identity();
-        view.selected_track = Some(tracks[0]);
-        view.insert_plugin_effect(
-            &selection,
+        view.selected_track = Some(track);
+        let destination = if existing_chain {
+            PluginEffectDestination::Track(track)
+        } else {
             PluginEffectDestination::NewTrack {
-                before_track: Some(tracks[0]),
+                before_track: Some(track),
                 slot: TrackDeviceSlot::Effect,
                 gain: 1.0,
                 track_identity: before,
-            },
-            None,
-            cx,
-        );
+            }
+        };
+        view.insert_plugin_effect(&selection, destination, before_device, cx);
         assert!(view.pending_plugin_effect.is_some());
         cx.notify();
     });
@@ -1249,27 +1282,51 @@ fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
             "pending load must reach repaint"
         );
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
-        assert_eq!(view.selected_track, Some(tracks[0]));
+        assert_eq!(view.selected_track, Some(track));
     });
-    let row = visual
-        .debug_bounds("arrangement-pending-device-track")
-        .expect("loading row");
-    let cancel = visual
-        .debug_bounds("arrangement-pending-device-cancel")
-        .expect("cancel alongside pending track");
-    let original =
-        Box::leak(format!("arrangement-track-header-{}", tracks[0].value()).into_boxed_str());
-    assert!(row.contains(&cancel.center()));
-    assert!(row.bottom() <= visual.debug_bounds(original).unwrap().top());
+    let (surface, cancel, dismiss) = if existing_chain {
+        (
+            "device-chain-loading-slot",
+            "device-chain-loading-cancel",
+            "device-chain-loading-dismiss",
+        )
+    } else {
+        (
+            "arrangement-pending-device-track",
+            "arrangement-pending-device-cancel",
+            "arrangement-pending-device-dismiss",
+        )
+    };
+    let pending = visual.debug_bounds(surface).expect("loading proposal");
+    let cancel_bounds = visual.debug_bounds(cancel).expect("cancel on proposal");
+    let original = Box::leak(
+        before_device
+            .map_or_else(
+                || format!("arrangement-track-header-{}", track.value()),
+                |id| format!("device-drop-card-{}", id.value()),
+            )
+            .into_boxed_str(),
+    );
+    let original_bounds = visual.debug_bounds(original).unwrap();
+    assert!(pending.contains(&cancel_bounds.center()));
+    if existing_chain {
+        assert!(pending.right() <= original_bounds.left());
+    } else {
+        assert!(pending.bottom() <= original_bounds.top());
+    }
 
     if cancel_first {
-        visual.simulate_click(cancel.center(), Modifiers::default());
+        if existing_chain {
+            let focus = editor.read_with(&visual, |view, _| {
+                view.proposed_plugin_action_focus.as_ref().unwrap().clone()
+            });
+            visual.update(|window, _| focus.focus(window));
+            visual.simulate_keystrokes("space");
+        } else {
+            visual.simulate_click(cancel_bounds.center(), Modifiers::default());
+        }
         visual.run_until_parked();
-        assert!(
-            visual
-                .debug_bounds("arrangement-pending-device-track")
-                .is_none()
-        );
+        assert!(visual.debug_bounds(surface).is_none());
         editor.read_with(&visual, |view, _| {
             assert!(view.pending_plugin_effect.is_some())
         });
@@ -1294,7 +1351,7 @@ fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
         }
         view.receive(event);
         assert!(view.pending_plugin_effect.is_none());
-        assert_eq!(view.selected_track, Some(tracks[0]));
+        assert_eq!(view.selected_track, Some(track));
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.revision, prior.revision);
         assert_eq!(state.project, prior.project);
@@ -1303,27 +1360,21 @@ fn check_vst_new_track_proposal(cx: &mut TestAppContext, cancel_first: bool) {
     });
     visual.run_until_parked();
     if !cancel_first {
-        assert_eq!(
-            visual.debug_bounds("arrangement-pending-device-track"),
-            Some(row)
-        );
-        assert!(
-            visual
-                .debug_bounds("arrangement-pending-device-cancel")
-                .is_none()
-        );
+        assert_eq!(visual.debug_bounds(surface), Some(pending));
+        assert!(visual.debug_bounds(cancel).is_none());
         let dismiss = visual
-            .debug_bounds("arrangement-pending-device-dismiss")
+            .debug_bounds(dismiss)
             .expect("failed proposal retains an explicit dismissal");
         visual.simulate_click(dismiss.center(), Modifiers::default());
         visual.run_until_parked();
     }
-    assert!(
-        visual
-            .debug_bounds("arrangement-pending-device-track")
-            .is_none()
-    );
-    assert!(visual.debug_bounds(original).unwrap().top() < row.bottom());
+    assert!(visual.debug_bounds(surface).is_none());
+    let original_bounds = visual.debug_bounds(original).unwrap();
+    if existing_chain {
+        assert!(original_bounds.left() < pending.right());
+    } else {
+        assert!(original_bounds.top() < pending.bottom());
+    }
 }
 
 #[gpui::test]
@@ -1470,7 +1521,7 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
                 panic!("header drop must reach the plugin worker: {:?}", view.error)
             });
             assert_eq!(
-                pending.destination,
+                pending.proposal.destination,
                 match new_track_slot {
                     Some(slot) => PluginEffectDestination::NewTrack {
                         before_track: Some(tracks[1]),
@@ -1481,7 +1532,10 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
                     None => PluginEffectDestination::Track(tracks[1]),
                 }
             );
-            assert_eq!(pending.before, None, "no device-card insertion anchor");
+            assert_eq!(
+                pending.proposal.before, None,
+                "no device-card insertion anchor"
+            );
             assert_eq!(view.selected_track, Some(tracks[0]));
         });
     }

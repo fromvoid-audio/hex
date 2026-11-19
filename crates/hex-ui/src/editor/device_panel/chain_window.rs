@@ -7,6 +7,8 @@ use std::{cell::Cell, rc::Rc};
 pub(super) struct ChainWindow {
     pub(super) scroll: ScrollHandle,
     cards: Vec<(DeviceId, f32, f32)>,
+    proposed_left: Option<f32>,
+    reveal_proposal: bool,
     focus: HashMap<DeviceId, FocusHandle>,
     selection_focus: Option<FocusHandle>,
     reveal_after_prepare: Option<DeviceId>,
@@ -15,16 +17,25 @@ pub(super) struct ChainWindow {
 }
 
 impl ChainWindow {
-    pub(super) fn prepare(&mut self, devices: &[(DeviceId, f32)]) {
+    pub(super) fn prepare(&mut self, devices: &[(DeviceId, f32)], proposed: Option<usize>) {
         let mut left = DEVICE_CHAIN_PADDING;
-        let cards: Vec<_> = devices
-            .iter()
-            .map(|(id, width)| {
-                let card = (*id, left, *width);
-                left += width + DEVICE_CHAIN_PADDING;
-                card
-            })
-            .collect();
+        let mut proposed_left = None;
+        let mut cards = Vec::with_capacity(devices.len());
+        for (index, &(id, width)) in devices.iter().enumerate() {
+            if proposed == Some(index) {
+                proposed_left = Some(left);
+                left += PROPOSED_SLOT_WIDTH + DEVICE_CHAIN_PADDING;
+            }
+            cards.push((id, left, width));
+            left += width + DEVICE_CHAIN_PADDING;
+        }
+        if proposed == Some(devices.len()) {
+            proposed_left = Some(left);
+        }
+        if self.proposed_left != proposed_left {
+            self.reveal_proposal = proposed_left.is_some();
+            self.proposed_left = proposed_left;
+        }
         if self.cards != cards {
             // Keep the leftmost surviving visible card at its prior screen
             // position when topology changes. Offsets are clamped by GPUI.
@@ -44,6 +55,20 @@ impl ChainWindow {
         }
         if let Some(device) = self.reveal_after_prepare.take() {
             self.reveal(device);
+        }
+        if self.reveal_proposal
+            && let Some(left) = proposed_left
+            && self.width.get() > 0.0
+        {
+            if let Some(offset) = reveal_offset(
+                left,
+                PROPOSED_SLOT_WIDTH,
+                f32::from(self.scroll.offset().x),
+                self.width.get(),
+            ) {
+                self.scroll.set_offset(point(px(offset), px(0.0)));
+            }
+            self.reveal_proposal = false;
         }
     }
 
@@ -229,7 +254,7 @@ mod tests {
             .map(|device| device.id())
             .collect();
         let mut chain = ChainWindow::default();
-        chain.prepare(&[(ids[0], 144.0), (ids[1], 600.0), (ids[2], 286.0)]);
+        chain.prepare(&[(ids[0], 144.0), (ids[1], 600.0), (ids[2], 286.0)], None);
         assert_eq!(
             chain.cards,
             vec![
@@ -241,14 +266,17 @@ mod tests {
         // Topology anchoring reads the requested offset even before a draw;
         // preparation does not apply native clamping itself.
         chain.scroll.set_offset(point(px(-160.0), px(0.0)));
-        chain.prepare(&[
-            (ids[3], 144.0),
-            (ids[0], 144.0),
-            (ids[1], 600.0),
-            (ids[2], 286.0),
-        ]);
+        chain.prepare(
+            &[
+                (ids[3], 144.0),
+                (ids[0], 144.0),
+                (ids[1], 600.0),
+                (ids[2], 286.0),
+            ],
+            None,
+        );
         assert_eq!(f32::from(chain.scroll.offset().x), -307.0);
-        chain.prepare(&[(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)]);
+        chain.prepare(&[(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)], None);
         assert_eq!(f32::from(chain.scroll.offset().x), -160.0);
         chain.width.set(100.0);
         assert!(chain.visible(ids[0], None), "unknown IDs are conservative");
@@ -280,6 +308,20 @@ mod tests {
             chain.visible(ids[2], None),
             "invalid viewport cannot hide a card"
         );
+
+        // A pending card past the viewport reveals itself and reserves its
+        // actual width for mount checks on later canonical cards.
+        let devices = [(ids[3], 144.0), (ids[1], 600.0), (ids[2], 286.0)];
+        chain.width.set(400.0);
+        chain.scroll.set_offset(point(px(0.0), px(0.0)));
+        chain.prepare(&devices, Some(2));
+        assert_eq!(
+            chain.cards[2].1,
+            753.0 + PROPOSED_SLOT_WIDTH + DEVICE_CHAIN_PADDING
+        );
+        assert_eq!(f32::from(chain.scroll.offset().x), -556.0);
+        chain.prepare(&devices, None);
+        assert_eq!(chain.cards[2].1, 753.0);
     }
 
     #[test]

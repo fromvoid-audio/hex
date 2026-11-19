@@ -615,7 +615,6 @@ impl Render for EditorView {
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
-        self.restore_proposed_plugin_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
@@ -642,6 +641,7 @@ impl Render for EditorView {
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
         self.reconcile_detail_context();
+        self.restore_proposed_plugin_focus(window);
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();

@@ -6,6 +6,15 @@ use hex_session::service::{
     PluginEffectControl, PluginEffectDestination, PluginEffectInsertion, PluginEffectSelection,
 };
 
+gpui::actions!(hex_plugin_proposal, [ActivatePluginProposal]);
+
+pub(super) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("enter", ActivatePluginProposal, Some("hex_plugin_proposal")),
+        gpui::KeyBinding::new("space", ActivatePluginProposal, Some("hex_plugin_proposal")),
+    ]);
+}
+
 #[cfg(feature = "ui-test-support")]
 pub(crate) fn fixture_view(
     window: gpui::AnyWindowHandle,
@@ -84,11 +93,7 @@ pub(crate) fn fixture_view(
 
 pub(super) struct PendingPluginEffect {
     pub(super) status: String,
-    #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) destination: PluginEffectDestination,
-    #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) before: Option<hex_project::DeviceId>,
-    track: Option<ProposedPluginTrack>,
+    pub(super) proposal: PluginProposal,
     control: Arc<PluginEffectControl>,
     trace: Option<crate::diagnostics::PluginLoad>,
 }
@@ -98,41 +103,92 @@ impl Drop for PendingPluginEffect {
     }
 }
 
-pub(super) struct ProposedPluginTrack {
-    before: Option<TrackId>,
+#[derive(Clone)]
+pub(super) struct PluginProposal {
+    pub(super) destination: PluginEffectDestination,
+    pub(super) before: Option<hex_project::DeviceId>,
     name: String,
 }
 
-pub(super) struct FailedPluginTrack {
-    track: ProposedPluginTrack,
+pub(super) struct FailedPluginProposal {
+    proposal: PluginProposal,
     control: Arc<PluginEffectControl>,
     error: String,
 }
 
+#[derive(Clone, Copy)]
+enum ProposalSurface {
+    Track,
+    Slot,
+}
+
+enum SlotPosition {
+    First,
+    Before(hex_project::DeviceId),
+    End,
+}
+
+impl PluginProposal {
+    fn slot(&self, owner: device_panel::DevicePanelOwner) -> Option<SlotPosition> {
+        use PluginEffectDestination as Destination;
+        use device_panel::DevicePanelOwner as Owner;
+        let effect_position = || Some(self.before.map_or(SlotPosition::End, SlotPosition::Before));
+        match (self.destination, owner) {
+            (Destination::Track(track), Owner::Track(id)) if track == id => effect_position(),
+            (Destination::Instrument(track), Owner::Track(id)) if track == id => {
+                Some(SlotPosition::First)
+            }
+            (Destination::ReplaceInstrument { track, instrument }, Owner::Track(id))
+                if track == id =>
+            {
+                Some(SlotPosition::Before(instrument))
+            }
+            (Destination::Return(target), Owner::Return(id)) if target == id => effect_position(),
+            (Destination::Main, Owner::Main) => effect_position(),
+            _ => None,
+        }
+    }
+}
+
 impl EditorView {
-    fn plugin_track_proposal(
+    fn plugin_proposal(
         &self,
-    ) -> Option<(
-        &ProposedPluginTrack,
-        &Arc<PluginEffectControl>,
-        Option<&str>,
-    )> {
-        if let Some((pending, track)) = self
+    ) -> Option<(&PluginProposal, &Arc<PluginEffectControl>, Option<&str>)> {
+        if let Some(pending) = self
             .pending_plugin_effect
             .as_ref()
             .filter(|pending| !pending.control.is_cancelled())
-            .and_then(|pending| pending.track.as_ref().map(|track| (pending, track)))
         {
-            return Some((track, &pending.control, None));
+            return Some((&pending.proposal, &pending.control, None));
         }
-        self.failed_plugin_track
-            .as_ref()
-            .map(|failed| (&failed.track, &failed.control, Some(failed.error.as_str())))
+        self.failed_plugin_proposal.as_ref().map(|failed| {
+            (
+                &failed.proposal,
+                &failed.control,
+                Some(failed.error.as_str()),
+            )
+        })
     }
 
     pub(super) fn proposed_plugin_track_anchor(&self) -> Option<Option<TrackId>> {
-        self.plugin_track_proposal()
-            .map(|(track, _, _)| track.before)
+        match self.plugin_proposal()?.0.destination {
+            PluginEffectDestination::NewTrack { before_track, .. } => Some(before_track),
+            _ => None,
+        }
+    }
+
+    pub(super) fn proposed_plugin_slot_index(
+        &self,
+        owner: device_panel::DevicePanelOwner,
+        mut chain: impl ExactSizeIterator<Item = hex_project::DeviceId>,
+    ) -> Option<usize> {
+        let (proposal, _, _) = self.plugin_proposal()?;
+        let len = chain.len();
+        Some(match proposal.slot(owner)? {
+            SlotPosition::First => 0,
+            SlotPosition::Before(id) => chain.position(|device| device == id).unwrap_or(len),
+            SlotPosition::End => len,
+        })
     }
 
     pub(super) fn restore_proposed_plugin_focus(&self, window: &mut Window) {
@@ -140,17 +196,63 @@ impl EditorView {
             .proposed_plugin_action_focus
             .as_ref()
             .is_some_and(|focus| focus.is_focused(window))
-            && (self.mode != EditorMode::Arrangement || self.plugin_track_proposal().is_none())
+            && !self.plugin_proposal_is_visible()
         {
             self.focus.focus(window);
         }
     }
 
+    fn plugin_proposal_is_visible(&self) -> bool {
+        let Some((proposal, _, _)) = self.plugin_proposal() else {
+            return false;
+        };
+        match proposal.destination {
+            PluginEffectDestination::NewTrack { .. } => self.mode == EditorMode::Arrangement,
+            _ => {
+                self.clip_view_open
+                    && self.device_panel_active
+                    && self
+                        .state
+                        .as_ref()
+                        .and_then(|state| device_panel::selected_owner(self, state))
+                        .is_some_and(|owner| proposal.slot(owner).is_some())
+            }
+        }
+    }
+
     pub(super) fn proposed_plugin_track_row(&mut self, cx: &mut Context<Self>) -> Div {
-        let Some((track, control, error)) = self.plugin_track_proposal() else {
+        div()
+            .debug_selector(|| "arrangement-pending-device-track".into())
+            .w_full()
+            .h(px(super::tracks::TRACK_ROW_HEIGHT))
+            .flex()
+            .justify_end()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children(
+                self.proposed_plugin_surface(ProposalSurface::Track, cx)
+                    .map(|header| header.w(px(self.track_header_width()))),
+            )
+    }
+
+    pub(super) fn proposed_plugin_slot_card(&mut self, cx: &mut Context<Self>) -> Div {
+        let Some(card) = self.proposed_plugin_surface(ProposalSurface::Slot, cx) else {
             return div();
         };
-        let title = hex_session::service::text::verbatim(&track.name);
+        card.debug_selector(|| "device-chain-loading-slot".into())
+            .w(px(device_panel::PROPOSED_SLOT_WIDTH))
+            .h(px(device_panel::DEVICE_FRAME_HEIGHT))
+            .mr(px(device_panel::DEVICE_CHAIN_PADDING))
+            .flex_shrink_0()
+    }
+
+    fn proposed_plugin_surface(
+        &mut self,
+        surface: ProposalSurface,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let (proposal, control, error) = self.plugin_proposal()?;
+        let title = hex_session::service::text::verbatim(&proposal.name);
         let failed = error.is_some();
         let detail = error.unwrap_or("loading vst3").to_owned();
         let tooltip = super::display_error::DisplayError::from(detail.clone());
@@ -162,11 +264,11 @@ impl EditorView {
         let action = move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
             if failed {
                 if view
-                    .failed_plugin_track
+                    .failed_plugin_proposal
                     .as_ref()
                     .is_some_and(|track| Arc::ptr_eq(&track.control, &control))
                 {
-                    view.failed_plugin_track = None;
+                    view.failed_plugin_proposal = None;
                 }
             } else if let Some(pending) = &view.pending_plugin_effect
                 && Arc::ptr_eq(&pending.control, &control)
@@ -178,10 +280,22 @@ impl EditorView {
             cx.notify();
         };
         let key_action = action.clone();
-        let action_id = if failed {
-            "arrangement-pending-device-dismiss"
-        } else {
-            "arrangement-pending-device-cancel"
+        let (action_id, status_id) = match (surface, failed) {
+            (ProposalSurface::Track, true) => (
+                "arrangement-pending-device-dismiss",
+                "arrangement-pending-device-status",
+            ),
+            (ProposalSurface::Track, false) => (
+                "arrangement-pending-device-cancel",
+                "arrangement-pending-device-status",
+            ),
+            (ProposalSurface::Slot, true) => (
+                "device-chain-loading-dismiss",
+                "device-chain-loading-status",
+            ),
+            (ProposalSurface::Slot, false) => {
+                ("device-chain-loading-cancel", "device-chain-loading-status")
+            }
         };
         let button = hex_widgets::action(
             theme::text(if failed { "dismiss" } else { "cancel" }),
@@ -193,6 +307,7 @@ impl EditorView {
         .px_2()
         .text_xs()
         .track_focus(&focus)
+        .key_context("hex_plugin_proposal")
         .focus(|style| {
             style
                 .border_1()
@@ -200,61 +315,43 @@ impl EditorView {
         })
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |view, _, window, cx| action(view, window, cx)))
-        .on_key_down(
-            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.modifiers == gpui::Modifiers::default()
-                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                {
-                    cx.stop_propagation();
-                    if !event.is_held {
-                        key_action(view, window, cx);
-                    }
-                }
+        .on_action(
+            cx.listener(move |view, _: &ActivatePluginProposal, window, cx| {
+                key_action(view, window, cx);
             }),
         );
-        div()
-            .debug_selector(|| "arrangement-pending-device-track".into())
-            .w_full()
-            .h(px(super::tracks::TRACK_ROW_HEIGHT))
-            .flex()
-            .justify_end()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .child(
-                div()
-                    .w(px(self.track_header_width()))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .text_xs()
-                            .child(div().truncate().child(theme::text(title)))
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::color(if failed {
-                                        theme::PaletteRole::Error
-                                    } else {
-                                        theme::PaletteRole::Muted
-                                    })))
-                                    .truncate()
-                                    .id("arrangement-pending-device-status")
-                                    .debug_selector(|| "arrangement-pending-device-status".into())
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| {
-                                            super::display_error::ErrorTooltip(tooltip.clone())
-                                        })
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_xs()
+                        .child(div().truncate().child(theme::text(title)))
+                        .child(
+                            div()
+                                .text_color(rgb(theme::color(if failed {
+                                    theme::PaletteRole::Error
+                                } else {
+                                    theme::PaletteRole::Muted
+                                })))
+                                .truncate()
+                                .id(status_id)
+                                .debug_selector(move || status_id.into())
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| super::display_error::ErrorTooltip(tooltip.clone()))
                                         .into()
-                                    })
-                                    .child(theme::text(detail)),
-                            ),
-                    )
-                    .children([button]),
-            )
+                                })
+                                .child(theme::text(detail)),
+                        ),
+                )
+                .children([button]),
+        )
     }
 
     pub(super) fn reconcile_device_insert_confirmation(
@@ -334,18 +431,15 @@ impl EditorView {
         {
             return false;
         }
-        let Some(mut pending) = self.pending_plugin_effect.take() else {
+        let Some(pending) = self.pending_plugin_effect.take() else {
             return false;
         };
         if let Some(trace) = &pending.trace {
             trace.complete(installed);
         }
-        if !installed
-            && !pending.control.is_cancelled()
-            && let Some(track) = pending.track.take()
-        {
-            self.failed_plugin_track = Some(FailedPluginTrack {
-                track,
+        if !installed && !pending.control.is_cancelled() {
+            self.failed_plugin_proposal = Some(FailedPluginProposal {
+                proposal: pending.proposal.clone(),
                 control: Arc::clone(control),
                 error: error.unwrap_or("vst3 load failed").into(),
             });
@@ -442,21 +536,13 @@ impl EditorView {
                 control,
                 trace,
                 status,
-                track: match destination {
-                    PluginEffectDestination::NewTrack { before_track, .. } => {
-                        Some(ProposedPluginTrack {
-                            before: before_track,
-                            name: selection.class_name.clone(),
-                        })
-                    }
-                    _ => None,
+                proposal: PluginProposal {
+                    destination,
+                    before,
+                    name: selection.class_name.clone(),
                 },
-                #[cfg(all(test, feature = "ui-test-support"))]
-                destination,
-                #[cfg(all(test, feature = "ui-test-support"))]
-                before,
             });
-            self.failed_plugin_track = None;
+            self.failed_plugin_proposal = None;
             self.error = None;
         }
     }

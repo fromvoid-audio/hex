@@ -550,6 +550,7 @@ fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_source_picker_keys(cx);
     device_panel::bind_source_manager_keys(cx);
     device_panel::bind_keyboard_keys(cx);
+    plugin_effect::bind_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
@@ -1002,7 +1003,7 @@ pub(super) struct EditorView {
     drag_bounce_held: bool,
     pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
-    failed_plugin_track: Option<plugin_effect::FailedPluginTrack>,
+    failed_plugin_proposal: Option<plugin_effect::FailedPluginProposal>,
     proposed_plugin_action_focus: Option<gpui::FocusHandle>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
@@ -1814,7 +1815,7 @@ impl EditorView {
             drag_bounce_held: false,
             pending_bounce_drop: None,
             pending_plugin_effect: None,
-            failed_plugin_track: None,
+            failed_plugin_proposal: None,
             proposed_plugin_action_focus: None,
             export_control: None,
             export_window: None,
