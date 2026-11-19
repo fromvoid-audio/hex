@@ -182,6 +182,17 @@ mod midi_pitch_viewport;
 mod midi_ruler;
 mod midi_scene;
 use midi_pitch_viewport::PitchViewport;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl PitchViewport {
+    fn first_test_pitch(self) -> u8 {
+        self.coverage().start
+    }
+
+    fn test_row_count(self) -> u8 {
+        self.coverage().len() as u8
+    }
+}
 mod midi_selection;
 mod midi_source_controls;
 mod midi_step;

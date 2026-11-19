@@ -120,7 +120,10 @@ pub(in crate::editor) fn double_down(
 fn fractional_edge_keys_agree_with_note_creation_and_exact_capture_identity(
     cx: &mut TestAppContext,
 ) {
-    for (low, span, edge) in [(0.25, 11.5, 0), (115.25, 12.5, 127)] {
+    for (low, span, edge, key_id) in [
+        (0.25, 11.5, 0, "midi-piano-key-0"),
+        (115.25, 12.5, 127, "midi-piano-key-127"),
+    ] {
         let cx = &mut cx.new_app();
         let (mut visual, editor, _environment, clip) = fixture(cx);
         let viewport = crate::editor::PitchViewport::new(low, span).unwrap();
@@ -129,9 +132,8 @@ fn fractional_edge_keys_agree_with_note_creation_and_exact_capture_identity(
             cx.notify();
         });
         visual.run_until_parked();
-        let key_id = format!("midi-piano-key-{edge}");
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
-        let key = visual.debug_bounds(&key_id).unwrap();
+        let key = visual.debug_bounds(key_id).unwrap();
         let down = point(roll.center().x, key.center().y);
         double_down(&mut visual, down, Modifiers::default());
         editor.read_with(&visual, |view, _| assert!(view.midi_creation.is_some()));

@@ -104,15 +104,6 @@ impl PitchViewport {
     fn floor_pitch(self, fraction: f64) -> f64 {
         (self.high() - fraction * self.span()).ceil() - 1.0
     }
-
-    #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn first_test_pitch(self) -> u8 {
-        self.coverage().start
-    }
-    #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn test_row_count(self) -> u8 {
-        self.coverage().len() as u8
-    }
 }
 
 #[cfg(test)]
