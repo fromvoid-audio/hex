@@ -934,7 +934,7 @@ fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat
         assert_eq!(waveform.bins()[0][0].max, read.source.bins()[0].max[0]);
     }
     assert!(sources.waveform(3).is_none());
-    session
+    let (_, revision) = session
         .command_prepared_revision(
             Command::SetAudioClipGain {
                 clip,
@@ -947,6 +947,26 @@ fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat
         sources,
         accepted_source(&session).occurrences.as_ref().unwrap()
     ));
+    let (_, reversed) = session
+        .command_prepared_revision(Command::ReverseClips(vec![clip]), Some(&revision))
+        .unwrap();
+    let source = accepted_source(&session);
+    let reversed_sources = source.occurrences.as_ref().unwrap();
+    let maps = reversed_sources.directed().unwrap();
+    assert_eq!(maps.base(), 0..12_000);
+    let spans: Vec<_> = maps.spans().iter().map(|span| span.destination()).collect();
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0].start, 0);
+    assert_eq!(spans[2].end, 12_000);
+    assert!(spans.windows(2).all(|pair| pair[0].end == pair[1].start));
+    assert!(Arc::ptr_eq(
+        &reversed_sources.prepared,
+        reversed.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .as_ref()
+            .unwrap(),
+    ));
+    assert!(maps.position_q32(0).unwrap().unwrap() > maps.position_q32(11_999).unwrap().unwrap());
 }
 
 #[test]

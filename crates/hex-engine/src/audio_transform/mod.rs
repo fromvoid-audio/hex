@@ -35,8 +35,8 @@ use instance_fade::{MusicalPeakCapture, OuterPlaybackFade};
 mod mapping;
 mod preview_peaks;
 pub use preview_peaks::{
-    PreparedEventOccurrence, PreparedEventOccurrences, PreparedEventSourcePeaks,
-    PreparedMusicalEventSourceClock,
+    PreparedDirectedEventRead, PreparedDirectedEventSpan, PreparedEventOccurrence,
+    PreparedEventOccurrences, PreparedEventSourcePeaks, PreparedMusicalEventSourceClock,
 };
 mod processing_root;
 mod view;
@@ -803,6 +803,26 @@ impl AudioTransformPreparation {
         audio: &Audio,
     ) -> Option<Arc<PreparedEventOccurrences>> {
         self.prepared_sidecar(audio, |entry| entry.event_source_occurrences.clone())
+    }
+
+    fn capture_event_occurrence(
+        &self,
+        table: &mut Option<PreparedEventOccurrences>,
+        placement: hex_project::AudioViewOccurrence,
+        root: &Audio,
+    ) {
+        if let Some(reads) = table {
+            // Only retain the summary belonging to this exact PCM. A miss
+            // abandons the optional table without interrupting playback.
+            if let Some(source) = self
+                .event_source_peaks(root)
+                .filter(|source| source.musical_clock().is_some())
+            {
+                reads.push(placement, source);
+            } else {
+                *table = None;
+            }
+        }
     }
 
     fn prepared_sidecar<T>(&self, audio: &Audio, read: impl Fn(&Entry) -> Option<T>) -> Option<T> {

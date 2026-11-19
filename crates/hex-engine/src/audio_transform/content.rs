@@ -133,8 +133,16 @@ impl AudioTransformPreparation {
             .try_reserve_exact(length)
             .map_err(|_| Invalid("directed audio allocation failed"))?;
         frames.resize(length, [0.0; 2]);
-        if musical {
-            self.render_musical_content(tempo_map, clip, asset, source, &mut frames)?;
+        let event_source_occurrences = if musical {
+            self.render_musical_content(
+                tempo_map,
+                clip,
+                asset,
+                source,
+                &mut frames,
+                self.entry_limit > 0 && bytes <= self.cache_limit,
+            )?
+            .map(Arc::new)
         } else {
             // Only the transient pre-fade processing program is neutralized. Saved
             // fade/source settings and source PCM are never rewritten.
@@ -153,7 +161,8 @@ impl AudioTransformPreparation {
                 let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
                 self.copy_frame_content(clip, &projection, root.frames(), &mut frames)?;
             }
-        }
+            None
+        };
         self.apply_content_fade(tempo_map, clip, edit, &projection, &mut frames)?;
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
@@ -172,7 +181,7 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             event_source_peaks: None,
-            event_source_occurrences: None,
+            event_source_occurrences,
             bytes,
         })?;
         finish(audio)
@@ -331,7 +340,8 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: &Audio,
         frames: &mut [crate::Frame],
-    ) -> Result<(), Invalid> {
+        capture_sources: bool,
+    ) -> Result<Option<PreparedEventOccurrences>, Invalid> {
         let edit = clip
             .audio_edit()
             .ok_or(Invalid("directed audio edit missing"))?;
@@ -363,6 +373,31 @@ impl AudioTransformPreparation {
         };
 
         let (base_start, base_end) = read_map::base_bounds(&projection, edit)?;
+        let window = projection
+            .content_window()
+            .ok_or(Invalid("directed audio view missing"))?;
+        let law = edit
+            .content_view
+            .ok_or(Invalid("directed audio view missing"))?
+            .read_resampler;
+        let budget = super::preview_peaks::event_source_budget();
+        let count = projection.occurrence_count();
+        let mut event_sources = if capture_sources && count > 0 {
+            PreparedEventOccurrences::admit(count, budget).and_then(|mut table| {
+                table.directed = Some(PreparedDirectedEventRead::admit(
+                    base_start..base_end,
+                    crop.clone(),
+                    clip.start(),
+                    window.reversed,
+                    law,
+                    count,
+                    budget,
+                )?);
+                Some(table)
+            })
+        } else {
+            None
+        };
         let length = usize::try_from(base_end - base_start)
             .map_err(|_| Invalid("directed filter context size overflow"))?;
         let bytes = length
@@ -387,6 +422,7 @@ impl AudioTransformPreparation {
             if root.frames().len() as u64 != occurrence.root_frame_length {
                 return Err(Invalid("directed root differs from admitted pcm"));
             }
+            self.capture_event_occurrence(&mut event_sources, occurrence, &root);
             let input = root
                 .frames()
                 .get(occurrence.root_start as usize..occurrence.root_end as usize)
@@ -411,11 +447,7 @@ impl AudioTransformPreparation {
             }
             output.copy_from_slice(input);
         }
-        if projection
-            .content_window()
-            .ok_or(Invalid("directed audio view missing"))?
-            .reversed
-        {
+        if window.reversed {
             for i in 0..base.len() / 2 {
                 if i % 1024 == 0 && self.cancelled() {
                     return Err(Invalid("audio preparation cancelled"));
@@ -425,11 +457,7 @@ impl AudioTransformPreparation {
             }
         }
         let base = Audio::from_derived(source.sample_rate(), base, reservation)?;
-        let law = super::warp_law(
-            edit.content_view
-                .ok_or(Invalid("directed audio view missing"))?
-                .read_resampler,
-        );
+        let resampler = super::warp_law(law);
         for i in 0..projection.occurrence_count() {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
@@ -442,7 +470,22 @@ impl AudioTransformPreparation {
                     .ok_or(Invalid(
                         "directed filtered destination exceeds admitted pcm",
                     ))?;
-                self.render_content_span(&base, &span.map, law, destination)?;
+                self.render_content_span(&base, &span.map, resampler, destination)?;
+                if let Some(table) = &mut event_sources
+                    && table
+                        .directed
+                        .as_mut()
+                        .and_then(|read| {
+                            read.record(
+                                span.first - output_start..span.last - output_start,
+                                span.map,
+                                budget,
+                            )
+                        })
+                        .is_none()
+                {
+                    event_sources = None;
+                }
             }
         }
         if cropped {
@@ -454,7 +497,13 @@ impl AudioTransformPreparation {
             }
             frames.copy_from_slice(retained);
         }
-        Ok(())
+        if let Some(read) = event_sources
+            .as_mut()
+            .and_then(|table| table.directed.as_mut())
+        {
+            read.finish();
+        }
+        Ok(event_sources)
     }
     fn render_content_span(
         &self,
