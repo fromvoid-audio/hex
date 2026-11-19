@@ -4947,3 +4947,214 @@ fn rejected_quantized_stream_releases_pending_candidate_pages(stale: bool) {
     drop(control);
     finish(&mut retirement);
 }
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_file_removal_cancellation_restores_the_running_stage() {
+    ordinary_file_removal_rollback(true);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn ordinary_file_removal_missed_page_restores_the_running_stage() {
+    ordinary_file_removal_rollback(false);
+}
+
+#[cfg(feature = "stream-test-support")]
+fn ordinary_file_removal_rollback(cancel: bool) {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{Command, Created, Editor};
+    use std::time::{Duration, Instant};
+
+    let _serial = serial();
+    const PAGE: usize = hex_engine::STREAM_PAGE_FRAMES;
+    const QUANTUM: usize = 64;
+    let wav = stream_fixture::Wav::with_frames((PAGE * 3) as u32);
+    let project = super::readiness::project_with_frames((PAGE * 3) as u64);
+    let asset = project.assets().next().unwrap().id();
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: metadata.key(),
+        page_index: 1,
+    });
+    let store = ResidentDeviceAssets::default();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Device(room) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::reverb::REVERB_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("reverb");
+    };
+    let wet = compile(editor.project(), metadata.clone(), &store);
+    editor.execute(Command::RemoveDevice(room)).unwrap();
+
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            PAGE,
+        )
+        .unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation_with_gate(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            vec![definition],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+            gate,
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("stream catalog: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "stream catalog timed out");
+        std::thread::yield_now();
+    }
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let old_context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    control
+        .publish_with_admission_and_source_on_control(
+            wet,
+            PublicationPolicy::InstallFreshRuntime,
+            old_context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut pcm = [[0.0; 2]; QUANTUM];
+    let cut = (PAGE - 2 * QUANTUM) as u64;
+    while control.status.position.load(Acquire) < cut {
+        measured_render(&mut data, &mut pcm);
+        assert!(
+            Instant::now() < deadline,
+            "predecessor did not reach the cut"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.position.load(Acquire), cut);
+    let predecessor = control.status.recording_source().unwrap();
+    let submit = |control: &mut PublicationControl, editor_revision| {
+        let revision = control
+            .publish_device_insert_with_receipt_on_control(
+                compile(editor.project(), metadata.clone(), &store),
+                PublicationPolicy::DeviceInsert {
+                    predecessor,
+                    fence: control.capture_fresh_runtime_fence().unwrap(),
+                },
+                hex_engine::AudioSourceContext {
+                    editor_revision,
+                    ..old_context
+                },
+                |_| {},
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        control.fresh_runtime_receipt(revision).unwrap()
+    };
+    let receipt = submit(&mut control, 4);
+    measured_render(&mut data, &mut pcm);
+    data.owner_mut().unwrap().run(|callback, _| {
+        assert!(
+            callback
+                .deferred
+                .as_ref()
+                .unwrap()
+                .playback
+                .native_removal_started()
+        );
+    });
+    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    if cancel {
+        assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
+        measured_render(&mut data, &mut pcm);
+    }
+    while receipt.state() == PublicationReceiptState::Pending {
+        measured_render(&mut data, &mut pcm);
+        assert!(Instant::now() < deadline, "removal did not terminate");
+    }
+    assert_eq!(
+        receipt.state(),
+        if cancel {
+            PublicationReceiptState::Cancelled
+        } else {
+            PublicationReceiptState::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
+        }
+    );
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    assert!(control.status.playing.load(Acquire));
+    assert_eq!(control.reclaim(), 1);
+
+    // The same still-running stage must be able to fade again after the
+    // worker releases the first page beyond the original render window.
+    entered.recv_timeout(Duration::from_millis(300)).unwrap();
+    release.send(()).unwrap();
+    while control.status.position.load(Acquire) < (PAGE + QUANTUM) as u64 {
+        measured_render(&mut data, &mut pcm);
+        assert!(Instant::now() < deadline, "old output did not resume");
+        std::thread::yield_now();
+    }
+    let retry = submit(&mut control, 5);
+    while retry.state() == PublicationReceiptState::Pending {
+        measured_render(&mut data, &mut pcm);
+        assert!(Instant::now() < deadline, "restored stage did not fade");
+    }
+    assert_eq!(retry.state(), PublicationReceiptState::Installed);
+    assert_eq!(
+        control
+            .status
+            .recording_source()
+            .unwrap()
+            .context
+            .editor_revision,
+        5
+    );
+    assert_eq!(
+        control.status.recording_source().unwrap().output_identity,
+        predecessor.output_identity
+    );
+
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        measured_render(&mut data, &mut pcm);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(Instant::now() < deadline, "source reclamation");
+        std::thread::yield_now();
+    }
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
