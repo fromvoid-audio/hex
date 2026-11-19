@@ -1,5 +1,6 @@
 use super::*;
 use crate::audio_transform::tests::{fixture, isolated, prepare};
+use crate::audio_transform::{AudioTransformPreparation, PreparedEventSourcePeaks};
 use hex_project::{
     AudioEventEdit, AudioEventFade, BeatTime, ClipGain, Command, Created, Editor, Project, Tempo,
     WarpMode, default_audio_warp,
@@ -56,6 +57,157 @@ fn frame_fixture() -> (
 }
 
 #[test]
+fn warped_event_source_peaks_survive_a_signed_move_across_a_tempo_seam() {
+    let (mut editor, clip, media) = fixture(false);
+    let track = editor.project().tracks()[0].id();
+    let half = BeatTime::ONE.raw() / 2;
+    for command in [
+        Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        },
+        Command::MoveClip {
+            clip,
+            track,
+            start: 16_000,
+        },
+    ] {
+        editor.execute(command).unwrap();
+    }
+    let project = editor.project();
+    let settings = default_audio_warp(
+        project.clip(clip).unwrap(),
+        project.tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    for command in [
+        Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        },
+        Command::SetTempoPoint {
+            beat: BeatTime::from_raw(5 * half),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        },
+    ] {
+        editor.execute(command).unwrap();
+    }
+    let context = AudioTransformPreparation::default();
+    let original = prepare(&editor, &media, &context);
+    let view = &original.arrangement().audio_clip_views()[0];
+    let neutral = view
+        .event_source_peaks
+        .as_ref()
+        .expect("neutral warped event source before the first fade");
+    assert_eq!(neutral.source_frames(), 6_000);
+    assert_event_source_bins(neutral, view.audio.frames());
+    let source_clock = neutral.musical_clock().unwrap();
+    assert_eq!(
+        source_clock.frame_at(BeatTime::from_raw(half)).unwrap(),
+        4_000
+    );
+    assert_eq!(source_clock.frame_at(BeatTime::ONE).unwrap(), 6_000);
+    assert!(
+        source_clock
+            .frame_at(BeatTime::from_raw(2 * half + 1))
+            .is_err()
+    );
+    for operation in [
+        AudioEventEdit::Split { at: half },
+        AudioEventEdit::Place {
+            event: 1,
+            start: -(2 * half as i64),
+        },
+        AudioEventEdit::SetFade {
+            event: 1,
+            fade: Some(
+                AudioEventFade::new(0, ClipFade::new(half, 0, half / 4, 0).unwrap()).unwrap(),
+            ),
+        },
+    ] {
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+    }
+    let moved = prepare(&editor, &media, &context);
+    let moved_view = &moved.arrangement().audio_clip_views()[0];
+    let retained = moved_view.event_source_peaks.as_ref().unwrap();
+    assert_eq!(retained.source_frames(), 6_000);
+    assert_eq!(retained.bins(), neutral.bins());
+    assert_eq!(retained.musical_clock(), Some(source_clock));
+    let moved_edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    assert!(
+        moved_edit
+            .domain
+            .musical_event_source
+            .unwrap()
+            .zero_in_destination
+            > 0
+    );
+    assert_ne!(moved_view.audio.frames(), view.audio.frames());
+    let again = prepare(&editor, &media, &context);
+    assert!(Arc::ptr_eq(
+        retained,
+        again.arrangement().audio_clip_views()[0]
+            .event_source_peaks
+            .as_ref()
+            .unwrap()
+    ));
+    let span = editor.project().clip(clip).unwrap().duration();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(span, 0, 257, 1_601).unwrap(),
+        })
+        .unwrap();
+    let outer = prepare(&editor, &media, &context);
+    let outer_view = &outer.arrangement().audio_clip_views()[0];
+    assert_eq!(
+        outer_view
+            .event_source_peaks
+            .as_ref()
+            .unwrap()
+            .musical_clock(),
+        Some(source_clock)
+    );
+    assert_eq!(
+        outer_view.event_source_peaks.as_ref().unwrap().bins(),
+        neutral.bins()
+    );
+    assert_ne!(outer_view.audio.frames(), moved_view.audio.frames());
+}
+
+fn assert_event_source_bins(peaks: &PreparedEventSourcePeaks, pcm: &[crate::Frame]) {
+    assert_eq!(peaks.source_frames(), pcm.len());
+    let bins = peaks.bins();
+    assert_eq!(bins.len(), 1_024);
+    let width = pcm.len() / bins.len();
+    let extra = pcm.len() % bins.len();
+    for (index, peak) in bins.iter().enumerate() {
+        let start = index * width + index.min(extra);
+        let end = start + width + usize::from(index < extra);
+        let range = &pcm[start..end];
+        let expected = crate::PreparedAudioPeak {
+            min: std::array::from_fn(|channel| {
+                range
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::INFINITY, f32::min)
+            }),
+            max: std::array::from_fn(|channel| {
+                range
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            }),
+        };
+        assert_eq!(*peak, expected);
+    }
+}
+
+#[test]
 fn processed_frame_event_source_peaks_survive_fades_and_cache_hits() {
     let (mut editor, clip, media) = fixture(false);
     for command in [
@@ -84,31 +236,9 @@ fn processed_frame_event_source_peaks_survive_fades_and_cache_hits() {
         .as_ref()
         .expect("pre-event basis before the first authored fade");
     let pcm = view.audio.frames();
-    assert_eq!(neutral.source_frames(), pcm.len());
+    assert_event_source_bins(neutral, pcm);
+    assert!(neutral.musical_clock().is_none());
     let bins = neutral.bins();
-    assert_eq!(bins.len(), 1_024);
-    let width = pcm.len() / bins.len();
-    let extra = pcm.len() % bins.len();
-    for (index, peak) in bins.iter().enumerate() {
-        let start = index * width + index.min(extra);
-        let end = start + width + usize::from(index < extra);
-        let range = &pcm[start..end];
-        let expected = crate::PreparedAudioPeak {
-            min: std::array::from_fn(|c| {
-                range
-                    .iter()
-                    .map(|frame| frame[c])
-                    .fold(f32::INFINITY, f32::min)
-            }),
-            max: std::array::from_fn(|c| {
-                range
-                    .iter()
-                    .map(|frame| frame[c])
-                    .fold(f32::NEG_INFINITY, f32::max)
-            }),
-        };
-        assert_eq!(*peak, expected);
-    }
     editor
         .execute(Command::EditAudioEvents {
             clip,

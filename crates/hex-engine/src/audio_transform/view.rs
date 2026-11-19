@@ -22,7 +22,7 @@ pub struct AudioPreviewRoot {
     pub audio: Audio,
     /// Technical domain-clock origin (raw beats for a musical domain).
     pub origin: i128,
-    /// Unweighted source summary for an eligible transformed frame root.
+    /// Unweighted source summary and its clock for an eligible processing root.
     pub event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
 }
 

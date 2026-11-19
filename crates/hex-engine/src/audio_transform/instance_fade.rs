@@ -1,13 +1,14 @@
 //! Destination-only fade finalization after the source program's last read.
 //! Musical fades use bounded PCM on control. The callback sees an ordinary
 //! resident clip and never evaluates a project tempo map.
-use super::preview_peaks::PeakBins;
+use super::preview_peaks::{PeakBins, PreparedEventSourcePeaks};
 use super::{Audio, AudioClipEdit, AudioTransformPreparation, Clip, Invalid};
 use crate::PreparedAudioPeak;
 use hex_project::{
     AudioClipFadeClock, AudioDomainClock, ClipFade, MAX_AUDIO_DOMAIN_FRAMES,
     ProjectedOuterAudioFade,
 };
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 pub(super) enum OuterPlaybackFade<'a> {
@@ -53,9 +54,11 @@ pub(crate) fn materializes_musical_outer_fade(edit: &AudioClipEdit) -> bool {
 }
 
 /// The collecting Arrangement compile owns this slot for one destination clip.
-pub(super) struct MusicalPeakCapture {
+#[derive(Default)]
+pub(crate) struct MusicalPeakCapture {
     limit: usize,
-    peaks: Vec<PreparedAudioPeak>,
+    pub(crate) destination: Vec<PreparedAudioPeak>,
+    pub(crate) event_source: Option<Arc<PreparedEventSourcePeaks>>,
 }
 
 impl AudioTransformPreparation {
@@ -97,20 +100,15 @@ impl AudioTransformPreparation {
         &self,
         limit: usize,
         prepare: impl FnOnce() -> Result<T, Invalid>,
-    ) -> Result<(T, Vec<PreparedAudioPeak>), Invalid> {
-        let capture = (limit > 0).then(|| MusicalPeakCapture {
+    ) -> Result<(T, MusicalPeakCapture), Invalid> {
+        let capture = MusicalPeakCapture {
             limit,
-            peaks: Vec::new(),
-        });
-        let previous = self.musical_peak_capture.replace(capture);
+            ..MusicalPeakCapture::default()
+        };
+        let previous = self.musical_peak_capture.replace(Some(capture));
         let prepared = prepare();
         let capture = self.musical_peak_capture.replace(previous);
-        prepared.map(|prepared| {
-            (
-                prepared,
-                capture.map_or_else(Vec::new, |capture| capture.peaks),
-            )
-        })
+        prepared.map(|prepared| (prepared, capture.unwrap_or_default()))
     }
 
     pub(super) fn finish_outer_fade(
@@ -139,6 +137,11 @@ impl AudioTransformPreparation {
             .audio
             .as_ref()
             .ok_or(Invalid("musical outer fade requires resident audio"))?;
+        let event_source = if self.musical_peak_capture.borrow().is_some() {
+            self.event_source_peaks(source)
+        } else {
+            None
+        };
         let duration = clip
             .end
             .checked_sub(clip.start)
@@ -187,10 +190,9 @@ impl AudioTransformPreparation {
         if let Some(metadata) = clip.metadata.as_mut() {
             metadata.source_phase = 0;
         }
-        if let Some(peaks) = peaks
-            && let Some(capture) = self.musical_peak_capture.borrow_mut().as_mut()
-        {
-            capture.peaks = peaks.into_peaks();
+        if let Some(capture) = self.musical_peak_capture.borrow_mut().as_mut() {
+            capture.destination = peaks.map_or_else(Vec::new, PeakBins::into_peaks);
+            capture.event_source = event_source;
         }
         Ok(clip)
     }

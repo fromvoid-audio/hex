@@ -822,6 +822,92 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
 }
 
 #[test]
+fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat() {
+    use hex_project::{
+        AudioEventEdit, AudioEventFade, AudioViewResizeOperation, BeatTime, ClipFade, Tempo,
+        WarpMode,
+    };
+    let (mut session, clip, mut revision) = fixture();
+    let project = session.project();
+    let settings = hex_project::default_audio_warp(
+        project.clip(clip).unwrap(),
+        project.tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let half = BeatTime::from_ratio(1, 2).unwrap();
+    for command in [
+        Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        },
+        Command::SetTempoPoint {
+            beat: half,
+            tempo: Tempo::new(240_000_000).unwrap(),
+        },
+    ] {
+        (_, revision) = session
+            .command_prepared_revision(command, Some(&revision))
+            .unwrap();
+    }
+    let accepted_source = |session: &Session| {
+        let source = session.audio_clip_waveforms.borrow()[&clip]
+            .event_source
+            .clone()
+            .unwrap();
+        assert!(source.frame_waveform().is_none());
+        assert!(source.waveform.bounded_samples(0..1, 1).is_none());
+        assert_eq!(source.waveform.source_frames(), 6_000);
+        let clock = source.musical_clock.as_ref().unwrap();
+        assert_eq!(clock.frame_at(half).unwrap(), 4_000);
+        assert_eq!(clock.frame_at(BeatTime::ONE).unwrap(), 6_000);
+        source
+    };
+    let original = accepted_source(&session);
+    (_, revision) = session
+        .command_prepared_revision(
+            Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetFade {
+                    event: 1,
+                    fade: Some(
+                        AudioEventFade::new(
+                            0,
+                            ClipFade::new(BeatTime::ONE.raw(), 0, half.raw(), 0).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &original.waveform,
+        &accepted_source(&session).waveform
+    ));
+    session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 12_000,
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(
+        session.audio_clip_waveforms.borrow()[&clip]
+            .preview_root
+            .is_some()
+    );
+    let repeated = accepted_source(&session);
+    assert!(Arc::ptr_eq(&original.waveform, &repeated.waveform));
+    assert_eq!(original.musical_clock, repeated.musical_clock);
+}
+
+#[test]
 fn long_dense_clip_edge_stretch_commits_and_renders_late_attacks_through_history() {
     const RATE: u32 = 44_100;
     const SOURCE_FRAMES: u64 = RATE as u64 * 27;

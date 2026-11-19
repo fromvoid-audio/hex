@@ -206,7 +206,7 @@ pub(in crate::editor) fn view(
             state
                 .audio_clip_waveforms
                 .get(&clip_id)
-                .and_then(|view| view.event_source.as_ref()),
+                .and_then(|view| view.event_source.as_ref()?.frame_waveform()),
             None,
             Some(preview.clone()),
             gain_preview,

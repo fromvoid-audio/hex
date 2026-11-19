@@ -198,8 +198,21 @@ pub struct AudioClipWaveform {
     pub preview_root: Option<AudioPreviewWaveform>,
     /// Neutral destination peaks and their accepted musical placement clock.
     pub neutral_musical: Option<AudioMusicalWaveform>,
-    /// Peak-only transformed frame source before event composition and fades.
-    pub event_source: Option<Arc<Waveform>>,
+    /// Peak-only transformed source before event composition and fades.
+    pub event_source: Option<AudioEventSourceWaveform>,
+}
+
+#[derive(Clone)]
+pub struct AudioEventSourceWaveform {
+    pub waveform: Arc<Waveform>,
+    /// Source clock for beat-domain peaks, including a retained source origin.
+    pub musical_clock: Option<hex_engine::audio_transform::PreparedMusicalEventSourceClock>,
+}
+
+impl AudioEventSourceWaveform {
+    pub fn frame_waveform(&self) -> Option<&Arc<Waveform>> {
+        self.musical_clock.is_none().then_some(&self.waveform)
+    }
 }
 
 #[derive(Clone)]

@@ -34,7 +34,7 @@ pub(crate) use instance_fade::materializes_musical_outer_fade;
 use instance_fade::{MusicalPeakCapture, OuterPlaybackFade};
 mod mapping;
 mod preview_peaks;
-pub use preview_peaks::PreparedEventSourcePeaks;
+pub use preview_peaks::{PreparedEventSourcePeaks, PreparedMusicalEventSourceClock};
 mod processing_root;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
@@ -420,9 +420,16 @@ struct Entry {
 }
 
 pub(crate) fn previews_transformed_frame_events(edit: &AudioClipEdit) -> bool {
+    matches!(edit.domain.clock, hex_project::AudioDomainClock::Frames(_))
+        && previews_event_source_peaks(edit)
+}
+
+pub(crate) fn previews_event_source_peaks(edit: &AudioClipEdit) -> bool {
     let domain = &edit.domain;
-    matches!(domain.clock, hex_project::AudioDomainClock::Frames(_))
-        && (domain.pitch_cents != 0 || domain.warp_enabled || !domain.source_gain.is_empty())
+    (matches!(domain.clock, hex_project::AudioDomainClock::Beats(_))
+        || domain.pitch_cents != 0
+        || domain.warp_enabled
+        || !domain.source_gain.is_empty())
         && domain
             .events
             .as_ref()
@@ -887,7 +894,7 @@ impl AudioTransformPreparation {
             .fade_clock
             .require_supported()
             .map_err(|error| Invalid(error.0))?;
-        let (_, length, _, _) = edit.projected_domain(tempo_map)?;
+        let (first, length, _, _) = edit.projected_domain(tempo_map)?;
         let tempo = if edit.reference_start_raw().is_some() {
             Some(self.shared_tempo(edit.processing_tempo(tempo_map))?)
         } else {
@@ -975,10 +982,11 @@ impl AudioTransformPreparation {
             })
             .transpose()?;
         let read_root = source_edit.as_ref().unwrap_or(edit);
-        let read_length = if source_edit.is_some() {
-            read_root.projected_domain(tempo_map)?.1
+        let (read_first, read_length) = if source_edit.is_some() {
+            let (first, length, _, _) = read_root.projected_domain(tempo_map)?;
+            (first, length)
         } else {
-            length
+            (first, length)
         };
         let reservation = self.reserve_with_eviction(bytes)?;
         let scratch_reservation = if edit.domain.events.is_some() {
@@ -1027,12 +1035,29 @@ impl AudioTransformPreparation {
                 self.cancelled()
             })
             .map_err(warp_error)?;
-        let event_source_peaks = if cacheable && previews_transformed_frame_events(edit) {
-            PreparedEventSourcePeaks::capture(
-                &rendered.frames,
-                preview_peaks::event_source_budget(),
-                || self.cancelled(),
-            )
+        let event_source_peaks = if cacheable && previews_event_source_peaks(edit) {
+            let capture = |clock| {
+                PreparedEventSourcePeaks::capture(
+                    &rendered.frames,
+                    clock,
+                    preview_peaks::event_source_budget(),
+                    || self.cancelled(),
+                )
+            };
+            match read_root.domain.clock {
+                hex_project::AudioDomainClock::Frames(_) => capture(None),
+                hex_project::AudioDomainClock::Beats(length) => tempo
+                    .as_ref()
+                    .zip(read_root.processing_origin().ok())
+                    .and_then(|(tempo, origin)| {
+                        capture(Some(PreparedMusicalEventSourceClock::new(
+                            Arc::clone(tempo),
+                            origin,
+                            read_first,
+                            length,
+                        )))
+                    }),
+            }
         } else {
             None
         };

@@ -1218,10 +1218,11 @@ fn musical_outer_fade_failure_keeps_source_and_releases_reservation() {
                 tight.finish_outer_fade(resident.clone(), Some(fade))
             })
             .unwrap();
-        assert_eq!(peaks.len(), limit);
+        assert_eq!(peaks.destination.len(), limit);
         if limit != 0 {
-            assert_eq!(peaks, unbaked);
+            assert_eq!(peaks.destination, unbaked);
         }
+        assert!(peaks.event_source.is_none());
         assert_eq!(tight.retained_pcm_bytes(), bytes);
         drop(baked);
         assert_eq!(tight.retained_pcm_bytes(), 0);

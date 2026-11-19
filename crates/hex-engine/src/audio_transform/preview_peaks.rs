@@ -1,6 +1,7 @@
 //! Bounded, control-owned display summaries of prepared audio.
 use super::budget::{Budget, Reservation};
-use crate::{Frame, PreparedAudioPeak};
+use crate::{Frame, Invalid, PreparedAudioPeak};
+use hex_project::{BeatTime, TempoMap, audio_projection_frame};
 use std::sync::{Arc, OnceLock};
 
 const EVENT_SOURCE_BINS: usize = 1_024;
@@ -17,12 +18,58 @@ pub(super) fn event_source_budget() -> &'static Arc<Budget> {
 pub struct PreparedEventSourcePeaks {
     frames: usize,
     bins: Vec<PreparedAudioPeak>,
+    musical_clock: Option<PreparedMusicalEventSourceClock>,
     _reservation: Reservation,
+}
+
+/// Clock used by the warped PCM before event composition. The source may
+/// retain a different origin from the destination after a signed event move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedMusicalEventSourceClock {
+    tempo: Arc<TempoMap>,
+    origin: i128,
+    first_frame: i128,
+    length: BeatTime,
+}
+
+impl PreparedMusicalEventSourceClock {
+    pub(super) fn new(
+        tempo: Arc<TempoMap>,
+        origin: i128,
+        first_frame: i128,
+        length: BeatTime,
+    ) -> Self {
+        Self {
+            tempo,
+            origin,
+            first_frame,
+            length,
+        }
+    }
+
+    /// Resolve a source beat boundary to a peak-relative PCM frame, including
+    /// the exclusive end. Uses the same signed projection as event playback.
+    pub fn frame_at(&self, position: BeatTime) -> Result<u64, Invalid> {
+        if position > self.length {
+            return Err(Invalid(
+                "audio event source position exceeds prepared clock",
+            ));
+        }
+        let absolute = self
+            .origin
+            .checked_add(i128::from(position.raw()))
+            .ok_or(Invalid("audio event source beat overflow"))?;
+        let frame =
+            audio_projection_frame(&self.tempo, absolute).map_err(|error| Invalid(error.0))?;
+        u64::try_from(frame - self.first_frame)
+            .map_err(|_| Invalid("audio event source frame overflow"))
+    }
 }
 
 impl PreparedEventSourcePeaks {
     pub(super) fn capture(
         frames: &[Frame],
+        musical_clock: Option<PreparedMusicalEventSourceClock>,
         budget: &Arc<Budget>,
         mut cancelled: impl FnMut() -> bool,
     ) -> Option<Arc<Self>> {
@@ -44,6 +91,7 @@ impl PreparedEventSourcePeaks {
         Some(Arc::new(Self {
             frames: frames.len(),
             bins: bins.into_peaks(),
+            musical_clock,
             _reservation: reservation,
         }))
     }
@@ -56,6 +104,11 @@ impl PreparedEventSourcePeaks {
 
     pub fn source_frames(&self) -> usize {
         self.frames
+    }
+
+    /// Frame-clock sources have no beat projection.
+    pub fn musical_clock(&self) -> Option<&PreparedMusicalEventSourceClock> {
+        self.musical_clock.as_ref()
     }
 
     /// Exact extrema per bin. The first `source_frames() % bins().len()` bins
@@ -119,16 +172,16 @@ mod tests {
         let budget = Arc::new(Budget::new(bytes));
         let mut polls = 0;
         assert!(
-            PreparedEventSourcePeaks::capture(&frames, &budget, || {
+            PreparedEventSourcePeaks::capture(&frames, None, &budget, || {
                 polls += 1;
                 polls == 2
             })
             .is_none()
         );
         assert_eq!(budget.used(), 0);
-        let summary = PreparedEventSourcePeaks::capture(&frames, &budget, || false).unwrap();
+        let summary = PreparedEventSourcePeaks::capture(&frames, None, &budget, || false).unwrap();
         assert_eq!(budget.used(), bytes);
-        assert!(PreparedEventSourcePeaks::capture(&frames, &budget, || false).is_none());
+        assert!(PreparedEventSourcePeaks::capture(&frames, None, &budget, || false).is_none());
         let retained = Arc::clone(&summary);
         drop(summary);
         assert_eq!(budget.used(), bytes);
