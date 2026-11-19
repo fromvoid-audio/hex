@@ -631,6 +631,7 @@ pub struct SessionPlayback {
     // Control-side request that the live handoff restart at the cursor rather
     // than carry voices or detached tails the candidate already represents.
     live_restart: bool,
+    native_removal: Option<device_removal::PendingNativeRemoval>,
 }
 
 impl fmt::Debug for SessionPlayback {
@@ -1054,6 +1055,7 @@ impl SessionPlayback {
             require_continuous_insert: _,
             foreign_continuation,
             live_restart: _,
+            native_removal: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
         // A real owning transfer can later leave an allocation-free empty
@@ -2341,6 +2343,7 @@ impl SessionPlayback {
             require_continuous_insert: false,
             foreign_continuation: None,
             live_restart: false,
+            native_removal: None,
         })
     }
 
@@ -2897,6 +2900,8 @@ mod analytic_import;
 mod clip_gain;
 mod commands;
 mod current_sampler_routes;
+mod device_removal;
+pub use device_removal::NativeRemovalProgress;
 mod handoff;
 pub(crate) use handoff::ClaimedTempoPair;
 pub use handoff::PreparedTempoAnchor;

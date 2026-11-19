@@ -1114,7 +1114,15 @@ impl SessionPlayback {
             Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
         );
         let continuous_insert = self.require_continuous_insert && previous.playing;
-        let tail_policy = if continuous_insert {
+        let tail_policy = if let Some(removal) = self.native_removal {
+            if !continuous_insert || !removal.matches(previous) {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
+            if demand.is_none() && !previous.native_removal_ready(removal.transition) {
+                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            }
+            DeviceEditTailPolicy::FadedNative(removal.transition.identity())
+        } else if continuous_insert {
             DeviceEditTailPolicy::RequireConfirmation
         } else if confirmed_insert {
             DeviceEditTailPolicy::Cut
@@ -6131,6 +6139,7 @@ impl SessionPlayback {
             foreign_handoff,
             true,
         );
+        self.native_removal = None;
         Ok(report)
     }
 
