@@ -31,7 +31,7 @@ fn direct_return_tail_graph(graph: &crate::signal_graph::SignalGraph) -> bool {
             .all(|bus| bus.feeds.is_empty() && bus.audio_feeds.is_empty())
 }
 
-/// A control-prepared, source-bound tempo restart at one exact running cut.
+/// A control-prepared, source-bound tempo edit at one exact running cut.
 ///
 /// Weak identities keep the two Arc allocations from being reused, but do not
 /// keep revision contents alive. Their allocations and this token need bounded
@@ -47,8 +47,7 @@ pub struct PreparedTempoAnchor {
     arrangement_frame: u64,
     performance_frame: u64,
     loop_state: Option<ArrangementLoopState>,
-    mapped_frame: u64,
-    mapped_beat: hex_project::BeatTime,
+    mapped_cut: (u64, u64),
 }
 
 impl PreparedTempoAnchor {
@@ -156,32 +155,26 @@ impl PreparedTempoAnchor {
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
-        let beat = base_timing_for(
-            previous.session(),
-            canonical_periodic_tempo(&previous, arrangement_frame),
-        )
-        .frame_to_beat(arrangement_frame)
-        .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let mapped_frame = base_timing_for(
-            candidate.session(),
-            canonical_periodic_tempo(&candidate, arrangement_frame),
-        )
-        .beat_to_frame(beat)
-        .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let mapped_beat = base_timing_for(
-            candidate.session(),
-            canonical_periodic_tempo(&candidate, mapped_frame),
-        )
-        .frame_to_beat(mapped_frame)
-        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let candidate_loop = candidate.arrangement().loop_region().filter(|region| {
+            region.enabled() && canonical_active_loop(&previous, arrangement_frame).is_some()
+        });
+        let mapped_cut = map_arrangement_cut(
+            &base_timing_for(
+                previous.session(),
+                canonical_periodic_tempo(&previous, arrangement_frame),
+            ),
+            candidate.session().timing(),
+            arrangement_frame,
+            loop_state.map_or(0, |state| state.pass),
+            candidate_loop,
+        )?;
         Ok(Self {
             previous: Arc::downgrade(&previous),
             candidate: Arc::downgrade(&candidate),
             arrangement_frame,
             performance_frame,
             loop_state,
-            mapped_frame,
-            mapped_beat,
+            mapped_cut,
         })
     }
 }
@@ -470,7 +463,8 @@ enum Restart {
 }
 
 impl SessionPlayback {
-    /// Borrow a control-prepared anchor for this exact running restart.
+    /// Borrow a control-prepared anchor for an exact running cut that carries
+    /// compensated history. A missed or incompatible cut leaves the donor running.
     /// The host must independently fence its output, commands, routes, faults
     /// and cancellation and keep the plan alive until control-side reclamation.
     pub fn try_inherit_state_with_tempo_anchor(
@@ -490,7 +484,11 @@ impl SessionPlayback {
             || self.transient_loop.is_some()
             || match anchor.loop_state {
                 Some(state) => previous.arrangement_loop_state() != state,
-                None => previous.loop_region().is_some() || self.loop_region().is_some(),
+                None => {
+                    previous.loop_region().is_some()
+                        || self.loop_region().is_some()
+                        || previous.arrangement_loop_pass != 0
+                }
             }
             || (previous.compensation.is_none() && self.compensation.is_none())
             || self.midi_capture_active()
@@ -789,6 +787,9 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
         if live && self.live_restart && self.candidate_admission_open {
+            if anchor.is_some() {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
             return self.inherit_state_planned_once(
                 previous,
                 None,
@@ -800,7 +801,7 @@ impl SessionPlayback {
                 },
                 None,
                 None,
-                anchor,
+                None,
             );
         }
         if anchor.is_some() {
@@ -811,7 +812,7 @@ impl SessionPlayback {
                 previous,
                 None,
                 demand,
-                Restart::Ordinary,
+                Restart::None,
                 None,
                 None,
                 anchor,
@@ -1040,7 +1041,7 @@ impl SessionPlayback {
         };
         let tempo_cut =
             if !same_base_timing && restart == Restart::None && source_transfer.is_none() {
-                self.compensated_arrangement_tempo_cut(previous)?
+                self.compensated_arrangement_tempo_cut(previous, anchor)?
             } else {
                 None
             };
@@ -1655,6 +1656,9 @@ impl SessionPlayback {
                         }));
         let carried_cut =
             tempo_cut.filter(|_| planned_transfer == Some(1) && fresh_history.is_none());
+        if anchor.is_some() && carried_cut.is_none() {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if !self.revision.proves_delayed_effect_clocks(
             &previous.revision,
             (planned_transfer == Some(1) && fresh_history.is_none())
@@ -1707,11 +1711,6 @@ impl SessionPlayback {
         // A changed timing map or loop relocates a fresh audio epoch to the
         // musically equivalent frame as a Play-from.
         let running_relocate = relocate && previous.playing && !running_restart;
-        if anchor.is_some()
-            && (!running_relocate || !self.main_chain.can_inherit_from(&previous.main_chain))
-        {
-            return Err(SessionPlaybackError::InvalidCommand);
-        }
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
             && !previous.stopped_input_has_history()
@@ -1789,34 +1788,26 @@ impl SessionPlayback {
             }
             let relocated = if running_relocate {
                 use crate::MidiTiming as _;
-                if let Some(anchor) = anchor {
-                    Some(anchor.mapped_frame)
-                } else {
-                    let beat =
-                        base_timing_for(previous.revision.session(), previous.periodic_tempo())
-                            .frame_to_beat(previous.arrangement_frame)
-                            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-                    Some(
-                        base_timing_for(
-                            self.revision.session(),
-                            self.periodic_tempo_at(previous.arrangement_frame),
-                        )
-                        .beat_to_frame(beat)
-                        .map_err(|_| SessionPlaybackError::TempoConversion)?,
+                let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
+                    .frame_to_beat(previous.arrangement_frame)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?;
+                Some(
+                    base_timing_for(
+                        self.revision.session(),
+                        self.periodic_tempo_at(previous.arrangement_frame),
                     )
-                }
+                    .beat_to_frame(beat)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+                )
             } else {
                 None
             };
             let cursor = match paused_cursor.or(relocated) {
                 Some(frame) => {
-                    let beat = if let Some(anchor) = anchor {
-                        anchor.mapped_beat
-                    } else {
+                    let beat =
                         base_timing_for(self.revision.session(), self.periodic_tempo_at(frame))
                             .frame_to_beat(frame)
-                            .map_err(|_| SessionPlaybackError::TempoConversion)?
-                    };
+                            .map_err(|_| SessionPlaybackError::TempoConversion)?;
                     // The same route relaunch `install_seek` commits below.
                     for route in &mut self.route_scratch {
                         route.pending = None;
@@ -5994,6 +5985,7 @@ impl SessionPlayback {
     fn compensated_arrangement_tempo_cut(
         &self,
         previous: &Self,
+        anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<Option<(u64, u64)>, SessionPlaybackError> {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
@@ -6031,6 +6023,9 @@ impl SessionPlayback {
         };
         if !keeps_loop_bounds {
             return Ok(None);
+        }
+        if let Some(anchor) = anchor {
+            return Ok(Some(anchor.mapped_cut));
         }
         candidate_arrangement_cut(previous, new_base, self.loop_region()).map(Some)
     }
@@ -6936,15 +6931,29 @@ fn candidate_arrangement_cut(
     candidate_timing: &impl crate::MidiTiming,
     candidate_loop: Option<hex_project::LoopRegion>,
 ) -> Result<(u64, u64), SessionPlaybackError> {
-    use crate::MidiTiming as _;
-    let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
-        .frame_to_beat(previous.arrangement_frame)
+    map_arrangement_cut(
+        &base_timing_for(previous.revision.session(), previous.periodic_tempo()),
+        candidate_timing,
+        previous.arrangement_frame,
+        previous.arrangement_loop_pass,
+        candidate_loop.filter(|_| previous.active_loop_region().is_some()),
+    )
+}
+
+fn map_arrangement_cut(
+    previous_timing: &impl crate::MidiTiming,
+    candidate_timing: &impl crate::MidiTiming,
+    previous_frame: u64,
+    pass: u64,
+    candidate_loop: Option<hex_project::LoopRegion>,
+) -> Result<(u64, u64), SessionPlaybackError> {
+    let beat = previous_timing
+        .frame_to_beat(previous_frame)
         .map_err(|_| SessionPlaybackError::TempoConversion)?;
     let frame = candidate_timing
         .beat_to_frame(beat)
         .map_err(|_| SessionPlaybackError::TempoConversion)?;
-    let pass = previous.arrangement_loop_pass;
-    match candidate_loop.filter(|_| previous.active_loop_region().is_some()) {
+    match candidate_loop {
         Some(region) => super::render::normalize_loop_cursor(frame, region, pass),
         None => Ok((frame, pass)),
     }
