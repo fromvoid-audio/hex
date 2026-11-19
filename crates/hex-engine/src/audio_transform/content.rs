@@ -171,6 +171,7 @@ impl AudioTransformPreparation {
             conversion: asset.conversion_version(),
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
+            event_source_peaks: None,
             bytes,
         })?;
         finish(audio)

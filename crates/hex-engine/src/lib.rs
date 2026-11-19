@@ -2711,6 +2711,8 @@ pub struct PreparedAudioClipView {
     /// Unweighted destination bins for a musical outer fade, including before
     /// the first fade or after a reset. Empty means capture was unavailable.
     pub neutral_musical_peaks: Vec<PreparedAudioPeak>,
+    /// Single-source transformed processing clock, before event and root fades.
+    pub event_source_peaks: Option<Arc<audio_transform::PreparedEventSourcePeaks>>,
 }
 
 /// Exact extrema of one consecutive stereo destination range before outer

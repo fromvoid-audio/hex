@@ -1,5 +1,5 @@
 use super::*;
-use crate::audio_transform::tests::{fixture, isolated};
+use crate::audio_transform::tests::{fixture, isolated, prepare};
 use hex_project::{
     AudioEventEdit, AudioEventFade, BeatTime, ClipGain, Command, Created, Editor, Project, Tempo,
     WarpMode, default_audio_warp,
@@ -53,6 +53,94 @@ fn frame_fixture() -> (
             crate::Audio::new(16_000, vec![[0.25, -0.125]; 128]).unwrap(),
         )]),
     )
+}
+
+#[test]
+fn processed_frame_event_source_peaks_survive_fades_and_cache_hits() {
+    let (mut editor, clip, media) = fixture(false);
+    for command in [
+        Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        },
+        Command::SetAudioClipPitch { clip, cents: 137 },
+    ] {
+        editor.execute(command).unwrap();
+    }
+    let bytes = 8_000 * std::mem::size_of::<crate::Frame>();
+    let context = isolated(3 * bytes, 2 * bytes, 4);
+    let original = prepare(&editor, &media, &context);
+    let view = &original.arrangement().audio_clip_views()[0];
+    let neutral = view
+        .event_source_peaks
+        .as_ref()
+        .expect("pre-event basis before the first authored fade");
+    let pcm = view.audio.frames();
+    assert_eq!(neutral.source_frames(), pcm.len());
+    let bins = neutral.bins();
+    assert_eq!(bins.len(), 1_024);
+    let width = pcm.len() / bins.len();
+    let extra = pcm.len() % bins.len();
+    for (index, peak) in bins.iter().enumerate() {
+        let start = index * width + index.min(extra);
+        let end = start + width + usize::from(index < extra);
+        let range = &pcm[start..end];
+        let expected = crate::PreparedAudioPeak {
+            min: std::array::from_fn(|c| {
+                range
+                    .iter()
+                    .map(|frame| frame[c])
+                    .fold(f32::INFINITY, f32::min)
+            }),
+            max: std::array::from_fn(|c| {
+                range
+                    .iter()
+                    .map(|frame| frame[c])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            }),
+        };
+        assert_eq!(*peak, expected);
+    }
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    AudioEventFade::new(0, ClipFade::new(8_000, 0, 997, 1_601).unwrap()).unwrap(),
+                ),
+            },
+        })
+        .unwrap();
+    let faded = prepare(&editor, &media, &context);
+    let faded_view = &faded.arrangement().audio_clip_views()[0];
+    let peaks = faded_view.event_source_peaks.as_ref().unwrap();
+    assert_eq!(peaks.bins(), bins);
+    assert_eq!(faded_view.audio.frames()[0], [0.0, 0.0]);
+    assert_ne!(faded_view.audio.frames(), pcm);
+    assert_eq!(
+        context.retained_pcm_bytes(),
+        2 * bytes,
+        "source scratch must be released"
+    );
+    let hits = context.cache_hits();
+    let cached = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert!(Arc::ptr_eq(
+        peaks,
+        cached.arrangement().audio_clip_views()[0]
+            .event_source_peaks
+            .as_ref()
+            .unwrap()
+    ));
+
+    let uncached = isolated(2 * bytes, 0, 0);
+    let fallback = prepare(&editor, &media, &uncached);
+    let fallback = &fallback.arrangement().audio_clip_views()[0];
+    assert!(fallback.event_source_peaks.is_none());
+    assert_eq!(fallback.audio.frames(), faded_view.audio.frames());
+    assert_eq!(uncached.retained_pcm_bytes(), bytes);
 }
 
 #[test]

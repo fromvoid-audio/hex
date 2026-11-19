@@ -22,6 +22,8 @@ pub struct AudioPreviewRoot {
     pub audio: Audio,
     /// Technical domain-clock origin (raw beats for a musical domain).
     pub origin: i128,
+    /// Unweighted source summary for an eligible transformed frame root.
+    pub event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
 }
 
 impl AudioTransformPreparation {
@@ -104,7 +106,12 @@ impl AudioTransformPreparation {
                 "audio preview root differs from canonical projection",
             ));
         }
-        Ok(Some(AudioPreviewRoot { audio, origin }))
+        let event_source_peaks = self.event_source_peaks(&audio);
+        Ok(Some(AudioPreviewRoot {
+            audio,
+            origin,
+            event_source_peaks,
+        }))
     }
 
     /// Resolve every original resident dependency for a finite-placement root
@@ -168,7 +175,11 @@ impl AudioTransformPreparation {
                 "grouped audio preview root differs from canonical domain",
             ));
         }
-        Ok(Some(AudioPreviewRoot { audio, origin }))
+        Ok(Some(AudioPreviewRoot {
+            audio,
+            origin,
+            event_source_peaks: None,
+        }))
     }
 
     pub(super) fn compile_view(
@@ -385,6 +396,7 @@ impl AudioTransformPreparation {
                 conversion: asset.conversion_version(),
                 source_rate: asset.source_sample_rate(),
                 prepared: audio.clone(),
+                event_source_peaks: None,
                 bytes,
             })?;
         }

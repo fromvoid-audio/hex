@@ -33,6 +33,8 @@ mod instance_fade;
 pub(crate) use instance_fade::materializes_musical_outer_fade;
 use instance_fade::{MusicalPeakCapture, OuterPlaybackFade};
 mod mapping;
+mod preview_peaks;
+pub use preview_peaks::PreparedEventSourcePeaks;
 mod processing_root;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
@@ -413,7 +415,18 @@ struct Entry {
     conversion: u32,
     source_rate: u32,
     prepared: Audio,
+    event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
     bytes: usize,
+}
+
+pub(crate) fn previews_transformed_frame_events(edit: &AudioClipEdit) -> bool {
+    let domain = &edit.domain;
+    matches!(domain.clock, hex_project::AudioDomainClock::Frames(_))
+        && (domain.pitch_cents != 0 || domain.warp_enabled || !domain.source_gain.is_empty())
+        && domain
+            .events
+            .as_ref()
+            .is_none_or(|events| events.sources.is_empty())
 }
 // Charge each immutable PCM allocation once, including grouped source owners.
 // Entries keep the Arcs alive throughout this control-side calculation.
@@ -765,6 +778,32 @@ impl AudioTransformPreparation {
             self.insert(entry)
         }
     }
+    /// Optional metadata from the same immutable root already selected for
+    /// playback. A miss or eviction grants no authority to prepare more PCM.
+    pub(crate) fn event_source_peaks(
+        &self,
+        audio: &Audio,
+    ) -> Option<Arc<PreparedEventSourcePeaks>> {
+        let matches = |entry: &Entry| {
+            entry
+                .event_source_peaks
+                .as_ref()
+                .filter(|_| entry.prepared.shares_pcm_with(audio))
+                .cloned()
+        };
+        if let Ok(pending) = self.pending.try_borrow()
+            && let Some(peaks) = pending.iter().flatten().find_map(matches)
+        {
+            return Some(peaks);
+        }
+        self.cache
+            .try_borrow()
+            .ok()?
+            .entries
+            .iter()
+            .find_map(matches)
+    }
+
     fn lookup(
         &self,
         source: &Audio,
@@ -988,6 +1027,15 @@ impl AudioTransformPreparation {
                 self.cancelled()
             })
             .map_err(warp_error)?;
+        let event_source_peaks = if cacheable && previews_transformed_frame_events(edit) {
+            PreparedEventSourcePeaks::capture(
+                &rendered.frames,
+                preview_peaks::event_source_budget(),
+                || self.cancelled(),
+            )
+        } else {
+            None
+        };
         if edit.domain.events.is_some() {
             rendered.frames = events::compose(
                 events::EventSource {
@@ -1017,6 +1065,7 @@ impl AudioTransformPreparation {
             conversion: asset.conversion_version(),
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
+            event_source_peaks,
             bytes,
         })?;
         Ok(audio)

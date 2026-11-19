@@ -1,8 +1,9 @@
 //! Destination-only fade finalization after the source program's last read.
 //! Musical fades use bounded PCM on control. The callback sees an ordinary
 //! resident clip and never evaluates a project tempo map.
+use super::preview_peaks::PeakBins;
 use super::{Audio, AudioClipEdit, AudioTransformPreparation, Clip, Invalid};
-use crate::{Frame, PreparedAudioPeak};
+use crate::PreparedAudioPeak;
 use hex_project::{
     AudioClipFadeClock, AudioDomainClock, ClipFade, MAX_AUDIO_DOMAIN_FRAMES,
     ProjectedOuterAudioFade,
@@ -57,45 +58,6 @@ pub(super) struct MusicalPeakCapture {
     peaks: Vec<PreparedAudioPeak>,
 }
 
-struct PeakBins {
-    peaks: Vec<PreparedAudioPeak>,
-    end: usize,
-    width: usize,
-    extra: usize,
-}
-
-impl PeakBins {
-    fn new(frames: usize, limit: usize) -> Option<Self> {
-        let count = limit.min(frames);
-        if count == 0 {
-            return None;
-        }
-        let mut peaks = Vec::new();
-        peaks.try_reserve_exact(count).ok()?;
-        Some(Self {
-            peaks,
-            end: 0,
-            width: frames / count,
-            extra: frames % count,
-        })
-    }
-
-    fn observe(&mut self, index: usize, sample: Frame) {
-        if index == self.end {
-            self.peaks.push(PreparedAudioPeak {
-                min: sample,
-                max: sample,
-            });
-            self.end += self.width + usize::from(self.peaks.len() <= self.extra);
-        } else if let Some(peak) = self.peaks.last_mut() {
-            for (channel, value) in sample.into_iter().enumerate() {
-                peak.min[channel] = peak.min[channel].min(value);
-                peak.max[channel] = peak.max[channel].max(value);
-            }
-        }
-    }
-}
-
 impl AudioTransformPreparation {
     /// Optional control-side read for the first musical fade or a neutral
     /// reset. Uses the same bins and destination samples as the bake.
@@ -126,7 +88,7 @@ impl AudioTransformPreparation {
             }
             peaks.observe(index, clip.at(frame, phase));
         }
-        peaks.peaks
+        peaks.into_peaks()
     }
 
     /// Collect an optional display sidecar from the existing bake pass. A failed
@@ -228,7 +190,7 @@ impl AudioTransformPreparation {
         if let Some(peaks) = peaks
             && let Some(capture) = self.musical_peak_capture.borrow_mut().as_mut()
         {
-            capture.peaks = peaks.peaks;
+            capture.peaks = peaks.into_peaks();
         }
         Ok(clip)
     }
