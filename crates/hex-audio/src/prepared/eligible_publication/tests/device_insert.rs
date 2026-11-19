@@ -34,6 +34,176 @@ fn verified_device_insert_expires_at_the_preparation_deadline() {
     check_insert(Insert::PreparationDeadline);
 }
 
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_playing() {
+    use hex_project::Created;
+
+    let _serial = serial();
+    let project = super::readiness::project_with_frames(512);
+    let first_asset = project.assets().next().unwrap().id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Asset(next_asset) = editor
+        .execute(Command::AddAsset {
+            path: "next-fade-source.wav".into(),
+            sample_rate: 48_000,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("next asset");
+    };
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "next".into(),
+        })
+        .unwrap()
+    else {
+        panic!("next track");
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset: next_asset,
+            start: 96,
+            duration: 512,
+            source_offset: 0,
+            source_length: 512,
+            looping: false,
+        })
+        .unwrap();
+    let first = stream_fixture::Wav::with_frames(512);
+    let next = stream_fixture::Wav::with_samples(512, |_| 4_096);
+    let definitions = vec![
+        first.definition(first_asset, 11),
+        next.definition(next_asset, 11),
+    ];
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: definitions[1].metadata.key(),
+        page_index: 0,
+    });
+    let context = AudioSourceContext {
+        project_generation: 0,
+        editor_revision: 7,
+    };
+    let mut owner = stream_fixture::owner_sources(
+        editor.project(),
+        definitions
+            .iter()
+            .map(|definition| definition.metadata.clone())
+            .collect(),
+        Some(context),
+    );
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(reservation(&mut owner))
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let mut stream = hex_stream::StreamRuntime::new_with_page_gate(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        definitions,
+        gate,
+    )
+    .unwrap();
+    stream.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream.split().ok().unwrap(),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{}", error.reason));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(
+            owner,
+            vec![domain],
+            PublicationPolicy::InheritRuntime,
+            context.project_generation,
+        )
+        .unwrap_or_else(|error| panic!("{}", error.reason));
+    control.command(PlaybackCommand::Play).unwrap();
+
+    let mut run = |project_fade: bool, render: bool| {
+        let mut output = [[0.0; 2]; 16];
+        let mut held = false;
+        let allocations = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                if project_fade {
+                    let mut active = callback
+                        .active
+                        .as_mut()
+                        .and_then(ActivePublication::stream_view)
+                        .unwrap();
+                    if let Some(pins) = active
+                        .reserve_outgoing_fade(&mut callback.domain_pages, 128)
+                        .unwrap()
+                    {
+                        held = true;
+                        pins.release(&mut callback.domain_pages);
+                    }
+                }
+                if render {
+                    callback.render(&mut output).unwrap();
+                }
+            });
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        (held, output)
+    };
+    let deadline = Instant::now() + Duration::from_millis(600);
+    while run(false, true).1 != [[0.25; 2]; 16] {
+        assert!(Instant::now() < deadline, "predecessor did not play");
+        std::thread::yield_now();
+    }
+    assert!(!run(true, false).0);
+    entered
+        .recv_timeout(Duration::from_millis(200))
+        .expect("the outgoing projection did not request the cold file");
+    assert_eq!(run(true, true), (false, [[0.25; 2]; 16]));
+    assert_eq!(control.status.position.load(Acquire), 32);
+    release.send(()).unwrap();
+    while !run(true, false).0 {
+        assert!(
+            Instant::now() < deadline,
+            "ready file did not join the held span"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.position.load(Acquire), 32);
+    control.command(PlaybackCommand::Stop).unwrap();
+    for _ in 0..8 {
+        run(false, true);
+    }
+    assert_eq!(control.status.position.load(Acquire), 0);
+    crate::lifecycle::test_dispose_backend(
+        &mut Some(()),
+        &mut false,
+        &mut false,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    let _ = retirement.advance().unwrap();
+    drop(recover(&mut control, &ticket));
+    drop(control);
+    finish(&mut retirement);
+}
+
 enum Insert {
     Seamless,
     Confirmed,
