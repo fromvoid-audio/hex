@@ -2056,7 +2056,7 @@ fn disconnect_send_stops_live_input_without_cutting_the_tail() {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum NativeAppendLocation {
+enum NativeInsertLocation {
     Return,
     Track,
     Group,
@@ -2065,21 +2065,33 @@ enum NativeAppendLocation {
 
 #[test]
 fn staged_return_append_preserves_reverb_and_uses_the_native_transition() {
-    native_append_case(NativeAppendLocation::Return);
+    native_insert_case(NativeInsertLocation::Return, false);
 }
 
 #[test]
 fn staged_track_group_and_main_append_preserves_reverb_and_uses_the_native_transition() {
     for location in [
-        NativeAppendLocation::Track,
-        NativeAppendLocation::Group,
-        NativeAppendLocation::Main,
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Main,
     ] {
-        native_append_case(location);
+        native_insert_case(location, false);
     }
 }
 
-fn native_append_case(location: NativeAppendLocation) {
+#[test]
+fn staged_native_mid_insert_preserves_the_running_prefix_and_suffix() {
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        native_insert_case(location, true);
+    }
+}
+
+fn native_insert_case(location: NativeInsertLocation, middle: bool) {
     use crate::{OutputCapture, OutputCaptureId};
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
@@ -2089,11 +2101,27 @@ fn native_append_case(location: NativeAppendLocation) {
     const CUT: usize = 6_000;
     const DELAY: usize = 480;
     const RAMP: usize = 240;
+    const SUFFIX_DELAY: usize = 960;
+    const OUTPUT_FRAMES: usize = DELAY * 4;
+    let delay = |milliseconds| {
+        let mut state = DEFINITION.default_state().unwrap();
+        for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+            state = DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Bool(false))
+                .unwrap();
+        }
+        for (parameter, value) in [(TIME, milliseconds), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+            state = DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Float(value))
+                .unwrap();
+        }
+        state
+    };
     let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
     let capture_id = match location {
-        NativeAppendLocation::Return => Some(OutputCaptureId::Return(bus)),
-        NativeAppendLocation::Track => Some(OutputCaptureId::Track(track)),
-        NativeAppendLocation::Group => {
+        NativeInsertLocation::Return => Some(OutputCaptureId::Return(bus)),
+        NativeInsertLocation::Track => Some(OutputCaptureId::Track(track)),
+        NativeInsertLocation::Group => {
             let Created::Track(group) = editor
                 .execute(Command::GroupTracks {
                     tracks: TrackSelectionIds::new(&[track]).unwrap(),
@@ -2105,36 +2133,47 @@ fn native_append_case(location: NativeAppendLocation) {
             };
             Some(OutputCaptureId::Track(group))
         }
-        NativeAppendLocation::Main => None,
+        NativeInsertLocation::Main => None,
     };
-    let append = |state| match capture_id {
+    let insert = |before, state| match capture_id {
         Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
             return_track,
-            before: None,
+            before,
             state,
         },
         Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
             track,
-            before: None,
+            before,
             state,
         },
-        None => Command::InsertMainDevice {
-            before: None,
-            state,
-        },
+        None => Command::InsertMainDevice { before, state },
     };
-    if !matches!(location, NativeAppendLocation::Return) {
+    if !matches!(location, NativeInsertLocation::Return) {
         let state = editor.project().device(reverb).unwrap().state().clone();
         editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
-        editor.execute(append(state)).unwrap();
+        editor.execute(insert(None, state)).unwrap();
     }
     let prepare = |project: &Project| {
         Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
     };
-    let original = prepare(editor.project());
+    let prefix = prepare(editor.project());
+    let before = if middle {
+        let Created::Device(suffix) = editor.execute(insert(None, delay(20.0))).unwrap() else {
+            panic!("suffix");
+        };
+        Some(suffix)
+    } else {
+        None
+    };
+    let original = if middle {
+        prepare(editor.project())
+    } else {
+        Arc::clone(&prefix)
+    };
     let mut incompatible = Editor::new(editor.project().clone(), 8).unwrap();
     incompatible
-        .execute(append(
+        .execute(insert(
+            before,
             crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap(),
         ))
         .unwrap();
@@ -2143,28 +2182,18 @@ fn native_append_case(location: NativeAppendLocation) {
         higher_latency.arrangement().main_latency_frames()
             > original.arrangement().main_latency_frames()
     );
-    let mut state = DEFINITION.default_state().unwrap();
-    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
-        state = DEFINITION
-            .patch_parameter(&state, parameter, ParameterValue::Bool(false))
-            .unwrap();
-    }
-    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
-        state = DEFINITION
-            .patch_parameter(&state, parameter, ParameterValue::Float(value))
-            .unwrap();
-    }
-    editor.execute(append(state)).unwrap();
-    let appended = prepare(editor.project());
+    editor.execute(insert(before, delay(10.0))).unwrap();
+    let inserted = prepare(editor.project());
     assert_eq!(
-        appended.arrangement().main_latency_frames(),
+        inserted.arrangement().main_latency_frames(),
         original.arrangement().main_latency_frames()
     );
 
     for partition in [1, 257] {
         let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
-        let mut oracle = SessionPlayback::new(Arc::clone(&original)).unwrap();
-        for runtime in [&mut old, &mut oracle] {
+        let mut oracle = SessionPlayback::new(Arc::clone(&prefix)).unwrap();
+        let mut retained = middle.then(|| SessionPlayback::new(Arc::clone(&original)).unwrap());
+        for runtime in [&mut old, &mut oracle].into_iter().chain(retained.as_mut()) {
             runtime.apply(SessionPlaybackCommand::Play).unwrap();
             runtime.render(&mut vec![[0.0; 2]; CUT]).unwrap();
         }
@@ -2176,9 +2205,11 @@ fn native_append_case(location: NativeAppendLocation) {
             Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
         ));
 
-        let mut candidate = SessionPlayback::new(Arc::clone(&appended)).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&inserted)).unwrap();
         candidate.require_continuous_insert = true;
-        let result = candidate.try_inherit_state_live_from(&mut old).unwrap();
+        let result = candidate
+            .try_inherit_state_live_from(&mut old)
+            .unwrap_or_else(|error| panic!("{location:?} middle={middle} {error:?}"));
         assert!(!result.running_audio_restart);
         assert_eq!(candidate.performance_frame(), CUT as u64);
         assert!(candidate.playing());
@@ -2193,7 +2224,7 @@ fn native_append_case(location: NativeAppendLocation) {
         assert!(candidate.tail_groups.iter().all(Option::is_none));
         let capture = |playback: &mut SessionPlayback| {
             let plan = capture_id.map(|id| playback.output_capture_plan(&[id], partition).unwrap());
-            let mut main = vec![[0.0; 2]; DELAY * 3];
+            let mut main = vec![[0.0; 2]; OUTPUT_FRAMES];
             let mut output = main.clone();
             for (main, output) in main.chunks_mut(partition).zip(output.chunks_mut(partition)) {
                 if let Some(plan) = &plan {
@@ -2220,17 +2251,51 @@ fn native_append_case(location: NativeAppendLocation) {
                 .flatten()
                 .any(|sample| sample.abs() > 1e-6)
         );
-        for (frame, output) in actual.iter().enumerate() {
+        let mut expected = vec![[0.0; 2]; OUTPUT_FRAMES];
+        for (frame, output) in expected.iter_mut().enumerate() {
             let mix = (frame + 1).min(RAMP) as f32 / RAMP as f32;
             for lane in 0..2 {
                 let wet: f32 = (1..=frame / DELAY)
                     .map(|tap| input[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
                     .sum();
                 let dry = input[frame][lane];
-                let expected = dry + (wet - dry) * mix;
+                output[lane] = dry + (wet - dry) * mix;
+            }
+        }
+        if let Some(retained) = retained.as_mut() {
+            // The uninterrupted suffix already owns every sample admitted
+            // before the cut. Feed it only the change in input after the cut
+            // to calculate the independently expected edited output.
+            let baseline = capture(retained);
+            assert!(
+                baseline[..SUFFIX_DELAY]
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 1e-6)
+            );
+            let upstream = std::mem::replace(&mut expected, baseline);
+            let mut heard_insert_through_suffix = false;
+            for (frame, output) in expected.iter_mut().enumerate() {
+                let unchanged = *output;
+                for lane in 0..2 {
+                    for tap in 1..=frame / SUFFIX_DELAY {
+                        let source = frame - tap * SUFFIX_DELAY;
+                        output[lane] += (upstream[source][lane] - input[source][lane])
+                            * 0.5_f32.powi(tap as i32 - 1);
+                    }
+                }
+                heard_insert_through_suffix |= output
+                    .iter()
+                    .zip(unchanged)
+                    .any(|(edited, old)| (edited - old).abs() > 2e-6);
+            }
+            assert!(heard_insert_through_suffix);
+        }
+        for (frame, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            for lane in 0..2 {
                 assert!(
-                    (output[lane] - expected).abs() < 2e-6,
-                    "location={location:?} partition={partition} frame={frame} lane={lane}"
+                    (actual[lane] - expected[lane]).abs() < 2e-6,
+                    "location={location:?} middle={middle} partition={partition} frame={frame} lane={lane}"
                 );
             }
         }

@@ -364,14 +364,14 @@ pub(super) struct ReturnEffectTailPlan {
     main_capture: Option<(usize, usize, u32)>,
     // A completed suffix needs no old DSP history and no retained tail owner.
     main_quiet_suffix: Option<usize>,
-    smooth_main_append: bool,
+    main_insert_transition: Option<hex_lattice::NativeInsertTransition>,
 }
 
 #[derive(Clone, Copy)]
 enum ReturnBusHistory {
     Fresh,
     Inherit,
-    SmoothAppend,
+    SmoothInsert(hex_lattice::NativeInsertTransition),
 }
 
 impl ReturnEffectTailPlan {
@@ -483,7 +483,7 @@ impl ReturnEffectTailPlan {
             bus_history: [ReturnBusHistory::Fresh; MAX_RETURN_TRACKS],
             main_capture: None,
             main_quiet_suffix: None,
-            smooth_main_append: false,
+            main_insert_transition: None,
         };
         let mut occupied = [false; RETURN_EFFECT_TAIL_CAPACITY];
 
@@ -535,18 +535,12 @@ impl ReturnEffectTailPlan {
                     && new_chain.can_inherit_from(old_chain)
                 {
                     Some(ReturnBusHistory::Inherit)
-                } else if tail_policy == DeviceEditTailPolicy::RequireConfirmation
-                    && new_chain.can_smooth_native_append_from(old_chain)
-                    && super::handoff::configuration_matches_continuation(
-                        old_chain,
-                        new_chain,
-                        0..old_chain.len(),
-                        continuation,
-                    )
-                {
-                    // The caller has proved continuous graph timing. Feed
-                    // the retained prefix into the new stage on this route.
-                    Some(ReturnBusHistory::SmoothAppend)
+                } else if tail_policy == DeviceEditTailPolicy::RequireConfirmation {
+                    // The caller has proved continuous graph timing. Keep the
+                    // original Return stages on one route around the insertion.
+                    new_chain
+                        .native_insert_transition_from(old_chain, continuation)
+                        .map(ReturnBusHistory::SmoothInsert)
                 } else {
                     None
                 };
@@ -620,6 +614,12 @@ impl ReturnEffectTailPlan {
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         tail_policy: DeviceEditTailPolicy,
     ) -> Result<(), SessionPlaybackError> {
+        if tail_policy == DeviceEditTailPolicy::RequireConfirmation {
+            self.main_insert_transition = current.native_insert_transition_from(old, continuation);
+            if self.main_insert_transition.is_some() {
+                return Ok(());
+            }
+        }
         let mut start = 0;
         let mut arrival = pre_main_arrival;
         while start < old.len().min(current.len())
@@ -640,14 +640,6 @@ impl ReturnEffectTailPlan {
             start += 1;
         }
         if start == old.len() {
-            self.smooth_main_append = tail_policy == DeviceEditTailPolicy::RequireConfirmation
-                && current.can_smooth_native_append_from(old)
-                && super::handoff::configuration_matches_continuation(
-                    old,
-                    current,
-                    0..start,
-                    continuation,
-                );
             return Ok(());
         }
         if !current.can_inherit_from_excluding_old_range(old, start..old.len()) {
@@ -716,8 +708,8 @@ impl ReturnEffectTailPlan {
         current: &mut NativeRuntimeChain,
         old: &mut NativeRuntimeChain,
     ) {
-        if self.smooth_main_append {
-            current.transfer_history_with_smoothed_native_append_from(old);
+        if let Some(transition) = self.main_insert_transition {
+            current.transfer_history_with_native_insert_from(old, transition);
         } else {
             current.transfer_history_from(old);
         }
@@ -798,8 +790,8 @@ impl ReturnEffectTailPlan {
     ) {
         match self.bus_history.get(index) {
             Some(ReturnBusHistory::Inherit) => current.transfer_history_from(old),
-            Some(ReturnBusHistory::SmoothAppend) => {
-                current.transfer_history_with_smoothed_native_append_from(old);
+            Some(ReturnBusHistory::SmoothInsert(transition)) => {
+                current.transfer_history_with_native_insert_from(old, *transition);
             }
             Some(ReturnBusHistory::Fresh) | None => {}
         }
