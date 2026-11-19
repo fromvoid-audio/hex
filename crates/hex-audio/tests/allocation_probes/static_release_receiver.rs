@@ -1,18 +1,20 @@
-//! Original Sampler release versus an independently authored note-off, through
-//! actual prepared publication. An unrelated source and a later onset continue.
+//! Sampler power through actual prepared publication, with independent dry
+//! and wet references for the receiver, a second source, and a later onset.
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{
-    PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable,
+    Frame, NodeSignalPhase, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable,
     native_device_resources::{
         PreparedDeviceResources, ResidentDeviceAssets, ResourcePreparationError,
     },
     playback::{Playback, PlaybackCommand},
 };
+use hex_lattice::{DevicePreparationContext, EMPTY_DEVICE_RESOURCES, TuningTable};
 use hex_lattice_contract::{
-    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceMetadata, ParameterValue,
+    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceMetadata, NativeDeviceState,
+    ParameterValue,
 };
-use hex_project::{BeatTime, Command, Created, Editor, Project};
+use hex_project::{BeatTime, Command, Created, DeviceId, Editor, Project};
 use std::{
     collections::BTreeMap,
     sync::{Arc, atomic::AtomicBool},
@@ -49,14 +51,14 @@ fn static_receiver_power_fade_and_future_onset_have_no_callback_allocations() {
 }
 
 #[test]
-fn gate_suffix_rejoin_retains_detector_history_and_source_pcm() {
+fn gate_suffix_power_cycle_retains_one_running_detector() {
     for block in [1, 7, 64, 512] {
         check(3, block);
     }
 }
 
 #[test]
-fn unproved_stateful_suffix_refuses_reenable_and_keeps_previous_release() {
+fn compressor_power_cycle_retains_one_running_detector() {
     check(4, 17);
 }
 
@@ -74,6 +76,7 @@ fn unproved_compensated_bypass_refuses_without_a_dropout() {
 
 fn check(case: usize, block: usize) {
     let static_receiver = matches!(case, 0..=2 | 5);
+    let stateful_receiver = matches!(case, 3 | 4);
     const CUT: usize = 129;
     const FADE: usize = 40;
     let mut editor = Editor::new(Project::new(8000).unwrap(), 32).unwrap();
@@ -145,13 +148,17 @@ fn check(case: usize, block: usize) {
             .patch_parameter(&state, p::INVERT_LEFT, ParameterValue::Bool(true))
             .unwrap();
     }
-    editor
+    let receiver_state = state.clone();
+    let Created::Device(receiver_effect) = editor
         .execute(Command::InsertDevice {
             track,
             before: None,
             state,
         })
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("receiver effect");
+    };
     if case == 2 {
         let state = utility
             .patch_parameter(
@@ -243,8 +250,8 @@ fn check(case: usize, block: usize) {
         panic!("clip");
     };
     let mut oracle_editor = Editor::new(editor.project().clone(), 32).unwrap();
-    let mut fresh_editor =
-        static_receiver.then(|| Editor::new(editor.project().clone(), 32).unwrap());
+    let mut fresh_editor = (static_receiver || stateful_receiver)
+        .then(|| Editor::new(editor.project().clone(), 32).unwrap());
     let off = editor
         .project()
         .tempo_map()
@@ -252,7 +259,7 @@ fn check(case: usize, block: usize) {
         .unwrap();
     let future = editor.project().tempo_map().frame_to_beat(300).unwrap();
     let duration = editor.project().tempo_map().frame_to_beat(16).unwrap();
-    let oracle_gate = if static_receiver || case == 6 {
+    let oracle_gate = if static_receiver || stateful_receiver || case == 6 {
         BeatTime::ONE
     } else {
         off
@@ -324,13 +331,33 @@ fn check(case: usize, block: usize) {
     let mut oracle =
         SessionPlayback::new_with_device_resources(oracle_revision, &oracle_resources).unwrap();
     oracle.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut fresh = fresh_editor.as_ref().map(|editor| {
-        let (revision, resources) = prepare(editor.project(), &store);
-        let mut oracle = SessionPlayback::new_with_device_resources(revision, &resources).unwrap();
-        oracle.apply(SessionPlaybackCommand::Play).unwrap();
-        oracle.render(&mut [[0.0; 2]; CUT]).unwrap();
-        oracle
+    let stateful_reference = stateful_receiver.then(|| {
+        let fresh_editor = fresh_editor.as_ref().unwrap();
+        let mut original =
+            SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
+        let (fresh_revision, fresh_resources) = prepare(fresh_editor.project(), &store);
+        let mut fresh =
+            SessionPlayback::new_with_device_resources(fresh_revision, &fresh_resources).unwrap();
+        stateful_receiver_reference(
+            &mut original,
+            &mut fresh,
+            receiver_effect,
+            &receiver_state,
+            CUT,
+            FADE,
+        )
     });
+    let mut fresh = fresh_editor
+        .as_ref()
+        .filter(|_| static_receiver)
+        .map(|editor| {
+            let (revision, resources) = prepare(editor.project(), &store);
+            let mut oracle =
+                SessionPlayback::new_with_device_resources(revision, &resources).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            oracle.render(&mut [[0.0; 2]; CUT]).unwrap();
+            oracle
+        });
     let (mut control, mut callback) = prepared::channel(8000).unwrap();
     control
         .configure_device_resource_publication_on_control(
@@ -359,7 +386,11 @@ fn check(case: usize, block: usize) {
     );
     assert_eq!(&actual[..CUT], &expected[..CUT]);
     position += CUT;
-    let first_off = if static_receiver { FADE + 24 } else { 13 };
+    let first_off = if static_receiver || stateful_receiver {
+        FADE + 24
+    } else {
+        13
+    };
     for (bypassed, count) in [(true, first_off), (false, 13), (true, 7), (false, 13)] {
         editor
             .execute(Command::SetDeviceBypass { device, bypassed })
@@ -383,7 +414,14 @@ fn check(case: usize, block: usize) {
                 &mut actual[..n],
                 &mut expected[..n],
             );
-            if let Some(fresh) = fresh.as_mut() {
+            if let Some(reference) = &stateful_reference {
+                check_stateful_reference(
+                    &actual[..n],
+                    &reference[position..position + n],
+                    case,
+                    position,
+                );
+            } else if let Some(fresh) = fresh.as_mut() {
                 fresh.render(&mut fresh_pcm[..n]).unwrap();
                 for i in 0..n {
                     let gain = FADE.saturating_sub(position + i - CUT) as f32 / FADE as f32;
@@ -408,7 +446,7 @@ fn check(case: usize, block: usize) {
             position += n;
             assert_eq!(control.status.recovery_position(), position as u64);
         }
-        if (case == 4 && !bypassed) || (case == 6 && bypassed) {
+        if case == 6 && bypassed {
             assert_eq!(
                 control.status.rejected_revision(),
                 Some((
@@ -424,22 +462,20 @@ fn check(case: usize, block: usize) {
                 previous_revision
             );
             assert_eq!(control.reclaim(), 1, "refused owner returns to control");
-            if case == 6 {
-                // A terminal compensated-source refusal must not obstruct
-                // priority Stop or chase the later onset from a fresh kernel.
-                control.stop();
-                oracle.apply(SessionPlaybackCommand::Stop).unwrap();
-                for frames in [1, 7, 64, 512, 512, 64] {
-                    render(
-                        &mut callback,
-                        &mut oracle,
-                        &mut actual[..frames],
-                        &mut expected[..frames],
-                    );
-                    assert_eq!(&actual[..frames], &expected[..frames]);
-                }
-                assert!(actual[..64].iter().all(|frame| *frame == [0.0; 2]));
+            // A terminal compensated-source refusal must not obstruct
+            // priority Stop or chase the later onset from a fresh kernel.
+            control.stop();
+            oracle.apply(SessionPlaybackCommand::Stop).unwrap();
+            for frames in [1, 7, 64, 512, 512, 64] {
+                render(
+                    &mut callback,
+                    &mut oracle,
+                    &mut actual[..frames],
+                    &mut expected[..frames],
+                );
+                assert_eq!(&actual[..frames], &expected[..frames]);
             }
+            assert!(actual[..64].iter().all(|frame| *frame == [0.0; 2]));
             control.request_shutdown();
             zero(measure(|| callback.begin_block()));
             assert_eq!(control.reclaim(), 1);
@@ -464,11 +500,20 @@ fn check(case: usize, block: usize) {
             &mut actual[..n],
             &mut expected[..n],
         );
-        assert_eq!(
-            &actual[..n],
-            &expected[..n],
-            "case={case} block={block} frame={position}: release, future onset or unrelated source changed"
-        );
+        if let Some(reference) = &stateful_reference {
+            check_stateful_reference(
+                &actual[..n],
+                &reference[position..position + n],
+                case,
+                position,
+            );
+        } else {
+            assert_eq!(
+                &actual[..n],
+                &expected[..n],
+                "case={case} block={block} frame={position}: release, future onset or unrelated source changed"
+            );
+        }
         position += n;
     }
     assert_eq!(
@@ -481,6 +526,96 @@ fn check(case: usize, block: usize) {
         callback.render(&mut actual).unwrap();
     }));
     control.reclaim();
+}
+
+// Measure both input signals independently from the public prepared graph
+// taps. The wet reference applies a single uninterrupted receiver to the
+// authored input, the old source fade, and the later fresh note in that order.
+fn stateful_receiver_reference(
+    original: &mut SessionPlayback,
+    fresh: &mut SessionPlayback,
+    effect: DeviceId,
+    state: &NativeDeviceState,
+    cut: usize,
+    fade: usize,
+) -> Vec<Frame> {
+    const FRAMES: usize = 5000;
+    let trace = |playback: &mut SessionPlayback| {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut input = vec![[0.0; 2]; FRAMES];
+        let mut wet = input.clone();
+        let mut mixed = input.clone();
+        let mut seen_input = 0;
+        let mut seen_output = 0;
+        playback
+            .render_with_node_signal_observer(
+                &mut mixed,
+                Some(&mut |node, phase, offset, frames| {
+                    if node.device_id == effect.value() {
+                        let (target, seen) = match phase {
+                            NodeSignalPhase::Input => (&mut input, &mut seen_input),
+                            NodeSignalPhase::Output => (&mut wet, &mut seen_output),
+                        };
+                        assert_eq!(*seen, offset);
+                        *seen += frames.len();
+                        target[offset..*seen].copy_from_slice(frames);
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!((seen_input, seen_output), (FRAMES, FRAMES));
+        (input, wet, mixed)
+    };
+    let (mut input, _, _) = trace(original);
+    let (new_notes, new_wet, mut expected) = trace(fresh);
+    assert!(
+        input[cut..cut + fade]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.05)
+    );
+    for (offset, frame) in input[cut..cut + fade].iter_mut().enumerate() {
+        let gain = (fade - offset) as f32 / fade as f32;
+        *frame = frame.map(|sample| sample * gain);
+    }
+    input[cut + fade..].copy_from_slice(&new_notes[cut + fade..]);
+    let context = DevicePreparationContext {
+        sample_rate: 8000,
+        tuning: &TuningTable::default(),
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let prepared = hex_devices::native_registry()
+        .unwrap()
+        .prepare_runtime_device(state, &context)
+        .unwrap();
+    let factory = prepared
+        .processor
+        .as_ref()
+        .and_then(|processor| processor.legacy())
+        .unwrap();
+    assert_eq!(factory.algorithmic_latency_frames(), Some(0));
+    let mut original_effect = factory.create_runtime();
+    for block in input.chunks_mut(256) {
+        original_effect.process_block(block, &EMPTY_DEVICE_RESOURCES);
+    }
+    for ((whole, replaced), receiver) in expected.iter_mut().zip(new_wet).zip(input) {
+        for ((whole, replaced), receiver) in whole.iter_mut().zip(replaced).zip(receiver) {
+            *whole += receiver - replaced;
+        }
+    }
+    expected
+}
+
+fn check_stateful_reference(actual: &[Frame], expected: &[Frame], case: usize, position: usize) {
+    for (offset, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 0.000_002,
+                "case={case} frame={}: {actual} vs {expected}",
+                position + offset,
+            );
+        }
+    }
 }
 
 fn render(
