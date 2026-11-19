@@ -2055,30 +2055,88 @@ fn disconnect_send_stops_live_input_without_cutting_the_tail() {
     assert_ne!(actual, expected);
 }
 
+#[derive(Clone, Copy, Debug)]
+enum NativeAppendLocation {
+    Return,
+    Track,
+    Group,
+    Main,
+}
+
 #[test]
-fn staged_zero_latency_return_append_feeds_the_retained_reverb_through_fresh_delay() {
+fn staged_return_append_preserves_reverb_and_uses_the_native_transition() {
+    native_append_case(NativeAppendLocation::Return);
+}
+
+#[test]
+fn staged_track_group_and_main_append_preserves_reverb_and_uses_the_native_transition() {
+    for location in [
+        NativeAppendLocation::Track,
+        NativeAppendLocation::Group,
+        NativeAppendLocation::Main,
+    ] {
+        native_append_case(location);
+    }
+}
+
+fn native_append_case(location: NativeAppendLocation) {
     use crate::{OutputCapture, OutputCaptureId};
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
-    use hex_project::{Command, Editor, Project};
+    use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
 
     const CUT: usize = 6_000;
     const DELAY: usize = 480;
     const RAMP: usize = 240;
-    let (mut editor, _, bus, _, media, table) = real_main_limiter_reverb_fixture();
+    let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let capture_id = match location {
+        NativeAppendLocation::Return => Some(OutputCaptureId::Return(bus)),
+        NativeAppendLocation::Track => Some(OutputCaptureId::Track(track)),
+        NativeAppendLocation::Group => {
+            let Created::Track(group) = editor
+                .execute(Command::GroupTracks {
+                    tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "room group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            Some(OutputCaptureId::Track(group))
+        }
+        NativeAppendLocation::Main => None,
+    };
+    let append = |state| match capture_id {
+        Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state,
+        },
+        Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        },
+        None => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+    };
+    if !matches!(location, NativeAppendLocation::Return) {
+        let state = editor.project().device(reverb).unwrap().state().clone();
+        editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+        editor.execute(append(state)).unwrap();
+    }
     let prepare = |project: &Project| {
         Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
     };
     let original = prepare(editor.project());
     let mut incompatible = Editor::new(editor.project().clone(), 8).unwrap();
     incompatible
-        .execute(Command::InsertReturnDevice {
-            return_track: bus,
-            before: None,
-            state: crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))
-                .unwrap(),
-        })
+        .execute(append(
+            crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap(),
+        ))
         .unwrap();
     let higher_latency = prepare(incompatible.project());
     assert!(
@@ -2096,13 +2154,7 @@ fn staged_zero_latency_return_append_feeds_the_retained_reverb_through_fresh_del
             .patch_parameter(&state, parameter, ParameterValue::Float(value))
             .unwrap();
     }
-    editor
-        .execute(Command::InsertReturnDevice {
-            return_track: bus,
-            before: None,
-            state,
-        })
-        .unwrap();
+    editor.execute(append(state)).unwrap();
     let appended = prepare(editor.project());
     assert_eq!(
         appended.arrangement().main_latency_frames(),
@@ -2138,18 +2190,21 @@ fn staged_zero_latency_return_append_feeds_the_retained_reverb_through_fresh_del
                 .all(Option::is_none)
         );
 
+        assert!(candidate.tail_groups.iter().all(Option::is_none));
         let capture = |playback: &mut SessionPlayback| {
-            let plan = playback
-                .output_capture_plan(&[OutputCaptureId::Return(bus)], partition)
-                .unwrap();
+            let plan = capture_id.map(|id| playback.output_capture_plan(&[id], partition).unwrap());
             let mut main = vec![[0.0; 2]; DELAY * 3];
             let mut output = main.clone();
             for (main, output) in main.chunks_mut(partition).zip(output.chunks_mut(partition)) {
-                playback
-                    .render_with_capture(main, &mut OutputCapture::new(&plan, &mut [output]))
-                    .unwrap();
+                if let Some(plan) = &plan {
+                    playback
+                        .render_with_capture(main, &mut OutputCapture::new(plan, &mut [output]))
+                        .unwrap();
+                } else {
+                    playback.render(main).unwrap();
+                }
             }
-            output
+            if plan.is_some() { output } else { main }
         };
         let input = capture(&mut oracle);
         let actual = capture(&mut candidate);
@@ -2175,7 +2230,7 @@ fn staged_zero_latency_return_append_feeds_the_retained_reverb_through_fresh_del
                 let expected = dry + (wet - dry) * mix;
                 assert!(
                     (output[lane] - expected).abs() < 2e-6,
-                    "partition={partition} frame={frame} lane={lane}"
+                    "location={location:?} partition={partition} frame={frame} lane={lane}"
                 );
             }
         }

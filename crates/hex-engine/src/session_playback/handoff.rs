@@ -4473,6 +4473,7 @@ impl SessionPlayback {
         }
 
         let mut old_track_tail_slots = [None; MAX_TRACKS];
+        let mut smooth_track_appends = [false; MAX_TRACKS];
         let mut completed_foreign_suffixes = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
@@ -4766,9 +4767,18 @@ impl SessionPlayback {
                         old_chain,
                         candidate_suffix_start..old_chain.len(),
                     );
-                old_track.instrument_position() != candidate_suffix_start
-                    || old_track.instrument_suffix_matrix()
-                        != candidate_track.instrument_suffix_matrix()
+                let same_instrument_placement = old_track.instrument_position()
+                    == candidate_suffix_start
+                    && old_track.instrument_suffix_matrix()
+                        == candidate_track.instrument_suffix_matrix();
+                if let Some(smooth_append) = smooth_track_appends.get_mut(old_index) {
+                    *smooth_append = continuous_insert
+                        && same_instrument_placement
+                        && native_zero_latency_append
+                        && retained_prefix_extension
+                        && candidate_chain.can_smooth_native_append_from(old_chain);
+                }
+                !same_instrument_placement
                     || !(exact_chain_configuration
                         || retargetable_effect_configuration
                         || retained_prefix_extension)
@@ -5721,6 +5731,8 @@ impl SessionPlayback {
                     candidate
                         .transfer_history_excluding_old_range(old, range)
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                } else if smooth_track_appends.get(old_index) == Some(&true) {
+                    candidate.transfer_history_with_smoothed_native_append_from(old);
                 } else {
                     candidate.transfer_history_from(old);
                 }
@@ -6108,8 +6120,7 @@ impl SessionPlayback {
         if let Some(groups) = groups {
             groups.commit();
         }
-        self.main_chain
-            .transfer_history_from(&mut previous.main_chain);
+        return_tail_plan.transfer_main_history(&mut self.main_chain, &mut previous.main_chain);
         self.foreign_arrangement.inherit_handoff(
             &mut previous.foreign_arrangement,
             foreign_handoff,
