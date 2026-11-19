@@ -815,6 +815,7 @@ impl Inputs<'_> {
             },
             ResidentPublicationPolicy::ArrangementEdit,
             selected.allowance(snapshot)?,
+            None,
         )?;
         snapshot.record_submission(context, accepted);
         selected.cancel_retired_from(&previous);
@@ -910,20 +911,85 @@ impl Inputs<'_> {
         policy: ResidentPublicationPolicy,
         mut playback: Playback,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let mut tempo_edit = match (policy, self.current) {
+            (ResidentPublicationPolicy::InheritRuntimeAt(witness), Some(previous))
+                if snapshot.prepared_context == metadata.context
+                    && snapshot.source_origin == ResidentSourceOrigin::CanonicalCandidate
+                    && playback.browser_audition_retained_bytes_on_control() == Some(0)
+                    && witness.section_loop.is_none()
+                    && snapshot
+                        .prepared
+                        .can_schedule_resident_tempo_edit_from(&previous.prepared) =>
+            {
+                previous
+                    .submission
+                    .filter(|source| {
+                        witness.output_identity == source.output_identity
+                            && witness.audio_revision == source.audio_revision
+                            && witness.source_context == Some(source.context)
+                    })
+                    .map(|source| super::ResidentTempoEdit {
+                        source,
+                        previous: &previous.prepared,
+                        retry_of: None,
+                    })
+            }
+            _ => None,
+        };
         let previous = snapshot.inputs.clone();
-        let mut selected = previous.clone();
-        selected.attach(project, &mut playback, &snapshot.resources)?;
-        selected.selected_after(&previous)?;
-        let additional_bytes = selected
-            .allowance(snapshot)?
-            .checked_add(
-                playback
-                    .browser_audition_retained_bytes_on_control()
-                    .ok_or(SessionError::Invalid("browser audition storage overflow"))?,
-            )
-            .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
-        let accepted =
-            self.publish_runtime(snapshot, playback, sink, metadata, policy, additional_bytes)?;
+        let (accepted, selected) = loop {
+            let mut selected = previous.clone();
+            selected.attach(project, &mut playback, &snapshot.resources)?;
+            selected.selected_after(&previous)?;
+            let additional_bytes = selected
+                .allowance(snapshot)?
+                .checked_add(
+                    playback
+                        .browser_audition_retained_bytes_on_control()
+                        .ok_or(SessionError::Invalid("browser audition storage overflow"))?,
+                )
+                .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
+            let accepted = self.publish_runtime(
+                snapshot,
+                playback,
+                sink,
+                metadata,
+                policy,
+                additional_bytes,
+                tempo_edit,
+            )?;
+            if let Some(edit) = tempo_edit.as_mut()
+                && sink
+                    .confirm_resident_tempo_edit(metadata.context, accepted)
+                    .map_err(SessionError::NativeAudio)?
+                    == ResidentTempoEditOutcome::MissedCut
+            {
+                if edit.retry_of.is_some() {
+                    return Err(SessionError::NativeAudio(
+                        hex_engine::PlaybackHandoffRejection::TempoCutMissed
+                            .message()
+                            .into(),
+                    ));
+                }
+                let ResidentPublicationAcceptance::Submitted {
+                    output_identity,
+                    audio_revision,
+                } = accepted
+                else {
+                    return Err(SessionError::Invalid(
+                        "a missed tempo cut requires a submission",
+                    ));
+                };
+                edit.retry_of = Some(ResidentGraphSubmission {
+                    output_identity,
+                    audio_revision,
+                    context: metadata.context,
+                });
+                playback = playback_with_loop(snapshot, None)?;
+                continue;
+            }
+            break (accepted, selected);
+        };
         snapshot.record_submission(metadata.context, accepted);
         if !matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. }) {
             selected.cancel_retired_from(&previous);
@@ -931,6 +997,7 @@ impl Inputs<'_> {
         snapshot.inputs = selected;
         Ok(accepted)
     }
+    #[allow(clippy::too_many_arguments)] // Existing admission and optional exact tempo intent.
     fn publish_runtime(
         &self,
         snapshot: &Snapshot,
@@ -939,6 +1006,7 @@ impl Inputs<'_> {
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
         additional_runtime_bytes: usize,
+        tempo_edit: Option<ResidentTempoEdit<'_>>,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
@@ -1009,91 +1077,61 @@ impl Inputs<'_> {
             },
             ..metadata
         };
-        let tempo_edit = match (policy, self.current) {
-            (ResidentPublicationPolicy::InheritRuntimeAt(witness), Some(previous))
-                if metadata.source_origin == ResidentSourceOrigin::CanonicalCandidate
-                    && witness.section_loop.is_none()
-                    && snapshot
-                        .prepared
-                        .can_schedule_resident_tempo_edit_from(&previous.prepared) =>
-            {
-                previous
-                    .submission
-                    .filter(|source| {
-                        witness.output_identity == source.output_identity
-                            && witness.audio_revision == source.audio_revision
-                            && witness.source_context == Some(source.context)
-                    })
-                    .map(|source| super::ResidentTempoEdit {
-                        source,
-                        previous: &previous.prepared,
-                    })
-            }
-            _ => None,
-        };
         let mut plugin_admitted = false;
-        let acceptance = sink
-            .publish_resident_transition(
-                playback,
-                Some(&snapshot.resources),
-                observation,
-                metadata,
-                policy,
-                self.limits.storage.max_retained_bytes,
-                &mut |native| {
-                    self.admit_with_requirements(
-                        &snapshot.resources,
-                        Some(&snapshot.prepared),
-                        native,
-                        runtime,
-                        0,
-                        snapshot.file_requirements(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    // Check before enqueue. A scheduled edit can also be
-                    // cancelled while its callback receipt is pending.
-                    if self.shutdown.load(Ordering::Acquire)
-                        || self
-                            .cancel
-                            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-                    {
-                        return Err("resident publication cancelled".into());
-                    }
-                    if let Some(control) = self.plugin_effect
-                        && !plugin_admitted
-                    {
-                        if !control.begin_commit() {
-                            return Err("vst3 effect insertion cancelled before admission".into());
-                        }
-                        plugin_admitted = true;
-                    }
-                    Ok(())
-                },
-                super::ResidentPublicationInputs {
-                    files: snapshot
-                        .file_sources
-                        .as_ref()
-                        .map(|sources| ResidentFilePublication {
-                            sources,
-                            shutdown: self.shutdown,
-                            cancel: self.cancel,
-                        }),
-                    tempo_edit,
-                },
-            )
-            .map_err(|refused| match refused.kind {
-                super::ResidentPublicationFailure::NativeSourceUnavailable => {
-                    SessionError::NativeSourceUnavailable(refused.error)
+        sink.publish_resident_transition(
+            playback,
+            Some(&snapshot.resources),
+            observation,
+            metadata,
+            policy,
+            self.limits.storage.max_retained_bytes,
+            &mut |native| {
+                self.admit_with_requirements(
+                    &snapshot.resources,
+                    Some(&snapshot.prepared),
+                    native,
+                    runtime,
+                    0,
+                    snapshot.file_requirements(),
+                )
+                .map_err(|error| error.to_string())?;
+                // Check before enqueue. A scheduled edit can also be
+                // cancelled while its callback receipt is pending.
+                if self.shutdown.load(Ordering::Acquire)
+                    || self
+                        .cancel
+                        .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+                {
+                    return Err("resident publication cancelled".into());
                 }
-                super::ResidentPublicationFailure::Other => {
-                    SessionError::NativeAudio(refused.error)
+                if let Some(control) = self.plugin_effect
+                    && !plugin_admitted
+                {
+                    if !control.begin_commit() {
+                        return Err("vst3 effect insertion cancelled before admission".into());
+                    }
+                    plugin_admitted = true;
                 }
-            })?;
-        if tempo_edit.is_some() {
-            sink.confirm_resident_tempo_edit(metadata.context, acceptance)
-                .map_err(SessionError::NativeAudio)?;
-        }
-        Ok(acceptance)
+                Ok(())
+            },
+            super::ResidentPublicationInputs {
+                files: snapshot
+                    .file_sources
+                    .as_ref()
+                    .map(|sources| ResidentFilePublication {
+                        sources,
+                        shutdown: self.shutdown,
+                        cancel: self.cancel,
+                    }),
+                tempo_edit,
+            },
+        )
+        .map_err(|refused| match refused.kind {
+            super::ResidentPublicationFailure::NativeSourceUnavailable => {
+                SessionError::NativeSourceUnavailable(refused.error)
+            }
+            super::ResidentPublicationFailure::Other => SessionError::NativeAudio(refused.error),
+        })
     }
 }
 
@@ -1991,7 +2029,7 @@ impl Session {
         selected.selected_after(&current.inputs)?;
         let accepted = self
             .resident_seek_inputs(admission, Some(current), Some(cancelled))?
-            .publish_runtime(snapshot, playback, sink, metadata, policy, extra)?;
+            .publish_runtime(snapshot, playback, sink, metadata, policy, extra, None)?;
         if Arc::ptr_eq(&current.prepared, &snapshot.prepared) {
             current.record_submission(metadata.context, accepted);
         } else {
@@ -2083,6 +2121,7 @@ impl Session {
             metadata,
             policy,
             selected.allowance(snapshot)?,
+            None,
         )?;
         Ok((hint, selected, accepted))
     }

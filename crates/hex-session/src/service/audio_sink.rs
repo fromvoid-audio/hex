@@ -616,6 +616,15 @@ impl ResidentGraphSubmission {
 pub struct ResidentTempoEdit<'a> {
     pub source: ResidentGraphSubmission,
     pub previous: &'a Arc<PreparedRevision>,
+    /// Exact missed publication whose predecessor fence must still hold.
+    pub retry_of: Option<ResidentGraphSubmission>,
+}
+
+/// A missed cut may be retried on the original running source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentTempoEditOutcome {
+    Confirmed,
+    MissedCut,
 }
 
 /// Optional inputs for the ordinary prepared-transition publisher.
@@ -774,8 +783,8 @@ pub trait WorkerAudioSink: Send {
         &mut self,
         _context: hex_engine::AudioSourceContext,
         _acceptance: ResidentPublicationAcceptance,
-    ) -> Result<(), String> {
-        Ok(())
+    ) -> Result<ResidentTempoEditOutcome, String> {
+        Ok(ResidentTempoEditOutcome::Confirmed)
     }
 
     /// Called for every Commit attempt, including capture/compilation/publication

@@ -1301,6 +1301,13 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
             if let Ok(event) = h.service.try_event() {
                 edited = Some(event);
             }
+            if cut.is_some() {
+                // The callback has installed the graph. Keep its cursor
+                // latched while control publishes the canonical result.
+                assert!(Instant::now() < until, "tempo edit did not commit");
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
             let status = h.audio.as_ref().unwrap().status().unwrap();
             let before_revision = status.applied_revision.load(Acquire);
             let before_position = status.position.load(Acquire);
@@ -1382,33 +1389,53 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
     }
 }
 
+fn running_resident_tempo_fixture(files: &Files) -> (ResidentHarness, Event, u64) {
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 8192)));
+    let (applied, _) = h.applied(initial);
+    let track = imported.state.project.tracks()[0].id();
+    let original = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    let (applied, _) = h.applied(applied);
+    use hex_engine::playback::PlaybackCommand;
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+    h.render();
+    (h, original, applied)
+}
+
+fn wait_for_tempo_submission(h: &mut ResidentHarness, previous: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        h.pump();
+        if let Some((revision, _)) = h.submitted
+            && revision > previous
+        {
+            break revision;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn resident_tempo_command_waits_for_its_cut_and_stop_preserves_the_project() {
     let _native = native_fixture();
     for stop_before_cut in [false, true] {
         let files = Files::new();
-        let mut h = ResidentHarness::with_frame_limit(32_768);
-        assert!(h.next().error.is_none());
-        let (initial, _) = h.applied(0);
-        let imported = h.run(Request::Import(files.wav(48_000, 8192)));
-        let (applied, _) = h.applied(initial);
-        let track = imported.state.project.tracks()[0].id();
-        let original = h.run(Request::AddNativeDevice {
-            track,
-            class: hex_engine::NativeDeviceClass::Effect,
-            type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
-            before: None,
-        });
-        let (applied, _) = h.applied(applied);
+        let (mut h, original, applied) = running_resident_tempo_fixture(&files);
         use hex_engine::playback::PlaybackCommand;
-        h.audio
-            .as_mut()
-            .unwrap()
-            .control
-            .command(PlaybackCommand::Play)
-            .unwrap();
-        h.render();
-        h.render();
         let status = h.audio.as_ref().unwrap().status().unwrap();
         let frame = status.performance_frame.load(Acquire);
         let position = status.position.load(Acquire);
@@ -1417,17 +1444,7 @@ fn resident_tempo_command_waits_for_its_cut_and_stop_preserves_the_project() {
                 tempo: hex_project::Tempo::new(90_000_000).unwrap(),
             }))
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let submitted = loop {
-            h.pump();
-            if let Some((revision, _)) = h.submitted
-                && revision > applied
-            {
-                break revision;
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        };
+        let submitted = wait_for_tempo_submission(&mut h, applied);
         // Give control a chance to emit an ordinary queue-only success while
         // the callback remains held at its observed predecessor.
         std::thread::sleep(Duration::from_millis(12));
@@ -1502,6 +1519,134 @@ fn resident_tempo_command_waits_for_its_cut_and_stop_preserves_the_project() {
             assert_eq!(
                 retimed,
                 event.state.project.tempo_map().beat_to_frame(beat).unwrap() + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn resident_tempo_command_retries_one_missed_cut_on_the_original_source() {
+    use hex_engine::{PlaybackHandoffRejection, playback::PlaybackCommand};
+    enum Retry {
+        Install,
+        Stop,
+        MissAgain,
+    }
+    let _native = native_fixture();
+    for mode in [Retry::Install, Retry::Stop, Retry::MissAgain] {
+        let files = Files::new();
+        let (mut h, original, applied) = running_resident_tempo_fixture(&files);
+        let (ready, resume, _) = h.probe_next_native_publication();
+        h.service
+            .submit(Request::Edit(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            }))
+            .unwrap();
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        // The first cut is bound. Render past it before letting control enqueue.
+        for _ in 0..9 {
+            h.render();
+        }
+        let (retry_ready, retry_resume, _) = h.probe_next_native_publication();
+        resume.send(()).unwrap();
+        let first = wait_for_tempo_submission(&mut h, applied);
+        let old_pcm = h.render();
+        assert!(old_pcm.iter().any(|frame| *frame != [0.0; 2]));
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(
+            status.rejected_revision(),
+            Some((first, PlaybackHandoffRejection::TempoCutMissed))
+        );
+        assert_eq!(status.applied_revision.load(Acquire), applied);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while retry_ready.recv_timeout(Duration::from_millis(5)).is_err() {
+            assert!(
+                h.service.try_event().is_err(),
+                "the tempo edit returned before retrying its missed cut"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "tempo retry did not reach admission"
+            );
+        }
+        assert!(h.service.try_event().is_err());
+
+        // The retry has twice the lead time on the same captured source.
+        let position = status.position.load(Acquire);
+        match mode {
+            Retry::Install => {}
+            Retry::Stop => {
+                h.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .command(PlaybackCommand::Stop)
+                    .unwrap();
+            }
+            Retry::MissAgain => {
+                for _ in 0..17 {
+                    h.render();
+                }
+            }
+        }
+        retry_resume.send(()).unwrap();
+        let retry = wait_for_tempo_submission(&mut h, first);
+        assert_eq!(retry, first + 1);
+        if matches!(mode, Retry::Install) {
+            for _ in 0..16 {
+                h.render();
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.applied_revision.load(Acquire), applied);
+            assert!(h.service.try_event().is_err());
+            h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(
+                status.applied_revision.load(Acquire),
+                retry,
+                "{:?}",
+                status.rejected_revision()
+            );
+            let retimed = status.position.load(Acquire);
+            let event = h.next();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert_eq!(event.state.revision, original.state.revision + 1);
+            let beat = original
+                .state
+                .project
+                .tempo_map()
+                .frame_to_beat(position + 1024)
+                .unwrap();
+            assert_eq!(
+                retimed,
+                event.state.project.tempo_map().beat_to_frame(beat).unwrap() + 64
+            );
+            let undone = h.run(Request::Undo);
+            assert_eq!(
+                undone.state.project.tempo_map(),
+                original.state.project.tempo_map()
+            );
+        } else {
+            h.render();
+            let event = h.next();
+            assert!(event.error.is_some());
+            assert_eq!(event.state.revision, original.state.revision);
+            assert_eq!(
+                event.state.project.tempo_map(),
+                original.state.project.tempo_map()
+            );
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.applied_revision.load(Acquire), applied);
+            assert_eq!(
+                status.rejected_revision(),
+                Some((
+                    retry,
+                    if matches!(mode, Retry::Stop) {
+                        PlaybackHandoffRejection::RuntimeFenceChanged
+                    } else {
+                        PlaybackHandoffRejection::TempoCutMissed
+                    }
+                ))
             );
         }
     }

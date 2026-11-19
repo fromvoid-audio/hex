@@ -1463,7 +1463,7 @@ impl WorkerAudioSink for NativeAudioSink {
         &mut self,
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
-    ) -> Result<(), String> {
+    ) -> Result<hex_session::service::ResidentTempoEditOutcome, String> {
         self.confirm_tempo_cut(context, acceptance)
     }
     fn resident_publication_readiness(

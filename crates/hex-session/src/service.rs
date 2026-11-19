@@ -101,7 +101,8 @@ pub use audio_sink::{
     ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentPublicationAcceptance,
     ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
     ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit, WorkerAudioSink,
+    ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit, ResidentTempoEditOutcome,
+    WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;

@@ -20,6 +20,44 @@ pub(super) enum FencedAdmission<'a> {
 }
 
 impl PublicationControl {
+    /// Prepare a new frame for the exact missed edit, provided its original
+    /// output, revisions and command/route fence survived. A later Stop or seek
+    /// invalidates the original transaction even if it left the graph installed.
+    pub fn reprepare_missed_tempo_cut(
+        &self,
+        missed_revision: u64,
+        context: hex_engine::AudioSourceContext,
+        previous: &Arc<hex_engine::PreparedRevision>,
+        candidate: &Arc<hex_engine::PreparedRevision>,
+        cut_performance_frame: u64,
+    ) -> Result<Option<FencedTempoCut>, hex_engine::session_playback::SessionPlaybackError> {
+        let original = self
+            .latest_fresh_runtime_cancellation
+            .as_ref()
+            .filter(|receipt| {
+                receipt.revision() == missed_revision
+                    && receipt.context() == Some(context)
+                    && receipt.output_identity() == self.candidate_root.root_id()
+                    && receipt.state()
+                        == PublicationReceiptState::Refused(
+                            PlaybackHandoffRejection::TempoCutMissed,
+                        )
+            })
+            .and_then(CancellablePublicationReceipt::tempo_cut)
+            .filter(|cut| cut.anchor.matches_revisions(previous, candidate));
+        let Some(original) = original else {
+            return Ok(None);
+        };
+        self.prepare_fenced_tempo_anchor(
+            original.fence.expected_active_revision,
+            original.control_generation,
+            Arc::clone(previous),
+            Arc::clone(candidate),
+            cut_performance_frame,
+        )
+        .map(|cut| cut.filter(|cut| cut.fence == original.fence))
+    }
+
     /// Admit a resident tempo edit through the ordinary resource book. A
     /// submission has a cancellable receipt and may still miss the exact cut.
     #[allow(clippy::result_large_err)] // Refusal returns the actual graph to control.

@@ -52,6 +52,17 @@ pub struct PreparedTempoAnchor {
 }
 
 impl PreparedTempoAnchor {
+    /// Compare the two immutable revision identities held by this plan.
+    /// The weak owners keep their addresses reserved without keeping graphs alive.
+    pub fn matches_revisions(
+        &self,
+        previous: &Arc<PreparedRevision>,
+        candidate: &Arc<PreparedRevision>,
+    ) -> bool {
+        std::ptr::eq(Arc::as_ptr(previous), self.previous.as_ptr())
+            && std::ptr::eq(Arc::as_ptr(candidate), self.candidate.as_ptr())
+    }
+
     /// Compute both tempo conversions on control for the named future cut.
     pub fn prepare(
         previous: Arc<PreparedRevision>,
@@ -476,8 +487,7 @@ impl SessionPlayback {
         // The weak handles keep allocation identities reserved even after a
         // graph expires. The two runtimes already own their live revisions;
         // pointer comparison neither upgrades nor drops a graph on callback.
-        if !std::ptr::eq(Arc::as_ptr(&previous.revision), anchor.previous.as_ptr())
-            || !std::ptr::eq(Arc::as_ptr(&self.revision), anchor.candidate.as_ptr())
+        if !anchor.matches_revisions(&previous.revision, &self.revision)
             || !previous.playing
             || previous.arrangement_frame != anchor.arrangement_frame
             || previous.performance_frame != anchor.performance_frame
