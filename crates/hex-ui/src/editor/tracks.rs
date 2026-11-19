@@ -116,7 +116,6 @@ struct ClipGhostGeometry {
 struct ClipGhostDecor {
     fill: u32,
     active: bool,
-    looping: bool,
     notched: bool,
     selector: &'static str,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
@@ -124,7 +123,7 @@ struct ClipGhostDecor {
     waveform_cache: std::rc::Rc<super::waveform_geometry::WaveformViewCache>,
 }
 
-/// Body-only clipping leaves the title and outer selection/rounded mask intact.
+/// Body-only clipping preserves the title and outer selection border.
 pub(super) fn clip_waveform_body(content: Div) -> Div {
     waveform_body_below(content, super::clip_name::CLIP_NAME_HEIGHT)
 }
@@ -155,14 +154,6 @@ pub(super) fn alias_drag_badge() -> Div {
         .child(theme::text("alias"))
 }
 
-fn clip_repeats(project: &hex_project::Project, clip: hex_project::ClipId) -> bool {
-    project
-        .clip(clip)
-        .map(loop_handles::audio_repeats)
-        .or_else(|| project.midi_clip(clip).map(|clip| clip.looping()))
-        .unwrap_or(false)
-}
-
 fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipGhostDecor) -> Div {
     let ClipGhostGeometry {
         left,
@@ -174,7 +165,6 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     let ClipGhostDecor {
         fill,
         active,
-        looping,
         notched,
         selector,
         grid,
@@ -195,11 +185,6 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         outline,
         hover_outline: outline,
         stroke,
-        bottom_radius: if looping {
-            loop_handles::BOTTOM_RADIUS
-        } else {
-            0.0
-        },
         header_height: super::clip_name::CLIP_NAME_HEIGHT,
         header_gradient: None,
         notch: super::clip_boundary::Notch::new(has_border && notched),
@@ -217,11 +202,11 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children(
             aligned_clip_grid_layer(&lines, start, end, stroke, has_border)
-                .map(|grid| loop_handles::body(grid.opacity(detail_opacity), looping)),
+                .map(|grid| grid.opacity(detail_opacity)),
         );
     }
     if let Some(content) = contents {
-        ghost = ghost.child(loop_handles::body(content, looping));
+        ghost = ghost.child(content);
         if payload.alias_copy() {
             ghost = ghost.children([alias_drag_badge()]);
         }
@@ -233,16 +218,13 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             move || format!("{selector}-trailing"),
         );
     } else if let Some(waveform) = &payload.ghost_waveform {
-        ghost = ghost.children([loop_handles::body(
-            clip_waveform_body(
-                waveform_summary_view_cached(
-                    std::sync::Arc::clone(waveform),
-                    waveform_cache,
-                    theme::waveform_ink_for_fill(fill),
-                )
-                .opacity(detail_opacity),
-            ),
-            looping,
+        ghost = ghost.children([clip_waveform_body(
+            waveform_summary_view_cached(
+                std::sync::Arc::clone(waveform),
+                waveform_cache,
+                theme::waveform_ink_for_fill(fill),
+            )
+            .opacity(detail_opacity),
         )]);
     } else {
         ghost = ghost.child(clip_waveform_body(
@@ -786,15 +768,9 @@ impl EditorView {
                                     1.0 / scale_factor.max(1.0),
                                     hex_widgets::rectangle_border_width(pixel_width) > 0.0,
                                 )
-                                .map(|grid| {
-                                    loop_handles::body(
-                                        grid.opacity(detail_opacity),
-                                        preview.looping(&clip),
-                                    )
-                                }),
+                                .map(|grid| grid.opacity(detail_opacity)),
                             );
                     let looping = preview.looping(&clip);
-                    overlay = loop_handles::surface(overlay, looping);
                     if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                         let shapes = midi_trim_note_shapes(
                             &state.project,
@@ -813,10 +789,7 @@ impl EditorView {
                         let fit = super::midi_loop_notes::sounding_fit(&clip);
                         let (notes, _) =
                             midi_note_canvas(|| "midi-trim-preview-notes".to_owned(), shapes, fit);
-                        overlay = overlay.child(loop_handles::body(
-                            clip_waveform_body(notes.opacity(detail_opacity)),
-                            looping,
-                        ));
+                        overlay = overlay.child(clip_waveform_body(notes.opacity(detail_opacity)));
                     }
                     overlay = overlay.child(self.clip_name_preview_header(
                         track_id,
@@ -850,11 +823,6 @@ impl EditorView {
                                 outline: color,
                                 hover_outline: color,
                                 stroke: 1.0 / scale_factor.max(1.0),
-                                bottom_radius: if looping {
-                                    loop_handles::BOTTOM_RADIUS
-                                } else {
-                                    0.0
-                                },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
                                 header_gradient: super::clip_header_loop::midi(
                                     &clip,
@@ -878,11 +846,7 @@ impl EditorView {
                             color,
                             true,
                             hex_widgets::rectangle_border_width(pixel_width) > 0.0,
-                            if looping {
-                                loop_handles::BOTTOM_RADIUS
-                            } else {
-                                0.0
-                            },
+                            0.0,
                             || "midi-trim-preview-trailing".into(),
                         )
                     };
@@ -949,15 +913,9 @@ impl EditorView {
                                     1.0 / scale_factor.max(1.0),
                                     hex_widgets::rectangle_border_width(pixel_width) > 0.0,
                                 )
-                                .map(|grid| {
-                                    loop_handles::body(
-                                        grid.opacity(detail_opacity),
-                                        loop_handles::audio_repeats(&preview_clip),
-                                    )
-                                }),
+                                .map(|grid| grid.opacity(detail_opacity)),
                             );
                     let looping = loop_handles::audio_repeats(&preview_clip);
-                    preview = loop_handles::surface(preview, looping);
                     if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
                         && let Some(waveform) = super::waveform::preview_waveform_view_cached(
                             super::waveform::WaveformPreview {
@@ -974,8 +932,7 @@ impl EditorView {
                             self.waveform_grid(track_id, viewport, scale_factor),
                         )
                     {
-                        preview = preview
-                            .child(loop_handles::body(clip_waveform_body(waveform), looping));
+                        preview = preview.child(clip_waveform_body(waveform));
                     }
                     preview = preview.child(self.clip_name_preview_header(
                         track_id,
@@ -1008,11 +965,6 @@ impl EditorView {
                                 outline: color,
                                 hover_outline: color,
                                 stroke: 1.0 / scale_factor.max(1.0),
-                                bottom_radius: if looping {
-                                    loop_handles::BOTTOM_RADIUS
-                                } else {
-                                    0.0
-                                },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
                                 header_gradient: super::clip_header_loop::audio(
                                     &preview_clip,
@@ -1035,11 +987,7 @@ impl EditorView {
                             color,
                             true,
                             hex_widgets::rectangle_border_width(pixel_width) > 0.0,
-                            if looping {
-                                loop_handles::BOTTOM_RADIUS
-                            } else {
-                                0.0
-                            },
+                            0.0,
                             || "trim-preview-trailing".into(),
                         )
                     };
@@ -1080,11 +1028,9 @@ impl EditorView {
                     }
                     overlap_events.push((start, 1, 0));
                     overlap_events.push((end, -1, 0));
-                    let (flavor, active, looping) = match &member.content {
-                        ClipGroupContent::Audio(c) => {
-                            (c.flavor(), c.active(), loop_handles::audio_repeats(c))
-                        }
-                        ClipGroupContent::Midi(c) => (c.flavor(), c.active(), c.looping()),
+                    let (flavor, active) = match &member.content {
+                        ClipGroupContent::Audio(c) => (c.flavor(), c.active()),
+                        ClipGroupContent::Midi(c) => (c.flavor(), c.active()),
                     };
                     let id = member.id();
                     let left = (start - viewport.start) as f32 / viewport.length as f32;
@@ -1123,12 +1069,7 @@ impl EditorView {
                                 1.0 / scale_factor.max(1.0),
                                 hex_widgets::rectangle_border_width(pixel_width) > 0.0,
                             )
-                            .map(|grid| {
-                                loop_handles::body(
-                                    grid.opacity(theme::clip_detail_opacity(active)),
-                                    looping,
-                                )
-                            }),
+                            .map(|grid| grid.opacity(theme::clip_detail_opacity(active))),
                         );
                     let source = match &member.content {
                         ClipGroupContent::Audio(_) => group
@@ -1150,7 +1091,7 @@ impl EditorView {
                             has_border,
                         )
                     {
-                        overlay = overlay.child(loop_handles::body(content, looping));
+                        overlay = overlay.child(content);
                     }
                     if drag.alias_copy() {
                         overlay = overlay.children([alias_drag_badge()]);
@@ -1166,11 +1107,6 @@ impl EditorView {
                                 outline: color,
                                 hover_outline: color,
                                 stroke: 1.0 / scale_factor.max(1.0),
-                                bottom_radius: if looping {
-                                    loop_handles::BOTTOM_RADIUS
-                                } else {
-                                    0.0
-                                },
                                 header_height: super::clip_name::CLIP_NAME_HEIGHT,
                                 header_gradient: None,
                                 notch: super::clip_boundary::Notch::new(end == bounds.end_frame),
@@ -1283,22 +1219,6 @@ impl EditorView {
                     false,
                     active,
                 );
-                let looping = self
-                    .displayed_clip_drag()
-                    .filter(|_| clip_preview.is_some())
-                    .and_then(|drag| {
-                        state
-                            .project
-                            .clip(drag.clip)
-                            .map(loop_handles::audio_repeats)
-                            .or_else(|| {
-                                state
-                                    .project
-                                    .midi_clip(drag.clip)
-                                    .map(|clip| clip.looping())
-                            })
-                    })
-                    .unwrap_or(false);
                 let mut drop_preview =
                     hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                         .left_0()
@@ -1328,12 +1248,7 @@ impl EditorView {
                                 1.0 / scale_factor.max(1.0),
                                 hex_widgets::rectangle_border_width(pixel_width) > 0.0,
                             )
-                            .map(|grid| {
-                                loop_handles::body(
-                                    grid.opacity(theme::clip_detail_opacity(active)),
-                                    looping,
-                                )
-                            }),
+                            .map(|grid| grid.opacity(theme::clip_detail_opacity(active))),
                         );
                 if let Some(drag) = self
                     .displayed_clip_drag()
@@ -1368,7 +1283,7 @@ impl EditorView {
                                 <= super::track_layout::HEADER_ONLY_HEIGHT,
                             has_border,
                         ) {
-                            drop_preview = drop_preview.child(loop_handles::body(content, looping));
+                            drop_preview = drop_preview.child(content);
                         }
                     }
                 } else if let Some(waveform) = self
@@ -1413,11 +1328,6 @@ impl EditorView {
                             outline: color,
                             hover_outline: color,
                             stroke: 1.0 / scale_factor.max(1.0),
-                            bottom_radius: if looping {
-                                loop_handles::BOTTOM_RADIUS
-                            } else {
-                                0.0
-                            },
                             header_height: super::clip_name::CLIP_NAME_HEIGHT,
                             header_gradient: None,
                             notch: super::clip_boundary::Notch::new(
@@ -1608,7 +1518,6 @@ impl EditorView {
                     theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active()),
                     clip.id(),
                     clip.name(),
-                    clip.looping(),
                     clip.active(),
                     |start, end, merge| {
                         self.loop_note_shapes(&state.project, clip, start, end, merge)
@@ -2200,11 +2109,7 @@ impl EditorView {
                         .debug_selector(move || format!("clip-selected-trailing-{}", id.value()))
                         .absolute()
                         .top_0()
-                        .bottom(px(if loop_handles::audio_repeats(clip) {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        }))
+                        .bottom_0()
                         .left(relative(
                             (end - viewport.start) as f32 / viewport.length as f32,
                         ))
@@ -2256,7 +2161,6 @@ impl EditorView {
                         theme::clip_activity_fill(track.color(), clip.flavor(), false, active),
                         clip.id(),
                         clip.name(),
-                        clip.looping(),
                         active,
                         |start, end, merge| {
                             self.loop_note_shapes(&state.project, clip, start, end, merge)
@@ -2361,7 +2265,6 @@ impl EditorView {
                     .bg(gpui::transparent_black())
                     .border_color(gpui::transparent_black());
             }
-            midi = loop_handles::surface(midi, clip.looping());
             if !narrow && self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT
             {
                 midi = midi.children(
@@ -2372,7 +2275,7 @@ impl EditorView {
                         1.0 / scale_factor.max(1.0),
                         hex_widgets::rectangle_border_width(pixel_width) > 0.0,
                     )
-                    .map(|grid| loop_handles::body(grid.opacity(detail_opacity), clip.looping())),
+                    .map(|grid| grid.opacity(detail_opacity)),
                 );
                 // Every visible repeat's notes come from the playback plan,
                 // unsampled; same-pitch notes within one device pixel merge.
@@ -2448,10 +2351,7 @@ impl EditorView {
                             ),
                     );
                 }
-                midi = midi.child(loop_handles::body(
-                    clip_waveform_body(notes.opacity(detail_opacity)),
-                    clip.looping(),
-                ));
+                midi = midi.child(clip_waveform_body(notes.opacity(detail_opacity)));
             }
             let header = if narrow {
                 self.narrow_clip_header(track_id, midi_clip_id, cx)
@@ -2511,11 +2411,6 @@ impl EditorView {
                     }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
-            let bottom_radius = if clip.looping() {
-                loop_handles::BOTTOM_RADIUS
-            } else {
-                0.0
-            };
             let framed_clip = if narrow {
                 midi.left(relative(left as f32))
                     .w(relative(width as f32))
@@ -2531,7 +2426,6 @@ impl EditorView {
                         outline: color,
                         hover_outline: color,
                         stroke,
-                        bottom_radius,
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
                         header_gradient: if trim_preview.is_some() {
                             None
@@ -2570,7 +2464,7 @@ impl EditorView {
                     color,
                     trim_preview.is_none(),
                     false,
-                    bottom_radius,
+                    0.0,
                     move || format!("midi-clip-trailing-{}", midi_clip_id.value()),
                 )
                 .into_any_element()
@@ -2585,11 +2479,7 @@ impl EditorView {
                         })
                         .absolute()
                         .top_0()
-                        .bottom(px(if clip.looping() {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        }))
+                        .bottom_0()
                         .left(relative(
                             (visible_end - viewport.start) as f32 / viewport.length as f32,
                         ))
@@ -3021,26 +2911,22 @@ impl EditorView {
                 .border_color(gpui::transparent_black());
         }
         let looping = loop_handles::audio_repeats(clip);
-        content = loop_handles::surface(content, looping);
         if !narrow
             && !active_trim_preview
             && self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
         {
             content = content.children(
                 aligned_clip_grid_layer(grid, visible_start, visible_end, stroke, border)
-                    .map(|grid| loop_handles::body(grid.opacity(detail_opacity), looping)),
+                    .map(|grid| grid.opacity(detail_opacity)),
             );
-            content = content.child(loop_handles::body(
-                clip_waveform_body(self.audio_clip_body(
-                    state,
-                    clip,
-                    visible_start,
-                    visible_end,
-                    self.waveform_grid(track, viewport, scale_factor),
-                    waveform_ink,
-                )),
-                looping,
-            ));
+            content = content.child(clip_waveform_body(self.audio_clip_body(
+                state,
+                clip,
+                visible_start,
+                visible_end,
+                self.waveform_grid(track, viewport, scale_factor),
+                waveform_ink,
+            )));
         }
         // Held/acknowledged fade editing paints after every clip body. Keep the
         // overlay in this lane so automation opacity and clipping still apply.
@@ -3069,15 +2955,12 @@ impl EditorView {
                 fade_envelope_samples(fade, clip.start(), visible_start, visible_end)
             };
             if samples.len() >= 2 {
-                let layer = loop_handles::body(
-                    div().absolute().inset_0().child(clip_fade_layer(
-                        clip.id(),
-                        samples,
-                        self.fade_key_held || self.fade_curve_active(clip_id),
-                        active,
-                    )),
-                    looping,
-                );
+                let layer = div().absolute().inset_0().child(clip_fade_layer(
+                    clip.id(),
+                    samples,
+                    self.fade_key_held || self.fade_curve_active(clip_id),
+                    active,
+                ));
                 if raise_fade {
                     foreground = foreground.children([layer]);
                 } else {
@@ -3245,11 +3128,6 @@ impl EditorView {
                         outline: color,
                         hover_outline: hover,
                         stroke,
-                        bottom_radius: if looping {
-                            loop_handles::BOTTOM_RADIUS
-                        } else {
-                            0.0
-                        },
                         header_height: super::clip_name::CLIP_NAME_HEIGHT,
                         header_gradient: if !active_trim_preview {
                             super::clip_header_loop::audio(
@@ -3277,11 +3155,7 @@ impl EditorView {
                     hover,
                     !active_trim_preview,
                     false,
-                    if looping {
-                        loop_handles::BOTTOM_RADIUS
-                    } else {
-                        0.0
-                    },
+                    0.0,
                     move || format!("clip-trailing-{}", clip_id.value()),
                 )
                 .into_any_element()
@@ -3358,7 +3232,6 @@ impl EditorView {
                 ClipGhostDecor {
                     active,
                     waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
-                    looping: clip_repeats(&state.project, payload.clip),
                     notched: visible_end == preview.end_frame,
                     fill: theme::clip_activity_fill(
                         hex_project::ElementColor::default(),
@@ -3434,10 +3307,6 @@ impl EditorView {
             ClipGhostDecor {
                 active,
                 waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
-                looping: self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| clip_repeats(&state.project, payload.clip)),
                 notched: true,
                 fill: theme::clip_activity_fill(
                     self.state

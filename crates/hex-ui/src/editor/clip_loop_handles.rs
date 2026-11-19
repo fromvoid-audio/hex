@@ -11,7 +11,6 @@ use super::*;
 use crate::theme;
 use gpui::{CursorStyle, relative, rgb};
 
-pub(in crate::editor) const BOTTOM_RADIUS: f32 = 8.0;
 /// Width of the first-boundary hit box.
 const WIDTH: f32 = 8.0;
 
@@ -256,18 +255,6 @@ pub(super) fn decorate(
     })
 }
 
-/// Round the fill and selection stroke together. Body layers stop above the
-/// corner radius because GPUI's descendant content mask is rectangular.
-pub(in crate::editor) fn surface<T: Styled + FluentBuilder>(surface: T, looping: bool) -> T {
-    surface.when(looping, |s| {
-        s.rounded_bl(px(BOTTOM_RADIUS))
-            .rounded_br(px(BOTTOM_RADIUS))
-    })
-}
-pub(in crate::editor) fn body(body: Div, looping: bool) -> Div {
-    body.when(looping, |s| s.bottom(px(BOTTOM_RADIUS)))
-}
-
 // Bound display work independently of a potentially enormous repeat count.
 // A lower-bound search jumps directly to the visible repetitions. A marker is
 // decoration, not a second hit surface or a source of playback geometry.
@@ -325,7 +312,7 @@ fn markers(
                     (value.saturating_sub(start) as f64 / (end - start) as f64) as f32,
                 ))
                 .top(px(super::super::clip_name::CLIP_NAME_HEIGHT + 1.0))
-                .bottom(px(BOTTOM_RADIUS))
+                .bottom_0()
                 .w(px(if primary { 1.0 } else { 0.5 }))
                 .bg(rgb(theme::color(theme::PaletteRole::Text)))
                 .opacity(if primary { 0.85 } else { 0.3 }),
@@ -394,30 +381,4 @@ pub(in crate::editor) fn midi_markers(
         frame(0),
         frame,
     )
-}
-
-#[cfg(all(test, not(feature = "ui-test-support")))]
-mod tests {
-    use super::*;
-    #[test]
-    fn loop_fill_and_border_keep_square_headers_and_only_round_lower_corners() {
-        let mut ordinary = surface(div(), false);
-        let mut looping = surface(div(), true);
-        let plain = ordinary.style();
-        assert!(
-            plain.corner_radii.bottom_left.is_none() && plain.corner_radii.bottom_right.is_none()
-        );
-        let rounded = looping.style();
-        assert!(
-            rounded.corner_radii.top_left.is_none() && rounded.corner_radii.top_right.is_none()
-        );
-        assert_eq!(
-            rounded.corner_radii.bottom_left,
-            Some(px(BOTTOM_RADIUS).into())
-        );
-        assert_eq!(
-            rounded.corner_radii.bottom_right,
-            rounded.corner_radii.bottom_left
-        );
-    }
 }
