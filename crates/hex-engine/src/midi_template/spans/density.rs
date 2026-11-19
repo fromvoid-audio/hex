@@ -426,6 +426,7 @@ mod tests {
         _voice: PreparedAnalyticNote,
     ) -> VoiceSpan {
         VoiceSpan {
+            starts_inside_gate: false,
             start,
             gate_end,
             raw_end: u128::from(gate_end + release),
