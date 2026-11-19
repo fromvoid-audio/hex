@@ -14,10 +14,10 @@ pub const MAX_RESERVED_BYPASS_FRAMES: u32 = 4096;
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
-    /// Opt into warm, latency-aligned host bypass with an independently reserved
+    /// Opt into latency-aligned host bypass with an independently reserved
     /// dry history pair. The exact configured delay must equal algorithmic
     /// latency and lie in 1..=MAX_RESERVED_BYPASS_FRAMES. Processing/automation,
-    /// detector and finite-tail semantics must remain valid while bypassed.
+    /// detector and finite-tail semantics must remain valid while processing.
     /// No source/resource custody transfers; all default providers refuse.
     fn reserved_bypass_latency_frames(&self) -> Option<u32> {
         None
@@ -27,9 +27,12 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn supports_smoothed_bypass(&self) -> bool {
         false
     }
-    /// Opt into authored power-off for a zero-latency, smoothed effect. Once
-    /// the off ramp commits, the host resets the runtime and skips its block
-    /// transactions until it turns on. Reset must be bounded and allocation-free.
+    /// Opt into authored power-off for a smoothed zero-latency effect or an
+    /// effect with reserved aligned bypass. Once the off ramp commits, the
+    /// host resets the runtime and skips its transactions. Reserved dry
+    /// history continues through Off and supplies output until fresh wet
+    /// samples reach the same output clock. Reset must be bounded,
+    /// allocation-free and preserve parameter admissions.
     fn supports_power_off(&self) -> bool {
         false
     }
