@@ -24,6 +24,7 @@ mod vst3_state_approval;
 pub use foreign_binding::ForeignProcessorBinding;
 pub use foreign_parameter::{
     ForeignParameterPoint, MAX_FOREIGN_AUTOMATION_TARGETS, MAX_FOREIGN_PARAMETER_POINTS,
+    MAX_FOREIGN_TIMING_CHANGES,
 };
 pub use vst3_state_approval::{Vst3StateAuthority, Vst3StateVerifier};
 #[cfg(test)]

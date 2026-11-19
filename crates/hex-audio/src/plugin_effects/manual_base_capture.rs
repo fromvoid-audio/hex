@@ -142,6 +142,7 @@ impl Hosting {
             rate,
             original.profile,
             Some(canonical.clone()),
+            None,
         )?;
         Ok(ManualBaseCapture {
             binding: scratch,
@@ -238,6 +239,7 @@ impl Hosting {
             rate,
             original.profile,
             Some(captured.clone()),
+            None,
         )?;
         Ok(ManualBaseCapture {
             binding: scratch,

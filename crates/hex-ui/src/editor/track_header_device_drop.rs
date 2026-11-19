@@ -99,6 +99,7 @@ impl EditorView {
                     track,
                     before: None,
                     replace: target.instrument().map(hex_project::Device::id),
+                    control: None,
                 }))
             }
             NativeDeviceDragSource::Browser { class, type_id } => self
@@ -164,6 +165,7 @@ impl EditorView {
             track,
             before: None,
             replace: None,
+            control: None,
         })
     }
 
@@ -229,7 +231,7 @@ impl EditorView {
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                     match request {
                         Ok(Some(request)) => {
-                            if view.enqueue_device_barrier(request) {
+                            if view.enqueue_catalog_device(request) {
                                 view.error = None;
                                 view.status = match drag.source {
                                     NativeDeviceDragSource::Existing { .. } if copy => {

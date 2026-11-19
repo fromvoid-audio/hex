@@ -658,6 +658,107 @@ fn prewarm_includes_the_outgoing_session_audio_release() {
 }
 
 #[test]
+fn outgoing_span_projection_covers_rendered_pages_across_release_and_tiny_loops() {
+    use std::collections::BTreeSet;
+    struct CheckedPages {
+        samples: Vec<Frame>,
+        predicted: BTreeSet<(StreamSourceKey, u64)>,
+        observed: BTreeSet<(StreamSourceKey, u64)>,
+    }
+    impl MediaPages for CheckedPages {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            assert!(self.predicted.contains(&(key, index)), "unprojected page");
+            self.observed.insert((key, index));
+            (index < 2).then_some(BorrowedMediaPage {
+                page_index: index,
+                frames: &self.samples,
+            })
+        }
+        fn request_page(&mut self, _: StreamSourceKey, _: u64) {
+            panic!("all projected pages are resident");
+        }
+    }
+    for partition in [1, 257] {
+        let mut actual = Playback::from_prepared(action_revision(true));
+        actual
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(95_992)))
+            .unwrap();
+        let clip = actual.prepared_revision().unwrap().session().audio_clips()[0].id;
+        actual
+            .try_apply_action(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        actual
+            .render_with_pages(&mut [[0.0; 2]; 1], &mut pages())
+            .unwrap();
+        let prepared = actual
+            .prepare_stream_action(PlaybackAction::Session(
+                SessionPlaybackCommand::BackToArrangement {
+                    quantization: LaunchQuantization::FourQuarter,
+                },
+            ))
+            .unwrap();
+        let due = prepared.scheduled_due_frame().unwrap();
+        actual.commit_stream_action(prepared).unwrap();
+        let before = (
+            actual.position(),
+            actual.performance_frame(),
+            actual.session_route_status(0),
+        );
+        assert!(due > before.1 && due - before.1 < 256);
+        let mut predicted = BTreeSet::new();
+        let mut offset = 0;
+        while offset < 768 {
+            let covered = actual
+                .visit_current_stream_quantum_at(
+                    offset as u64,
+                    768 - offset,
+                    None,
+                    false,
+                    &mut |row| {
+                        let crate::StreamResourceKey::Audio(key) = row.source else {
+                            panic!("raw fixture")
+                        };
+                        predicted.insert((key, row.page_index));
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(covered, (768 - offset).min(256));
+            offset += covered;
+        }
+        assert_eq!(
+            (
+                actual.position(),
+                actual.performance_frame(),
+                actual.session_route_status(0)
+            ),
+            before
+        );
+        assert!(
+            predicted.iter().any(|(_, page)| *page == 1),
+            "outgoing release page"
+        );
+        let mut checked = CheckedPages {
+            samples: vec![[0.25; 2]; 4096],
+            predicted,
+            observed: BTreeSet::new(),
+        };
+        let mut output = [[0.0; 2]; 768];
+        for block in output.chunks_mut(partition) {
+            actual.render_with_pages(block, &mut checked).unwrap();
+        }
+        assert_eq!(checked.observed, checked.predicted);
+        assert_eq!(actual.performance_frame(), before.1 + 768);
+        assert!(actual.session_route_status(0).unwrap().pending.is_none());
+    }
+}
+
+#[test]
 fn prepared_action_cannot_follow_a_new_runtime_reusing_the_same_box_and_revision() {
     let revision = action_revision(false);
     let mut runtime = Box::new(SessionPlayback::new(Arc::clone(&revision)).unwrap());

@@ -790,6 +790,77 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
     }
 }
 
+/// Borrowed exact old/new state identities for a possible foreign effect continuation.
+/// The comparison allows only the same unautomated, unmodulated effect with
+/// unchanged host gains, bypass and prepared endpoint. This matcher owns no
+/// source, endpoint, graph, or publication authority. The
+/// host must independently authenticate and fence its particular candidate and
+/// predecessor before passing it to a handoff; it must retain both states and
+/// all associated resources until the callback returns the graph on control.
+pub struct ForeignConfigurationContinuation<'a> {
+    identity: ProcessorInstanceIdentity,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    previous: &'a NativeDeviceState,
+    candidate: &'a NativeDeviceState,
+}
+
+impl<'a> ForeignConfigurationContinuation<'a> {
+    pub fn new(
+        identity: ProcessorInstanceIdentity,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        previous: &'a NativeDeviceState,
+        candidate: &'a NativeDeviceState,
+    ) -> Result<Self, DeviceContractError> {
+        if !binding.is_valid() || binding.instance != identity.device_id() {
+            return Err(DeviceContractError::InvalidId);
+        }
+        previous.require_asset_free_processing()?;
+        candidate.require_asset_free_processing()?;
+        if previous.type_id() != candidate.type_id()
+            || previous.state_version() != candidate.state_version()
+            || previous.input_gain_millidb() != candidate.input_gain_millidb()
+            || previous.output_gain_millidb() != candidate.output_gain_millidb()
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        Ok(Self {
+            identity,
+            binding,
+            previous,
+            candidate,
+        })
+    }
+
+    fn matches(
+        &self,
+        previous: &RuntimeEntry,
+        candidate: &RuntimeEntry,
+        previous_state: &NativeDeviceState,
+        candidate_state: &NativeDeviceState,
+    ) -> bool {
+        previous.owner == self.identity.owner()
+            && previous.device_id == self.identity.device_id()
+            && previous.bypassed == candidate.bypassed
+            && previous.input_gain == candidate.input_gain
+            && previous.output_gain == candidate.output_gain
+            && previous.automation.is_empty()
+            && candidate.automation.is_empty()
+            && previous.modulation.is_none()
+            && candidate.modulation.is_none()
+            && previous.runtime.foreign_modulation().is_none()
+            && candidate.runtime.foreign_modulation().is_none()
+            && matches!((&previous.runtime, &candidate.runtime),
+                (RuntimeOwnership::Foreign(old), RuntimeOwnership::Foreign(new))
+                    if old.prepared == new.prepared
+                        && !old.prepared.is_instrument_profile()
+                        && old.prepared.binding() == Some(self.binding))
+            && previous_state.shares_payload_storage_with(self.previous)
+            && candidate_state.shares_payload_storage_with(self.candidate)
+            && previous_state == self.previous
+            && candidate_state == self.candidate
+    }
+}
+
 struct RuntimeEntry {
     modulation: Option<ModulationRuntime>,
     automation: PreparedParameterAutomation,
@@ -943,6 +1014,11 @@ impl NativeInstrumentClock for OffsetClock<'_> {
     fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock
             .arrangement_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn authored_clock_epoch_at_offset(&self, offset: usize) -> Option<std::num::NonZeroU64> {
+        self.clock
+            .authored_clock_epoch_at_offset(self.offset.checked_add(offset)?)
     }
 
     fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
@@ -1156,6 +1232,26 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
                 (None, None) => true,
                 _ => false,
             }
+    }
+}
+
+/// One staged native insertion at a proved position in a pair of chains.
+/// Constructed by `NativeRuntimeChain::native_insert_transition_from`.
+#[derive(Clone, Copy)]
+pub struct NativeInsertTransition {
+    position: usize,
+}
+
+/// The exact stage on a retiring predecessor that may ramp from wet to dry.
+#[derive(Clone, Copy)]
+pub struct NativeRemovalTransition {
+    position: usize,
+    identity: ProcessorInstanceIdentity,
+}
+
+impl NativeRemovalTransition {
+    pub fn identity(self) -> ProcessorInstanceIdentity {
+        self.identity
     }
 }
 
@@ -1834,6 +1930,27 @@ impl NativeRuntimeChain {
     /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
     /// worst case. Larger VST3 state must share its immutable payload allocation.
     pub fn configuration_matches_range(&self, other: &Self, range: std::ops::Range<usize>) -> bool {
+        self.configuration_matches_range_inner(other, range, None)
+    }
+
+    /// Compare a single host-authenticated foreign continuation alongside the
+    /// ordinary immutable graph rules. This is comparison only: it neither
+    /// validates the host's witness nor transfers source or tail custody.
+    pub fn configuration_matches_range_with_foreign_continuation(
+        &self,
+        other: &Self,
+        range: std::ops::Range<usize>,
+        continuation: &ForeignConfigurationContinuation<'_>,
+    ) -> bool {
+        self.configuration_matches_range_inner(other, range, Some(continuation))
+    }
+
+    fn configuration_matches_range_inner(
+        &self,
+        other: &Self,
+        range: std::ops::Range<usize>,
+        continuation: Option<&ForeignConfigurationContinuation<'_>>,
+    ) -> bool {
         if range.start > range.end
             || range.end > self.entries.len()
             || range.end > other.entries.len()
@@ -1843,41 +1960,51 @@ impl NativeRuntimeChain {
         self.entries[range.clone()]
             .iter()
             .zip(&other.entries[range])
-            .all(|(left, right)| {
-                left.owner == right.owner
-                    && left.device_id == right.device_id
-                    && left.device_type == right.device_type
-                    && left.runtime_version == right.runtime_version
-                    && left.sample_rate == right.sample_rate
-                    && left.runtime.foreign_configuration_matches(&right.runtime)
-                    // Foreign bypass is the host's aligned wet/dry selection:
-                    // the same source still processes, at the same latency.
-                    // This compares graph views only. The host must separately
-                    // retain/admit the actual endpoint and its dry history.
-                    && (left.bypassed == right.bypassed
-                        || (left.can_smooth_bypass_from(right)
-                            && left.input_gain == right.input_gain
-                            && left.output_gain == right.output_gain
-                            && !matches!(left.runtime, RuntimeOwnership::Foreign(_))
-                            && !matches!(right.runtime, RuntimeOwnership::Foreign(_)))
-                        || matches!((&left.runtime, &right.runtime),
-                            (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
-                                if left.prepared == right.prepared))
-                    && (left.automation == right.automation
-                        || match (&left.runtime, &right.runtime) {
-                            (RuntimeOwnership::Foreign(a), RuntimeOwnership::Foreign(b))
-                                if a.prepared == b.prepared => a.prepared.binding().is_some_and(|binding|
-                                    left.automation.shares_foreign_program_history_with(&right.automation, binding)),
-                            _ => false,
-                        })
-                    && left.matrix == right.matrix
-                    && match (&left.configuration, &right.configuration) {
-                        (Some(left), Some(right)) => {
-                            std::sync::Arc::ptr_eq(left, right) || left.processing_eq_on_callback(right)
-                        }
-                        _ => false,
-                    }
+            .all(|(left, right)| Self::entry_configuration_matches(left, right, continuation))
+    }
+
+    fn entry_configuration_matches(
+        left: &RuntimeEntry,
+        right: &RuntimeEntry,
+        continuation: Option<&ForeignConfigurationContinuation<'_>>,
+    ) -> bool {
+        left.owner == right.owner
+        && left.device_id == right.device_id
+        && left.device_type == right.device_type
+        && left.runtime_version == right.runtime_version
+        && left.sample_rate == right.sample_rate
+        && left.runtime.foreign_configuration_matches(&right.runtime)
+        // Foreign bypass is the host's aligned wet/dry selection:
+        // the same source still processes, at the same latency.
+        // This compares graph views only. The host must separately
+        // retain/admit the actual endpoint and its dry history.
+        && (left.bypassed == right.bypassed
+            || (left.can_smooth_bypass_from(right)
+                && left.input_gain == right.input_gain
+                && left.output_gain == right.output_gain
+                && !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                && !matches!(right.runtime, RuntimeOwnership::Foreign(_)))
+            || matches!((&left.runtime, &right.runtime),
+                (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
+                    if left.prepared == right.prepared))
+        && (left.automation == right.automation
+            || match (&left.runtime, &right.runtime) {
+                (RuntimeOwnership::Foreign(a), RuntimeOwnership::Foreign(b))
+                    if a.prepared == b.prepared => a.prepared.binding().is_some_and(|binding|
+                        left.automation.shares_foreign_program_history_with(&right.automation, binding)),
+                _ => false,
             })
+        && left.matrix == right.matrix
+        && match (&left.configuration, &right.configuration) {
+            (Some(previous_state), Some(candidate_state)) => {
+                std::sync::Arc::ptr_eq(previous_state, candidate_state)
+                    || previous_state.processing_eq_on_callback(candidate_state)
+                    || continuation.is_some_and(|proof| {
+                        proof.matches(left, right, previous_state, candidate_state)
+                    })
+            }
+            _ => false,
+        }
     }
 
     /// Preflight a retiring-donor transfer for a source effect recipe. The
@@ -2424,6 +2551,139 @@ impl NativeRuntimeChain {
     /// chain nor any resource is destroyed; the host still retires the donor.
     pub fn transfer_history_from(&mut self, previous: &mut Self) {
         self.transfer_history_excluding_unchecked(previous, 0..0);
+    }
+
+    /// Find a single new native stage that can ramp in at the same sample
+    /// origin. Every other stage must retain identity, order and compatible
+    /// configuration and history. The host separately proves routing and timing.
+    pub fn native_insert_transition_from(
+        &self,
+        previous: &Self,
+        continuation: Option<&ForeignConfigurationContinuation<'_>>,
+    ) -> Option<NativeInsertTransition> {
+        let position = self.extra_native_stage_from(previous, |old, current| {
+            Self::entry_configuration_matches(old, current, continuation)
+        })?;
+        self.can_inherit_from(previous)
+            .then_some(NativeInsertTransition { position })
+    }
+
+    /// Prove one native removal with all surviving stages in their original
+    /// order and history-compatible. This does not change either runtime.
+    pub fn native_removal_transition_from(
+        &self,
+        previous: &Self,
+    ) -> Option<NativeRemovalTransition> {
+        let position = previous.extra_native_stage_from(self, |current, old| {
+            Self::entry_configuration_matches(old, current, None)
+        })?;
+        let removed = previous.entries.get(position)?;
+        let identity = ProcessorInstanceIdentity::new(removed.owner, removed.device_id).ok()?;
+        self.can_inherit_from(previous)
+            .then_some(NativeRemovalTransition { position, identity })
+    }
+
+    fn extra_native_stage_from(
+        &self,
+        shorter: &Self,
+        compatible: impl Fn(&RuntimeEntry, &RuntimeEntry) -> bool,
+    ) -> Option<usize> {
+        if shorter.len().checked_add(1) != Some(self.len()) {
+            return None;
+        }
+        let position = shorter
+            .entries
+            .iter()
+            .zip(&self.entries)
+            .position(|(short, long)| !Self::same_runtime_identity(short, long))
+            .unwrap_or(shorter.len());
+        let extra = self.entries.get(position)?;
+        let retained = self
+            .entries
+            .iter()
+            .take(position)
+            .chain(self.entries.iter().skip(position + 1));
+        (!extra.bypassed
+            && extra.algorithmic_latency_frames == Some(0)
+            && extra.supports_smoothed_bypass
+            && matches!(
+                extra.runtime,
+                RuntimeOwnership::Legacy { .. } | RuntimeOwnership::Owned(_)
+            )
+            && shorter.entries.iter().zip(retained).all(|(short, long)| {
+                short.device_id != extra.device_id
+                    && short.algorithmic_latency_frames == long.algorithmic_latency_frames
+                    && compatible(short, long)
+            }))
+        .then_some(position)
+    }
+
+    /// Start a proved removal on its predecessor. Only the affected stage's
+    /// wet/dry mix changes. Its DSP stays owned by the predecessor.
+    pub fn begin_native_removal(&mut self, transition: NativeRemovalTransition) -> bool {
+        self.set_native_removal_bypass(transition, true)
+    }
+
+    /// Restore the same stage if the pending edit is cancelled or refused.
+    pub fn cancel_native_removal(&mut self, transition: NativeRemovalTransition) {
+        self.set_native_removal_bypass(transition, false);
+    }
+
+    /// Commit of the rendered bypass ramp is the terminal, independent of the
+    /// number or size of callback blocks used to render it.
+    pub fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
+        self.entries.get(transition.position).is_some_and(|entry| {
+            entry.owner == transition.identity.owner()
+                && entry.device_id == transition.identity.device_id()
+                && entry.bypassed
+                && !entry.committed_bypass_ramp.is_active()
+        })
+    }
+
+    fn set_native_removal_bypass(
+        &mut self,
+        transition: NativeRemovalTransition,
+        bypassed: bool,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(transition.position) else {
+            return false;
+        };
+        if entry.owner != transition.identity.owner()
+            || entry.device_id != transition.identity.device_id()
+            || entry.bypassed == bypassed
+        {
+            return false;
+        }
+        let ramp = bypass_ramp::BypassRamp::inherited(
+            entry.committed_bypass_ramp,
+            entry.bypassed,
+            bypassed,
+            entry.sample_rate,
+        );
+        entry.bypassed = bypassed;
+        entry.committed_bypass_ramp = ramp;
+        entry.scratch_bypass_ramp = ramp;
+        true
+    }
+
+    /// Commit the preflighted transition against the same two chains. The new
+    /// stage ramps from dry to wet on the same signal. Only the new graph runs.
+    pub fn transfer_history_with_native_insert_from(
+        &mut self,
+        previous: &mut Self,
+        transition: NativeInsertTransition,
+    ) {
+        self.transfer_history_from(previous);
+        if let Some(entry) = self.entries.get_mut(transition.position) {
+            let ramp = bypass_ramp::BypassRamp::inherited(
+                bypass_ramp::BypassRamp::INACTIVE,
+                true,
+                false,
+                entry.sample_rate,
+            );
+            entry.committed_bypass_ramp = ramp;
+            entry.scratch_bypass_ramp = ramp;
+        }
     }
 
     /// Transfer only histories not retained by the donor's old output suffix.
@@ -3529,7 +3789,14 @@ impl NativeRuntimeChain {
                 automation: entry
                     .automation
                     .foreign()
-                    .map(PreparedForeignAutomation::borrow),
+                    .map(|program| {
+                        program.borrow_for_effect_clock(if entry.automation_frozen {
+                            None
+                        } else {
+                            clock.and_then(|clock| clock.authored_clock_epoch_at_offset(0))
+                        })
+                    })
+                    .transpose()?,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
                 output_gain: if entry.automation_frozen {
@@ -5115,6 +5382,55 @@ mod tests {
         fn algorithmic_latency_frames(&self) -> Option<u32> {
             Some(self.latency)
         }
+    }
+
+    #[test]
+    fn native_insert_refuses_a_changed_retained_order_or_configuration() {
+        let kind = DeviceTypeId::from_static("test.native-insert");
+        let chain = |entries: &[(u64, u8)]| {
+            NativeRuntimeChain::new(
+                entries
+                    .iter()
+                    .map(|&(device_id, payload)| {
+                        let configuration = std::sync::Arc::new(
+                            NativeDeviceState::new(kind, 1, vec![payload]).unwrap(),
+                        );
+                        PreparedProcessorInstance {
+                            meter: Default::default(),
+                            owner: ProcessorChainOwner::Track(1),
+                            device_id,
+                            device_type: kind,
+                            matrix: StereoMatrix::identity(),
+                            bypassed: false,
+                            sample_rate: 48_000,
+                            configuration: Some(configuration),
+                            definition: Some(std::sync::Arc::new(BypassRetargetPrepared {
+                                smooth: true,
+                                retarget: true,
+                                latency: 0,
+                            })),
+                        }
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let old = chain(&[(1, 1), (2, 2)]);
+        assert!(
+            chain(&[(1, 1), (3, 3), (2, 2)])
+                .native_insert_transition_from(&old, None)
+                .is_some()
+        );
+        assert!(
+            chain(&[(2, 2), (3, 3), (1, 1)])
+                .native_insert_transition_from(&old, None)
+                .is_none()
+        );
+        assert!(
+            chain(&[(1, 1), (3, 3), (2, 4)])
+                .native_insert_transition_from(&old, None)
+                .is_none()
+        );
     }
 
     #[test]

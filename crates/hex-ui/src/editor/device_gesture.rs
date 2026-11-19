@@ -1,6 +1,6 @@
-mod effect_bus_barrier;
+mod catalog_barrier;
 use super::EditorView;
-pub(super) use effect_bus_barrier::EffectBusBarrierState;
+pub(super) use catalog_barrier::CatalogBarrierState;
 use hex_session::device_gesture::{
     GesturePhase, GestureTarget, ParameterPairValue, ParameterValue,
 };
@@ -114,6 +114,9 @@ impl EditorView {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · device gestures are unavailable");
         }
@@ -132,6 +135,9 @@ impl EditorView {
         second: hex_lattice_contract::ParameterId,
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before changing a device");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · device gestures are unavailable");
         }
@@ -175,6 +181,18 @@ impl EditorView {
         self.device_gesture.snapshot().is_some() || !self.device_gesture_barriers.is_empty()
     }
 
+    fn refuse_device_gesture_barriers(&mut self, reason: &'static str) {
+        let insertion = self
+            .device_gesture_barriers
+            .iter()
+            .find_map(|request| request.builtin_device_insert_control().cloned());
+        self.device_gesture_barriers.clear();
+        self.catalog_barrier.custody = None;
+        if let Some(control) = insertion {
+            self.retire_plugin_effect(&control, false, Some(reason));
+        }
+    }
+
     pub(super) fn pump_device_gesture(&mut self) -> bool {
         let Some(gesture) = self.device_gesture.next_request() else {
             return false;
@@ -188,8 +206,7 @@ impl EditorView {
             Err(SubmitError::Full(_)) => false,
             Err(SubmitError::Busy(_, reason)) => {
                 self.device_gesture.reset();
-                self.device_gesture_barriers.clear();
-                self.effect_bus_barrier.custody = None;
+                self.refuse_device_gesture_barriers(super::user_errors::busy(reason));
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
                 self.error = Some(super::user_errors::busy(reason).into());
@@ -197,8 +214,7 @@ impl EditorView {
             }
             Err(SubmitError::Closed(_)) => {
                 self.device_gesture.reset();
-                self.device_gesture_barriers.clear();
-                self.effect_bus_barrier.custody = None;
+                self.refuse_device_gesture_barriers("project worker stopped");
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
                 self.error = Some("project worker stopped".into());
@@ -220,20 +236,20 @@ impl EditorView {
         ack: &hex_session::device_gesture::GestureAck,
         snapshot: Option<hex_session::device_gesture::GestureSnapshot>,
     ) -> bool {
-        let committed_plugin = (ack.phase == GesturePhase::Commit
+        let committed_display = (ack.phase == GesturePhase::Commit
             && ack.accepted
             && !ack.preview_retained
-            && !ack.source_lost
-            && !self.owns_vst3_recording(ack.key))
-        .then(|| {
-            let active = self.device_gesture.snapshot()?;
-            (active.key == ack.key
-                && active.sequence == ack.sequence
-                && active.plugin_value.is_some()
-                && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
-            .then_some(active)
-        })
-        .flatten();
+            && !ack.source_lost)
+            .then(|| {
+                let active = self.device_gesture.snapshot()?;
+                (active.key == ack.key
+                    && active.sequence == ack.sequence
+                    && active.plugin_value.is_some()
+                    && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
+                .then_some(active)
+            })
+            .flatten();
+        let committed_plugin = committed_display.filter(|_| !self.owns_vst3_recording(ack.key));
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
         let plugin = self.device_gesture.snapshot().is_some_and(|active| {
@@ -241,8 +257,8 @@ impl EditorView {
         });
         let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
         if !matched {
-            self.refuse_effect_bus_barriers(
-                "effect insertion canceled · device acknowledgment did not match",
+            self.refuse_catalog_barriers(
+                "device load canceled · device acknowledgment did not match",
             );
             return false;
         }
@@ -253,10 +269,10 @@ impl EditorView {
             && !ack.preview_retained
             && (terminal || ack.phase == GesturePhase::Begin && !ack.accepted)
         {
-            super::device_panel::vst3_parameters::refresh(self);
+            super::device_panel::vst3_parameters::refresh_after_gesture(self, committed_display);
         }
         if terminal {
-            self.settle_effect_bus_barriers(ack);
+            self.settle_catalog_barriers(ack);
             self.bind_tuning_library_device_terminal(ack.key, ack.accepted);
             if !ack.accepted {
                 self.refuse_deferred_tuning_writes();
@@ -293,7 +309,7 @@ impl EditorView {
                 );
             }
         } else if ack.phase == GesturePhase::Begin && !ack.accepted {
-            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was refused");
+            self.refuse_catalog_barriers("device load canceled · device edit was refused");
             // The worker refused to admit the draft, so release dependent
             // barriers in their accepted order without an edit to finalize.
             release_deferred(
@@ -326,7 +342,7 @@ impl EditorView {
             self.error = Some("device edit queue full · request was not applied".into());
             return false;
         }
-        let custody = match self.effect_bus_custody(&request) {
+        let custody = match self.catalog_custody(&request) {
             Ok(proof) => proof,
             Err(reason) => {
                 self.error = Some(reason.into());
@@ -355,7 +371,7 @@ impl EditorView {
             request,
         ) {
             if let Some(proof) = custody {
-                self.effect_bus_barrier.custody = Some(proof);
+                self.catalog_barrier.custody = Some(proof);
             }
             true
         } else {
@@ -374,7 +390,7 @@ impl EditorView {
         let Some(request) = request.take() else {
             return Some(false);
         };
-        let custody = match self.effect_bus_custody(&request) {
+        let custody = match self.catalog_custody(&request) {
             Ok(proof) => proof,
             Err(reason) => {
                 self.error = Some(reason.into());
@@ -387,7 +403,7 @@ impl EditorView {
             request,
         ) {
             if let Some(proof) = custody {
-                self.effect_bus_barrier.custody = Some(proof);
+                self.catalog_barrier.custody = Some(proof);
             }
             Some(true)
         } else {

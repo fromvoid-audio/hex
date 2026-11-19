@@ -82,14 +82,26 @@ impl NativeEndpointBank {
         }
         Ok(())
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         for index in 0..self.routing_len {
             if let Some(entry) = self.entries[self.routing[index]]
                 .as_mut()
                 .and_then(|entry| entry.0.callback.as_mut())
             {
-                entry.end_staging_at_pause(frame);
+                entry.end_staging_at_rendered_prefix(frame);
             }
+        }
+    }
+    /// A full physical render can commit its streamed prefix and hold the
+    /// remaining output silent. Split renders may still visit a later span.
+    pub(crate) fn end_staging_at_stream_hold(
+        &mut self,
+        offset: usize,
+        frames: usize,
+        committed_frames: usize,
+    ) {
+        if offset == 0 && self.cycle.extent() == Some(frames) {
+            self.end_staging_at_rendered_prefix(committed_frames);
         }
     }
     pub(crate) fn reject_rendering(&mut self) {

@@ -281,3 +281,94 @@ fn cued_loop_excludes_pre_cue_gate_and_keeps_future_note_offs_across_tempo_chang
         assert_eq!(actual, expected, "block size {block}");
     }
 }
+
+mod onset_provenance {
+    use super::*;
+
+    #[test]
+    fn source_edges_spans_and_gate_capture_keep_crossing_and_real_onset_distinct() {
+        let (mut editor, track, clip, crossing) = fixture(true);
+        let Created::Note(boundary) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: b(3),
+                duration: b(1),
+                pitch: 67,
+                channel: 0,
+                velocity: 88,
+            })
+            .unwrap()
+        else {
+            panic!("boundary note")
+        };
+        let timing =
+            PreparedTempoMap::prepare(editor.project().tempo_map().clone(), 8_000).unwrap();
+        let raw = editor.project().midi_clip(clip).unwrap().source();
+        for offset in [b(3), b(9)] {
+            let source = PreparedMidiSourceTemplate::prepare_source_window(
+                track, clip, raw, offset, &timing,
+            )
+            .unwrap();
+            let instrument =
+                PreparedMidiInstrumentTemplate::prepare(&source, &hex_devices::SineTable::new())
+                    .unwrap();
+            let captured = instrument.capture_gate_template().unwrap();
+            let mut edges = MidiEdgeBuffer::default();
+            for (start, end, kind) in [
+                (0, 1, MidiEventKind::NoteOn),
+                (3_999, 4_001, MidiEventKind::NoteOff),
+            ] {
+                source.query(b(0), &timing, start, end, &mut edges).unwrap();
+                let actual = edges
+                    .events()
+                    .map(|edge| (edge.note, edge.kind, edge.starts_inside_gate))
+                    .collect::<Vec<_>>();
+                assert_eq!(actual.len(), 2);
+                assert!(actual.contains(&(crossing, kind, true)));
+                assert!(actual.contains(&(boundary, kind, false)));
+            }
+            let mut original = MidiSpanBuffer::default();
+            instrument
+                .query(b(0), &timing, 0, 1, &mut original)
+                .unwrap();
+            let mut copy = MidiSpanBuffer::default();
+            captured
+                .query_with_origin(SessionMidiOrigin::launch(b(0)), &timing, 0, 1, &mut copy)
+                .unwrap();
+            let metadata = |buffer: &MidiSpanBuffer| {
+                buffer
+                    .spans()
+                    .map(|span| {
+                        (
+                            span.note,
+                            span.iteration,
+                            span.start_frame,
+                            span.gate_end_frame,
+                            span.starts_inside_gate,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(metadata(&original), metadata(&copy));
+            assert!(
+                original
+                    .spans()
+                    .any(|span| span.note == crossing && span.starts_inside_gate)
+            );
+            assert!(
+                original
+                    .spans()
+                    .any(|span| span.note == boundary && !span.starts_inside_gate)
+            );
+            source
+                .query(b(0), &timing, 8_000, 8_001, &mut edges)
+                .unwrap();
+            assert!(
+                edges
+                    .events()
+                    .any(|edge| edge.note == crossing && !edge.starts_inside_gate),
+                "later original repeat remains a real onset"
+            );
+        }
+    }
+}

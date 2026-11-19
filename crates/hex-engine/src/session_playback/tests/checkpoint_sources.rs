@@ -51,7 +51,7 @@ fn process_source_input(
     frame_count: usize,
 ) -> Vec<crate::Frame> {
     runtime.begin_block();
-    runtime.stage_live_events(input, transitions).unwrap();
+    runtime.stage_live_events(input, transitions, None).unwrap();
     let mut frames = vec![[0.0; 2]; frame_count];
     runtime
         .process_source_segment(

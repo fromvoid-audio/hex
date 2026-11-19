@@ -91,13 +91,7 @@ pub(super) fn command(
                 settings: if domain.is_some_and(|d| d.warp_enabled) {
                     None
                 } else {
-                    Some(
-                        if let Some(settings) = domain.and_then(|d| d.warp.as_ref()) {
-                            settings.clone()
-                        } else {
-                            hex_project::default_audio_warp(clip, project.tempo_map(), modes()[0])?
-                        },
-                    )
+                    Some(project.audio_warp_settings_for_enable(id)?)
                 },
             });
         }

@@ -31,6 +31,7 @@ fn interactive_sampler_session(files: &sampler_export::tests::Files) -> Session 
 #[derive(Default)]
 struct Observed {
     accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
+    next_submission: Mutex<Option<(u64, u64)>>,
     refuse: AtomicBool,
     refuse_native_source: AtomicBool,
     refuse_source_confirmation: AtomicBool,
@@ -237,7 +238,15 @@ impl WorkerAudioSink for OfflineSink {
                     .lock()
                     .unwrap()
                     .push((metadata.context.editor_revision, thread::current().id()));
-                Ok(ResidentPublicationAcceptance::OfflineRetained)
+                Ok(match self.observed.next_submission.lock().unwrap().take() {
+                    Some((output_identity, audio_revision)) => {
+                        ResidentPublicationAcceptance::Submitted {
+                            output_identity,
+                            audio_revision,
+                        }
+                    }
+                    None => ResidentPublicationAcceptance::OfflineRetained,
+                })
             }
             Err(error) => Err(ResidentPublicationRefusal {
                 kind: if self.observed.refuse_native_source.load(Ordering::Acquire) {
@@ -1041,6 +1050,7 @@ fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
             route_generation: 0,
             admitted_command_ticket: 0,
             output_fault_epoch: 0,
+            consumed_stop_generation: 0,
         },
         device_preview: None,
         tuning_preview: None,
@@ -1480,6 +1490,7 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
             let captured = Snapshot {
                 source_origin: current.source_origin,
                 prepared_context: current.prepared_context,
+                submission: None,
                 file_sources: current.file_sources.clone(),
                 prepared: Arc::clone(&current.prepared),
                 resources: current.resources.capture_on_control(bytes).unwrap(),
@@ -1529,6 +1540,7 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
                             route_generation: 0,
                             admitted_command_ticket: 0,
                             output_fault_epoch: 0,
+                            consumed_stop_generation: 0,
                         },
                         quantization: hex_engine::LaunchQuantization::Quarter,
                     },
@@ -1549,6 +1561,153 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_engine::playback::PlaybackCommand;
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let class = hex_engine::NativeDeviceClass::Instrument;
+    let state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        class,
+        &state,
+        ParameterId::from_static(20_001),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+
+    let capacity = 3 * hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+    let mut session = Session::new(48_000, 8, 1024)
+        .unwrap()
+        .with_native_reservation(crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: capacity,
+                max_construction_peak_bytes: capacity,
+            },
+            max_scan_frames: 1024,
+        })
+        .unwrap();
+    let Created::Track(track) = session
+        .command(Command::InsertTrackWithDevice {
+            name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let mut sink = OfflineSink {
+        observed: Arc::new(Observed::default()),
+        pending: None,
+    };
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 0,
+        editor_revision: 2,
+    };
+    let mut current = session
+        .publish_resident_snapshot(
+            context,
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    let quote = Playback::paused_source_monitor_allowance_on_control(
+        &current.prepared,
+        Some(&current.resources),
+    )
+    .unwrap();
+    assert!(current.prepared.has_arrangement_mutable_instruments());
+    assert!(quote > 0);
+    let original = sink
+        .pending
+        .as_ref()
+        .unwrap()
+        .0
+        .accounted_session_runtime_bytes_on_control()
+        .unwrap();
+    assert!(current.inputs.keyboard.is_none());
+    let ordinary_graph = Playback::try_from_prepared_with_device_resources(
+        Arc::clone(&current.prepared),
+        &current.resources,
+    )
+    .unwrap();
+    let added = original
+        - ordinary_graph
+            .accounted_session_runtime_bytes_on_control()
+            .unwrap();
+    assert!(
+        (1..=quote).contains(&added),
+        "the initial publication charges its private route"
+    );
+    let latency = current.prepared.arrangement().main_latency_frames() as usize;
+    assert!(latency > 0);
+
+    let first = Arc::new(ComputerKeyboardInput::default());
+    let next = Arc::new(ComputerKeyboardInput::default());
+    for (request_id, input) in [(1, &first), (2, &next)] {
+        let metadata = ResidentPublicationMetadata {
+            computer_keyboard_request: Some(request_id),
+            ..canonical_metadata(&current, context)
+        };
+        let mut selected = current.inputs.clone();
+        selected.keyboard = Some((track, Arc::clone(input)));
+        session
+            .publish_resident_runtime_inputs(
+                &mut current,
+                &mut sink,
+                sampler_export::Admission::default(),
+                metadata,
+                ResidentPublicationPolicy::InheritRuntime,
+                selected,
+                Some(RequiredInput::Keyboard),
+            )
+            .unwrap();
+        assert_eq!(current.inputs.version, request_id);
+        let playback = &mut sink.pending.as_mut().unwrap().0;
+        assert!(
+            playback
+                .accounted_session_runtime_bytes_on_control()
+                .unwrap()
+                > original
+        );
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut [[0.0; 2]; 4]).unwrap();
+        playback.apply(PlaybackCommand::Pause);
+        let mut output = vec![[0.0; 2]; latency + 128];
+        playback.render(&mut output).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+        input.set_key(0, Some((60, 100, request_id))).unwrap();
+        playback.render(&mut output).unwrap();
+        assert!(output[..latency].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(output[latency..].iter().any(|frame| *frame != [0.0; 2]));
+        assert_eq!(playback.position(), 4);
+    }
+    assert!(first.is_cancelled());
+    assert!(!next.is_cancelled());
 }
 
 #[test]
@@ -1614,6 +1773,7 @@ fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_re
             route_generation: 0,
             admitted_command_ticket: 0,
             output_fault_epoch: 0,
+            consumed_stop_generation: 0,
         },
         device_preview: None,
         tuning_preview: None,
@@ -1730,6 +1890,7 @@ fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_re
             route_generation: 0,
             admitted_command_ticket: 0,
             output_fault_epoch: 0,
+            consumed_stop_generation: 0,
         },
         device_preview: Some(identity),
         tuning_preview: None,
@@ -1811,5 +1972,164 @@ fn wait_for_seek(service: &Service) -> ResidentArrangementSeekResult {
             "native scalar seek result did not arrive"
         );
         thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn locator_checkpoint_keeps_seek_preparation_and_terminals_ordered() {
+    for (stale, cancelled, conflict, shutdown) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, false, true, false),
+        (false, false, false, true),
+    ] {
+        check_locator_checkpoint_seek(stale, cancelled, conflict, shutdown);
+    }
+}
+
+fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, shutdown: bool) {
+    let files = sampler_export::tests::Files::new(false);
+    let journal = files
+        .source()
+        .parent()
+        .unwrap()
+        .join("locator-seek.hex-journal");
+    let observed = Arc::new(Observed::default());
+    let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 2;
+    let mut service = Service::with_audio_sink_and_native_reservation(
+        16,
+        8_000_000,
+        Some(journal.clone()),
+        Box::new(OfflineSink {
+            observed: Arc::clone(&observed),
+            pending: None,
+        }),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: retained
+                    + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            },
+            max_scan_frames: 8_000_000,
+        },
+    )
+    .unwrap();
+    let next = || {
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
+    };
+    next();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "source".into(),
+        }))
+        .unwrap();
+    assert!(next().error.is_none());
+    let (entered_tx, entered) = mpsc::sync_channel(1);
+    let (release, release_rx) = mpsc::sync_channel(1);
+    super::super::recovery::install_checkpoint_gate(journal.clone(), entered_tx, release_rx);
+    service
+        .submit(Request::Edit(Command::AddArrangementLocator { frame: 129 }))
+        .unwrap();
+    entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let view = service.try_arrangement_edit_view().unwrap();
+    let state = view.state.upgrade().unwrap();
+    let locator = state.project.arrangement_locators().first().unwrap();
+    assert_eq!(locator.frame(), 129);
+    if conflict {
+        std::fs::write(&journal, b"another writer's journal").unwrap();
+    }
+    service
+        .submit_resident_arrangement_seek(ResidentArrangementSeekIntent {
+            history: ResidentSeekHistory::Fresh,
+            request_id: 1,
+            project_generation: view.project_generation,
+            project_revision: state.revision + u64::from(stale),
+            destination_frame: locator.frame(),
+            start_playing: true,
+            section: None,
+            locator_quantization: None,
+            fence: ResidentFreshRuntimeFence {
+                output_identity: 1,
+                active_audio_revision: 1,
+                route_generation: 0,
+                admitted_command_ticket: 0,
+                output_fault_epoch: 0,
+                consumed_stop_generation: 0,
+            },
+            device_preview: None,
+            tuning_preview: None,
+            cancelled: Arc::new(AtomicBool::new(cancelled)),
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    let result = loop {
+        if let Some(result) = service.try_resident_arrangement_seek_result() {
+            break Some(result);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        thread::yield_now();
+    };
+    if !stale && !cancelled && !conflict && !shutdown {
+        service
+            .submit(Request::NewWithAudioMode {
+                mode: DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap();
+    }
+    let early_terminal = service.try_event().ok();
+    if shutdown {
+        assert!(service.shutdown(Duration::from_millis(20)).is_err());
+        release.send(()).unwrap();
+        service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
+        assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
+        assert!(early_terminal.is_none());
+        assert!(result.is_some(), "seek result must precede shutdown");
+        return;
+    }
+    release.send(()).unwrap();
+    let result = result.expect("seek should finish preparation while checkpoint is held");
+    assert_eq!(result.request_id, 1);
+    assert_eq!(result.project_generation, view.project_generation);
+    assert_eq!(result.project_revision, state.revision + u64::from(stale));
+    let error = result.result.unwrap_err();
+    if stale || cancelled {
+        assert!(error.contains("target changed or was cancelled"), "{error}");
+        assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 0);
+    } else {
+        assert!(error.contains("fixture has no fresh output"), "{error}");
+        assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 1);
+    }
+    assert!(
+        early_terminal.is_none(),
+        "the locator terminal must remain ordered"
+    );
+    let first = next();
+    let second = next();
+    assert!(matches!(first.created, Some(Created::ArrangementLocator(id)) if id == locator.id()));
+    assert_eq!(first.state.revision, state.revision);
+    assert_eq!(second.state.revision, state.revision);
+    assert!(second.created.is_none());
+    assert_eq!(second.error.is_some(), stale || cancelled);
+    if conflict {
+        assert!(first.recovery_failure.is_some());
+        assert!(second.recovery_failure.is_some());
+        assert_eq!(
+            std::fs::read(&journal).unwrap(),
+            b"another writer's journal"
+        );
+    } else if !stale && !cancelled {
+        let replacement = next();
+        assert!(replacement.project_replaced);
+        assert!(replacement.state.project.arrangement_locators().is_empty());
     }
 }

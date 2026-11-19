@@ -1138,6 +1138,275 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, false, false, crate::editor::EditorMode::Arrangement);
+}
+
+#[gpui::test]
+fn cancel_vst_new_track_removes_the_proposal_before_the_worker_terminal(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, true, false, crate::editor::EditorMode::Arrangement);
+}
+
+#[gpui::test]
+fn cancel_vst_session_track_before_worker_terminal_restores_the_column(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, true, false, crate::editor::EditorMode::Session);
+}
+
+#[gpui::test]
+fn failed_vst_session_track_retains_its_column_until_dismissed(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, false, false, crate::editor::EditorMode::Session);
+}
+
+#[gpui::test]
+fn pending_vst_slot_retains_failed_load_at_the_requested_chain_position(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, false, true, crate::editor::EditorMode::Arrangement);
+}
+
+#[gpui::test]
+fn cancel_vst_slot_with_keyboard_preserves_the_existing_chain(cx: &mut TestAppContext) {
+    check_vst_proposal(cx, true, true, crate::editor::EditorMode::Arrangement);
+}
+
+fn check_vst_proposal(
+    cx: &mut TestAppContext,
+    cancel_first: bool,
+    existing_chain: bool,
+    mode: crate::editor::EditorMode,
+) {
+    use hex_project::TrackDeviceSlot;
+    use hex_session::service::{
+        CanonicalAudioSourceSnapshot, PluginEffectDestination, Request, Service, WorkerAudioSink,
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
+
+    // Hold only the Session control worker so Cancel can reliably win before
+    // the request reaches preparation. The worker still returns its own event.
+    struct Gate {
+        armed: Arc<AtomicBool>,
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl WorkerAudioSink for Gate {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {
+            if self.armed.swap(false, Ordering::AcqRel) {
+                self.entered.try_send(()).unwrap();
+                let _ = self.release.recv_timeout(Duration::from_secs(3));
+            }
+        }
+        fn close(&mut self) {}
+    }
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let service = if cancel_first {
+        Service::with_audio_sink(
+            32,
+            8_000_000,
+            None,
+            Box::new(Gate {
+                armed: Arc::clone(&armed),
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+    } else {
+        Service::new(48_000, 32, 8_000_000)
+    }
+    .unwrap();
+    let (mut visual, editor, tracks) =
+        crate::editor::track_reorder_ui_test::live_tracks_on_service(cx, 1, 0, service);
+    let track = tracks[0];
+    let before_device = existing_chain.then(|| {
+        editor.update(&mut visual, |view, cx| {
+            let state = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap();
+            assert!(view.enqueue(Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })));
+            let event = crate::editor::track_reorder_ui_test::next(&view.service);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let id = event.state.project.track(track).unwrap().devices()[0].id();
+            view.receive(event);
+            view.clip_view_open = true;
+            view.device_panel_active = true;
+            cx.notify();
+            id
+        })
+    });
+    let directory = PreferencesTestDirectory::new();
+    let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+    let mut catalog = original_plugin_catalog(module.clone());
+    let class = &mut catalog.entries[0]
+        .last_good
+        .as_mut()
+        .unwrap()
+        .discovery
+        .as_mut()
+        .unwrap()
+        .classes[0];
+    class.class_flags = Some(0);
+    class.subcategories = Some("Fx".into());
+    class.class_vendor = Some("Original Vendor".into());
+    class.class_version = Some("1".into());
+    class.class_sdk_version = Some("3.8".into());
+    let selection = catalog.select_effect(&module, [1; 16]).unwrap();
+
+    if cancel_first {
+        armed.store(true, Ordering::Release);
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    let prior = editor.read_with(&visual, |view, _| view.state.clone().unwrap());
+    let session = mode == crate::editor::EditorMode::Session;
+    editor.update(&mut visual, |view, cx| {
+        view.set_mode(mode);
+        let before = view.state.as_ref().unwrap().project.next_identity();
+        view.selected_track = Some(track);
+        let destination = if existing_chain {
+            PluginEffectDestination::Track(track)
+        } else {
+            PluginEffectDestination::NewTrack {
+                before_track: Some(track),
+                slot: TrackDeviceSlot::Effect,
+                gain: 1.0,
+                track_identity: before,
+            }
+        };
+        view.insert_plugin_effect(&selection, destination, before_device, cx);
+        assert!(view.pending_plugin_effect.is_some());
+        cx.notify();
+    });
+    // Paint without advancing the editor's worker-receive timer.
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.pending_plugin_effect.is_some(),
+            "pending load must reach repaint"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
+        assert_eq!(view.selected_track, Some(track));
+    });
+    let (surface, cancel, dismiss) = if existing_chain {
+        (
+            "device-chain-loading-slot",
+            "device-chain-loading-cancel",
+            "device-chain-loading-dismiss",
+        )
+    } else if session {
+        (
+            "session-pending-device-track",
+            "session-pending-device-cancel",
+            "session-pending-device-dismiss",
+        )
+    } else {
+        (
+            "arrangement-pending-device-track",
+            "arrangement-pending-device-cancel",
+            "arrangement-pending-device-dismiss",
+        )
+    };
+    let pending = visual.debug_bounds(surface).expect("loading proposal");
+    let cancel_bounds = visual.debug_bounds(cancel).expect("cancel on proposal");
+    let original = Box::leak(
+        before_device
+            .map_or_else(
+                || {
+                    if session {
+                        format!("session-track-{}", track.value())
+                    } else {
+                        format!("arrangement-track-header-{}", track.value())
+                    }
+                },
+                |id| format!("device-drop-card-{}", id.value()),
+            )
+            .into_boxed_str(),
+    );
+    let original_bounds = visual.debug_bounds(original).unwrap();
+    assert!(pending.contains(&cancel_bounds.center()));
+    if existing_chain || session {
+        assert!(pending.right() <= original_bounds.left());
+    } else {
+        assert!(pending.bottom() <= original_bounds.top());
+    }
+
+    if cancel_first {
+        if existing_chain || session {
+            let focus = editor.read_with(&visual, |view, _| {
+                view.proposed_plugin_action_focus.as_ref().unwrap().clone()
+            });
+            visual.update(|window, _| focus.focus(window));
+            visual.simulate_keystrokes("space");
+        } else {
+            visual.simulate_click(cancel_bounds.center(), Modifiers::default());
+        }
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(surface).is_none());
+        editor.read_with(&visual, |view, _| {
+            assert!(view.pending_plugin_effect.is_some())
+        });
+        release_tx.send(()).unwrap();
+    }
+    editor.update(&mut visual, |view, cx| {
+        let event = crate::editor::track_reorder_ui_test::next(&view.service);
+        assert_eq!(event.plugin_effect_complete.len(), 1);
+        assert!(!event.plugin_effect_complete[0].accepted);
+        assert_eq!(
+            event.plugin_effect_complete[0].control.is_cancelled(),
+            cancel_first
+        );
+        if !cancel_first {
+            assert!(
+                event
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("vst3 hosting unavailable")
+            );
+        }
+        view.receive(event);
+        assert!(view.pending_plugin_effect.is_none());
+        assert_eq!(view.selected_track, Some(track));
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, prior.revision);
+        assert_eq!(state.project, prior.project);
+        assert_eq!(state.can_undo, prior.can_undo);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    if !cancel_first {
+        assert_eq!(visual.debug_bounds(surface), Some(pending));
+        assert!(visual.debug_bounds(cancel).is_none());
+        let dismiss = visual
+            .debug_bounds(dismiss)
+            .expect("failed proposal retains an explicit dismissal");
+        visual.simulate_click(dismiss.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert!(visual.debug_bounds(surface).is_none());
+    let original_bounds = visual.debug_bounds(original).unwrap();
+    if existing_chain || session {
+        assert!(original_bounds.left() < pending.right());
+    } else {
+        assert!(original_bounds.top() < pending.bottom());
+    }
+}
+
+#[gpui::test]
 fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     use hex_project::TrackDeviceSlot;
@@ -1154,6 +1423,11 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
         (
             crate::editor::EditorMode::Arrangement,
             true,
+            Some(TrackDeviceSlot::Instrument),
+        ),
+        (
+            crate::editor::EditorMode::Session,
+            false,
             Some(TrackDeviceSlot::Instrument),
         ),
     ] {
@@ -1210,6 +1484,8 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
                     "arrangement-lane"
                 } else if mode == crate::editor::EditorMode::Arrangement {
                     "arrangement-track-header"
+                } else if new_track_slot.is_some() {
+                    "console-column-header-before"
                 } else {
                     "session-track"
                 },
@@ -1218,9 +1494,10 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
             .into_boxed_str(),
         );
         let bounds = visual.debug_bounds(selector).unwrap();
-        let target = match new_track_slot {
-            Some(_) => point(bounds.center().x, bounds.origin.y),
-            None => bounds.center(),
+        let target = if lane && new_track_slot.is_some() {
+            point(bounds.center().x, bounds.origin.y)
+        } else {
+            bounds.center()
         };
         for refusal in 0..2 {
             visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
@@ -1281,7 +1558,7 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
                 panic!("header drop must reach the plugin worker: {:?}", view.error)
             });
             assert_eq!(
-                pending.destination,
+                pending.proposal.destination,
                 match new_track_slot {
                     Some(slot) => PluginEffectDestination::NewTrack {
                         before_track: Some(tracks[1]),
@@ -1292,7 +1569,10 @@ fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContex
                     None => PluginEffectDestination::Track(tracks[1]),
                 }
             );
-            assert_eq!(pending.before, None, "no device-card insertion anchor");
+            assert_eq!(
+                pending.proposal.before, None,
+                "no device-card insertion anchor"
+            );
             assert_eq!(view.selected_track, Some(tracks[0]));
         });
     }

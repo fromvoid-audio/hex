@@ -32,6 +32,11 @@ pub(crate) enum QuantumFailure {
     Capacity,
     Invalid,
 }
+#[derive(Clone, Copy)]
+enum QuantumCoverage {
+    ResidentSubset { pending_play: bool },
+    CompleteFade,
+}
 impl QuantumPins {
     pub(crate) fn complete(&self) -> bool {
         self.complete
@@ -54,6 +59,39 @@ impl ActiveView<'_> {
         frames: usize,
         pending_play: bool,
     ) -> Result<QuantumPins, QuantumFailure> {
+        self.reserve_stream_window(
+            domains,
+            frames,
+            QuantumCoverage::ResidentSubset { pending_play },
+        )
+    }
+
+    /// A fade can start only with the complete span protected. A cache miss
+    /// leaves no partial reservation on either domain. Capacity is terminal.
+    pub(crate) fn reserve_outgoing_fade(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        frames: usize,
+    ) -> Result<Option<QuantumPins>, QuantumFailure> {
+        let pins = self.reserve_stream_window(domains, frames, QuantumCoverage::CompleteFade)?;
+        if pins.complete() {
+            Ok(Some(pins))
+        } else {
+            pins.release(domains);
+            Ok(None)
+        }
+    }
+
+    fn reserve_stream_window(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        frames: usize,
+        coverage: QuantumCoverage,
+    ) -> Result<QuantumPins, QuantumFailure> {
+        let pending_play = matches!(
+            coverage,
+            QuantumCoverage::ResidentSubset { pending_play: true }
+        );
         let refs = self.state.domain_refs;
         let workspace = self
             .state
@@ -118,16 +156,29 @@ impl ActiveView<'_> {
                 .map_err(|_| QuantumFailure::Invalid)
                 .and_then(|pages| pages.inner.loan.as_mut().ok_or(QuantumFailure::Invalid))
                 .and_then(|loan| {
-                    loan.reserve_resident_current_quantum(&workspace.quantum_extents[token.slot])
-                        .map_err(|error| match error {
-                            hex_stream::CurrentQuantumRefusal::Capacity => QuantumFailure::Capacity,
-                            _ => QuantumFailure::Invalid,
-                        })
+                    use hex_stream::CurrentQuantumRefusal;
+                    let extents = &workspace.quantum_extents[token.slot];
+                    let reservation = match coverage {
+                        QuantumCoverage::ResidentSubset { .. } => loan
+                            .reserve_resident_current_quantum(extents)
+                            .map(|(reservation, complete)| (Some(reservation), complete)),
+                        QuantumCoverage::CompleteFade => {
+                            match loan.reserve_current_quantum(extents) {
+                                Ok(reservation) => Ok((Some(reservation), true)),
+                                Err(CurrentQuantumRefusal::NotResident) => Ok((None, false)),
+                                Err(error) => Err(error),
+                            }
+                        }
+                    };
+                    reservation.map_err(|error| match error {
+                        CurrentQuantumRefusal::Capacity => QuantumFailure::Capacity,
+                        _ => QuantumFailure::Invalid,
+                    })
                 });
             match result {
                 Ok((reservation, complete)) => {
                     pins.complete &= complete;
-                    pins.entries[token.slot] = Some((token, reservation));
+                    pins.entries[token.slot] = reservation.map(|reservation| (token, reservation));
                 }
                 Err(error) => {
                     pins.release(domains);

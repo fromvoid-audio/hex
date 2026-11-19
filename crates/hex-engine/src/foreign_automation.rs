@@ -706,6 +706,10 @@ impl Program {
 }
 
 impl hex_lattice::ForeignAutomationProgram for Program {
+    fn quantum_point_budget(&self) -> Option<usize> {
+        Some(self.point_budget())
+    }
+
     fn render_quantum(
         &self,
         origins: &[Option<u64>],

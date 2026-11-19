@@ -88,6 +88,7 @@ mod activation;
 mod activation_ui_test;
 mod arranger_navigation;
 mod audio_import_settings;
+mod audio_recording;
 pub(crate) mod changelog;
 mod clip_detail_resize;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -210,9 +211,15 @@ mod recovery_state_integration_tests;
 mod refresh;
 mod refresh_state;
 mod render;
+#[cfg(feature = "ui-test-support")]
+mod rendered_test_fixture;
 mod return_tracks;
 mod routing_controls;
 mod sample_recorder;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use device_panel::operator_focus_fixture::exercise as operator_focus_fixture;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use sample_recorder::layout_fixture::exercise as sample_recorder_layout_fixture;
 mod sampler_load;
 mod sampler_parameter;
 mod save;
@@ -261,6 +268,7 @@ mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
 mod track_name;
+mod track_proposals;
 mod track_reorder;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_reorder_ui_test;
@@ -277,6 +285,7 @@ mod waveform;
 mod waveform_columns;
 mod waveform_geometry;
 mod waveform_loop;
+mod waveform_overrange;
 mod waveform_source;
 mod waveform_stretch;
 mod zoom_fit;
@@ -542,6 +551,7 @@ fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_source_picker_keys(cx);
     device_panel::bind_source_manager_keys(cx);
     device_panel::bind_keyboard_keys(cx);
+    plugin_effect::bind_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
@@ -836,6 +846,7 @@ pub(super) struct EditorView {
     route_follow: Option<u64>,
     /// Vst3 devices the current output reports as degraded.
     degraded_plugins: crate::editor_backend::DegradedDevices,
+    plugin_editor_windows: Vec<u64>,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -844,6 +855,7 @@ pub(super) struct EditorView {
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
     leftover_recovery: leftover_recovery::State,
     truncated_import: truncated_import::State,
+    device_insert_confirmation: Option<hex_session::service::DeviceInsertConfirmation>,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -923,10 +935,11 @@ pub(super) struct EditorView {
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
     device_gesture_barriers: VecDeque<Request>,
-    effect_bus_barrier: device_gesture::EffectBusBarrierState,
+    catalog_barrier: device_gesture::CatalogBarrierState,
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     sample_recorder: sample_recorder::Recorder,
+    audio_recorder: audio_recording::Recorder,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
     sampler_parameter: sampler_parameter::State,
@@ -968,6 +981,8 @@ pub(super) struct EditorView {
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_track_clipboard: Option<track_clipboard::Pending>,
+    pending_empty_tracks: Vec<track_defaults::PendingEmptyTrack>,
+    next_empty_track_id: u64,
     // Input context only: a committed cut can remove its focused header.
     // The next real selection intent or document generation invalidates it.
     track_clipboard_context: Option<(u64, u64)>,
@@ -991,6 +1006,8 @@ pub(super) struct EditorView {
     drag_bounce_held: bool,
     pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
+    failed_plugin_proposal: Option<plugin_effect::FailedPluginProposal>,
+    proposed_plugin_action_focus: Option<gpui::FocusHandle>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1288,7 +1305,7 @@ impl EditorView {
     }
 
     /// Bound all filesystem discovery before any worker starts.
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     fn new_for_test_with_browser_directory(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1304,7 +1321,7 @@ impl EditorView {
         )
     }
 
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     fn new_for_test_with_project_preferences(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1323,8 +1340,14 @@ impl EditorView {
                 directory.join("theme.json"),
                 project_preferences,
             ),
-            #[cfg(feature = "ui-test-support")]
+            #[cfg(test)]
             None,
+            #[cfg(not(test))]
+            Some(sampler_load::FixturePaths {
+                home: directory.to_path_buf(),
+                directory: directory.join("samples"),
+            }),
+            #[cfg(test)]
             test_environment::Inputs {
                 directory: Some(directory.join("samples")),
                 ..Default::default()
@@ -1650,6 +1673,7 @@ impl EditorView {
             pending_recovery_generation: None,
             route_follow: None,
             degraded_plugins: Default::default(),
+            plugin_editor_windows: Vec::new(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
@@ -1659,6 +1683,7 @@ impl EditorView {
             latency_rebuild: None,
             leftover_recovery: Default::default(),
             truncated_import: Default::default(),
+            device_insert_confirmation: None,
             sampler_edit_resume: None,
             deferred_play: None,
             offline_cursor: 0,
@@ -1731,10 +1756,11 @@ impl EditorView {
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
             device_gesture_barriers: VecDeque::new(),
-            effect_bus_barrier: Default::default(),
+            catalog_barrier: Default::default(),
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             sample_recorder: Default::default(),
+            audio_recorder: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
             sampler_parameter: Default::default(),
@@ -1775,6 +1801,8 @@ impl EditorView {
             requested_audio_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_track_clipboard: None,
+            pending_empty_tracks: Vec::new(),
+            next_empty_track_id: 0,
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
@@ -1792,6 +1820,8 @@ impl EditorView {
             drag_bounce_held: false,
             pending_bounce_drop: None,
             pending_plugin_effect: None,
+            failed_plugin_proposal: None,
+            proposed_plugin_action_focus: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,
@@ -2045,7 +2075,11 @@ impl EditorView {
                 }
                 self.queue_audio_command(PlaybackCommand::Pause);
             } else if let Some(source) = self.section_copy_play_source() {
-                self.queue_section_copy_play(self.playback_start_frame(), source);
+                if let Some(frame) = self.section_copy_play_start() {
+                    self.queue_section_copy_play(frame, source);
+                } else {
+                    self.error = Some("applying edit · wait for audio".into());
+                }
             } else {
                 self.error = Some("applying edit · wait for audio".into());
             }
@@ -2058,14 +2092,13 @@ impl EditorView {
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
-        if !self.desired_playing(device_playing) && self.recover_degraded_play_at(start_frame) {
-            return;
-        }
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
             arrangement_seek::ToggleAction::Unavailable => {
-                self.error = Some("playback source is unavailable · cannot seek safely".into());
+                if !self.recover_degraded_play_at(start_frame) {
+                    self.error = Some("playback source is unavailable · cannot seek safely".into());
+                }
                 return;
             }
         };
@@ -2081,6 +2114,10 @@ impl EditorView {
     /// selection, play-start lock and loop intact. The reset wins over all of
     /// those sources, including a loop whose start is later in the song.
     fn playback_start_frame(&self) -> u64 {
+        self.playback_start_frame_with_section_override(None)
+    }
+
+    fn playback_start_frame_with_section_override(&self, section: Option<u64>) -> u64 {
         if self.play_start_at_beginning {
             return 0;
         }
@@ -2105,7 +2142,7 @@ impl EditorView {
             return selection.start();
         }
         if let Some(frame) = self.selected_arrangement_play_start() {
-            return frame;
+            return section.unwrap_or(frame);
         }
         if let Some(cursor) = self
             .edit_cursor
@@ -2224,7 +2261,7 @@ impl EditorView {
             };
             if let Some(row) = row {
                 self.track_scroll
-                    .scroll_to_item(row, gpui::ScrollStrategy::Top);
+                    .scroll_to_item(self.arrangement_list_row(row), gpui::ScrollStrategy::Top);
             }
         }
     }
@@ -2333,11 +2370,7 @@ impl EditorView {
             return false;
         }
         self.advance_selection_intent();
-        self.duplicate_intent.cancel_chain();
-        self.retire_clip_detail_state_for(clip);
-        self.detail_context = None;
-        self.selected_track = Some(track);
-        self.arrangement_focus.observe_active_track(Some(track));
+        self.select_arrangement_clip(track, clip);
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {
@@ -2345,10 +2378,19 @@ impl EditorView {
                 .select(&state.project, track, false, false);
             self.update_track_selection_status();
         }
-        self.selected_clip = Some(clip);
-        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
+    }
+
+    /// Change the clip subject without switching panes or taking keyboard focus.
+    pub(super) fn select_arrangement_clip(&mut self, track: TrackId, clip: ClipId) {
+        self.duplicate_intent.cancel_chain();
+        self.retire_clip_detail_state_for(clip);
+        self.detail_context = None;
+        self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
+        self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
     }
 
     /// Reset clip-local editor state when the clip editor's subject changes.

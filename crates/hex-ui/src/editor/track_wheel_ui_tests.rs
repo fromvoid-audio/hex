@@ -50,23 +50,31 @@ fn option_wheel_targets_hovered_header_and_lane_without_editing_or_zooming(
         bounds(&mut visual, "arrangement-track-header", tracks[1])
             .size
             .height,
-        px(60.)
+        px(66.)
     );
     let lane = bounds(&mut visual, "arrangement-lane", tracks[1]);
-    wheel(
-        &mut visual,
-        lane.center(),
-        ScrollDelta::Pixels(point(px(0.), px(-16.))),
-        option(),
-    );
+    for height in [66., 66., 66., 44.] {
+        wheel(
+            &mut visual,
+            lane.center(),
+            ScrollDelta::Pixels(point(px(0.), px(-16.))),
+            option(),
+        );
+        assert_eq!(
+            bounds(&mut visual, "arrangement-track-header", tracks[1])
+                .size
+                .height,
+            px(height)
+        );
+    }
     let header = bounds(&mut visual, "arrangement-track-header", tracks[1]);
-    assert_eq!(header.size.height, px(56.));
+    assert_eq!(header.size.height, px(44.));
     let lane = bounds(&mut visual, "arrangement-lane", tracks[1]);
     assert_eq!(header.top(), lane.top());
     // Natural-scroll inversion is undone exactly once for physical sizing.
     visual.simulate_event(ScrollWheelEvent {
         position: lane.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-16.))),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-64.))),
         modifiers: option(),
         direction_inverted_from_device: true,
         ..Default::default()
@@ -76,7 +84,7 @@ fn option_wheel_targets_hovered_header_and_lane_without_editing_or_zooming(
         bounds(&mut visual, "arrangement-track-header", tracks[1])
             .size
             .height,
-        px(60.)
+        px(66.)
     );
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_track, Some(tracks[0]));
@@ -104,7 +112,7 @@ fn option_wheel_caps_trackpad_steps_and_minimum_and_preserves_normal_wheel(
         bounds(&mut visual, "arrangement-track-header", tracks[0])
             .size
             .height,
-        px(76.)
+        px(88.)
     );
     for _ in 0..3 {
         let at = bounds(&mut visual, "track-name-area", tracks[0]).center();
@@ -114,7 +122,7 @@ fn option_wheel_caps_trackpad_steps_and_minimum_and_preserves_normal_wheel(
         bounds(&mut visual, "arrangement-track-header", tracks[0])
             .size
             .height,
-        px(23.)
+        px(22.)
     );
     let at = bounds(&mut visual, "track-name-area", tracks[0]).center();
     for delta in [
@@ -128,7 +136,7 @@ fn option_wheel_caps_trackpad_steps_and_minimum_and_preserves_normal_wheel(
         bounds(&mut visual, "arrangement-track-header", tracks[0])
             .size
             .height,
-        px(23.)
+        px(22.)
     );
     let lane = bounds(&mut visual, "arrangement-lane", tracks[1]);
     let span = editor.read_with(&visual, |v, _| {
@@ -160,7 +168,7 @@ fn option_wheel_main_and_overview_share_existing_heights_and_held_resize_exclude
             .unwrap()
             .size
             .height,
-        px(60.)
+        px(66.)
     );
     let name = bounds(&mut visual, "track-name-area", tracks[0]);
     visual.simulate_click(name.center(), Modifiers::default());
@@ -172,7 +180,7 @@ fn option_wheel_main_and_overview_share_existing_heights_and_held_resize_exclude
         bounds(&mut visual, "arrangement-track-header", tracks[0])
             .size
             .height,
-        px(39.)
+        px(44.)
     );
     visual.simulate_keystrokes("h");
     visual.run_until_parked();
@@ -188,7 +196,7 @@ fn option_wheel_main_and_overview_share_existing_heights_and_held_resize_exclude
             .unwrap()
             .size
             .height,
-        px(60.)
+        px(66.)
     );
     let edge = bounds(&mut visual, "track-height-resize", tracks[0]).center();
     visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
@@ -231,6 +239,14 @@ fn option_wheel_centers_hovered_track_as_it_resizes(cx: &mut TestAppContext) {
             viewport
         );
     }
+    let row = bounds(&mut visual, "arrangement-track-header", track);
+    wheel(
+        &mut visual,
+        row.center(),
+        ScrollDelta::Pixels(point(px(0.0), px(-16.0))),
+        option(),
+    );
+    assert_eq!(bounds(&mut visual, "arrangement-track-header", track), row);
 }
 
 #[gpui::test]
@@ -291,13 +307,23 @@ fn option_wheel_centers_track_taller_than_viewport(cx: &mut TestAppContext) {
         "fixture needs a taller row: {row:?} {viewport:?}"
     );
     let previous_height = row.size.height;
-    let name = bounds(&mut visual, "track-name-area", track);
-    assert!(name.center().y >= viewport.top() && name.center().y < viewport.bottom());
-    wheel(&mut visual, name.center(), line(-1.0), option());
+    // The full-height name plate can extend under an adjacent pane after a
+    // window shrink. Use the visible title's hit position for the wheel input.
+    let at = bounds(&mut visual, "track-name", track).center();
+    assert!(
+        visual
+            .debug_bounds("arrangement-content")
+            .unwrap()
+            .contains(&at)
+    );
+    wheel(&mut visual, at, line(-1.0), option());
     let viewport = editor.read_with(&visual, |view, _| view.track_scroll.list.viewport_bounds());
     let row = bounds(&mut visual, "arrangement-track-header", track);
     // The existing height limit can clamp the row to the smaller viewport.
-    assert!(row.size.height < previous_height);
+    assert!(
+        row.size.height < previous_height,
+        "row {row:?} did not shrink from {previous_height:?} at {at:?}"
+    );
     assert!(
         (f32::from(row.center().y - viewport.center().y)).abs() <= 1.0,
         "row {row:?}, viewport {viewport:?}"

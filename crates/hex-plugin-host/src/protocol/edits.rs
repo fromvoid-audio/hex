@@ -44,6 +44,8 @@ pub struct EditorPcm {
     pub block: Block,
     pub performs: EditorPerforms,
     pub restorations: EditorRestorations,
+    /// Sum of the helper's SDK process calls in this quantum, when requested.
+    pub sdk_process_ns: Option<u64>,
 }
 
 /// The canonical restoration choice for one original worker target.

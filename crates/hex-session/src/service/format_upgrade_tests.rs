@@ -617,6 +617,49 @@ fn sinc_v2_project_opens_resident_and_streamed_and_saves_without_consent() {
 }
 
 #[test]
+fn silent_repeat_gap_requires_format_upgrade_consent_before_overwrite() {
+    let files = Files::new();
+    let path = sinc_v2_project(&files);
+    let original = fs::read(&path).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    let clip = opened.state.project.tracks()[0].clips()[0].id();
+    for operation in [
+        hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 12_000,
+        },
+        hex_project::AudioViewResizeOperation::CycleEnd {
+            project_frame: 6_000,
+        },
+    ] {
+        let event = request(
+            &service,
+            Request::Edit(Command::ResizeAudioClipView { clip, operation }),
+        );
+        assert!(event.error.is_none(), "{:?}", event.error);
+    }
+    let refused = request(&service, Request::SaveCurrent);
+    assert!(refused.save_complete && refused.error.is_some());
+    assert!(refused.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let saved = request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 1,
+            path: path.clone(),
+        },
+    );
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert_eq!(
+        hex_storage::schema_version_for(&saved.state.project),
+        hex_storage::SILENT_REPEAT_SCHEMA_VERSION
+    );
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+}
+
+#[test]
 fn importing_v2_media_into_a_schema63_file_requires_overwrite_consent() {
     let files = Files::new();
     let path = files.0.join("old.hex");

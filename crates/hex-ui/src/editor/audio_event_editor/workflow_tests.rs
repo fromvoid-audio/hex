@@ -224,7 +224,22 @@ pub(super) fn open(
     Entity<EditorView>,
     ClipId,
 ) {
-    let (files, handle, editor) = upper_rail_owned_fixture(cx);
+    let fixture = upper_rail_owned_fixture(cx);
+    open_fixture(cx, fixture)
+}
+pub(super) fn open_fixture(
+    cx: &mut TestAppContext,
+    (files, handle, editor): (
+        Arc<crate::editor::test_environment::Environment>,
+        gpui::AnyWindowHandle,
+        Entity<EditorView>,
+    ),
+) -> (
+    Arc<crate::editor::test_environment::Environment>,
+    VisualTestContext,
+    Entity<EditorView>,
+    ClipId,
+) {
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1280.0), px(800.0)));
     let clip = editor.update(&mut visual, |v, cx| {

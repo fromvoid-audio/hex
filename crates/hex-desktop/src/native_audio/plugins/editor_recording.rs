@@ -4,7 +4,7 @@
 //! values and clocks. One unmatched quantum and one observation bound custody.
 use super::*;
 use hex_audio::foreign_parameter_delivery::editor::{
-    ConfirmedQuantum, GroupTouchTarget, Receipt, Retired, Target, TouchPlan,
+    AbortReason, ConfirmedQuantum, GroupTouchTarget, Receipt, Retired, Target, TouchPlan,
 };
 use hex_audio::plugin_worker::ParameterEdit;
 use hex_audio::prepared::{AppliedAudioSource, PublicationControl};
@@ -298,7 +298,7 @@ impl Plugins {
             closed: false,
             drained: false,
         })));
-        self.latency_poll_at = None;
+        self.parameter_poll.request_ordinary_poll();
         Ok(())
     }
 
@@ -380,13 +380,23 @@ impl Plugins {
         let Some(Recording::Active(active)) = self.editor_recording.as_mut() else {
             return None;
         };
+        if active.has_completed_observation() && !active.drained {
+            return None;
+        }
         active.observation.take()
     }
 }
 
 impl Active {
     fn poll(&mut self, mut control: Option<&mut PublicationControl>) {
-        if self.drained || self.observation.is_some() {
+        if self.drained {
+            return;
+        }
+        if self.has_completed_observation() {
+            self.poll_completed_terminal(control);
+            return;
+        }
+        if self.observation.is_some() {
             return;
         }
         if let Some(observation) = self.correlation.take_completion() {
@@ -449,6 +459,70 @@ impl Active {
                 }
             }
         }
+    }
+
+    fn has_completed_observation(&self) -> bool {
+        matches!(
+            self.observation,
+            Some(Observation::Restored(_))
+                | Some(Observation::Grouped(Vst3EditorGroupObservation {
+                    receipt: Vst3EditorGroupReceipt::Finished(_),
+                    ..
+                }))
+        )
+    }
+
+    // Session publishes a finished take immediately after its terminal. Keep
+    // that terminal until reading the exact audio abort releases its admission.
+    fn poll_completed_terminal(&mut self, mut control: Option<&mut PublicationControl>) {
+        let target = self.correlation.target();
+        if let Some(reader) = self.retired.as_ref() {
+            reader.cancel_on_control();
+        } else if let Some(control) = control.as_deref_mut() {
+            control.cancel_native_source_editor_delivery_on_control(target);
+        } else {
+            return;
+        }
+        for _ in 0..4 {
+            let next = if let Some(reader) = self.retired.as_mut() {
+                reader.try_receipt_on_control()
+            } else if let Some(control) = control.as_deref_mut() {
+                control.try_native_source_editor_delivery_on_control()
+            } else {
+                None
+            };
+            match next {
+                Some(Receipt::Aborted {
+                    target: ended,
+                    reason,
+                }) if ended == target => {
+                    self.finish_completed_terminal(reason);
+                    return;
+                }
+                Some(_) => {}
+                None => return,
+            }
+        }
+    }
+
+    fn finish_completed_terminal(&mut self, reason: AbortReason) {
+        if reason != AbortReason::Cancelled {
+            self.observation = match self.observation {
+                Some(Observation::Restored(point)) => Some(Observation::Interrupted {
+                    key: point.key,
+                    context: point.context,
+                    target: point.target,
+                    source: point.source,
+                    sequence: point.sequence,
+                }),
+                Some(Observation::Grouped(mut group)) => {
+                    group.receipt = Vst3EditorGroupReceipt::Interrupted;
+                    Some(Observation::Grouped(group))
+                }
+                other => other,
+            };
+        }
+        self.drained = true;
     }
 
     fn finish(&mut self) {

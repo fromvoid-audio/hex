@@ -53,7 +53,11 @@ impl EditorView {
         let Some(state) = &self.state else {
             return false;
         };
-        if let Some(page) = self.pending_console_reorder_page() {
+        let projected = self.pending_console_reorder_page().or_else(|| {
+            (!self.pending_empty_tracks.is_empty() || self.proposed_plugin_track().is_some())
+                .then(|| self.session_track_page(&state.project, self.session_visible_columns))
+        });
+        if let Some(page) = projected {
             return page.columns.iter().any(|column| {
                 column.id == id
                     && state
@@ -98,13 +102,19 @@ impl EditorView {
         let Some(state) = self.state.clone() else {
             return row;
         };
-        for track in page.columns.iter().filter_map(|column| {
-            state
+        for column in page.displayed_columns() {
+            let Some(column) = column else {
+                row = row.child(super::session_grid::pending_device_column(column_width));
+                continue;
+            };
+            let Some(track) = state
                 .project
                 .tracks()
                 .get(column.index)
                 .filter(|track| track.id() == column.id)
-        }) {
+            else {
+                continue;
+            };
             let id = track.id();
             let (muted, soloed) = self.displayed_track_switches(track);
             let (background, text) = super::track_gain::activator_colors(!muted);

@@ -4796,6 +4796,7 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     pitch: 60,
                     channel: 0,
                     velocity,
+                    contributor_fade_in: false,
                 })
                 .unwrap();
         }
@@ -4900,6 +4901,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 pitch,
                 channel: 0,
                 velocity,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -5004,6 +5006,7 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
         pitch: 60,
         channel: 4,
         velocity: 91,
+        contributor_fade_in: false,
     };
 
     let mut old =
@@ -5110,6 +5113,7 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        contributor_fade_in: false,
     };
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -5216,6 +5220,7 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -12536,6 +12541,46 @@ fn arrangement_preroll_held_mutable_source_and_return_send_follow_seek_law() {
 }
 
 #[test]
+fn ordinary_preroll_refuses_stopped_pcm_and_preserves_held_instrument_history() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    let track = prepared.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let caller = SessionPlayback::new(prepared).unwrap();
+    let prepare = || {
+        caller
+            .prepare_arrangement_preroll(512, 512, false, &AtomicBool::new(false))
+            .unwrap()
+    };
+    let mut candidate = prepare();
+    let mut reference = prepare();
+    let mut output = [[1.0; 2]; 64];
+    assert_eq!(
+        candidate.render_paused_pcm(
+            track,
+            &[[0.5; 2]; 64],
+            &mut output,
+            &mut hex_lattice::RefuseForeign
+        ),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    assert_eq!(output, [[0.0; 2]; 64]);
+    candidate.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+    assert_eq!(candidate.performance_frame(), 512);
+    let mut expected = output;
+    for (runtime, frames) in [
+        (&mut candidate, &mut output),
+        (&mut reference, &mut expected),
+    ] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(frames).unwrap();
+    }
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(output, expected);
+}
+
+#[test]
 fn interactive_arrangement_preroll_released_mutable_source_and_return_start_empty() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());
@@ -14177,8 +14222,9 @@ fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
     }
 }
 
-#[test]
-fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+fn mixed_streamed_resident_and_midi_compensation_case(
+    return_gain: Option<f32>,
+) -> ([[f32; 2]; 512], u32) {
     #[derive(Default)]
     struct ChangingPages {
         frames: [[f32; 2]; 32],
@@ -14219,9 +14265,39 @@ fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_st
         .execute(Command::InsertDevice {
             track,
             before: None,
-            state: limiter,
+            state: limiter.clone(),
         })
         .unwrap();
+    if let Some(gain) = return_gain {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "latency return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return track expected");
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ReturnGain {
+                return_track: bus,
+                gain,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+    }
     editor
         .execute(Command::SetLoopRegion {
             start: 0,
@@ -14304,4 +14380,22 @@ fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_st
     assert!(actual.0.iter().flatten().any(|sample| *sample != 0.0));
     assert!(actual.1.len() > 1);
     assert_eq!(actual.2.len(), 1);
+    assert_eq!((actual.3, actual.4), (512, 8));
+    (actual.0, revision.arrangement().main_latency_frames())
+}
+
+#[test]
+fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+    let track_latency = mixed_streamed_resident_and_midi_compensation_case(None);
+    let silent_return = mixed_streamed_resident_and_midi_compensation_case(Some(0.0));
+    let sounding_return = mixed_streamed_resident_and_midi_compensation_case(Some(1.0));
+    assert_eq!(sounding_return.1, silent_return.1);
+    assert!(
+        sounding_return.1 > track_latency.1,
+        "the return must add latency"
+    );
+    assert_ne!(
+        sounding_return.0, silent_return.0,
+        "the return send must change rendered PCM"
+    );
 }

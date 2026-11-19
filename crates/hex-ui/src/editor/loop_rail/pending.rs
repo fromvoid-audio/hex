@@ -64,7 +64,7 @@ impl EditorView {
         false
     }
 
-    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) {
+    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) -> bool {
         self.submit_loop_intent(
             generation,
             region,
@@ -73,10 +73,13 @@ impl EditorView {
                 end: region.end(),
                 enabled: region.enabled(),
             },
-        );
+        )
     }
 
     pub(in crate::editor) fn toggle_loop(&mut self) {
+        if self.recovery.holds_loop_region() {
+            return;
+        }
         let command = Command::ToggleLoopRegion;
         // Predict the toggle only when no earlier edit can change its input.
         // Keep the command relative to the worker's actual loop in either case.
@@ -90,7 +93,15 @@ impl EditorView {
         }
     }
 
-    fn submit_loop_intent(&mut self, generation: u64, region: LoopRegion, command: Command) {
+    fn submit_loop_intent(
+        &mut self,
+        generation: u64,
+        region: LoopRegion,
+        command: Command,
+    ) -> bool {
+        if self.recovery.holds_loop_region() {
+            return false;
+        }
         self.pending_loop = Some(PendingLoop {
             generation,
             region,
@@ -102,7 +113,9 @@ impl EditorView {
         });
         if !self.enqueue(Request::Edit(command)) {
             self.pending_loop = None;
+            return false;
         }
+        true
     }
 
     pub(in crate::editor) fn submit_section_launch_loop(
@@ -110,8 +123,9 @@ impl EditorView {
         launch: SectionLaunch,
         region: LoopRegion,
     ) {
-        self.submit_loop_preview(self.project_generation, region);
-        if let Some(pending) = self.pending_loop.as_mut() {
+        if self.submit_loop_preview(self.project_generation, region)
+            && let Some(pending) = self.pending_loop.as_mut()
+        {
             pending.launch = Some(launch);
         }
     }
@@ -133,8 +147,9 @@ impl EditorView {
         section: bool,
     ) {
         let intent = self.selection_intent_epoch;
-        self.submit_loop_preview(self.project_generation, region);
-        if let Some(pending) = self.pending_loop.as_mut() {
+        if self.submit_loop_preview(self.project_generation, region)
+            && let Some(pending) = self.pending_loop.as_mut()
+        {
             pending.start_intent = intent;
             if section {
                 pending.focus_intent = intent;

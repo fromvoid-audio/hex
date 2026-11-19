@@ -5,8 +5,7 @@ use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
-#[path = "../../../hex-engine/examples/support/latency_fixture.rs"]
-mod latency_fixture;
+use crate::latency_fixture;
 
 #[test]
 fn foreign_bounce_requires_completed_provider_before_wav_publication() {

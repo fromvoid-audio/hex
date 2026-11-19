@@ -13,6 +13,24 @@ impl CandidateRoot {
             source.approves_captured_state_on_control(state)
         })
     }
+    pub(crate) fn approve_native_sequenced_capture(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        self.require_native_source_control_open()?;
+        let state = self
+            .0
+            .eligible
+            .with_live_capture(binding, |owner| match owner {
+                Owner::Effect(effect) => effect.approve_sequenced_capture_on_control(fact),
+                Owner::Loaned(control) => control.approve_sequenced_capture_on_control(fact),
+                _ => Err("native captured state source is unavailable"),
+            })?;
+        self.require_native_source_control_open()?;
+        Ok(state)
+    }
+
     pub(crate) fn approve_native_canonical_processing(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,

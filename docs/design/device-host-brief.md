@@ -2,6 +2,10 @@
 
 The shared host makes instruments and processors consistent to navigate, combine and reuse. It inherits the [Hex overview](../../README.md) and the local Codex product design philosophy. [Vector](vector-brief.md) is one consumer.
 
+The [live track and device editing brief](live-repatching-brief.md) defines the
+agreed 0.2 target for preparation, routing, power, retirement and undo/redo.
+Those target rules are not a claim of current native behavior.
+
 Every host is 200 px high, with variable width. Its left sidebar contains power, a device context menu immediately below it, a bottom-up device name, then macro and modulator toggles at the bottom in that order. Selection highlights the outer border, not the header fill.
 
 Macros and modulators open independently and can remain open together: sidebar → macros → modulators → device controls → nested-device widget → external stereo meter/add button. Opening panels expands horizontally.

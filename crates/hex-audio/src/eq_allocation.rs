@@ -6,12 +6,15 @@ use hex_lattice::{NativeDeviceDefinition, NativeInstrumentClock};
 struct Clock;
 impl NativeInstrumentClock for Clock {
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
-        Some((offset as u64) << 20)
+        Some(((offset % 601) as u64) << 20)
     }
     fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.beat_at_offset(offset)
     }
     fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        Some((offset % 601) as u64)
+    }
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
         Some(offset as u64)
     }
     fn transport_is_running(&self) -> Option<bool> {

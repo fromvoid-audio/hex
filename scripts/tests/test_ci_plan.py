@@ -147,6 +147,117 @@ class PlannerSourceLoaderTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_resolve_uses_explicit_git_and_native_selection_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "repo"
+            root.mkdir()
+            empty = Path(directory) / "empty-config"
+            empty.write_text("")
+            exclusions = Path(directory) / "excludes"
+            exclusions.write_text("extra.rs\n")
+            configured = Path(directory) / "configured-git"
+            configured.write_text(f"[core]\n\texcludesfile = {exclusions}\n")
+            # The host may have present or future native qualification inputs.
+            # Seed both kinds so this fixture tests isolation on every machine.
+            ambient = {**os.environ, "HEX_VST3_FUTURE_FIXTURE": "ambient",
+                       "HEX_TEST_SIGNING_IDENTITY": "ambient"}
+            default_env = {key: value for key, value in ambient.items()
+                           if not key.startswith("HEX_VST3_") and key != "HEX_TEST_SIGNING_IDENTITY"}
+            default_env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty),
+                                "HEX_VST3_SDK_DIR": ""})
+            selected_env = {**default_env, "GIT_CONFIG_GLOBAL": str(configured),
+                            "HEX_VST3_SDK_DIR": "explicit-fixture"}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=default_env, text=True).strip()
+            git("init", "-q")
+            (root / "source.rs").write_text("before\n")
+            git("add", "source.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "source.rs").write_text("after\n")
+            git("add", "source.rs")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source")
+            source = git("rev-parse", "HEAD")
+            (root / "extra.rs").write_text("extra\n")
+            metadata = {"workspace_members": ["fixture"], "packages": [{
+                "id": "fixture", "name": "fixture", "manifest_path": str(root / "Cargo.toml"),
+                "features": {}, "dependencies": [], "targets": [],
+            }]}
+            with patch.dict(os.environ, default_env, clear=True):
+                default = plan.resolve(root, profile="merge", base=base, source=source, metadata=metadata)
+                selected = plan.resolve(root, profile="merge", base=base, source=source,
+                                        metadata=metadata, env=selected_env)
+            self.assertIn("extra.rs", default["paths"])
+            self.assertNotIn("extra.rs", selected["paths"])
+            self.assertEqual(selected["runtime_inputs"], plan.runtime_inputs(root, selected_env))
+            self.assertNotEqual(default["runtime_inputs"], selected["runtime_inputs"])
+            self.assertIn("explicit native acceptance inputs", selected["python_tests"]["reasons"][0])
+            self.assertNotIn("explicit native acceptance inputs", default["python_tests"]["reasons"][0])
+
+    def test_session_density_inventory_retains_target_path(self):
+        root = SCRIPTS.parent
+        package_dir = root / "crates/hex-session"
+        metadata = {"workspace_members": ["session"], "packages": [{
+            "id": "session", "name": "hex-session",
+            "manifest_path": str(package_dir / "Cargo.toml"), "features": {}, "dependencies": [],
+            "targets": [{"name": "automation_take_density", "kind": ["test"],
+                         "src_path": str(package_dir / "tests/automation_take_density.rs")}],
+        }]}
+        inventory = plan.cargo_inventory(metadata, root)
+        self.assertEqual(inventory[0]["targets"][0]["src_path"],
+                         "tests/automation_take_density.rs")
+
+    def test_session_adoption_selects_density_integration_only_when_needed(self):
+        owner = "hex-session"
+        target = {"name": "automation_take_density", "kind": ["test"],
+                  "src_path": "tests/automation_take_density.rs", "required-features": []}
+        for filters, targets, expected in (
+            (["service::automation_take::adoption::"], [target], True),
+            (["service::automation_take::"], [target], True),
+            (["service::automation_take::adoption::tests::"], [target], True),
+            (["service::recovery::"], [target], False),
+            (["service::automation_take::adoption::"], [], False),
+            ([], [target], False),
+        ):
+            with self.subTest(filters=filters, targets=targets):
+                inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml",
+                              "features": {}, "dependencies": [],
+                              "targets": [{"name": "hex_session", "kind": ["lib"]}, *targets]}]
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {},
+                            "module_filters": {owner: filters} if filters else {}}
+                steps = {step.step_id: step for step in ci.boundary_steps({
+                    "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": []})}
+                step = steps.get("session-automation-take-density")
+                self.assertEqual(step is not None, expected)
+                if step:
+                    self.assertEqual(step.argv, ("cargo", "test", "-p", owner, "--test",
+                                                  "automation_take_density", "--locked"))
+                    self.assertTrue(step.requires_tests)
+                if not filters:
+                    self.assertIn("affected-tests", steps)
+
+    def test_session_adoption_rejects_malformed_density_target(self):
+        owner = "hex-session"
+        for target in (
+            {"name": "automation_take_density", "kind": ["test"], "src_path": "tests/wrong.rs"},
+            {"name": "automation_take_density", "kind": ["example"],
+             "src_path": "tests/automation_take_density.rs"},
+            {"name": "automation_take_density", "kind": ["test"],
+             "src_path": "tests/automation_take_density.rs", "required-features": ["hidden"]},
+        ):
+            with self.subTest(target=target):
+                inventory = [{"name": owner, "manifest": "crates/hex-session/Cargo.toml",
+                              "features": {}, "dependencies": [],
+                              "targets": [{"name": "hex_session", "kind": ["lib"]}, target]}]
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {},
+                            "module_filters": {owner: ["service::automation_take::adoption::"]}}
+                with self.assertRaisesRegex(ValueError, "integration target is malformed"):
+                    ci.boundary_steps({"affected_packages": [owner], "boundary": boundary,
+                                       "cargo_inventory": inventory, "paths": []})
+
     def test_session_resident_audio_source_and_nested_tests_share_module_boundary(self):
         root = SCRIPTS.parent
         owner = "hex-session"
@@ -222,16 +333,18 @@ class ScopeTests(unittest.TestCase):
                                      ci.ci_plan.UI_UNIT_FEATURES[target])
 
 
-    def test_ui_library_and_midi_pressure_feature_targets_are_disjoint(self):
+    def test_ui_library_and_standalone_rendered_feature_targets_are_disjoint(self):
         for scope in ("full", "ui"):
             with self.subTest(scope=scope):
                 steps = {step.step_id: step for step in ci.planned_steps({"scope": scope})}
                 self.assertIn("--lib", steps["ui-feature-tests"].argv)
                 self.assertNotIn("--test", steps["ui-feature-tests"].argv)
-                self.assertEqual(steps["ui-midi-pressure-boundary-tests"].argv,
-                                 ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
-                                  "--test", "midi_pressure_boundary", "--locked"))
-                self.assertTrue(steps["ui-midi-pressure-boundary-tests"].requires_tests)
+                for target in ("midi_pressure_boundary", "sample_recorder_layout", "operator_focus"):
+                    step = steps[f"ui-{target.replace('_', '-')}-tests"]
+                    self.assertEqual(step.argv,
+                                     ("cargo", "test", "-p", "hex-ui", "--features",
+                                      "ui-test-support", "--test", target, "--locked"))
+                    self.assertTrue(step.requires_tests)
                 self.assertIn("--doc", steps["ui-feature-doctests"].argv)
                 self.assertIn("--example", steps["device-gallery-tests"].argv)
                 self.assertNotIn("ui-default-standalone-tests", steps)
@@ -239,7 +352,8 @@ class ScopeTests(unittest.TestCase):
         health = {"python": False, "workspace_inputs": False, "packages": ["hex-ui"]}
         steps = {step.step_id: step for step in ci.planned_steps({"scope": "rust", "health": health})}
         self.assertEqual(steps["health-tests"].argv, ("cargo", "test", "-p", "hex-ui", "--locked"))
-        self.assertFalse(any("midi_pressure_boundary" in step.argv for step in steps.values()))
+        for target in ("midi_pressure_boundary", "sample_recorder_layout", "operator_focus"):
+            self.assertFalse(any(target in step.argv for step in steps.values()))
 
     def test_hex_ui_standalone_targets_require_the_reviewed_features(self):
         root = SCRIPTS.parent
@@ -255,7 +369,7 @@ class ScopeTests(unittest.TestCase):
             (): {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
                  "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"},
             ("ui-unit-tier",): set(plan.UI_UNIT_FEATURES),
-            ("ui-test-support",): {"midi_pressure_boundary"},
+            ("ui-test-support",): {"midi_pressure_boundary", "sample_recorder_layout", "operator_focus"},
         })
 
     def test_shared_theme_selects_unit_and_path_consumer_configurations(self):
@@ -336,6 +450,18 @@ class ScopeTests(unittest.TestCase):
                     ci.main(arguments)
                 self.assertEqual(error.exception.code, 2)
                 runner.assert_not_called()
+
+    def test_scoped_cli_resolves_with_its_metadata_environment(self):
+        fixture_plan = {"scope": "metadata", "qualifies_merge": True}
+        completed = subprocess.CompletedProcess([], 0, "{}", "")
+        with patch.object(ci, "command_output", return_value=completed) as metadata, \
+                patch.object(ci, "cli_policy_error", return_value=None), \
+                patch.object(ci.ci_plan, "resolve", return_value=fixture_plan) as resolve, \
+                patch.object(ci, "LocalCiRunner") as runner:
+            runner.return_value.run.return_value = 0
+            runner.return_value.summary = {"steps": [], "status": "partial"}
+            self.assertEqual(ci.main(["--profile", "merge", "--base", "base", "--source", "source"]), 0)
+        self.assertIs(resolve.call_args.kwargs["env"], metadata.call_args.args[2])
 
     def test_edit_target_validation_and_required_features(self):
         inventory = [{"name": "fixture", "features": {"default": ["enabled"], "enabled": [], "extra": []},
@@ -592,18 +718,30 @@ class ScopeTests(unittest.TestCase):
             self.assertNotIn(":tool_dependency", log.read_text())
             self.assertNotIn(":tool_consumer", log.read_text())
             delivery = module("compiler_release_fixture", "hex-test-build.py")
-            def release(name):
-                runner = delivery.ci.LocalCiRunner(root, env={**env, "CARGO_TARGET_DIR": str(root / "release-target")}, run_id=name, min_free_bytes=0)
+            def release(name, target):
+                runner = delivery.ci.LocalCiRunner(root, env={**env, "CARGO_TARGET_DIR": str(target)},
+                                                   run_id=name, min_free_bytes=0)
                 with delivery.optimized_artifact(runner, package="tool-consumer") as (binary, ownership):
                     self.assertEqual(command(str(binary)), "7")
                 return ownership
-            release("old-release-tool")
+
+            old_target = root / "release-target" / "initial"
+            old = release("old-release-tool", old_target)
+            old_owner = Path(old["owner_path"])
+            old_owner_bytes = old_owner.read_bytes()
             log.write_text("")
             write_wrapper("third")
-            release("new-release-tool")
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "release cache does not prove an empty origin"):
+                release("changed-wrapper-old-target", old_target)
+            self.assertEqual(old_owner.read_bytes(), old_owner_bytes)
+            self.assertNotIn(":tool_dependency", log.read_text())
+
+            new_target = root / "release-target" / "changed-wrapper"
+            new_target.mkdir()
+            release("new-release-tool", new_target)
             self.assertIn("third:tool_dependency", log.read_text())
             log.write_text("")
-            reused = release("same-release-tool")
+            reused = release("same-release-tool", new_target)
             self.assertNotIn(":tool_dependency", log.read_text())
             self.assertNotIn(":tool_consumer", log.read_text())
             self.assertEqual(reused["cleanup_status"], "not_needed")
@@ -1034,9 +1172,9 @@ class ScopeTests(unittest.TestCase):
             run(selected)
             run(selection("unknown.input"), passed=False)
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_prose_continuation_requires_complete_original_runtime_certificate(self):
-        with tempfile.TemporaryDirectory() as directory:
+    @contextmanager
+    def runtime_certificate_fixture(self):
+        with patch.dict(os.environ, {}, clear=True), tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install_delivery_source_fixture(root)
             def git(*args):
@@ -1059,6 +1197,7 @@ class ScopeTests(unittest.TestCase):
             metadata = {"workspace_members": ["fixture"], "packages": [dict(
                 id="fixture", name="fixture", manifest_path=str(root / "Cargo.toml"),
                 features={}, targets=[], dependencies=[])]}
+            scoped = plan.resolve(root, profile="merge", base=base, source=previous, metadata=metadata)
             # Deliberately fabricated unit-test data exercises schema/refusal;
             # these counts are never claimed as executed product tests.
             tree = {"commit": previous, "dirty": False, "dirty_files": [], "content_sha256": "fixture"}
@@ -1077,15 +1216,55 @@ class ScopeTests(unittest.TestCase):
             report = root / "artifacts/report.json"
             report.parent.mkdir()
             report.write_text(json.dumps(evidence))
+            yield root, resolved, report, evidence, scoped, metadata
+
+    def test_prose_continuation_requires_complete_original_runtime_certificate(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
             reused = ci.reusable_plan(root, resolved, report)
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
-            self.assertEqual(reused["reuse"]["source"], previous)
+            self.assertEqual(reused["reuse"]["source"], evidence["commit"])
             self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
+            complete_bytes = report.read_bytes()
+            incomplete_bytes = json.dumps({**evidence, "steps": [{"status": "passed"}]}).encode()
+            resolved_report = report.resolve()
+            original_read = Path.read_bytes
+            reads = []
+            def change_report(path):
+                if path == resolved_report:
+                    reads.append(None)
+                    return complete_bytes if len(reads) == 1 else incomplete_bytes
+                return original_read(path)
+            with patch.object(Path, "read_bytes", change_report):
+                retained = ci.reusable_plan(root, resolved, report, env={})
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(retained["reuse"]["sha256"], hashlib.sha256(complete_bytes).hexdigest())
+            reads.clear()
+            def change_incomplete_report(path):
+                if path == resolved_report:
+                    reads.append(None)
+                    return incomplete_bytes if len(reads) == 1 else complete_bytes
+                return original_read(path)
+            with patch.object(Path, "read_bytes", change_incomplete_report), \
+                    self.assertRaisesRegex(ValueError, "complete required configurations"):
+                ci.reusable_plan(root, resolved, report, env={})
+            self.assertEqual(len(reads), 1)
+            with self.assertRaisesRegex(ValueError, "native/external"):
+                ci.reusable_plan(root, resolved, report, env={"HEX_VST3_SDK_DIR": "fixture"})
+            original_report = report.read_bytes()
+            original_plan = json.dumps(resolved, sort_keys=True)
+            report.write_bytes(b"[]")
+            for check in (ci.reusable_plan, plan.reuse_checks):
+                with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "must be an object"):
+                    check(root, resolved, report, env={})
+            report.write_bytes(original_report)
+
+    def test_runtime_reuse_preserves_native_acceptance_exclusions(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
             original_report = report.read_bytes()
             original_plan = json.dumps(resolved, sort_keys=True)
             # Full reports without a plan and scoped reports must both carry an
             # explicit false observation. Missing historical state is unknown.
-            for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
+            for old_plan in (None, scoped):
                 candidate = {**evidence, "plan": old_plan,
                              "mode": "full" if old_plan is None else "merge",
                              "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
@@ -1121,20 +1300,38 @@ class ScopeTests(unittest.TestCase):
                         plan.reuse_checks(root, resolved, report, env={})
                     self.assertEqual(report.read_bytes(), native_report)
                 self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
-            report.write_bytes(original_report)
+
+    def test_sharded_full_report_supports_prose_continuation(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, _, _):
+            tooling = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+            tooling["argv"] = list(ci.ci_plan.python_tests.SHARDED_DISCOVERY_ARGV)
+            evidence["sharded_full_python"] = True
+            report.write_text(json.dumps(evidence))
+            reused = ci.reusable_plan(root, resolved, report)
+            self.assertEqual(reused["reuse"]["source"], evidence["commit"])
+            for marker in (False, 1):
+                with self.subTest(marker=marker):
+                    report.write_text(json.dumps({**evidence, "sharded_full_python": marker}))
+                    with self.assertRaises(ValueError):
+                        ci.reusable_plan(root, resolved, report)
+
+    def test_runtime_reuse_refuses_invalid_certificates_and_executable_changes(self):
+        with self.runtime_certificate_fixture() as (root, resolved, report, evidence, scoped, metadata):
+            original_report = report.read_bytes()
             (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
             with self.assertRaisesRegex(ValueError, "symlink"):
-                plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+                plan.resolve(root, profile="merge", base=resolved["base"], source=resolved["source"], metadata=metadata)
             (root / "linked-runtime.rs").unlink()
             for field, value in (("steps", evidence["steps"][:-1]), ("status", "failed"),
                                  ("mode", "edit"), ("schema_version", 1),
-                                 ("runtime_inputs", {"sha256": "changed"}), ("target_cache", {})):
+                                 ("runtime_inputs", {"sha256": "changed"}), ("runtime_inputs", []),
+                                 ("target_cache", {}), ("target_cache", [])):
                 report.write_text(json.dumps({**evidence, field: value}))
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     ci.reusable_plan(root, resolved, report)
             report.write_text(json.dumps(evidence))
             (root / "runtime.rs").write_text("uncommitted executable change")
-            changed = plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
+            changed = plan.resolve(root, profile="merge", base=resolved["base"], source=resolved["source"], metadata=metadata)
             with self.assertRaises(ValueError):
                 ci.reusable_plan(root, changed, report)
             runner = ci.LocalCiRunner(root, mode="merge", plan=changed, min_free_bytes=0)
@@ -1385,6 +1582,11 @@ class SingleRunFeatureTests(unittest.TestCase):
             ui_source.write_text('#[cfg(all(test, feature = "ui-unit-tier"))]\nmod tests {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
                              {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]\nmod tests {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            ui_source.write_text('#[cfg(any(feature = "ui-unit-tier", feature = "ui-test-support"))]\nfn runtime() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
             ui_source.write_text('#[cfg(feature = "ui-unit-tier")]\nfn runtime() {}\n')
             self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
             ui_source.write_text("")
@@ -1740,7 +1942,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         for name in ("core", "ui"):
             (root / f"crates/{name}/src").mkdir(parents=True)
             (root / f"crates/{name}/Cargo.toml").write_text(f"[package]\nname='{name}'\n")
-            (root / f"crates/{name}/src/lib.rs").write_text("// base\n")
+            (root / f"crates/{name}/src/lib.rs").write_text("mod a;\n" if name == "ui" else "// base\n")
         git("add", ".")
         git("commit", "-qm", "base")
         return git
@@ -1756,9 +1958,11 @@ class BaseAdvanceCarryTests(unittest.TestCase):
         return {"schema_version": 2, "mode": "merge", "status": "passed", "exit_code": 0,
                 "commit": resolved["source"], "dirty": False, "stale": False,
                 "native_acceptance_opt_in": False, "start_tree": tree, "end_tree": tree,
+                "runtime_inputs": resolved["runtime_inputs"],
                 "plan": resolved, "target_cache": {"dependency_inputs": {"version": 1}},
-                "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
-                           "test_results": {"rust_passed_by_binary": [1]}}]}
+                "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                           "test_results": {"rust_passed_by_binary": [1], "python_executions": [1]}}
+                          for step in ci.planned_steps(resolved)]}
 
     @contextmanager
     def carry_fixture(self):
@@ -1767,14 +1971,14 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             git = self.repository(root)
             base = git("rev-parse", "HEAD")
             git("checkout", "-qb", "pr")
-            (root / "crates/ui/src/a.rs").write_text("// pr\n")
+            (root / "crates/ui/src/a.rs").write_text("#[test] fn original() {}\n")
             git("add", ".")
             git("commit", "-qm", "pr")
             evidence = self.evidence(root, plan.resolve(root, profile="merge", base=base,
                                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root)))
             candidate = git("rev-parse", "HEAD")
 
-            def advance(paths, *, then=None):
+            def advance(paths, *, then=None, checker=None):
                 git("checkout", "-q", "--detach", base)
                 for path, text in paths.items():
                     (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -1790,7 +1994,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                     git("commit", "-qm", "extra")
                 resolved = plan.resolve(root, profile="merge", base=advanced,
                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
-                return plan.carry_basis(root, resolved, evidence, env={})
+                return (checker or plan.carry_basis)(root, resolved, evidence, env={})
 
             yield root, base, candidate, evidence, advance
 
@@ -1799,6 +2003,54 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
             self.assertEqual(basis["delta_owners"], ["core"])
             self.assertEqual(basis["report_commit"], candidate)
+
+    def test_carry_refuses_rehashed_historical_selection(self):
+        with self.carry_fixture() as (_, _, _, evidence, advance):
+            old = evidence["plan"]
+            old["python_tests"]["forged"] = True
+            old.pop("plan_sha256")
+            old["plan_sha256"] = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
+            with self.assertRaisesRegex(ValueError, "historical"):
+                advance({"crates/core/src/lib.rs": "// advanced\n"})
+
+    def test_carry_reconstructs_selector_relevant_old_source(self):
+        with self.carry_fixture() as (_, _, _, evidence, advance):
+            self.assertEqual(evidence["plan"]["boundary"]["module_filters"], {"ui": ["a::"]})
+            basis = advance({"crates/ui/src/lib.rs": "#[cfg(test)]\nmod a;\n"})
+            self.assertEqual(basis["delta_owners"], ["ui"])
+
+    def test_carry_git_uses_explicit_environment(self):
+        def check(root, current, evidence, **_):
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+            with patch.dict(os.environ, {"GIT_DIR": str(root / "missing")}):
+                return plan.carry_basis(root, current, evidence, env=env)
+        with self.carry_fixture() as (_, _, _, _, advance):
+            self.assertEqual(advance({"crates/core/src/lib.rs": "// advanced\n"}, checker=check)["delta_owners"], ["core"])
+
+    def test_runner_refuses_incomplete_carried_report_before_inheritance(self):
+        def check(root, current, evidence, **_):
+            report = root / "artifacts/old.json"
+            report.parent.mkdir()
+            report.write_text(json.dumps(evidence))
+            runner = ci.LocalCiRunner(root, mode="merge", plan=current, carry_report=report)
+            runner._prepare_carry()
+            self.assertIsNotNone(runner._carry)
+            cache = evidence["target_cache"]
+            evidence["target_cache"] = []
+            report.write_text(json.dumps(evidence))
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("guarded target identity", runner.summary["carry"]["refused"])
+            evidence["target_cache"] = cache
+            evidence["steps"].pop()
+            raw = json.dumps(evidence).encode()
+            report.write_bytes(raw)
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])
+            self.assertEqual(report.read_bytes(), raw)
+        with self.carry_fixture() as (_, _, _, _, advance):
+            advance({"crates/core/src/lib.rs": "// advanced\n"}, checker=check)
 
     def assert_carry_advance_refused(self, paths, then, message):
         with self.carry_fixture() as (_, _, _, _, advance):
@@ -1832,6 +2084,8 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                     plan.carry_basis(root, current, {**evidence, field: value}, env={})
             with self.assertRaisesRegex(ValueError, "native/external"):
                 plan.carry_basis(root, current, evidence, env={"HEX_VST3_SDK_DIR": "x"})
+            with self.assertRaisesRegex(ValueError, "not a complete passed"):
+                plan.carry_basis(root, current, {**evidence, "start_tree": "bad", "end_tree": "bad"}, env={})
             # A report whose base is newer than the current base cannot carry.
             newer = {**evidence["plan"], "base": candidate}
             with self.assertRaisesRegex(ValueError, "not an ancestor"):
@@ -1850,7 +2104,7 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             runner.output_dir.mkdir(parents=True)  # run() creates it before any step.
             basis = {"report_commit": "c0", "delta_paths": ["crates/core/src/lib.rs"],
                      "delta_owners": ["core"], "python_tests": {"mode": "none", "reasons": []}}
-            with patch.object(ci.ci_plan, "carry_basis", return_value=basis):
+            with patch.object(ci, "validate_report_steps"), patch.object(ci.ci_plan, "carry_basis", return_value=basis):
                 runner._prepare_carry()
             self.assertEqual(runner.summary["carry"]["decisions"][0]["action"], "carry")
             runner._record_carried(step, 1, runner._carry[0])
@@ -1859,12 +2113,16 @@ class BaseAdvanceCarryTests(unittest.TestCase):
             self.assertEqual(carried["carried_from"], {"report": str(report.resolve()), "commit": "c0", "log": "old.log"})
             # A chained carry keeps the run that actually executed the step.
             self.assertEqual(runner._carry_origin({"carried_from": {"report": "first.json"}}), {"report": "first.json"})
+            with patch.object(ci, "validate_report_steps", side_effect=ValueError("report changed")):
+                runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIsNone(runner._carry_dependency_inputs)
             runner._drop_carry("toolchain changed")
             self.assertIsNone(runner._carry)
             self.assertIn("run fresh", runner.summary["carry"]["refused"])
             refused = ci.LocalCiRunner(root, mode="merge", plan=resolved, min_free_bytes=0,
                                        steps=(step,), carry_report=report)
-            with patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
+            with patch.object(ci, "validate_report_steps"), patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
                 refused._prepare_carry()
             self.assertIsNone(refused._carry)
             self.assertIn("every step runs fresh", refused.summary["carry"]["refused"])
@@ -2090,6 +2348,122 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertEqual(command(str(binary)), "B")
             self.assertEqual(unrelated.read_bytes(), b"unrelated release artifact")
 
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_release_external_dependency_requires_exact_fresh_cache_lineage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
+            (root / "app/src").mkdir(parents=True)
+            (root / "vendor/src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/target*/\n/artifacts/\n')
+            (root / "app/Cargo.toml").write_text(
+                '[package]\nname="selector-release"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal-selector={path="../vendor"}\n')
+            (root / "vendor/Cargo.toml").write_text(
+                '[package]\nname="external-selector"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "vendor/build.rs").write_text(
+                'fn main() {\n'
+                '    println!("cargo:rerun-if-changed=build.rs");\n'
+                '    let selector = std::fs::read_to_string("../scripts/selector.txt").unwrap();\n'
+                '    println!("cargo:rustc-env=SELECTOR_PROBE={}", selector.trim());\n'
+                '}\n')
+            (root / "vendor/src/lib.rs").write_text(
+                'pub fn selected() -> &\'static str { env!("SELECTOR_PROBE") }\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", external_selector::selected()); }\n')
+            selector = root / "scripts/selector.txt"
+            selector.write_text("A\n")
+            env = {**os.environ, "CARGO_CACHE_RUSTC_INFO": "0"}
+            target = root / "target-a"
+            target.mkdir()
+            fresh_target = root / "target-b"
+            fresh_target.mkdir()
+            state_dir = root / "artifacts/target-state"
+            argv = ["cargo", "build", "--release", "--offline", "--locked"]
+            binary_path = Path("release/selector-release")
+
+            def command(*args):
+                return subprocess.check_output(args, cwd=root, env=env, text=True).strip()
+
+            def runner(name, build_target=target):
+                return ci.LocalCiRunner(root, run_id=name, min_free_bytes=0,
+                                        env=dict(env, CARGO_TARGET_DIR=str(build_target)),
+                                        target_state_dir=state_dir)
+
+            def build(active, build_target, **options):
+                with active.guarded_release(requested_build_argv=argv, **options) as report:
+                    result = subprocess.run(argv, cwd=root, env=active.env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    binary = build_target / binary_path
+                    report.update(build_argv=argv, build_exit_code=0,
+                                  artifact=active.identify_release_artifact(binary, argv))
+                return report
+
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "release cache fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector A")
+            first = build(runner("release-a"), target)
+            old_binary = target / binary_path
+            self.assertEqual(command(str(old_binary)), "A")
+            old_owner = Path(first["owner_path"])
+            old_owner_bytes = old_owner.read_bytes()
+            sentinels = [target / "release/unrelated-artifact", target / "debug/unrelated-artifact"]
+            for path in sentinels:
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"unrelated")
+
+            selector.write_text("B\n")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector B")
+            with self.assertRaisesRegex(ci.TargetCacheError, "fresh release target"):
+                with runner("refuse-stale-release").guarded_release(requested_build_argv=argv):
+                    self.fail("changed source reached the optimized build with old dependency output")
+            self.assertEqual(old_owner.read_bytes(), old_owner_bytes)
+            self.assertEqual(command(str(old_binary)), "A")
+            for path in sentinels:
+                self.assertEqual(path.read_bytes(), b"unrelated")
+
+            with ci.FreshTargetReservation.acquire(root, str(fresh_target), {"run_id": "fresh"},
+                                                    state_dir=state_dir) as reservation:
+                with self.assertRaises(KeyboardInterrupt):
+                    with runner("interrupted-b", fresh_target).guarded_release(
+                            requested_build_argv=argv, reservation=reservation):
+                        raise KeyboardInterrupt
+            recovered = build(runner("recover-b", fresh_target), fresh_target, adopt=True)
+            self.assertEqual(recovered["state"], "ready")
+            self.assertEqual(command(str(fresh_target / binary_path)), "B")
+            reused = build(runner("reuse-b", fresh_target), fresh_target)
+            self.assertEqual(reused["action"], "reuse")
+            self.assertEqual(reused["cleanup_status"], "not_needed")
+
+            legacy_owner = Path(recovered["owner_path"])
+            old_pending = json.loads(legacy_owner.read_bytes())
+            old_pending["state"] = "pending"
+            old_pending.pop("build_cache_origin", None)
+            legacy_owner.write_text(json.dumps(old_pending))
+            legacy_bytes = legacy_owner.read_bytes()
+            with self.assertRaisesRegex(ci.TargetCacheError, "fresh release target"):
+                with runner("refuse-legacy-b", fresh_target).guarded_release(
+                        requested_build_argv=argv, adopt=True):
+                    self.fail("legacy pending owner reached optimized build without cache lineage")
+            self.assertEqual(legacy_owner.read_bytes(), legacy_bytes)
+            self.assertEqual(command(str(fresh_target / binary_path)), "B")
+
+            unowned = root / "target-unowned"
+            unowned.mkdir()
+            retained = unowned / "existing-artifact"
+            retained.write_bytes(b"unowned")
+            with self.assertRaisesRegex(ci.TargetCacheError, "fresh release target"):
+                with runner("refuse-unowned", unowned).guarded_release(
+                        requested_build_argv=argv, adopt=True):
+                    self.fail("adoption established a false empty origin")
+            self.assertEqual(retained.read_bytes(), b"unowned")
+
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2141,6 +2515,93 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertEqual(fixed.run(), 0, fixed.summary)
             self.assertIn("cache-dependency", " ".join(fixed.summary["target_cache"]["cleanup_argv"]))
             self.assertEqual(command(str(root / "target/debug/cache-consumer")), "new API")
+
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_dev_handoff_refuses_stale_output_from_excluded_build_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
+            (root / "app/src").mkdir(parents=True)
+            (root / "app/build_support").mkdir()
+            (root / "vendor/src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/target*/\n/artifacts/\n')
+            (root / "app/Cargo.toml").write_text(
+                '[package]\nname="selector-dev"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal-selector={path="../vendor"}\n')
+            (root / "vendor/Cargo.toml").write_text(
+                '[package]\nname="external-selector"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "vendor/build.rs").write_text(
+                'fn main() {\n'
+                '    println!("cargo:rerun-if-changed=build.rs");\n'
+                '    let s = std::fs::read_to_string("../app/build_support/selector.txt").unwrap();\n'
+                '    println!("cargo:rustc-env=SELECTOR_PROBE={}", s.trim());\n'
+                '}\n')
+            (root / "vendor/src/lib.rs").write_text(
+                'pub fn selected() -> &\'static str { env!("SELECTOR_PROBE") }\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", external_selector::selected()); }\n')
+            selector = root / "app/build_support/selector.txt"
+            selector.write_text("A\n")
+            env = dict(os.environ, CARGO_CACHE_RUSTC_INFO="0")
+            target = root / "target-a"
+            state_dir = root / "artifacts/target-state"
+            stages = (ci.Step("build", ("cargo", "build", "--offline", "--locked")),)
+
+            def command(*args):
+                return subprocess.check_output(args, cwd=root, env=env, text=True).strip()
+
+            def runner(name, selected=target, *, adopt=False, workspace=root):
+                return ci.LocalCiRunner(workspace, mode="component", run_id=name, steps=stages,
+                                        env=dict(env, CARGO_TARGET_DIR=str(selected)),
+                                        target_state_dir=state_dir, adopt_target=adopt)
+
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "dev cache fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector A")
+            first = runner("dev-a")
+            self.assertEqual(first.run(), 0, first.summary)
+            binary = target / "debug/selector-dev"
+            self.assertEqual(command(str(binary)), "A")
+            _, owner = ci.target_state_paths(target, state_dir)
+            original_owner = owner.read_bytes()
+            retained = target / "release/existing"
+            retained.parent.mkdir()
+            retained.write_bytes(b"unrelated release output")
+
+            # The unchanged dependency's build script declares a watch only on
+            # itself. Its old output survives workspace-only cleanup.
+            selector.write_text("B\n")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector B")
+            guarded = runner("dev-b-refusal", adopt=True)
+            status = guarded.run()
+            self.assertEqual(status, 1, f"guard admitted stale output {command(str(binary))!r}")
+            self.assertIn("fresh target", guarded.summary["target_cache_error"])
+            self.assertNotEqual(guarded._dependency_inputs, first._dependency_inputs)
+            self.assertEqual(owner.read_bytes(), original_owner)
+            self.assertEqual(command(str(binary)), "A")
+            self.assertEqual(retained.read_bytes(), b"unrelated release output")
+
+            worktree = root / "artifacts/worktree-b"
+            command("git", "worktree", "add", "--detach", str(worktree), "HEAD")
+            handoff = runner("other-worktree-refusal", workspace=worktree)
+            self.assertEqual(handoff.run(), 1, handoff.summary)
+            self.assertIn("fresh target", handoff.summary["target_cache_error"])
+            self.assertEqual(owner.read_bytes(), original_owner)
+
+            fresh = root / "target-b"
+            fresh.mkdir()
+            with ci.FreshTargetReservation.acquire(root, str(fresh), {"run_id": "dev-fresh"},
+                                                    state_dir=state_dir) as reservation:
+                updated = runner("dev-b-fresh", fresh)
+                self.assertEqual(updated.run(reservation=reservation), 0, updated.summary)
+            self.assertEqual(command(str(fresh / "debug/selector-dev")), "B")
+            self.assertEqual(runner("dev-b-reuse", fresh).run(), 0)
 
     def test_final_dependency_signal_releases_lock_and_restores_handlers(self):
         # Reuse the existing isolated fake-tool fixture, not the real app/target.
@@ -2745,6 +3206,60 @@ class ModuleScopeTests(unittest.TestCase):
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner, "hex-session"],
                                   "boundary": consumer_only, "cargo_inventory": [*inventory, other], "paths": []})
         self.assertFalse(any(step.step_id == "ui-consumer-track_group_focus" for step in steps))
+
+    def test_sample_recorder_layout_is_selected_from_its_owner_and_target(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        cases = ("src/editor/sample_recorder.rs",
+                 "src/editor/sample_recorder/layout_fixture.rs",
+                 "src/editor/rendered_test_fixture.rs",
+                 "tests/sample_recorder_layout.rs", "src/editor/user_errors.rs")
+        for path in cases:
+            with self.subTest(path=path):
+                paths = [f"crates/hex-ui/{path}"]
+                filters = plan.module_test_filters(root, paths, inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": filters}
+                steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                          "boundary": boundary, "cargo_inventory": inventory,
+                                          "paths": paths})
+                matches = [step for step in steps if "sample_recorder_layout" in step.argv]
+                self.assertEqual(len(matches), int(path != cases[-1]))
+                if matches:
+                    self.assertEqual(matches[0].step_id, "ui-consumer-sample_recorder_layout")
+                    self.assertTrue(matches[0].requires_tests)
+                    self.assertIn("ui-test-support", matches[0].argv)
+
+    def test_operator_focus_is_selected_from_its_owners_and_target(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        cases = ("src/editor/device_panel/operator_panel.rs",
+                 "src/editor/device_panel/operator_focus_fixture.rs",
+                 "src/editor/device_panel/tests/operator_tab_tests.rs",
+                 "tests/operator_focus.rs", "src/editor/user_errors.rs")
+        for path in cases:
+            with self.subTest(path=path):
+                paths = [f"crates/hex-ui/{path}"]
+                filters = plan.module_test_filters(root, paths, inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": filters}
+                steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                          "boundary": boundary, "cargo_inventory": inventory,
+                                          "paths": paths})
+                matches = [step for step in steps if "operator_focus" in step.argv]
+                self.assertEqual(len(matches), int(path != cases[-1]))
+                if matches:
+                    self.assertEqual(matches[0].step_id, "ui-consumer-operator_focus")
+                    self.assertTrue(matches[0].requires_tests)
+                    self.assertIn("ui-test-support", matches[0].argv)
 
     def test_midi_pressure_boundary_source_target_feature_and_full_run_selection(self):
         root = SCRIPTS.parent

@@ -24,6 +24,7 @@ fn insert(revision: u64, destination: EffectBusDestination) -> Request {
         class: NativeDeviceClass::Effect,
         type_id: DeviceTypeId::from_static("hex.utility"),
         before: None,
+        control: None,
     }
 }
 
@@ -177,6 +178,7 @@ fn effect_bus_worker_invalid_identity_target_anchor_and_stamps_are_atomic() {
                 class,
                 type_id: DeviceTypeId::from_static(kind),
                 before: anchor,
+                control: None,
             },
         );
         assert!(refused.error.is_some());
@@ -320,6 +322,7 @@ fn overdrive_track_return_main_parameters_history_and_file_roundtrip() {
                 class: NativeDeviceClass::Effect,
                 type_id: DeviceTypeId::from_static("hex.overdrive"),
                 before: None,
+                control: None,
             },
         );
         assert!(added.error.is_none(), "{:?}", added.error);

@@ -341,3 +341,54 @@ fn chain_matching_recognizes_exact_retained_programs_without_relaxing_source_or_
         }
     }
 }
+
+#[test]
+fn delayed_effect_programs_resolve_by_exact_clock_and_reserve_the_joined_queue() {
+    struct Bounded(usize);
+    impl ForeignAutomationProgram for Bounded {
+        fn quantum_point_budget(&self) -> Option<usize> {
+            Some(self.0)
+        }
+        fn render_quantum(
+            &self,
+            _: &[Option<u64>],
+            _: &[u16],
+            _: &mut [ForeignParameterPoint],
+        ) -> Result<usize, DeviceContractError> {
+            Ok(0)
+        }
+    }
+    let compile = |revision, clock, points| {
+        let mut prepared =
+            PreparedForeignAutomation::new(BINDING, key(revision), Bounded(points), 0).unwrap();
+        prepared.bind_effect_clock_on_control(key(clock), revision > 1);
+        prepared
+    };
+    let opening = compile(1, 1, 52);
+    let mut replacement = compile(2, 1, 38);
+    replacement.retain_previous_on_control(&opening).unwrap();
+    let mut next = compile(3, 2, 70);
+    next.retain_previous_on_control(&replacement).unwrap();
+    assert!(next.effect_clock_splice_fits());
+    assert!(next.covers_effect_clock_range(key(1), key(2)));
+    let old = next.borrow_for_effect_clock(Some(key(1))).unwrap();
+    assert_eq!(old.revision, key(2));
+    assert_eq!(old.authored_clock_epoch, Some(key(1)));
+    assert!(old.retains_program_from(opening.borrow(), key(1)));
+    let current = next.borrow_for_effect_clock(Some(key(2))).unwrap();
+    assert_eq!(current.revision, key(3));
+    assert_eq!(current.authored_clock_epoch, Some(key(2)));
+    assert!(next.borrow_for_effect_clock(Some(key(3))).is_err());
+
+    let mut too_dense = compile(4, 3, 7);
+    too_dense.retain_previous_on_control(&next).unwrap();
+    assert!(!too_dense.effect_clock_splice_fits());
+    // A received program on the later clock proves both earlier versions
+    // have cleared this particular effect's delayed input and worker queue.
+    let mut drained = compile(4, 3, 7);
+    drained.retain_received_on_control(&next, key(3)).unwrap();
+    assert!(drained.effect_clock_splice_fits());
+    assert!(drained.covers_effect_clock_range(key(2), key(3)));
+    assert!(!drained.covers_effect_clock_range(key(1), key(3)));
+    assert!(drained.borrow_for_effect_clock(Some(key(1))).is_err());
+}

@@ -6,6 +6,23 @@ use hex_lattice::NativeRuntimeEntryStorage;
 pub(crate) fn pair_bytes(
     entry: &NativeRuntimeEntryStorage<'_>,
 ) -> Result<Option<(usize, usize)>, AudioStorageError> {
+    let limiter = entry
+        .owned_runtime::<hex_devices::limiter::LimiterRuntime>()
+        .map(|runtime| runtime.control_storage().ok_or(AudioStorageError::Overflow))
+        .or_else(|| {
+            entry
+                .owned_runtime::<hex_devices::limiter::StructuralLimiterRuntime>()
+                .map(|runtime| runtime.control_storage().ok_or(AudioStorageError::Overflow))
+        })
+        .transpose()?;
+    if let Some((inline, [committed, scratch])) = limiter {
+        return Ok(Some((
+            inline
+                .checked_add(committed)
+                .ok_or(AudioStorageError::Overflow)?,
+            scratch,
+        )));
+    }
     if let Some(delay) = entry.owned_runtime::<hex_devices::delay::DelayRuntime>() {
         let (inline, [committed, scratch]) =
             delay.control_storage().ok_or(AudioStorageError::Overflow)?;
@@ -57,4 +74,5 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::eq8::EQ8_TYPE_ID
         || id == hex_devices::rattle::RATTLE_TYPE_ID
         || id == hex_devices::delay::TYPE_ID
+        || id == hex_devices::limiter::TYPE_ID
 }

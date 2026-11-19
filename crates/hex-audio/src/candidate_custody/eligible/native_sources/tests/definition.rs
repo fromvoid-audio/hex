@@ -59,6 +59,7 @@ fn root_compiler_borrow_selects_exact_source_epoch_with_equal_device_state() {
                     preparation,
                     Some(state),
                     native::TrustUserCode::Acknowledged,
+                    None,
                 )
                 .unwrap()
         } else {
@@ -188,7 +189,8 @@ fn root_compiler_borrow_selects_exact_source_epoch_with_equal_device_state() {
             source,
             preparation,
             None,
-            native::TrustUserCode::Acknowledged
+            native::TrustUserCode::Acknowledged,
+            None,
         ),
         Err("native source control is closing")
     );

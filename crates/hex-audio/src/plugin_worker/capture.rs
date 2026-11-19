@@ -109,6 +109,32 @@ impl Work {
     }
 }
 
+/// How the worker acknowledged the input before this capture.
+/// An idle flush has no PCM sequence, frame, or output-delivery receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeWorkerParameterApplication {
+    ProcessedPcm,
+    IdleFlushed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AppliedParameter {
+    ordinal: u64,
+    parameter: u32,
+    normalized_bits: u64,
+    application: NativeWorkerParameterApplication,
+}
+
+impl AppliedParameter {
+    fn current(self, slot: &super::parameter_change::Slot) -> bool {
+        let current = match self.application {
+            NativeWorkerParameterApplication::ProcessedPcm => slot.processed_parameter(),
+            NativeWorkerParameterApplication::IdleFlushed => slot.idle_flushed_parameter(),
+        };
+        current == Some((self.ordinal, self.parameter, self.normalized_bits))
+    }
+}
+
 /// Correlation with this exact joining worker's original shared cell, binding
 /// and operation. The weak anchor owns no processor, endpoint or native lease.
 /// Caller-owned token storage/weak alias is separate from constructor handles;
@@ -118,6 +144,55 @@ pub struct NativeWorkerCapture {
     binding: Binding,
     ordinal: u64,
     mode: Mode,
+    after_parameter: Option<AppliedParameter>,
+}
+
+#[cfg(test)]
+impl NativeWorkerCapture {
+    pub(crate) fn original_worker_released_on_control(&self) -> bool {
+        self.source.upgrade().is_none()
+    }
+}
+
+/// State observed after one exact input on this worker, explicitly recording
+/// whether it was processed in PCM or acknowledged by an idle flush. This is
+/// an ordering fact, not PCM delivery, controller readback or graph authority.
+pub struct NativeWorkerStateAfterParameter {
+    state: NativeDeviceState,
+    source: Weak<Signal>,
+    binding: Binding,
+    parameter_ordinal: u64,
+    parameter: u32,
+    normalized_bits: u64,
+    application: NativeWorkerParameterApplication,
+}
+
+impl NativeWorkerStateAfterParameter {
+    pub fn state(&self) -> &NativeDeviceState {
+        &self.state
+    }
+
+    pub fn parameter(&self) -> u32 {
+        self.parameter
+    }
+
+    /// How this worker acknowledged the input; this never proves final output.
+    pub fn application(&self) -> NativeWorkerParameterApplication {
+        self.application
+    }
+
+    /// The value actually sent in the SDK input, not plugin readback.
+    pub fn normalized_input(&self) -> f64 {
+        f64::from_bits(self.normalized_bits)
+    }
+}
+
+#[allow(clippy::large_enum_variant)] // One bounded control-side result; keep capture transfer allocation-free.
+pub enum NativeWorkerSequencedCaptureProgress {
+    Pending,
+    Captured(NativeWorkerStateAfterParameter),
+    Failed,
+    Refused(StateCaptureRefusal),
 }
 /// Data/progress only, never a canonical edit, save or graph acknowledgement.
 #[derive(Debug)]
@@ -143,12 +218,47 @@ impl NativeWorker {
     /// terminal and services that same retained State/channel. This does not
     /// revive transport, return a callback or grant graph publication.
     pub fn begin_state_capture_on_control(&mut self) -> Result<NativeWorkerCapture, &'static str> {
+        self.begin_state_capture(None)
+    }
+
+    /// Capture after a successfully processed PCM input on this exact worker.
+    /// A newer input invalidates the ordering fact, even if it is withdrawn.
+    pub fn begin_state_capture_after_parameter_on_control(
+        &mut self,
+        input: &super::NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_parameter_change_source(input)?;
+        self.begin_state_capture(Some((
+            input,
+            NativeWorkerParameterApplication::ProcessedPcm,
+        )))
+    }
+
+    /// Capture after an idle flush on this exact live worker.
+    pub fn begin_state_capture_after_idle_parameter_on_control(
+        &mut self,
+        input: &super::NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_parameter_change_source(input)?;
+        self.begin_state_capture(Some((input, NativeWorkerParameterApplication::IdleFlushed)))
+    }
+
+    fn begin_state_capture(
+        &mut self,
+        input: Option<(
+            &super::NativeWorkerParameterChange,
+            NativeWorkerParameterApplication,
+        )>,
+    ) -> Result<NativeWorkerCapture, &'static str> {
         if self.retirement_requested || !self.retains_original_source_on_control() {
             return Err("native capture source is not live");
         }
         let mode = if self.transport_is_live_on_control() {
             Mode::Live
         } else {
+            if input.is_some() {
+                return Err("native sequenced capture requires a live source");
+            }
             self.prepare_stopped_capture()?;
             Mode::Stopped
         };
@@ -161,6 +271,32 @@ impl NativeWorker {
         if slot.phase != Phase::Idle {
             return Err("native capture is already pending");
         }
+        let after_parameter = match input {
+            Some((input, application)) => {
+                let current = match application {
+                    NativeWorkerParameterApplication::ProcessedPcm
+                        if slot.parameter_change.is_processed(input) =>
+                    {
+                        slot.parameter_change.processed_parameter()
+                    }
+                    NativeWorkerParameterApplication::IdleFlushed
+                        if slot.parameter_change.is_idle_flushed(input) =>
+                    {
+                        slot.parameter_change.idle_flushed_parameter()
+                    }
+                    _ => None,
+                };
+                let (ordinal, parameter, normalized_bits) = current
+                    .ok_or("native parameter input was not the latest matching operation")?;
+                Some(AppliedParameter {
+                    ordinal,
+                    parameter,
+                    normalized_bits,
+                    application,
+                })
+            }
+            None => None,
+        };
         let ordinal = slot
             .ordinal
             .checked_add(1)
@@ -174,6 +310,7 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             mode,
+            after_parameter,
         })
     }
 
@@ -186,6 +323,100 @@ impl NativeWorker {
     /// remain the canonical snapshot owner's responsibility.
     /// Pending also includes shared-slot contention before its exact state check.
     pub fn poll_state_capture_on_control(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        if request.after_parameter.is_some() {
+            return Err("native sequenced capture requires its exact terminal");
+        }
+        self.poll_state_capture(request)
+    }
+
+    /// Return the captured data and original-worker ordering fact together.
+    /// A newer parameter operation is reported only after the capture terminal
+    /// has been drained, so the original mailbox cannot be stranded.
+    pub fn poll_state_capture_after_parameter_on_control(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerSequencedCaptureProgress, &'static str> {
+        let applied = request
+            .after_parameter
+            .ok_or("native sequenced capture differs")?;
+        match self.poll_state_capture(request)? {
+            NativeWorkerCaptureProgress::Pending => {
+                Ok(NativeWorkerSequencedCaptureProgress::Pending)
+            }
+            NativeWorkerCaptureProgress::Failed => Ok(NativeWorkerSequencedCaptureProgress::Failed),
+            NativeWorkerCaptureProgress::Refused(reason) => {
+                Ok(NativeWorkerSequencedCaptureProgress::Refused(reason))
+            }
+            NativeWorkerCaptureProgress::Captured(state) => {
+                let fact = NativeWorkerStateAfterParameter {
+                    state,
+                    source: Arc::downgrade(&self.reaper.completed),
+                    binding: self.binding,
+                    parameter_ordinal: applied.ordinal,
+                    parameter: applied.parameter,
+                    normalized_bits: applied.normalized_bits,
+                    application: applied.application,
+                };
+                Ok(NativeWorkerSequencedCaptureProgress::Captured(fact))
+            }
+        }
+    }
+
+    /// Revalidate the same original worker and latest matching acknowledged input. This
+    /// observation does not reserve the source against a subsequent change.
+    pub fn sequenced_capture_is_current_on_control(
+        &self,
+        fact: &NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        if fact.binding != self.binding
+            || fact.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
+        {
+            return Ok(false);
+        }
+        if self.retirement_requested
+            || !self.transport_is_live_on_control()
+            || !self.retains_original_source_on_control()
+        {
+            return Ok(false);
+        }
+        let slot = match self.reaper.completed.capture.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::WouldBlock) => return Err("native capture mailbox is busy"),
+            Err(TryLockError::Poisoned(_)) => return Err("native capture mailbox failed"),
+        };
+        Ok(AppliedParameter {
+            ordinal: fact.parameter_ordinal,
+            parameter: fact.parameter,
+            normalized_bits: fact.normalized_bits,
+            application: fact.application,
+        }
+        .current(&slot.parameter_change))
+    }
+
+    /// Observe the paired input generation only after the original worker
+    /// acknowledged this exact captured input. This can become stale immediately;
+    /// it is neither a graph continuation nor permission to publish a candidate.
+    /// The returned weak source identity must be reclaimed on control.
+    pub fn observe_sequenced_capture_input_on_control(
+        &self,
+        fact: &NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.sequenced_capture_is_current_on_control(fact)? {
+            return Ok(None);
+        }
+        let Some(ordinal) = std::num::NonZeroU64::new(fact.parameter_ordinal) else {
+            return Ok(None);
+        };
+        Ok(self
+            .reaper
+            .control
+            .observe_parameter_input_on_control(ordinal))
+    }
+
+    fn poll_state_capture(
         &mut self,
         request: &NativeWorkerCapture,
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
@@ -231,7 +462,13 @@ impl NativeWorker {
         let Some(terminal) = slot.take_terminal() else {
             return Ok(NativeWorkerCaptureProgress::Pending);
         };
+        let superseded = request
+            .after_parameter
+            .is_some_and(|parameter| !parameter.current(&slot.parameter_change));
         drop(slot);
+        if superseded {
+            return Err("native sequenced capture was superseded");
+        }
         match terminal {
             Ok(captured) => Ok(NativeWorkerCaptureProgress::Captured(captured)),
             Err(refusal) => Ok(NativeWorkerCaptureProgress::Refused(refusal)),

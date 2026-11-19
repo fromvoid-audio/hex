@@ -13,20 +13,69 @@ use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 #[test]
 fn compensated_session_audio_batches_without_callback_allocations() -> Result<(), Box<dyn Error>> {
-    check_compensated_audio_batch(true)
+    check_compensated_audio_batch(true, false, false)
 }
 
 #[test]
 fn compensated_dry_arrangement_tracks_batch_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    check_compensated_audio_batch(false)
+    check_compensated_audio_batch(false, false, false)
 }
 
-fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn compensated_resident_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(false, true, false)
+}
+
+#[test]
+fn compensated_session_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(true, true, false)
+}
+
+#[test]
+fn compensated_nonunity_session_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(true, true, true)
+}
+
+#[test]
+fn compensated_nonunity_return_sends_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(false, true, true)
+}
+
+fn check_compensated_audio_batch(
+    session: bool,
+    return_latency: bool,
+    nonunity: bool,
+) -> Result<(), Box<dyn Error>> {
     const RATE: u32 = 48_000;
     const SOURCE: [f32; 2] = [0.01, -0.02];
     let (lookahead, latency) = if session { (2, 288) } else { (0, 72) };
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let return_track = if return_latency {
+        let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })?
+        else {
+            return Err("return track".into());
+        };
+        let limiter = hex_devices::limiter::DEFINITION.patch_parameter(
+            &hex_devices::limiter::DEFINITION.default_state()?,
+            hex_devices::limiter::parameter::LOOKAHEAD,
+            ParameterValue::Choice(lookahead),
+        )?;
+        editor.execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: limiter,
+        })?;
+        Some(bus)
+    } else {
+        None
+    };
     let Created::Scene(scene) = editor.execute(Command::AddScene {
         name: "session".into(),
     })?
@@ -47,6 +96,9 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
         else {
             return Err("track".into());
         };
+        if nonunity {
+            editor.execute(Command::Gain { track, gain: 0.5 })?;
+        }
         if session {
             editor.execute(Command::CreateSessionAudioClip {
                 track,
@@ -58,7 +110,14 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
             })?;
         }
         media.insert(asset, Audio::new(RATE, vec![SOURCE; 1024])?);
-        if index == 0 {
+        if let Some(bus) = return_track {
+            editor.execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.25,
+            })?;
+        }
+        if index == 0 && !return_latency {
             let limiter = hex_devices::limiter::DEFINITION.patch_parameter(
                 &hex_devices::limiter::DEFINITION.default_state()?,
                 hex_devices::limiter::parameter::LOOKAHEAD,
@@ -103,14 +162,23 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
     }
     let mut output = [[0.0; 2]; 512];
     let mut offset = 0;
-    for count in [1, 63, 257, 512] {
+    for count in [1, 63, 257, 512, 128] {
         probe::measured_block(&mut callback, &mut output[..count]);
         let expected: Vec<_> = (0..count)
             .map(|i| {
                 if offset + i < latency {
                     [0.0; 2]
                 } else {
-                    SOURCE.map(|sample| sample * 4.0)
+                    SOURCE.map(|sample| {
+                        sample
+                            * if nonunity {
+                                2.5
+                            } else if return_latency {
+                                5.0
+                            } else {
+                                4.0
+                            }
+                    })
                 }
             })
             .collect();

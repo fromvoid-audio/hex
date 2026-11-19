@@ -267,12 +267,38 @@ impl MutableInstrumentTrackRuntime {
     /// A scheduling span contains transitions at offset zero only. The first
     /// callback sample and ordered ingress events have a one-frame span; empty
     /// spans reuse the ordinary query width. Release room is reserved before
-    /// scheduler/capture admission.
+    /// scheduler/capture admission. An optional fade token identifies exactly
+    /// one offset-zero NoteOn in this input generation; it cannot share a batch
+    /// with its NoteOff. Refuse unsupported providers before changing the ledger.
     pub(crate) fn stage_live_events(
         &mut self,
         input: LiveInputId,
         transitions: &[NativeInstrumentEvent],
+        fade_in_token: Option<u64>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        let fade_frames = if let Some(token) = fade_in_token {
+            let marked = transitions.iter().filter(|event| matches!(event,
+                NativeInstrumentEvent::NoteOn { occurrence_id, frame_offset: 0, .. } if *occurrence_id == token
+            )).count();
+            if marked != 1
+                || transitions.iter().any(|event| matches!(event,
+                    NativeInstrumentEvent::NoteOn { occurrence_id, frame_offset: 1.., .. } if *occurrence_id == token
+                ))
+                || transitions.iter().any(|event| matches!(event,
+                    NativeInstrumentEvent::NoteOff { occurrence_id, .. } if *occurrence_id == token
+                ))
+                || !self.pair.supports_occurrence_gain()
+            {
+                return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+            }
+            Some(
+                ContributorFadeIn::new(self.sample_rate)
+                    .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?
+                    .frames(),
+            )
+        } else {
+            None
+        };
         let tail = self.max_release_tail_frames();
         let capacity = self
             .max_active_occurrences()
@@ -368,7 +394,14 @@ impl MutableInstrumentTrackRuntime {
                         id,
                         quiet_age: None,
                         release_requested: false,
-                        contributor_fade: None,
+                        contributor_fade: fade_frames.filter(|_| fade_in_token == Some(token)).map(
+                            |frames| ContributorFade {
+                                start_age: live.scratch_age,
+                                frames,
+                                start_bits: 0.0_f64.to_bits(),
+                                muted: false,
+                            },
+                        ),
                     });
                     live.push(NativeInstrumentEvent::NoteOn {
                         frame_offset,

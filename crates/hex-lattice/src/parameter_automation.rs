@@ -351,6 +351,17 @@ impl PreparedParameterAutomation {
         self.foreign.as_ref()
     }
 
+    /// Label the current unpublished effect program with its frame clock.
+    pub fn bind_foreign_effect_clock_on_control(
+        &mut self,
+        clock_epoch: std::num::NonZeroU64,
+        clock_splices: bool,
+    ) {
+        if let Some(program) = self.foreign.as_mut() {
+            program.bind_effect_clock_on_control(clock_epoch, clock_splices);
+        }
+    }
+
     pub(crate) fn shares_foreign_program_history_with(
         &self,
         other: &Self,
@@ -409,6 +420,26 @@ impl PreparedParameterAutomation {
             Some(received) => current.retain_received_on_control(previous, received),
             None => current.retain_previous_on_control(previous),
         }
+    }
+
+    /// Select foreign history while the caller holds the exact stopped source
+    /// fence and knows no omitted program can be used by any callback.
+    /// This control-side operation does not establish that fence or authorize
+    /// publication; failures leave the existing program owners unchanged.
+    pub fn retain_selected_foreign_history_on_control(
+        &mut self,
+        previous: &Self,
+        required: &[std::num::NonZeroU64],
+    ) -> Result<(), Error> {
+        let current = self
+            .foreign
+            .as_mut()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        let previous = previous
+            .foreign
+            .as_ref()
+            .ok_or(Error::ForeignProcessingFailed)?;
+        current.retain_selected_on_control(previous, required)
     }
 
     pub fn new(
