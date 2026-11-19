@@ -243,6 +243,13 @@ pub trait PreparedNativeProcessor: Send + Sync {
     fn supports_smoothed_bypass(&self) -> bool {
         false
     }
+    /// Opt into authored power-off for a zero-latency, smoothed effect. Once
+    /// the off ramp commits, the host resets both runtime twins in place and
+    /// skips their block transactions until the stage turns on. Reset must
+    /// be bounded, allocation-free, and restore fresh DSP and control history.
+    fn supports_power_off(&self) -> bool {
+        false
+    }
     /// Opt in to host-aligned bypass for an exact, fixed latency from 1 to
     /// 16 frames. The host keeps untrimmed dry history and continues ordinary
     /// wet processing and automation while bypassed. A bypass edit changes
@@ -1462,10 +1469,17 @@ impl NativeRuntimeChain {
                 .map(PreparedProcessorFactory::reserved_bypass_frames)
                 .transpose()?
                 .flatten();
-            let supports_power_off = (reserved_frames.is_some()
-                || (supports_smoothed_bypass && latency == Some(0)))
-                && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
-                        if value.supports_power_off());
+            let zero_latency_smoothing = supports_smoothed_bypass && latency == Some(0);
+            let supports_power_off = match &instance.definition {
+                Some(PreparedProcessorFactory::Legacy(value)) => {
+                    zero_latency_smoothing && value.supports_power_off()
+                }
+                Some(PreparedProcessorFactory::Owned(value)) => {
+                    (zero_latency_smoothing || reserved_frames.is_some())
+                        && value.supports_power_off()
+                }
+                Some(PreparedProcessorFactory::Foreign(_)) | None => false,
+            };
             let (committed_aligned_dry, scratch_aligned_dry) = if let Some(frames) = reserved_frames
             {
                 (

@@ -282,3 +282,79 @@ fn plugin_transaction_cancel_race_is_resolved_at_final_publication_admission() {
         }
     }
 }
+
+#[test]
+fn accepted_eq_write_survives_pending_vst3_failure_or_cancel() {
+    let gain = hex_lattice_contract::ParameterId::from_static(202);
+    for cancel in [false, true] {
+        let (service, observed, _) = service();
+        let eq = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.eq"),
+        )
+        .unwrap();
+        service
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state: eq.clone(),
+            }))
+            .unwrap();
+        let before = receive(&service);
+        assert!(before.error.is_none(), "{:?}", before.error);
+        let device = before.state.project.main_devices()[0].id();
+
+        let request = insertion(&before.state);
+        service
+            .submit(Request::InsertPluginEffect(request.clone()))
+            .unwrap();
+        assert!(receive(&service).plugin_effect_complete.is_empty());
+
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: gain,
+                value: hex_lattice_contract::ParameterValue::Float(0.5),
+            })
+            .unwrap();
+        let changed = receive(&service);
+        assert!(changed.error.is_none(), "{:?}", changed.error);
+        assert_eq!(changed.state.revision, before.state.revision + 1);
+        assert_ne!(changed.state.project.main_devices()[0].state(), &eq);
+        assert!(
+            changed.plugin_effect_complete.is_empty(),
+            "the accepted EQ edit cancelled the pending insertion"
+        );
+        assert!(observed.plugin_terminals.lock().unwrap().is_empty());
+
+        if cancel {
+            assert!(request.control.cancel());
+        } else {
+            observed.plugin_ready.store(true, Ordering::Release);
+        }
+        let finished = receive(&service);
+        assert_eq!(finished.state.project, changed.state.project);
+        assert_eq!(finished.plugin_effect_complete.len(), 1);
+        assert!(!finished.plugin_effect_complete[0].accepted);
+        assert!(Arc::ptr_eq(
+            &finished.plugin_effect_complete[0].control,
+            &request.control
+        ));
+        if !cancel {
+            assert!(
+                finished
+                    .error
+                    .unwrap()
+                    .contains("different device provider")
+            );
+        }
+        assert_eq!(
+            observed.plugin_preparations.load(Ordering::Acquire),
+            if cancel { 1 } else { 2 }
+        );
+
+        service.submit(Request::Undo).unwrap();
+        let undone = receive(&service);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(undone.state.project.main_devices()[0].state(), &eq);
+    }
+}
