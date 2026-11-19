@@ -42,8 +42,13 @@ impl PitchViewport {
     }
     /// Unclipped normalized note top. Edge notes may be partially visible.
     pub(super) fn note_top(self, pitch: u8) -> Option<f32> {
-        self.contains(pitch)
-            .then(|| ((self.high() - f64::from(pitch) - 1.0) / self.span()) as f32)
+        self.contains(pitch).then(|| {
+            // Validated Q4096 coordinates fit exactly in f32. Keep the signed
+            // numerator in pitch units instead of converting each note to f64.
+            let top = i64::from(self.low) + i64::from(self.span)
+                - (i64::from(pitch) + 1) * i64::from(UNITS_PER_PITCH);
+            top as f32 / self.span as f32
+        })
     }
     pub(super) fn row_height_pixels(self, height: f32) -> Option<f32> {
         let pixels = height / self.span() as f32;
