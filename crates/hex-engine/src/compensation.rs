@@ -315,6 +315,20 @@ impl CompensationRuntime {
         self.stamps.at_delay_ref(delay_frames as usize)?.as_ref()
     }
 
+    /// Oldest already-staged frame the input can still see after a compatible
+    /// handoff. At the next render one new stamp is pushed before this read.
+    pub(crate) fn oldest_pending_stage_clock(&self, input_delay: u32) -> Option<NonZeroU64> {
+        let index = self
+            .stamps
+            .valid_len()
+            .min(input_delay as usize)
+            .checked_sub(1)?;
+        self.stamps
+            .at_delay_ref(index)?
+            .as_ref()?
+            .authored_clock_epoch
+    }
+
     /// Preview an upcoming stage's Arrangement frame before its stamp is pushed.
     /// The supplied incoming projection belongs to the same planned clock as
     /// the caller's eventual render. Historical stamps are read verbatim from

@@ -2265,7 +2265,7 @@ impl SessionPlayback {
             current_sampler_keyboard_revoked: 0,
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
-            authored_clock_epoch: NonZeroU64::MIN,
+            authored_clock_epoch: revision.authored_clock_epoch,
             gain_recording_override: None,
             live_gain: gain_recording::LiveGain::default(),
             live_gain_scratch: gain_recording::LiveGain::default(),

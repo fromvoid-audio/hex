@@ -239,24 +239,8 @@ impl<'a> ResidentEffectPreparation<'a> {
         device: u64,
         quantum_frames: Option<u16>,
     ) -> bool {
-        fn lanes(
-            project: &Project,
-            device: u64,
-        ) -> impl Iterator<Item = &hex_project::DeviceAutomation> {
-            project
-                .automation_devices()
-                .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
-                .into_iter()
-                .flat_map(hex_project::Device::reading_automation)
-                .filter(|lane| {
-                    matches!(
-                        lane.target,
-                        hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
-                    )
-                })
-        }
-        let mut current = lanes(self.project, device).peekable();
-        let mut old = lanes(previous.project, device).peekable();
+        let mut current = authored_plugin_lanes(self.project, device).peekable();
+        let mut old = authored_plugin_lanes(previous.project, device).peekable();
         if current.peek().is_none() && old.peek().is_none() {
             return true;
         }
@@ -287,6 +271,19 @@ impl<'a> ResidentEffectPreparation<'a> {
         self.project.tempo_map() == previous.project.tempo_map()
             && same_loop_budget
             && current.eq(old)
+    }
+
+    /// A pure recompile of an authored effect's time coordinates can
+    /// retain the original processor. Runtime admission still proves the
+    /// compatible graph and exact delayed-clock history at the stopped/live cut.
+    pub fn retimes_existing_authored_effect(&self, previous: &Self, device: u64) -> bool {
+        let mut current = authored_plugin_lanes(self.project, device).peekable();
+        !self
+            .project
+            .tempo_map()
+            .proves_same_clock(previous.project.tempo_map())
+            && current.peek().is_some()
+            && current.eq(authored_plugin_lanes(previous.project, device))
     }
 
     pub fn visit_plugin_devices(
@@ -363,6 +360,23 @@ pub trait OfflineBounceSource: hex_export::ForeignBounceRenderer + Send {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String>;
+}
+
+fn authored_plugin_lanes(
+    project: &Project,
+    device: u64,
+) -> impl Iterator<Item = &hex_project::DeviceAutomation> {
+    project
+        .automation_devices()
+        .find(|candidate| candidate.id().value() == device && is_plugin_effect(candidate))
+        .into_iter()
+        .flat_map(hex_project::Device::reading_automation)
+        .filter(|lane| {
+            matches!(
+                lane.target,
+                hex_lattice_contract::DeviceAutomationTarget::Vst3 { .. }
+            )
+        })
 }
 
 fn is_plugin_effect(device: &hex_project::Device) -> bool {
