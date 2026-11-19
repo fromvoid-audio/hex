@@ -1,5 +1,6 @@
 //! Cached source peaks and their accepted clock for live musical event bends.
 use super::waveform_frame::coarse_peaks;
+use hex_engine::PreparedAudioRepeat;
 use hex_engine::audio_transform::{MusicalEventFadePreview, PreparedMusicalEventSourceClock};
 use hex_project::{
     AudioDomainClock, AudioEvent, AudioEvents, Clip, ClipFade, ClipGain, Project, TempoMap,
@@ -18,6 +19,7 @@ pub(super) struct Projection {
     clip: Clip,
     tempo: TempoMap,
     source_clock: PreparedMusicalEventSourceClock,
+    repeat: Option<PreparedAudioRepeat>,
     events: Arc<AudioEvents>,
     gain: ClipGain,
 }
@@ -36,7 +38,6 @@ impl Projection {
         let source_clock = prepared.musical_clock.as_ref()?;
         if project.clip(clip.id())? != clip
             || !matches!(edit.domain.clock, AudioDomainClock::Beats(_))
-            || edit.placement.is_some()
             || edit.content_view.is_some()
         {
             return None;
@@ -45,6 +46,7 @@ impl Projection {
             .map(Arc::new)
             .or_else(|| edit.domain.events.clone())
             .unwrap_or_else(|| Arc::new(AudioEvents::identity(edit.domain.clock.length())));
+        let placed = edit.placement.is_some();
         let clip = match fade {
             Some(fade) if project.arrangement_fade_edit_uses_outer(clip) => clip
                 .with_authored_outer_fade(project.tempo_map(), fade)
@@ -55,10 +57,17 @@ impl Projection {
         let projection = Self {
             tempo: project.tempo_map().clone(),
             source_clock: source_clock.clone(),
+            repeat: prepared.repeat,
             events,
             gain: gain.unwrap_or_else(|| clip.gain()),
             clip,
         };
+        // A placement with several independent roots must keep the established
+        // destination waveform, including its held clip fade. Validate the
+        // source and read geometry before selecting the event projection.
+        if placed {
+            projection.project(&[])?;
+        }
         Some((Arc::clone(&prepared.waveform), Arc::new(projection)))
     }
 
@@ -70,12 +79,17 @@ impl Projection {
             Clock::Arrangement => &self.events.events,
             Clock::Event(event) => std::slice::from_ref(event),
         };
+        self.project(events)
+    }
+
+    fn project(&self, events: &[AudioEvent]) -> Option<MusicalEventFadePreview<'_>> {
         MusicalEventFadePreview::new(
             &self.clip,
             &self.tempo,
             &self.source_clock,
             events,
             self.gain,
+            self.repeat,
         )
         .ok()?
     }

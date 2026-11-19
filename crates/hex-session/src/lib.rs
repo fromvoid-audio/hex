@@ -2172,7 +2172,7 @@ fn prepare_with_waveforms_using(
                         media.resident.get(&asset)
                     })?
                     .map(|root| {
-                        if root.event_source_peaks.is_some() {
+                        if view.event_source_repeat.is_none() && root.event_source_peaks.is_some() {
                             event_peaks = root.event_source_peaks;
                         }
                         // A placement-only change can leave a large preview
@@ -2220,6 +2220,7 @@ fn prepare_with_waveforms_using(
             let event_source = event_peaks.and_then(|peaks| {
                 event_source_waveform(
                     peaks,
+                    view.event_source_repeat,
                     old.get(&view.clip)
                         .and_then(|entry| entry.event_source.as_ref())
                         .map(|entry| &entry.waveform),
@@ -2279,6 +2280,7 @@ type EventWaveformRoot = (
 
 fn event_source_waveform(
     source: Arc<hex_engine::audio_transform::PreparedEventSourcePeaks>,
+    repeat: Option<hex_engine::PreparedAudioRepeat>,
     previous: Option<&Arc<Waveform>>,
     roots: &mut Vec<EventWaveformRoot>,
 ) -> Option<service::AudioEventSourceWaveform> {
@@ -2295,6 +2297,7 @@ fn event_source_waveform(
     Some(service::AudioEventSourceWaveform {
         waveform,
         musical_clock,
+        repeat,
     })
 }
 

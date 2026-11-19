@@ -812,7 +812,7 @@ fn compile_project_inner<'a>(
                     return Ok(None);
                 }
                 let bakes_musical_fade = clip.audio_edit().is_some_and(materializes_musical_outer_fade);
-                let (mut compiled, mut neutral_musical_peaks, materialized_event_peaks) = if let Some(events) = clip.audio_edit()
+                let (mut compiled, mut neutral_musical_peaks, materialized_event_peaks, materialized_event_repeat) = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
                 {
@@ -829,16 +829,16 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new(), None)
+                    (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new(), None, None)
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
                     if bakes_musical_fade {
                         let (compiled, peaks) = transforms.capture_musical_peaks(musical_peak_limit, || {
                             transforms.compile_clip(snapshot, clip, asset, source)
                         })?;
-                        (compiled, peaks.destination, peaks.event_source)
+                        (compiled, peaks.destination, peaks.event_source, peaks.event_source_repeat)
                     } else {
-                        (transforms.compile_clip(snapshot, clip, asset, source)?, Vec::new(), None)
+                        (transforms.compile_clip(snapshot, clip, asset, source)?, Vec::new(), None, None)
                     }
                 };
                 if let Some(compiled) = compiled.as_mut() {
@@ -853,6 +853,15 @@ fn compile_project_inner<'a>(
                     && let Some(audio) = &compiled.audio
                     && (audio.frames._derived.is_some() || !neutral_musical_peaks.is_empty())
                 {
+                    let event_source_peaks = materialized_event_peaks.or_else(|| {
+                        clip.audio_edit()
+                            .filter(|edit| previews_event_source_peaks(edit))
+                            .and_then(|_| transforms.event_source_peaks(audio))
+                    });
+                    let repeat = crate::PreparedAudioRepeat::from_clip(compiled);
+                    let event_source_repeat = event_source_peaks.as_ref()
+                        .filter(|source| source.musical_clock().is_some())
+                        .and(materialized_event_repeat.or(repeat));
                     audio_clip_views
                         .try_reserve(1)
                         .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
@@ -863,18 +872,9 @@ fn compile_project_inner<'a>(
                         length: compiled.end - compiled.start,
                         sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
                         neutral_musical_peaks,
-                        event_source_peaks: materialized_event_peaks.or_else(|| {
-                            clip.audio_edit()
-                                .filter(|edit| previews_event_source_peaks(edit))
-                                .and_then(|_| transforms.event_source_peaks(audio))
-                        }),
-                        repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
-                            period: compiled.source_length as u64,
-                            phase: compiled
-                                .metadata
-                                .as_deref()
-                                .map_or(0, |metadata| metadata.source_phase),
-                        }),
+                        event_source_peaks,
+                        event_source_repeat,
+                        repeat,
                     });
                 }
                 Ok::<_, Invalid>(compiled)

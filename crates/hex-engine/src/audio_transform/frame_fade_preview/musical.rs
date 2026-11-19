@@ -1,7 +1,10 @@
 //! Forward musical event reads over the accepted pre-event peak clock.
 use super::*;
+use crate::PreparedAudioRepeat;
 use crate::audio_transform::{PreparedMusicalEventSourceClock, events::event_source_frame};
 use hex_project::{AudioEventFade, BeatTime, ProjectedAudioFade};
+mod placement;
+use placement::{ArrangementRead, repeat_ranges};
 
 /// Control-only projection of a single forward musical processing root.
 /// The arrangement reads project frames and the event editor reads frames in
@@ -12,7 +15,7 @@ pub struct MusicalEventFadePreview<'a> {
     tempo: &'a TempoMap,
     source: &'a PreparedMusicalEventSourceClock,
     root_frames: u64,
-    crop_start: u64,
+    read: ArrangementRead,
     clip_end: u64,
     events: Vec<MusicalEvent>,
     legacy: Option<ProjectedAudioFade<'a>>,
@@ -35,11 +38,10 @@ impl<'a> MusicalEventFadePreview<'a> {
         source: &'a PreparedMusicalEventSourceClock,
         events: &[AudioEvent],
         gain: ClipGain,
+        repeat: Option<PreparedAudioRepeat>,
     ) -> Result<Option<Self>, Invalid> {
         let Some(edit) = clip.audio_edit().filter(|edit| {
-            matches!(edit.domain.clock, AudioDomainClock::Beats(_))
-                && edit.placement.is_none()
-                && edit.content_view.is_none()
+            matches!(edit.domain.clock, AudioDomainClock::Beats(_)) && edit.content_view.is_none()
         }) else {
             return Ok(None);
         };
@@ -54,13 +56,22 @@ impl<'a> MusicalEventFadePreview<'a> {
             return Ok(None);
         }
         let (_, root_frames, crop_start, crop_end) = edit.projected_domain(tempo)?;
-        if crop_end - crop_start != clip.duration() {
-            return Ok(None);
-        }
         let clip_end = clip
             .start()
             .checked_add(clip.duration())
             .ok_or(Invalid("musical waveform clip end overflow"))?;
+        let Some(read) = ArrangementRead::new(
+            clip,
+            edit,
+            tempo,
+            root_frames,
+            crop_start..crop_end,
+            clip_end,
+            repeat,
+        )?
+        else {
+            return Ok(None);
+        };
         let outer = clip.projected_outer_fade(tempo)?;
         let legacy = (outer.is_none() && !edit.domain.fade.is_neutral())
             .then(|| edit.projected_fade(tempo))
@@ -70,6 +81,9 @@ impl<'a> MusicalEventFadePreview<'a> {
             .musical_event_source
             .map_or(0, |source| source.zero_in_destination);
         let aligned_zero = source.aligned_destination_zero(edit, tempo, zero)?;
+        if edit.placement.is_some() && aligned_zero.is_none() {
+            return Ok(None);
+        }
         let mut spans = Vec::new();
         spans
             .try_reserve_exact(events.len())
@@ -109,7 +123,7 @@ impl<'a> MusicalEventFadePreview<'a> {
             tempo,
             source,
             root_frames,
-            crop_start,
+            read,
             clip_end,
             events: spans,
             legacy,
@@ -130,22 +144,49 @@ impl<'a> MusicalEventFadePreview<'a> {
         if range.start > range.end {
             return Err(Invalid("musical waveform range is reversed"));
         }
-        let first = range.start.max(self.clip.start());
-        let last = range.end.min(self.clip_end);
+        let (read_start, read_end) = match &self.read {
+            ArrangementRead::Once { destination, .. } => (destination.start, destination.end),
+            ArrangementRead::Repeat(_) => (self.clip.start(), self.clip_end),
+        };
+        let first = range.start.max(read_start);
+        let last = range.end.min(read_end);
         if first >= last {
             return Ok(Some(FrameFadeCoverage {
                 has_silence: !range.is_empty(),
             }));
         }
-        let root = self.crop_start + (first - self.clip.start())
-            ..self.crop_start + (last - self.clip.start());
-        self.visit(
-            root,
-            None,
-            first != range.start || last != range.end,
-            remaining,
-            visit,
-        )
+        let silence = first != range.start || last != range.end;
+        match &self.read {
+            ArrangementRead::Once { root_start, .. } => {
+                let root_first = root_start + (first - read_start);
+                let root = root_first..root_first + (last - first);
+                self.visit(
+                    root,
+                    None,
+                    silence,
+                    remaining,
+                    |midpoint| self.outer_gain(first + (midpoint - root_first)),
+                    visit,
+                )
+            }
+            ArrangementRead::Repeat(shape) => {
+                // One coarse column can collapse several wraps. Its clip
+                // envelope belongs to forward destination time.
+                let gain = self.outer_gain(first + (last - first - 1) / 2)?;
+                let elapsed = first - read_start..last - read_start;
+                let mut has_silence = silence;
+                let mut visit = visit;
+                for root in repeat_ranges(*shape, elapsed).into_iter().flatten() {
+                    let Some(coverage) =
+                        self.visit(root, None, false, remaining, |_| Ok(gain), &mut visit)?
+                    else {
+                        return Ok(None);
+                    };
+                    has_silence |= coverage.has_silence;
+                }
+                Ok(Some(FrameFadeCoverage { has_silence }))
+            }
+        }
     }
 
     pub fn visit_event(
@@ -169,6 +210,7 @@ impl<'a> MusicalEventFadePreview<'a> {
             Some(event),
             end != range.end,
             remaining,
+            |_| Ok(1.0),
             visit,
         )
     }
@@ -179,6 +221,7 @@ impl<'a> MusicalEventFadePreview<'a> {
         event: Option<u64>,
         mut silence: bool,
         remaining: &mut usize,
+        mut outer_gain: impl FnMut(u64) -> Result<f32, Invalid>,
         mut visit: impl FnMut(FrameFadeRange),
     ) -> Result<Option<FrameFadeCoverage>, Invalid> {
         let mut cursor = root.start;
@@ -217,12 +260,8 @@ impl<'a> MusicalEventFadePreview<'a> {
             };
             let clip_fade = if let Some(legacy) = &self.legacy {
                 legacy.gain_at(midpoint)?
-            } else if event.is_none()
-                && let Some(outer) = &self.outer
-            {
-                outer.gain_at(self.clip.start() + (midpoint - self.crop_start))?
             } else {
-                1.0
+                outer_gain(midpoint)?
             };
             silence |= first > cursor;
             cursor = last;
@@ -250,6 +289,15 @@ impl<'a> MusicalEventFadePreview<'a> {
         event_source_frame(self.edit, self.tempo, &span.event, frame, |position| {
             self.source.frame_at(BeatTime::from_raw(position))
         })
+    }
+
+    fn outer_gain(&self, frame: u64) -> Result<f32, Invalid> {
+        Ok(self
+            .outer
+            .as_ref()
+            .map(|fade| fade.gain_at(frame))
+            .transpose()?
+            .unwrap_or(1.0))
     }
 }
 
@@ -342,6 +390,7 @@ mod tests {
             source,
             &events.events,
             clip.gain(),
+            None,
         )
         .unwrap()
         .unwrap();

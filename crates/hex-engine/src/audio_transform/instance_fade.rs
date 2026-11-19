@@ -3,7 +3,7 @@
 //! resident clip and never evaluates a project tempo map.
 use super::preview_peaks::{PeakBins, PreparedEventSourcePeaks};
 use super::{Audio, AudioClipEdit, AudioTransformPreparation, Clip, Invalid};
-use crate::PreparedAudioPeak;
+use crate::{PreparedAudioPeak, PreparedAudioRepeat};
 use hex_project::{
     AudioClipFadeClock, AudioDomainClock, ClipFade, MAX_AUDIO_DOMAIN_FRAMES,
     ProjectedOuterAudioFade,
@@ -59,6 +59,7 @@ pub(crate) struct MusicalPeakCapture {
     limit: usize,
     pub(crate) destination: Vec<PreparedAudioPeak>,
     pub(crate) event_source: Option<Arc<PreparedEventSourcePeaks>>,
+    pub(crate) event_source_repeat: Option<PreparedAudioRepeat>,
 }
 
 impl AudioTransformPreparation {
@@ -142,6 +143,10 @@ impl AudioTransformPreparation {
         } else {
             None
         };
+        let event_source_repeat = event_source
+            .as_ref()
+            .filter(|source| source.musical_clock().is_some())
+            .and_then(|_| PreparedAudioRepeat::from_clip(&clip));
         let duration = clip
             .end
             .checked_sub(clip.start)
@@ -193,6 +198,7 @@ impl AudioTransformPreparation {
         if let Some(capture) = self.musical_peak_capture.borrow_mut().as_mut() {
             capture.destination = peaks.map_or_else(Vec::new, PeakBins::into_peaks);
             capture.event_source = event_source;
+            capture.event_source_repeat = event_source_repeat;
         }
         Ok(clip)
     }

@@ -1797,6 +1797,15 @@ fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut Test
 
 #[gpui::test]
 fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut TestAppContext) {
+    warped_event_fade_workflow(cx, false);
+}
+
+#[gpui::test]
+fn event_fade_warped_shared_repeat_keeps_both_waveforms_through_ack(cx: &mut TestAppContext) {
+    warped_event_fade_workflow(cx, true);
+}
+
+fn warped_event_fade_workflow(cx: &mut TestAppContext, repeat: bool) {
     use crate::editor::waveform_geometry::painted_clip_waveform_outline;
     let (_files, mut visual, editor, clip) = open(cx);
     editor.update(&mut visual, |v, _| {
@@ -1825,13 +1834,15 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
             .length()
     });
     assert!(length > 96_000, "fixture must use Q32.32 beats");
-    editor.update(&mut visual, |v, _| {
-        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
-            beat: hex_project::BeatTime::from_raw(length / 2),
-            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
-        })));
-    });
-    pump(&editor, &mut visual);
+    if !repeat {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
+                beat: hex_project::BeatTime::from_raw(length / 2),
+                tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
     edit(
         &mut visual,
         &editor,
@@ -1847,8 +1858,53 @@ fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut T
             start: length / 2,
         },
     );
+    if repeat {
+        let track = editor.read_with(&visual, |v, _| {
+            v.state.as_ref().unwrap().project.tracks()[0].id()
+        });
+        for command in [
+            Command::MoveClip {
+                clip,
+                track,
+                start: 48_000,
+            },
+            Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 336_000,
+                },
+            },
+            Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::PlayStart {
+                    position: length / 4,
+                },
+            },
+        ] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let pending = v.pending_playback.as_ref().unwrap();
+            let prepared = pending
+                .prepared_revision
+                .as_ref()
+                .or_else(|| pending.playback.prepared_revision())
+                .unwrap();
+            let view = prepared
+                .arrangement()
+                .audio_clip_views()
+                .iter()
+                .find(|view| view.clip == clip)
+                .unwrap();
+            assert_eq!(view.repeat.unwrap().phase, 24_000);
+        });
+    }
     editor.update(&mut visual, |v, cx| {
-        v.viewport = Some(Viewport::fit(96_000));
+        v.viewport = Some(Viewport::fit(if repeat { 384_000 } else { 96_000 }));
         v.audio_event_editor.viewport = Some(crate::editor::viewport::Viewport {
             start: 24_000,
             length: 72_000,
