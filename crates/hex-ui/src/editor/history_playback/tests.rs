@@ -327,3 +327,163 @@ fn latest_history_intent_on_an_ordinary_graph_waits_for_prior_then_exact_ack(
     });
     fixture.finish(cx);
 }
+
+fn open_play_menu(visual: &mut VisualTestContext) {
+    visual.run_until_parked();
+    let play = visual.debug_bounds("transport-play-icon").unwrap().center();
+    visual.simulate_mouse_down(play, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(play, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+}
+
+fn wait_for_save(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+    let deadline = crate::test_wait::hang_deadline();
+    while editor.read_with(visual, |view, _| view.playback_settings.saving) {
+        visual.run_until_parked();
+        assert!(
+            Instant::now() < deadline,
+            "playback menu save did not finish"
+        );
+    }
+}
+
+#[gpui::test]
+fn playback_menu_order_session_availability_and_keyboard_save_keep_history_independent(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor) = crate::editor::rendered_test_fixture::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    open_play_menu(&mut visual);
+    editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert_eq!(
+            menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+            ["play with history", "note chase"]
+        );
+        assert!(menu.items[1].checked);
+        assert_eq!(menu.selected, 0);
+    });
+    visual.simulate_keystrokes("down enter");
+    wait_for_save(&editor, &mut visual);
+    editor.update(&mut visual, |view, cx| {
+        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(
+            !hex_preferences::load_playback_preferences(&view.playback_settings.path)
+                .unwrap()
+                .note_chase
+        );
+        assert!(view.prepared_seek.is_none());
+        assert!(view.latched_seek_intent.is_none());
+        view.mode = EditorMode::Session;
+        cx.notify();
+    });
+    open_play_menu(&mut visual);
+    editor.read_with(&visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert_eq!(menu.items.len(), 1);
+        assert_eq!(menu.items[0].label, "note chase");
+        assert!(!menu.items[0].checked);
+    });
+    // Activation uses the same real atomic save owner; failed writes retain
+    // both the active checkmark and the user's existing malformed bytes.
+    editor.update(&mut visual, |view, _| {
+        std::fs::write(&view.playback_settings.path, b"original malformed settings").unwrap();
+    });
+    visual.simulate_keystrokes("enter");
+    wait_for_save(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(view.error.as_ref().unwrap().contains("could not save"));
+        assert_eq!(
+            std::fs::read(&view.playback_settings.path).unwrap(),
+            b"original malformed settings"
+        );
+    });
+}
+
+#[gpui::test]
+fn disabled_popup_row_ignores_pointer_enter_and_navigation_skips_it(cx: &mut TestAppContext) {
+    let (handle, editor) = crate::editor::rendered_test_fixture::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        view.playback_settings.saving = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    open_play_menu(&mut visual);
+    visual.simulate_keystrokes("down");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.context_menu.as_ref().unwrap().selected, 0);
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.context_menu.as_mut().unwrap().selected = 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    let position = visual
+        .debug_bounds("context-menu-disabled-1")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.playback_settings.preferences.note_chase);
+        assert!(view.context_menu.is_some());
+        assert!(view.prepared_seek.is_none());
+    });
+}
+
+#[gpui::test]
+fn playback_option_revalidates_stale_and_disabled_actions_and_surfaces_load_errors(
+    cx: &mut TestAppContext,
+) {
+    let (_, editor) = crate::editor::rendered_test_fixture::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        let action = NoteChaseAction {
+            generation: view.project_generation,
+            enabled: true,
+            checked: true,
+        };
+        view.playback_settings.preferences.note_chase = false;
+        view.note_chase_menu_action(action.clone(), cx);
+        assert!(!view.playback_settings.saving);
+        assert!(!view.playback_settings.preferences.note_chase);
+        assert!(view.error.as_ref().unwrap().contains("settings changed"));
+        for state in ["loading", "saving", "unwritable"] {
+            view.playback_settings.preferences.note_chase = true;
+            view.playback_settings.loading = state == "loading";
+            view.playback_settings.saving = state == "saving";
+            view.playback_settings.writable = state != "unwritable";
+            view.playback_settings.error = Some("playback settings could not be read".into());
+            view.note_chase_menu_action(
+                NoteChaseAction {
+                    enabled: false,
+                    ..action.clone()
+                },
+                cx,
+            );
+            assert!(view.playback_settings.preferences.note_chase);
+            assert_eq!(view.playback_settings.saving, state == "saving");
+            assert!(view.error.as_ref().unwrap().contains("could not be read"));
+        }
+        view.playback_settings.loading = false;
+        view.playback_settings.saving = false;
+        view.playback_settings.writable = true;
+        view.project_generation += 1;
+        view.note_chase_menu_action(action, cx);
+        assert!(!view.playback_settings.saving);
+        assert!(view.playback_settings.preferences.note_chase);
+    });
+}
