@@ -2215,6 +2215,52 @@ fn compensated_fader_ramps_at_the_delayed_content_origin() {
 }
 
 #[test]
+fn resident_mute_feeds_the_same_pcm_as_a_fader_cut() {
+    use hex_project::Command;
+
+    let mut f = fixture(&[&[], &[7]], 1024);
+    let track = f.tracks[0];
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, vec![[1.0, -0.5]; 1024]).unwrap();
+    }
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[1],
+            gain: 0.0,
+        })
+        .unwrap();
+    let before = prepare(&f).unwrap();
+    assert_eq!(before.arrangement().main_latency_frames(), 7);
+    f.editor.execute(Command::Mute { track, muted: true }).unwrap();
+    let muted = prepare(&f).unwrap();
+    assert!(f.editor.undo());
+    f.editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+    let fader_cut = prepare(&f).unwrap();
+
+    for partition in [1, 257] {
+        let render = |after: &Arc<PreparedRevision>| {
+            let mut old = SessionPlayback::new(Arc::clone(&before)).unwrap();
+            let mut next = SessionPlayback::new(Arc::clone(after)).unwrap();
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            old.render(&mut [[0.0; 2]; 32]).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut output = [[0.0; 2]; 256];
+            for chunk in output.chunks_mut(partition) {
+                next.render(chunk).unwrap();
+            }
+            output
+        };
+        let expected = render(&fader_cut);
+        let actual = render(&muted);
+        assert!(expected[23][0] > 0.5);
+        assert_eq!(expected[255], [0.0; 2]);
+        for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+            assert_eq!(actual, expected, "partition {partition}, frame {index}");
+        }
+    }
+}
+
+#[test]
 fn noncompensated_device_fader_ramps_without_applying_gain_twice() {
     let mut f = fixture(&[&[0]], 1024);
     for audio in f.media.values_mut() {
