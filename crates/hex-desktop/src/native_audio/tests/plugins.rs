@@ -363,7 +363,11 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
         let diagnostics = fs::read_to_string(log.path()).unwrap();
         let stages: Vec<_> = diagnostics
             .lines()
-            .filter(|line| line.contains("vst3_insert v=1"))
+            .filter_map(|line| {
+                let (_, message) = line.split_once(" message=\"")?;
+                let message = message.strip_suffix('"')?;
+                message.starts_with("vst3_insert v=1 ").then_some(message)
+            })
             .collect();
         for stage in &stages {
             assert!(stage.contains(&format!("binding={binding:?}")), "{stage}");
