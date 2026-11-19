@@ -408,7 +408,7 @@ fn waiting_start_cannot_attach_to_a_replacement_recovery_generation(cx: &mut Tes
 fn ordinary_fresh_playing_seek_captures_off_while_stopped_positioning_keeps_on(
     cx: &mut TestAppContext,
 ) {
-    let fixture = open_applied_source(cx, Vec::new());
+    let fixture = open_applied_source(cx, feedback_recovery_commands());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -424,7 +424,7 @@ fn ordinary_fresh_playing_seek_captures_off_while_stopped_positioning_keeps_on(
         assert!(pending.start_playing);
     });
     fixture.finish(cx);
-    let fixture = open_applied_source(cx, Vec::new());
+    let fixture = open_applied_source(cx, feedback_recovery_commands());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
@@ -726,7 +726,7 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
 #[gpui::test]
 fn toggle_during_loading_cancels_the_future_seek_and_pauses_active_audio(cx: &mut TestAppContext) {
     use std::sync::atomic::Ordering::Acquire;
-    let mut fixture = open_applied_source(cx, Vec::new());
+    let mut fixture = open_applied_source(cx, feedback_recovery_commands());
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         view.queue_audio_command(PlaybackCommand::Play);
