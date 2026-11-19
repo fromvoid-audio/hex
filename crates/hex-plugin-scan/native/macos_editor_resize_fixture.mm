@@ -151,6 +151,18 @@ static void check_editor_placement() {
     }
     restore_editor_window_position(replacement,EditorPosition{900000,900000});
     assert(NSIntersectsRect([replacement frame],screen));
+
+    // A display configuration can leave just a sliver of a formerly usable
+    // window position on screen. There must be enough title bar to recover it.
+    auto rightmost=screen;
+    for(NSScreen* display in [NSScreen screens]) {
+        const auto visible=[display visibleFrame];
+        if(NSMaxX(visible)>NSMaxX(rightmost)) rightmost=visible;
+    }
+    const EditorPosition sliver{NSMaxX(rightmost)-1,NSMidY(rightmost)};
+    restore_editor_window_position(replacement,sliver);
+    assert(NSMinX([replacement frame])!=sliver.x);
+
     [replacement release];
     [original release];
 }

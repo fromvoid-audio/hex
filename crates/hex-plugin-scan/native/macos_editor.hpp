@@ -4,6 +4,7 @@
 #include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/base/keycodes.h"
 #include "macos_editor_position.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -402,8 +403,12 @@ inline void restore_editor_window_position(NSWindow* window,EditorPosition posit
         const auto content=[window contentRectForFrameRect:frame];
         const auto title_height=NSHeight(frame)-NSHeight(content);
         const auto title=NSMakeRect(position.x,position.y-title_height,NSWidth(frame),title_height);
+        // Keep enough room to grab the title bar in logical screen points.
+        const auto drag_width=std::min(NSWidth(title),title_height);
         for(NSScreen* screen in [NSScreen screens]) {
-            if(NSIntersectsRect(title,[screen visibleFrame])) {
+            const auto visible_title=NSIntersectionRect(title,[screen visibleFrame]);
+            if(!NSIsEmptyRect(visible_title) && NSWidth(visible_title)>=drag_width &&
+                NSHeight(visible_title)>=title_height) {
                 [window setFrameTopLeftPoint:NSMakePoint(position.x,position.y)];
                 return;
             }
