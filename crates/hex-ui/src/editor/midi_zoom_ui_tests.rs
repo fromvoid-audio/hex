@@ -734,6 +734,9 @@ fn resized_grid_rebounds_manual_zoom_and_keeps_the_full_note_fit(cx: &mut TestAp
         );
     });
     pump(&editor, &mut visual);
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    visual.simulate_click(roll.center(), Modifiers::default());
+    visual.run_until_parked();
     visual.simulate_keystrokes("z");
     visual.run_until_parked();
     let full = editor.read_with(&visual, |view, _| {
