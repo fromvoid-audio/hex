@@ -218,7 +218,7 @@ fn pitched_stream_fade_matches_resident_render_at_start_and_seek() {
     }
     assert!(expected[400..528].iter().any(|frame| frame[0].abs() > 0.01));
 }
-fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
+pub(super) fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
     AudioTransformPreparation {
         budget: Arc::new(budget::Budget::new(limit)),
         cache_limit: cache,
@@ -3547,33 +3547,4 @@ fn distinct_transforms_share_one_bounded_source_charge_across_edits() {
         source_charge(context.cache.borrow().entries.iter(), None).unwrap(),
         64_000
     );
-}
-
-#[test]
-fn unsupported_outer_fade_is_refused_before_preparation_cache_lookup() {
-    let (mut editor, id, media) = fixture(false);
-    editor
-        .execute(Command::SetAudioClipPitch {
-            clip: id,
-            cents: 100,
-        })
-        .unwrap();
-    let clip = editor.project().clip(id).unwrap();
-    let asset = editor.project().asset(clip.asset()).unwrap();
-    let context = AudioTransformPreparation::default();
-    let edit = clip.audio_edit().unwrap();
-    context
-        .prepare_audio(editor.project(), edit, asset, &media[&clip.asset()])
-        .unwrap();
-    let before = context.cache_hits();
-    let mut unsupported = edit.clone();
-    Arc::make_mut(&mut unsupported.domain).fade_clock = hex_project::AudioClipFadeClock::Outer;
-    assert_eq!(
-        context
-            .prepare_audio(editor.project(), &unsupported, asset, &media[&clip.asset()])
-            .unwrap_err()
-            .0,
-        "outer clip fades are not supported yet"
-    );
-    assert_eq!(context.cache_hits(), before);
 }
