@@ -167,6 +167,7 @@ fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
                 ),
                 (0, 0, 0, 0)
             );
+            assert_eq!(planned.performance_frame(), cut_frames as u64 + 257);
             let mut fresh =
                 Playback::try_from_prepared_with_session(Arc::clone(&candidate)).unwrap();
             fresh.apply(PlaybackCommand::PlayFrom(planned.position()));
@@ -174,6 +175,15 @@ fn run_tempo_cases(cases: &[(usize, bool, bool)]) {
             let mut expected = projected;
             planned.render(&mut projected).unwrap();
             fresh.render(&mut expected).unwrap();
+            let latency = candidate.arrangement().main_latency_frames() as usize;
+            let mut uninterrupted =
+                Playback::try_from_prepared_with_session(Arc::clone(&old_for_anchor)).unwrap();
+            uninterrupted.apply(PlaybackCommand::Play);
+            uninterrupted
+                .render(&mut vec![[0.0; 2]; cut_frames + 257])
+                .unwrap();
+            uninterrupted.render(&mut expected[..latency]).unwrap();
+            assert!(expected[..latency].iter().any(|frame| *frame != [0.0; 2]));
             assert_eq!(
                 projected, expected,
                 "future cut partition={partition} looped={looped}"
