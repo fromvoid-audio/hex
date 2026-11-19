@@ -996,6 +996,110 @@ fn pcm_limits() -> AudioStorageLedgerReservation {
         max_construction_peak_bytes: 2_000_000,
     }
 }
+
+#[test]
+fn duplicated_sampler_admits_independent_configurations_over_one_pcm_source() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "duplicate-source.wav".into(),
+            sample_rate: 48_000,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sampler".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: super::super::current_sampler_fixture::one_shot_state(512, asset).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("sampler track");
+    };
+    let cancel = AtomicBool::new(false);
+    let limits = pcm_limits();
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                crate::OwnedAudioSource::try_resident(48_000, vec![[0.25, -0.125]; 512])
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            limits,
+            512,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let prepare = |project: &Project| {
+        PreparedDeviceResources::prepare_on_control(
+            &store,
+            project,
+            limits.max_retained_bytes,
+            &cancel,
+        )
+        .unwrap()
+    };
+    let original = prepare(editor.project());
+    let Created::Tracks { first: copy, .. } = editor
+        .execute(Command::DuplicateTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            without_clips: false,
+        })
+        .unwrap()
+    else {
+        panic!("duplicated track");
+    };
+    let duplicated = prepare(editor.project());
+    let captured = duplicated
+        .capture_on_control(limits.max_retained_bytes)
+        .unwrap();
+    let sets = [&original, &duplicated, &captured];
+    let registered = [DeviceResourceAdmission::new(&sets[..2], &[])];
+    let phase = DeviceResourcePhase {
+        stores: &[&store],
+        registered: &registered,
+        selections: &[],
+        outbound: &[],
+        legacy: &[],
+        checked_runtime_bytes: 0,
+        construction_bytes: 0,
+    };
+    let uncaptured = inspect_device_resource_union(&phase, &phase, limits).unwrap();
+    let registered = [DeviceResourceAdmission::new(&sets, &[])];
+    let phase = DeviceResourcePhase {
+        registered: &registered,
+        ..phase
+    };
+    let inventory = inspect_device_resource_union(&phase, &phase, limits).unwrap();
+    assert_eq!(inventory.retained_frames, 512);
+    assert_eq!(inventory.construction_frames, 512);
+    assert_eq!(
+        inventory.retained.unresolved_handles,
+        uncaptured.retained.unresolved_handles + 2
+    );
+    for resources in [&duplicated, &captured] {
+        let original = resources.lease_on_control(track).unwrap().unwrap();
+        let copied = resources.lease_on_control(copy).unwrap().unwrap();
+        assert_eq!(
+            original.resources().get(0).unwrap().pcm.frame(0),
+            Some([0.25, -0.125])
+        );
+        assert_eq!(
+            copied.resources().get(0).unwrap().pcm.frame(0),
+            Some([0.25, -0.125])
+        );
+    }
+}
+
 fn pcm_inventory(registered: &[DeviceResourceAdmission<'_>], originals: &[&Audio]) -> u64 {
     let phase = DeviceResourcePhase {
         stores: &[],
