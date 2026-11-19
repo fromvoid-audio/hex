@@ -5043,10 +5043,7 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
     };
     let before = &imported.state;
     let deadline = Instant::now() + Duration::from_secs(2);
-    while read(cx)
-        .state
-        .is_none_or(|s| s.revision != before.revision)
-    {
+    while read(cx).state.is_none_or(|s| s.revision != before.revision) {
         step(cx, &mut visual);
         assert!(
             Instant::now() < deadline,
