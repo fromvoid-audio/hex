@@ -4473,7 +4473,7 @@ impl SessionPlayback {
         }
 
         let mut old_track_tail_slots = [None; MAX_TRACKS];
-        let mut smooth_track_appends = [false; MAX_TRACKS];
+        let mut track_insert_transitions = [None; MAX_TRACKS];
         let mut completed_foreign_suffixes = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
@@ -4771,17 +4771,20 @@ impl SessionPlayback {
                     == candidate_suffix_start
                     && old_track.instrument_suffix_matrix()
                         == candidate_track.instrument_suffix_matrix();
-                if let Some(smooth_append) = smooth_track_appends.get_mut(old_index) {
-                    *smooth_append = continuous_insert
-                        && same_instrument_placement
-                        && native_zero_latency_append
-                        && retained_prefix_extension
-                        && candidate_chain.can_smooth_native_append_from(old_chain);
+                let transition = (continuous_insert
+                    && !relocate
+                    && same_instrument_placement
+                    && candidate_track.device_chain.len() == candidate_chain.len())
+                .then(|| candidate_chain.native_insert_transition_from(old_chain, continuation))
+                .flatten();
+                if let Some(slot) = track_insert_transitions.get_mut(old_index) {
+                    *slot = transition;
                 }
                 !same_instrument_placement
                     || !(exact_chain_configuration
                         || retargetable_effect_configuration
-                        || retained_prefix_extension)
+                        || retained_prefix_extension
+                        || transition.is_some())
             });
             if !detached {
                 continue;
@@ -5731,8 +5734,10 @@ impl SessionPlayback {
                     candidate
                         .transfer_history_excluding_old_range(old, range)
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                } else if smooth_track_appends.get(old_index) == Some(&true) {
-                    candidate.transfer_history_with_smoothed_native_append_from(old);
+                } else if let Some(transition) =
+                    track_insert_transitions.get(old_index).copied().flatten()
+                {
+                    candidate.transfer_history_with_native_insert_from(old, transition);
                 } else {
                     candidate.transfer_history_from(old);
                 }
