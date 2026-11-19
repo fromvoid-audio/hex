@@ -1,7 +1,7 @@
 //! Destination-only fade finalization after the source program's last read.
 //! Musical fades use bounded PCM on control. The callback sees an ordinary
 //! resident clip and never evaluates a project tempo map.
-use super::preview_peaks::{PeakBins, PreparedEventSourcePeaks};
+use super::preview_peaks::{PeakBins, PreparedEventOccurrences, PreparedEventSourcePeaks};
 use super::{Audio, AudioClipEdit, AudioTransformPreparation, Clip, Invalid};
 use crate::{PreparedAudioPeak, PreparedAudioRepeat};
 use hex_project::{
@@ -60,6 +60,7 @@ pub(crate) struct MusicalPeakCapture {
     pub(crate) destination: Vec<PreparedAudioPeak>,
     pub(crate) event_source: Option<Arc<PreparedEventSourcePeaks>>,
     pub(crate) event_source_repeat: Option<PreparedAudioRepeat>,
+    pub(crate) event_source_occurrences: Option<Arc<PreparedEventOccurrences>>,
 }
 
 impl AudioTransformPreparation {
@@ -138,11 +139,15 @@ impl AudioTransformPreparation {
             .audio
             .as_ref()
             .ok_or(Invalid("musical outer fade requires resident audio"))?;
-        let event_source = if self.musical_peak_capture.borrow().is_some() {
-            self.event_source_peaks(source)
-        } else {
-            None
-        };
+        let (event_source, event_source_occurrences) =
+            if self.musical_peak_capture.borrow().is_some() {
+                (
+                    self.event_source_peaks(source),
+                    self.event_source_occurrences(source),
+                )
+            } else {
+                (None, None)
+            };
         let event_source_repeat = event_source
             .as_ref()
             .filter(|source| source.musical_clock().is_some())
@@ -199,6 +204,7 @@ impl AudioTransformPreparation {
             capture.destination = peaks.map_or_else(Vec::new, PeakBins::into_peaks);
             capture.event_source = event_source;
             capture.event_source_repeat = event_source_repeat;
+            capture.event_source_occurrences = event_source_occurrences;
         }
         Ok(clip)
     }

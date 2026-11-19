@@ -2716,6 +2716,8 @@ pub struct PreparedAudioClipView {
     /// Loop read of those event peaks when all musical occurrences share their
     /// processing root. This remains available before a baked instance fade.
     pub event_source_repeat: Option<PreparedAudioRepeat>,
+    /// Per-occurrence source reads for a materialized forward musical view.
+    pub event_source_occurrences: Option<Arc<audio_transform::PreparedEventOccurrences>>,
 }
 
 /// Exact extrema of one consecutive stereo destination range before outer

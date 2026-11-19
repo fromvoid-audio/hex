@@ -445,6 +445,7 @@ impl AudioTransformPreparation {
             source_rate: anchor.asset.source_sample_rate(),
             prepared: audio.clone(),
             event_source_peaks: None,
+            event_source_occurrences: None,
             bytes: std::mem::size_of_val(audio.frames()),
         })?;
         Ok(audio)

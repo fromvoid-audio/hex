@@ -336,6 +336,20 @@ impl AudioTransformPreparation {
             .try_reserve_exact(length)
             .map_err(|_| Invalid("audio placement allocation failed"))?;
         frames.resize(length, [0.0; 2]);
+        let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
+        let mut event_sources = if musical
+            && canonical_cache
+            && projection.occurrence_count() > 1
+            && self.entry_limit > 0
+            && bytes <= self.cache_limit
+        {
+            PreparedEventOccurrences::admit(
+                projection.occurrence_count(),
+                super::preview_peaks::event_source_budget(),
+            )
+        } else {
+            None
+        };
         let mut frame_root: Option<Audio> = None;
         for index in 0..projection.occurrence_count() {
             if self.cancelled() {
@@ -357,6 +371,18 @@ impl AudioTransformPreparation {
                     "audio placement root projection differs from prepared pcm",
                 ));
             }
+            if let Some(table) = &mut event_sources {
+                // Take the reservation-backed summary while this exact root is
+                // still selected. A miss abandons the whole optional table.
+                if let Some(source) = self
+                    .event_source_peaks(root)
+                    .filter(|source| source.musical_clock().is_some())
+                {
+                    table.push(occurrence, source);
+                } else {
+                    event_sources = None;
+                }
+            }
             let source_range = occurrence.root_start as usize..occurrence.root_end as usize;
             let elapsed = occurrence
                 .destination_start
@@ -375,7 +401,7 @@ impl AudioTransformPreparation {
                 .get(source_range)
                 .ok_or(Invalid("audio placement root crop exceeds pcm"))?;
             destination.copy_from_slice(source);
-            if matches!(edit.domain.clock, AudioDomainClock::Beats(_)) {
+            if musical {
                 frame_root = None;
             }
         }
@@ -397,6 +423,7 @@ impl AudioTransformPreparation {
                 source_rate: asset.source_sample_rate(),
                 prepared: audio.clone(),
                 event_source_peaks: None,
+                event_source_occurrences: event_sources.map(Arc::new),
                 bytes,
             })?;
         }
