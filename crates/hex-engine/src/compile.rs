@@ -698,17 +698,24 @@ fn compile_project_inner<'a>(
         prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
     // At most 4 MiB of neutral leaf bins per Arrangement revision. Allocate
-    // them evenly among candidates, independently of the audio PCM budget.
+    // them evenly among candidates, including clips before their first fade.
+    let musical_peak_candidate = |clip: &hex_project::Clip| {
+        clip.audio_edit().is_some_and(|edit| {
+            matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_))
+                && (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer
+                    || edit.domain.fade.is_neutral())
+        })
+    };
     let musical_peak_candidates = snapshot
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
-        .filter(|clip| {
-            clip.audio_edit()
-                .is_some_and(materializes_musical_outer_fade)
-        })
+        .filter(|clip| musical_peak_candidate(clip))
         .count();
     let musical_peak_limit = (262_144 / musical_peak_candidates.max(1)).min(1_024);
+    // The bake already visits every sample. Bound the additional optional read
+    // for unfaded candidates across the entire revision, including repeats.
+    let mut neutral_peak_budget = hex_project::MAX_AUDIO_DOMAIN_FRAMES;
     let solo = crate::TrackSoloSelection::prepare(snapshot);
     let any_soloed = solo.any;
     let mut tracks = Vec::new();
@@ -803,7 +810,8 @@ fn compile_project_inner<'a>(
                 {
                     return Ok(None);
                 }
-                let (mut compiled, neutral_musical_peaks) = if let Some(events) = clip.audio_edit()
+                let bakes_musical_fade = clip.audio_edit().is_some_and(materializes_musical_outer_fade);
+                let (mut compiled, mut neutral_musical_peaks) = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
                 {
@@ -823,7 +831,7 @@ fn compile_project_inner<'a>(
                     (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new())
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
-                    if clip.audio_edit().is_some_and(materializes_musical_outer_fade) {
+                    if bakes_musical_fade {
                         transforms.capture_musical_peaks(musical_peak_limit, || {
                             transforms.compile_clip(snapshot, clip, asset, source)
                         })?
@@ -832,11 +840,16 @@ fn compile_project_inner<'a>(
                     }
                 };
                 if let Some(compiled) = compiled.as_mut() {
+                    if !bakes_musical_fade && musical_peak_candidate(clip) {
+                        neutral_musical_peaks = transforms.capture_unbaked_musical_peaks(
+                            compiled, musical_peak_limit, &mut neutral_peak_budget,
+                        );
+                    }
                     compiled.active = clip.active();
                 }
                 if let Some(compiled) = &compiled
                     && let Some(audio) = &compiled.audio
-                    && audio.frames._derived.is_some()
+                    && (audio.frames._derived.is_some() || !neutral_musical_peaks.is_empty())
                 {
                     audio_clip_views
                         .try_reserve(1)

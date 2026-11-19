@@ -97,6 +97,38 @@ impl PeakBins {
 }
 
 impl AudioTransformPreparation {
+    /// Optional control-side read for the first musical fade or a neutral
+    /// reset. Uses the same bins and destination samples as the bake.
+    pub(crate) fn capture_unbaked_musical_peaks(
+        &self,
+        clip: &Clip,
+        limit: usize,
+        remaining_frames: &mut u64,
+    ) -> Vec<PreparedAudioPeak> {
+        let duration = clip.end - clip.start;
+        if duration > *remaining_frames || clip.audio.is_none() {
+            return Vec::new();
+        }
+        let phase = match neutral_phase(clip) {
+            Some(phase) => phase,
+            None => return Vec::new(),
+        };
+        let Ok(length) = usize::try_from(duration) else {
+            return Vec::new();
+        };
+        let Some(mut peaks) = PeakBins::new(length, limit) else {
+            return Vec::new();
+        };
+        *remaining_frames -= duration;
+        for (index, frame) in (clip.start..clip.end).enumerate() {
+            if index % 1024 == 0 && self.cancelled() {
+                return Vec::new();
+            }
+            peaks.observe(index, clip.at(frame, phase));
+        }
+        peaks.peaks
+    }
+
     /// Collect an optional display sidecar from the existing bake pass. A failed
     /// or non-materializing compile produces no peaks and keeps no scratch.
     pub(crate) fn capture_musical_peaks<T>(
@@ -150,20 +182,9 @@ impl AudioTransformPreparation {
             .checked_sub(clip.start)
             .ok_or(Invalid("musical outer fade placement is reversed"))?;
         OuterPlaybackFade::Musical(fade).admit(duration, true)?;
-        let phase = if let Some(metadata) = &clip.metadata {
-            if metadata.fade.is_some()
-                || metadata.sparse.is_some()
-                || metadata.streamed.is_some()
-                || metadata.reversed
-            {
-                return Err(Invalid(
-                    "musical outer fade requires unfaded resident placement",
-                ));
-            }
-            metadata.source_phase
-        } else {
-            0
-        };
+        let phase = neutral_phase(&clip).ok_or(Invalid(
+            "musical outer fade requires unfaded resident placement",
+        ))?;
         let length = usize::try_from(duration)
             .map_err(|_| Invalid("musical outer fade span exceeds addressable frames"))?;
         let bytes = length
@@ -211,4 +232,15 @@ impl AudioTransformPreparation {
         }
         Ok(clip)
     }
+}
+
+fn neutral_phase(clip: &Clip) -> Option<u64> {
+    let Some(metadata) = &clip.metadata else {
+        return Some(0);
+    };
+    (metadata.fade.is_none()
+        && metadata.sparse.is_none()
+        && metadata.streamed.is_none()
+        && !metadata.reversed)
+        .then_some(metadata.source_phase)
 }

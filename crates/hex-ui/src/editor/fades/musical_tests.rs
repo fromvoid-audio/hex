@@ -145,6 +145,7 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
     use crate::editor::{
         clip_drag_ui_test::editor_window, drag::group_drag_ui_test::pump,
         external_audio_drop_ui_test::BatchFiles, viewport::Viewport,
+        waveform_geometry::painted_clip_waveform_outline,
     };
     use gpui::{point, rgba};
     use hex_project::{AudioViewResizeOperation, Project};
@@ -195,10 +196,37 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
             length: 85_000,
         });
         view.fade_key_held = true;
-        assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope { clip, fade })));
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
         cx.notify();
     });
+    visual.run_until_parked();
+    let neutral_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
+    let basis = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let neutral = state.audio_clip_waveforms[&clip]
+            .neutral_musical
+            .as_ref()
+            .unwrap();
+        assert!(neutral.waveform.bounded_samples(0..1, 1).is_none());
+        Arc::clone(&neutral.waveform)
+    });
+    let assert_shared_basis = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let neutral = state.audio_clip_waveforms[&clip]
+                .neutral_musical
+                .as_ref()
+                .unwrap();
+            assert!(Arc::ptr_eq(&neutral.waveform, &basis));
+        });
+    };
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope { clip, fade })));
+    });
     pump(&editor, &mut visual);
+    assert_shared_basis(&visual);
 
     let selector: &'static str =
         Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
@@ -212,6 +240,8 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
             .collect::<Vec<_>>()
     };
     let original = mesh(&mut visual);
+    let original_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
+    assert_ne!(original_waveform, neutral_waveform);
     assert!(
         !original.is_empty(),
         "musical Repeat lost its committed fade shade"
@@ -221,9 +251,19 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
     let from = visual.debug_bounds(selector).unwrap().center();
     let to = point(from.x + px(9.0), from.y + px(8.0));
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
+    });
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = mesh(&mut visual);
+    let held_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
+    assert_ne!(
+        held_waveform, original_waveform,
+        "held fade reshapes the musical waveform"
+    );
     assert_ne!(held, original);
     assert!(!held.is_empty());
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
@@ -246,16 +286,50 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
         editor.update(&mut visual, |view, cx| {
             view.fade_key_held = false;
             assert!(view.pending_fade.is_some());
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
             cx.notify();
         });
         visual.run_until_parked();
         assert_eq!(mesh(&mut visual), held, "pre-ack repaint");
+        assert_eq!(
+            painted_clip_waveform_outline(&editor, &mut visual, clip),
+            held_waveform
+        );
     }
     editor.update(&mut visual, |view, cx| {
         view.receive(terminal);
         assert!(view.pending_fade.is_none());
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
         cx.notify();
     });
     visual.run_until_parked();
+    assert_shared_basis(&visual);
     assert_eq!(mesh(&mut visual), held, "installed canonical repaint");
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        held_waveform
+    );
+
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        original_waveform
+    );
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::neutral(fade.span()).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    assert_shared_basis(&visual);
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        neutral_waveform
+    );
 }

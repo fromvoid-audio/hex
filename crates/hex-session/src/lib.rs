@@ -2073,6 +2073,7 @@ fn prepare_with_waveforms_using(
         type Shape = Option<(waveform::Repeat, usize)>;
         let mut roots: Vec<(Audio, Shape, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
+        let mut musical_tempo = None;
         for view in prepared.arrangement().audio_clip_views() {
             if let Some(map) = &view.sparse {
                 let waveform = if let Some(existing) = old.get(&view.clip).filter(|entry| {
@@ -2095,6 +2096,7 @@ fn prepare_with_waveforms_using(
                         offset: view.offset,
                         length: view.length,
                         preview_root: None,
+                        neutral_musical: None,
                     },
                 );
                 continue;
@@ -2203,6 +2205,12 @@ fn prepare_with_waveforms_using(
             } else {
                 None
             };
+            let neutral_musical = musical_waveform(
+                view,
+                old.get(&view.clip),
+                project.tempo_map(),
+                &mut musical_tempo,
+            );
             next.insert(
                 view.clip,
                 service::AudioClipWaveform {
@@ -2210,6 +2218,7 @@ fn prepare_with_waveforms_using(
                     offset: if shape.is_some() { 0 } else { view.offset },
                     length: view.length,
                     preview_root,
+                    neutral_musical,
                 },
             );
         }
@@ -2217,6 +2226,54 @@ fn prepare_with_waveforms_using(
     })?;
     *old = next;
     Ok(prepared)
+}
+
+fn musical_waveform(
+    view: &hex_engine::PreparedAudioClipView,
+    previous: Option<&service::AudioClipWaveform>,
+    tempo: &hex_project::TempoMap,
+    shared_tempo: &mut Option<Arc<hex_project::TempoMap>>,
+) -> Option<service::AudioMusicalWaveform> {
+    let peaks = &view.neutral_musical_peaks;
+    if peaks.is_empty() {
+        return None;
+    }
+    let length = usize::try_from(view.length).ok()?;
+    let as_peaks = |peak: &hex_engine::PreparedAudioPeak| {
+        std::array::from_fn(|channel| CachedPeak {
+            min: peak.min[channel],
+            max: peak.max[channel],
+        })
+    };
+    let previous = previous.and_then(|entry| entry.neutral_musical.as_ref());
+    let waveform = if let Some(previous) = previous.filter(|previous| {
+        previous.waveform.source_frames() == length
+            && previous
+                .waveform
+                .bins()
+                .iter()
+                .copied()
+                .eq(peaks.iter().map(as_peaks))
+    }) {
+        Arc::clone(&previous.waveform)
+    } else {
+        let mut bins = Vec::new();
+        bins.try_reserve_exact(peaks.len()).ok()?;
+        bins.extend(peaks.iter().map(as_peaks));
+        Arc::new(Waveform::from_peaks(length, bins).ok()?)
+    };
+    let tempo = shared_tempo.get_or_insert_with(|| {
+        previous
+            .filter(|previous| previous.tempo.as_ref() == tempo)
+            .map_or_else(
+                || Arc::new(tempo.clone()),
+                |previous| Arc::clone(&previous.tempo),
+            )
+    });
+    Some(service::AudioMusicalWaveform {
+        waveform,
+        tempo: Arc::clone(tempo),
+    })
 }
 
 #[cfg(test)]

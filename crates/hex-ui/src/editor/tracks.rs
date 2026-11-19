@@ -2682,6 +2682,17 @@ impl EditorView {
             )),
             None => prepared
                 .and_then(|prepared| {
+                    if let Some((waveform, view)) =
+                        super::waveform_prepared_fade::PreparedMusicalFade::for_clip(
+                            &state.project,
+                            clip,
+                            prepared,
+                            fade,
+                            gain.unwrap_or(clip.gain()),
+                        )
+                    {
+                        return Some((waveform, WaveformMapping::PreparedMusicalFade(view)));
+                    }
                     let view = super::waveform_prepared_fade::PreparedFade::for_clip(
                         &state.project,
                         clip,

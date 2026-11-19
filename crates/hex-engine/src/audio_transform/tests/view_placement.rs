@@ -1191,6 +1191,18 @@ fn musical_outer_fade_failure_keeps_source_and_releases_reservation() {
 
     let bytes = duration as usize * std::mem::size_of::<crate::Frame>();
     let tight = isolated(bytes, 0, 0);
+    let mut budget = duration - 1;
+    assert!(
+        tight
+            .capture_unbaked_musical_peaks(&resident, 17, &mut budget)
+            .is_empty()
+    );
+    assert_eq!(budget, duration - 1);
+    let mut budget = duration;
+    let unbaked = tight.capture_unbaked_musical_peaks(&resident, 17, &mut budget);
+    assert_eq!(unbaked.len(), 17);
+    assert_eq!(budget, 0);
+    assert_eq!(tight.retained_pcm_bytes(), 0);
     tight.cancel_after_polls.set(Some(2));
     assert!(matches!(
         tight.capture_musical_peaks(17, || {
@@ -1207,6 +1219,9 @@ fn musical_outer_fade_failure_keeps_source_and_releases_reservation() {
             })
             .unwrap();
         assert_eq!(peaks.len(), limit);
+        if limit != 0 {
+            assert_eq!(peaks, unbaked);
+        }
         assert_eq!(tight.retained_pcm_bytes(), bytes);
         drop(baked);
         assert_eq!(tight.retained_pcm_bytes(), 0);
