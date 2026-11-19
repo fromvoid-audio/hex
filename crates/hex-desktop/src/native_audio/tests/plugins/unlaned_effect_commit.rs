@@ -9,6 +9,16 @@ use hex_session::{
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn unlaned_effect_commit_keeps_the_running_source() {
+    verify_unlaned_effect_commit(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn grouped_unlaned_effect_commit_keeps_the_running_source() {
+    verify_unlaned_effect_commit(true);
+}
+
+fn verify_unlaned_effect_commit(grouped: bool) {
     const CHILD: &str = "HEX_DESKTOP_TEST_UNLANED_EFFECT_COMMIT";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -83,6 +93,23 @@ fn unlaned_effect_commit_keeps_the_running_source() {
         looping: true,
     }));
     let (applied, _) = h.applied(applied);
+    let (applied, group) = if grouped {
+        let event = h.run(Request::Edit(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+            name: "compensated source group".into(),
+        }));
+        assert!(event.error.is_none(), "grouping: {:?}", event.error);
+        let Some(Created::Track(group)) = event.created else {
+            panic!("group track was not created");
+        };
+        assert_eq!(
+            event.state.project.track(track).unwrap().parent_group(),
+            Some(group)
+        );
+        (h.applied(applied).0, Some(group))
+    } else {
+        (applied, None)
+    };
     let mut eq = hex_engine::eq::EqState::default();
     let node_id = hex_engine::eq::NodeId::new(800).unwrap();
     let node = hex_engine::eq::Node::new(node_id, 90.97308, 0.0, 0).unwrap();
@@ -342,7 +369,33 @@ fn unlaned_effect_commit_keeps_the_running_source() {
         .finish_plugin(PluginParameterValue::new(0.5).unwrap())
         .unwrap();
     let committed = send(&mut h, &mut client);
-    let (commit_applied, _) = h.applied(applied);
+    let (commit_applied, successor) = h.applied(applied);
+    assert_eq!(
+        successor.context,
+        committed
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+    );
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(hex_audio::prepared::AppliedAudioSource {
+            context: successor.context,
+            audio_revision: commit_applied,
+            output_identity: output,
+        })
+    );
+    assert_eq!(
+        committed.state.project.track(track).unwrap().parent_group(),
+        group
+    );
     assert_ne!(
         committed
             .state
