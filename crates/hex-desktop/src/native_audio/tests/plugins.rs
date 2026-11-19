@@ -363,7 +363,11 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
         let diagnostics = fs::read_to_string(log.path()).unwrap();
         let stages: Vec<_> = diagnostics
             .lines()
-            .filter(|line| line.contains("vst3_insert v=1"))
+            .filter_map(|line| {
+                let (_, message) = line.split_once(" message=\"")?;
+                let message = message.strip_suffix('"')?;
+                message.starts_with("vst3_insert v=1 ").then_some(message)
+            })
             .collect();
         for stage in &stages {
             assert!(stage.contains(&format!("binding={binding:?}")), "{stage}");
@@ -388,7 +392,22 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
                 "graph_terminal"
             ]
         );
-        assert!(stages[0].contains("elapsed_ns="));
+        for field in [
+            "elapsed_ns=",
+            "selection_inspection_ns=",
+            "revalidation_ns=",
+            "waitable_probe_ns=Some(",
+            "instance_to_facts_ns=Some(",
+        ] {
+            let elapsed = stages[0]
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix(field))
+                .unwrap()
+                .trim_end_matches(')')
+                .parse::<u128>()
+                .unwrap();
+            assert!(elapsed > 0, "missing duration for {field}");
+        }
         assert!(stages[3].contains("committed=true"));
     }
 }

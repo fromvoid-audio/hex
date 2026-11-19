@@ -294,6 +294,7 @@ impl Plugins {
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 ) {
                 Ok(binding) => break binding,
                 Err(error) if error == "native preparation is busy" => poll_control(control),

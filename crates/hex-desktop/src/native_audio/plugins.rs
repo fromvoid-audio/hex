@@ -5,8 +5,8 @@ use hex_audio::plugin_effects::EffectBinding as Binding;
 use hex_audio::{
     NativeSourcePreparationProgress as Progress,
     plugin_effects::{
-        AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection, Hosting,
-        PluginProfile,
+        AuthoredSelection, EffectPresentation, EffectPresentationPlan, EffectSelection,
+        EffectStartupTimings, Hosting, PluginProfile,
     },
 };
 use hex_engine::{PreparedRevision, ProcessorChainOwner};
@@ -552,7 +552,10 @@ impl Plugins {
                 .editor_revision
                 .checked_add(1)
                 .ok_or("vst3 graph revision exhausted")?;
-            let prepare_started = self.diagnostics.as_ref().map(|_| std::time::Instant::now());
+            let mut timing = self
+                .diagnostics
+                .as_ref()
+                .map(|_| (std::time::Instant::now(), EffectStartupTimings::default()));
             let binding = match host.begin_on_control(
                 control,
                 EffectSelection {
@@ -568,6 +571,7 @@ impl Plugins {
                 output.sample_rate,
                 hosting_profile(input.insertion.destination),
                 None,
+                timing.as_mut().map(|(_, timings)| timings),
             ) {
                 Ok(binding) => binding,
                 // Root's contended Work mutex refuses before reserving a slot
@@ -579,13 +583,20 @@ impl Plugins {
                 }
                 Err(reason) => return Err(reason),
             };
-            if let Some(started) = prepare_started {
+            if let Some((started, timing)) = timing {
                 record_insertion_stage(
                     self.diagnostics.as_ref(),
                     binding,
                     input.insertion.context.project_generation,
                     "native_prepare_returned",
-                    format_args!(" elapsed_ns={}", started.elapsed().as_nanos()),
+                    format_args!(
+                        " elapsed_ns={} selection_inspection_ns={} revalidation_ns={} waitable_probe_ns={:?} instance_to_facts_ns={:?}",
+                        started.elapsed().as_nanos(),
+                        timing.selection_inspection.as_nanos(),
+                        timing.revalidation.as_nanos(),
+                        timing.waitable_probe.map(|elapsed| elapsed.as_nanos()),
+                        timing.instance_to_facts.map(|elapsed| elapsed.as_nanos()),
+                    ),
                 );
             }
             #[cfg(all(test, feature = "allocation-probe"))]

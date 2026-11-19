@@ -146,6 +146,7 @@ impl PausedEffects {
                 node.sample_rate,
                 PluginProfile::Effect,
                 Some(state.clone()),
+                None,
             )?;
             plugins.paused_monitor_sources.push(binding);
             self.preparing = Some(binding);
