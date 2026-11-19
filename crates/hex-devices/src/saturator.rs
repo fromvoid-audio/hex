@@ -357,6 +357,10 @@ impl PreparedNativeProcessor for PreparedSaturator {
         true
     }
 
+    fn supports_power_off(&self) -> bool {
+        true
+    }
+
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
