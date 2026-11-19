@@ -4,13 +4,13 @@ use super::{EditorMode, EditorView, Viewport};
 use gpui::{Context, Div, Stateful, Window, prelude::*, px};
 use hex_project::{BeatTime, ClipId};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Target {
     Arrange,
     Audio,
     Midi,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 struct PianoView {
     start: i128,
     span: BeatTime,
@@ -435,6 +435,8 @@ impl EditorView {
                 "zoom back · v"
             } else if target == Target::Arrange {
                 "fit time and selected tracks · z"
+            } else if target == Target::Midi {
+                "fit selected notes or all notes · z"
             } else {
                 "fit time selection or clip/content · z"
             },
