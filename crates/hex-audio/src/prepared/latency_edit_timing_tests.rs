@@ -8,6 +8,7 @@ use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
 
 mod aligned_power;
+mod analytic_power;
 mod reverb_power;
 
 const RATE: u32 = 48_000;

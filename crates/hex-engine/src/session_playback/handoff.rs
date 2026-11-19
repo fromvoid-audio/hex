@@ -3680,6 +3680,24 @@ impl SessionPlayback {
         // boundary: later tracks may append fresh entries before an existing
         // carried key is extended, so the full scratch vector is not sorted.
         let carried_suppression_count = self.suppression_scratch.len();
+        let powered_off_receivers: [bool; MAX_TRACKS] = std::array::from_fn(|index| {
+            let old = previous.revision.arrangement().tracks().get(index);
+            let new = self.revision.arrangement().tracks().get(track_map[index]);
+            old.zip(new).is_some_and(|(old, new)| {
+                old.instrument_slot_enabled()
+                    && new.instrument_id == old.instrument_id
+                    && new.source_id() == old.source_id()
+                    && new.instrument_bypassed
+            })
+        });
+        let source_powered_off = |contributor| {
+            let receiver = previous
+                .revision
+                .source_routing()
+                .receiver_index(contributor)
+                .unwrap_or(contributor);
+            powered_off_receivers[receiver]
+        };
         for (old_index, _) in previous.routes.iter().enumerate() {
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
             if !arrangement_instrument_changed
@@ -3814,9 +3832,12 @@ impl SessionPlayback {
                         if is_suppressed(previous, old_route.id, key) {
                             return;
                         }
-                        let voice_result = if arrangement_cut == previous.arrangement_frame
-                            && shared_sources::track_has_analytic_source(&self.revision, new_index)
-                        {
+                        let voice_result = if source_powered_off(old_index)
+                            || (arrangement_cut == previous.arrangement_frame
+                                && shared_sources::track_has_analytic_source(
+                                    &self.revision,
+                                    new_index,
+                                )) {
                             MidiReleaseVoice::from_finite_span_preserving_gate(
                                 span.start,
                                 span.gate_end,
@@ -4387,8 +4408,11 @@ impl SessionPlayback {
                             && occurrence.channel == span.channel
                             && occurrence.velocity == span.velocity
                     });
-                    let mapped_gate = if matches && span.gate_end_frame > previous.performance_frame
-                    {
+                    let mapped_gate = if source_powered_off(old_index) {
+                        // Device power fades the original waveform independently
+                        // of the instrument's authored MIDI note-off envelope.
+                        Some(span.gate_end_frame)
+                    } else if matches && span.gate_end_frame > previous.performance_frame {
                         Some(
                             candidate_timing
                                 .beat_to_frame(span.gate_end_beat)
@@ -4737,13 +4761,22 @@ impl SessionPlayback {
                 &analytic_owner_matches,
                 source_effects_continue,
             )?;
+            let Some(old_index) = audio_plan.old_receiver else {
+                continue;
+            };
+            // The source receiver owns Power Off, including voices from other
+            // MIDI contributors. Previously detached suffixes were skipped above.
+            if powered_off_receivers[old_index] {
+                let cut = release.sample_frame(previous.performance_frame)?;
+                release.voice.power_off_at(cut, sample_rate);
+                release.voice.detach(&previous.analytic_continuations);
+                release.continuation = None;
+                release.inline_tuning_owned = false;
+            }
             if let Some(current) = audio_plan.current_receiver {
                 release.location = ReleaseLocation::new(current, None)?;
                 continue;
             }
-            let Some(old_index) = audio_plan.old_receiver else {
-                continue;
-            };
             let Some(old_chain) = previous.device_chains.get(old_index) else {
                 return Err(SessionPlaybackError::DeviceRuntime);
             };
