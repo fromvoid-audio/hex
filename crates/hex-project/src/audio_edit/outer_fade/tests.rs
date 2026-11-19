@@ -356,14 +356,12 @@ fn cropped_musical_context_retains_immutable_author_origin_across_tempo_seam() {
             .unwrap()
             .elapsed_at_frame(cut)
             .unwrap();
-        let mut cropped =
+        let cropped =
             crate::audio_edit::trim_view(&original, crate::TrimEdge::Left, cut, &author).unwrap();
         let old_domain = &original.audio_edit().unwrap().domain;
-        let domain = Arc::make_mut(&mut cropped.audio_edit_mut().unwrap().domain);
-        // Prospective context required of the later crop bridge, not activation.
-        domain
-            .shift_outer_fade_displacement(i128::from(consumed))
-            .unwrap();
+        let domain = &cropped.audio_edit().unwrap().domain;
+        // The guarded trim boundary now retains this context; no canonical
+        // Outer admission, command history or native behavior is activated.
         assert_eq!(domain.fade, old_domain.fade);
         assert_eq!(
             domain.fade_projection.as_ref().unwrap().origin_beat_raw,
@@ -386,23 +384,14 @@ fn cropped_musical_context_retains_immutable_author_origin_across_tempo_seam() {
                 expected.domain_position_at_frame(frame).unwrap()
             );
         }
-        let mut combined = cropped.clone();
-        let domain = Arc::make_mut(&mut combined.audio_edit_mut().unwrap().domain);
-        domain
-            .shift_outer_fade_displacement(-i128::from(consumed))
-            .unwrap();
-        domain
-            .shift_outer_fade_displacement(i128::from(consumed / 2))
-            .unwrap();
-        domain
-            .shift_outer_fade_displacement(i128::from(consumed - consumed / 2))
-            .unwrap();
+        let first_cut = author.beat_to_frame(BeatTime::ONE).unwrap();
+        let first =
+            crate::audio_edit::trim_view(&original, crate::TrimEdge::Left, first_cut, &author)
+                .unwrap();
+        let successive =
+            crate::audio_edit::trim_view(&first, crate::TrimEdge::Left, cut, &author).unwrap();
         assert_eq!(
-            domain.outer_fade_displacement().unwrap(),
-            i128::from(consumed)
-        );
-        assert_eq!(
-            combined.audio_edit().unwrap().domain,
+            successive.audio_edit().unwrap().domain,
             cropped.audio_edit().unwrap().domain
         );
         let mut wrong_context = cropped.clone();
@@ -492,18 +481,15 @@ fn subframe_origins_survive_crop_and_common_rewind_with_observable_hard_gate() {
         domain.fade = ClipFade::new(76_696, 0, 0, 3_600).unwrap();
         domain.fade_projection.as_mut().unwrap().origin_beat_raw = origin;
         crate::audio_edit::project_clip(&mut clip, &author).unwrap();
-        let mut cropped =
+        let cropped =
             crate::audio_edit::trim_view(&clip, crate::TrimEdge::Left, common_crop_frame, &author)
                 .unwrap();
-        Arc::make_mut(&mut cropped.audio_edit_mut().unwrap().domain)
-            .shift_outer_fade_displacement(consumed)
-            .unwrap();
+
         let mut rewound =
             crate::audio_edit::trim_view(&cropped, crate::TrimEdge::Left, 0, &author).unwrap();
-        let domain = Arc::make_mut(&mut rewound.audio_edit_mut().unwrap().domain);
-        // These explicit context updates model the later crop bridge; no
-        // admitted edit/Undo or native behavior is exercised by this fixture.
-        domain.shift_outer_fade_displacement(-common_crop).unwrap();
+        let domain = &rewound.audio_edit().unwrap().domain;
+        // Actual guarded trim previews retain context. Admission, command
+        // history and native behavior remain unactivated.
         assert_eq!(domain.outer_fade_displacement().unwrap(), -origin);
         assert_eq!(domain.fade.offset(), 0);
         assert_eq!(
@@ -556,3 +542,5 @@ fn hidden_retained_knots_near_upper_frame_limit_do_not_overflow_visible_projecti
             .all(|frame| (clip.start()..=u64::MAX - 10).contains(&frame))
     );
 }
+
+mod crop_tests;

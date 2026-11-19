@@ -5,6 +5,8 @@ use super::{
     AudioViewProjection, audio_projection_beat, audio_projection_frame,
 };
 use crate::{Clip, ClipFade, Invalid, TempoMap};
+mod crop;
+pub(super) use crop::retain_crop_context;
 
 /// Clip-context outer fade projection. Source repetition, slip and reflection
 /// never restart or reverse this envelope. Gain samples use project frames;
