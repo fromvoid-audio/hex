@@ -280,6 +280,7 @@ impl ArrangementClips {
             if s.gain != 1.0
                 || s.sparse_frames.is_some()
                 || fade.is_some()
+                || s.reserve_fade
                 || s.phase != 0
                 || matches!(&inputs.sources[s.source].1.kind, SourceKind::Streamed(_))
             {
@@ -376,11 +377,13 @@ impl ArrangementClips {
         for (slot, (r, s)) in self.rows.iter().zip(slots.iter()).enumerate() {
             let source = s.source_owner(inputs)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
+            let reserved_fade = (!s.reserve_fade && !s.fade.is_neutral()).then_some(s.fade);
             let required = s.gain != 1.0
                 || s.sparse_frames.is_some()
                 || matches!(&owner.kind, SourceKind::Streamed(_))
                 || s.phase != 0
-                || !s.fade.is_neutral();
+                || !s.fade.is_neutral()
+                || s.reserve_fade;
             if r.binding
                 != (Binding {
                     slot,
@@ -398,7 +401,7 @@ impl ArrangementClips {
                 || r.metadata.is_some() != required
                 || s.sparse.as_ref().map(|map| map.packed_len()) != s.sparse_frames
                 || s.sparse.as_ref().is_some_and(|map| {
-                    s.looping || s.phase != 0 || !s.fade.is_neutral()
+                    s.looping || s.phase != 0
                         || !matches!(&owner.kind, SourceKind::Resident(audio) if audio.frames().len() == map.packed_len())
                         || s.source_offset.checked_add(s.source_length).is_none_or(|end| end > map.extent())
                 })
@@ -408,7 +411,7 @@ impl ArrangementClips {
                         || m.gain != s.gain
                         || m.source_phase != s.phase
                         || m.reversed != s.reversed
-                        || m.fade != (!s.fade.is_neutral()).then_some(s.fade)
+                        || m.fade != reserved_fade
                 })
                 || s.disposal != Disposal::Unstarted
                 || owner.handle != s.handle
@@ -426,6 +429,7 @@ impl ArrangementClips {
                 match kind {
                     SourceKind::Resident(audio) => {
                         if let Some(target) = r.metadata.as_mut() {
+                            target.fade = (!s.fade.is_neutral()).then_some(s.fade);
                             target.sparse = s.sparse.take();
                         }
                         r.clip = Some(Clip {
