@@ -1857,127 +1857,103 @@ class ReleaseCargoTests(unittest.TestCase):
                                                  verification_check=refuse_certificate):
                     self.fail("changed CI certificate reached compilation/consumer")
             self.assertEqual(Path(first["owner_path"]).read_bytes(), owner_before)
-            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            self.assertTrue(dependencies)
-            # Keep a real dev build and ensure release handoff cannot touch it.
+            # Keep a real dev build and verify all refusals preserve it.
             command(["cargo", "build", "--offline", "--locked"], root, env)
-            dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
-            self.assertTrue(dev)
-            wrapper_dir = base / "bin"
-            wrapper_dir.mkdir()
-            cargo = shutil.which("cargo")
-            self.assertIsNotNone(cargo)
-            wrapper = wrapper_dir / "cargo"
-            wrapper.write_text('#!/usr/bin/env python3\nimport os,glob,sys\n'
-                'if sys.argv[1:2] == ["build"] and "--release" in sys.argv:\n'
-                ' stale=glob.glob(os.path.join(os.environ["CARGO_TARGET_DIR"], "release/deps/libfixture_api-*.rlib"))\n'
-                ' if stale:\n  print("workspace release artifact survived handoff",file=sys.stderr)\n  sys.exit(23)\n'
-                f'os.execv({cargo!r},[{cargo!r},*sys.argv[1:]])\n')
-            wrapper.chmod(0o755)
-            guarded_env = {**env, "PATH":str(wrapper_dir) + os.pathsep + env["PATH"]}
-            # Negative control: ordinary dev handoff leaves these release artifacts.
-            dev_runner = runner(other, "dev-only", guarded_env)
-            dev_runner.adopt_target = True
-            dev_runner.output_dir.mkdir(parents=True)
-            self.assertTrue(dev_runner._capture_repository_state("start_tree"))
-            self.assertTrue(dev_runner._resolve_cargo_identity())
-            self.assertTrue(dev_runner._prepare_target_cache())
-            dev_runner.target_lock.release()
-            dev_runner.target_lock = None
-            control = subprocess.run(["cargo", "build", "--release", "--locked"], cwd=other,
-                                     env=guarded_env, capture_output=True, text=True)
-            self.assertEqual(control.returncode, 23, control.stderr)
-            command(["cargo", "build", "--offline", "--locked"], other, env)
-            dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
-            second = build(other, "release-b", "B string API 9", guarded_env, retain=True)
-            third = build(root, "release-a-again", "16", guarded_env)
-            self.assertEqual(second["cleanup_status"], "passed")
-            self.assertEqual(third["cleanup_status"], "passed")
-            self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)
-            self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
-            self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
-            self.assertEqual(command([str(base / "release-b-retained-binary")]), "B string API 9")
-            build(root, "release-a-normal-tool", "16")
+            def inventory(directory):
+                return {str(p.relative_to(directory)): delivery.sha(p)
+                        for p in directory.rglob("*") if p.is_file()}
+
+            original_dev = inventory(target / "debug")
+            original_release = inventory(target / "release")
+            self.assertTrue(original_dev)
+            self.assertTrue(original_release)
+            self.assertTrue(any("libexternal_helper" in path for path in original_release))
+
+            def refuse(cwd, name, reason="fresh release target", selected_env=env, **options):
+                with self.assertRaisesRegex(delivery.ci.TargetCacheError, reason):
+                    with delivery.optimized_artifact(
+                            runner(cwd, name, selected_env), package="fixture-app", **options):
+                        self.fail("unsupported release target reached the build")
+
+            def fresh(cwd, name, expected, selected_env=env):
+                fresh_env = {**selected_env, "CARGO_TARGET_DIR": str(base / (name + "-target"))}
+                return build(cwd, name, expected, fresh_env)
+
+            # A -> B -> A across worktrees. B uses separate custody; returning
+            # to the unchanged A inputs can reuse the original A target.
+            refuse(other, "refuse-shared-b")
+            fresh(other, "release-b", "B string API 9")
             reused = build(root, "release-a-reuse", "16")
+            self.assertEqual(reused["action"], "reuse")
             self.assertEqual(reused["cleanup_status"], "not_needed")
-            # Same checkout/source edit must invoke Cargo and change the actual
-            # executable, retaining the known build cache rather than cleaning.
-            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 10 }\n')
+            self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
+            stable_owner = Path(reused["owner_path"])
+            stable_owner_bytes = stable_owner.read_bytes()
+
+            # Workspace changes, including restored source mtimes, cannot reuse
+            # a prior release's dependencies even from the same checkout.
+            api = root / "api/src/lib.rs"
+            api.write_text('pub fn value() -> u32 { 10 }\n')
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "same checkout changed behavior"])
-            incremental = build(root, "release-a-incremental", "19")
-            self.assertEqual(incremental["cleanup_status"], "not_needed")
-            self.assertNotEqual(incremental["source"], reused["source"])
-            self.assertNotEqual(incremental["artifact"]["sha256"], reused["artifact"]["sha256"])
-            # Same-size current source with the exact old mtime must never
-            # reuse the old optimized executable. Normal edits above stay warm.
-            api = root / "api/src/lib.rs"
+            refuse(root, "refuse-edited-a")
+            updated = fresh(root, "release-a-updated", "19")
             stamp = api.stat()
             api.write_text('pub fn value() -> u32 { 20 }\n')
             os.utime(api, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "backdated workspace behavior"])
-            restored = build(root, "release-a-restored-mtime", "29")
-            self.assertEqual(restored["cleanup_status"], "passed")
-            self.assertIn("fixture-api", " ".join(restored["cleanup_argv"]))
-            self.assertNotEqual(restored["artifact"]["sha256"], incremental["artifact"]["sha256"])
-            # External path dependencies need the same content-based release
-            # protection, even when Cargo's timestamp observation is unchanged.
-            # Keep workspace source fixed at the previous successful build.
+            updated_env = {**env, "CARGO_TARGET_DIR": updated["target_directory"]}
+            refuse(root, "refuse-backdated-a", selected_env=updated_env)
+            restored = fresh(root, "release-a-restored-mtime", "29")
+
+            # Exact source alone is insufficient: restored-mtime external
+            # dependencies and compiler config also change the cache witness.
             external_source = external / "src/lib.rs"
             stamp = external_source.stat()
             external_source.write_text('pub fn suffix() -> u32 { 8 }\n')
             os.utime(external_source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-            external_changed = build(root, "release-a-external-restored", "28")
-            self.assertIn("external-helper", " ".join(external_changed["cleanup_argv"]))
-            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            self.assertTrue(dependencies)
+            restored_env = {**env, "CARGO_TARGET_DIR": restored["target_directory"]}
+            refuse(root, "refuse-external-change", selected_env=restored_env)
+            external_changed = fresh(root, "release-a-external-restored", "28")
             configured_env = {**env, "RUSTFLAGS": "--cfg release_fixture_changed"}
-            changed_config = build(root, "release-a-config", "28", configured_env)
-            self.assertEqual(changed_config["cleanup_status"], "passed")
-            configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            self.assertEqual({name: configured_dependencies[name] for name in dependencies}, dependencies)
+            refuse(root, "refuse-compiler-config", selected_env={
+                **configured_env, "CARGO_TARGET_DIR": external_changed["target_directory"]})
+            fresh(root, "release-a-config", "28", configured_env)
+
             original_main = (root / "app/src/main.rs").read_text()
             (root / "app/src/main.rs").write_text("invalid Rust source")
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "actual failed build"])
-            failed = runner(root, "release-a-failed", configured_env)
+            failed_env = {**configured_env, "CARGO_TARGET_DIR": str(base / "failed-target")}
+            failed = runner(root, "release-a-failed", failed_env)
             with self.assertRaises(delivery.DeliveryError):
                 with delivery.optimized_artifact(failed, package="fixture-app"):
                     self.fail("failed Cargo build yielded an artifact")
-            owner = json.loads(Path(incremental["owner_path"]).read_text())
-            self.assertEqual(owner["state"], "pending")
+            pending = Path(failed.summary["release_target_cache"]["owner_path"])
+            pending_before = pending.read_bytes()
+            self.assertEqual(json.loads(pending_before)["state"], "pending")
+            refuse(root, "pending-refused", "pending", failed_env)
             (root / "app/src/main.rs").write_text(original_main)
             (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
             external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "restore behavior"])
-            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "pending"):
-                with delivery.optimized_artifact(runner(root, "pending-refused", configured_env), package="fixture-app"):
-                    self.fail("pending state was silently reused")
-            with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
-                self.assertEqual(command([str(binary)]), "16")
-            # Explicit recovery restores the original release inputs.
-            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            # Cargo cannot select the old removed/renamed member from this graph.
+            refuse(root, "pending-changed-input", selected_env=failed_env, adopt=True)
+            self.assertEqual(pending.read_bytes(), pending_before)
+            fresh(root, "restored-after-failure", "16")
+
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')
             (other / "app/Cargo.toml").write_text(manifest.replace('fixture-api={path=', 'fixture-api={package="renamed-api",path='))
             command(["cargo", "generate-lockfile", "--offline"], other)
             command(["git", "add", "."], other)
             command(["git", "commit", "-qm", "rename member"], other)
-            before = delivery.sha(target / "release/fixture-app")
-            for name in ("renamed", "removed"):
-                if name == "removed":
-                    (other / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["api"]\nresolver="2"\n')
-                    command(["git", "add", "."], other)
-                    command(["git", "commit", "-qm", "remove workspace member"], other)
-                with self.assertRaisesRegex(delivery.ci.TargetCacheError, "removed, renamed"):
-                    with delivery.optimized_artifact(runner(other, name), package="fixture-app"):
-                        self.fail("unsupported package handoff built")
-                self.assertEqual(delivery.sha(target / "release/fixture-app"), before)
-                self.assertEqual(json.loads(Path(first["owner_path"]).read_text())["state"], "ready")
-            # Pure additions retain every old package, so Cargo can clean the
-            # complete current workspace and compile the newly added dependency.
+            refuse(other, "renamed", "removed, renamed")
+            (other / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["api"]\nresolver="2"\n')
+            command(["git", "add", "."], other)
+            command(["git", "commit", "-qm", "remove workspace member"], other)
+            refuse(other, "removed", "removed, renamed")
+
             (root / "extra/src").mkdir(parents=True)
             extra_manifest = root / "extra/Cargo.toml"
             extra_manifest.write_text('[package]\nname="fixture-extra"\nversion="0.1.0"\nedition="2021"\n')
@@ -1989,24 +1965,20 @@ class ReleaseCargoTests(unittest.TestCase):
             command(["cargo", "generate-lockfile", "--offline"])
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "add workspace dependency"])
-            addition = build(root, "release-addition", "17")
-            self.assertEqual(addition["cleanup_status"], "passed")
-            self.assertTrue(any("fixture-extra" in argument for argument in addition["cleanup_argv"]))
-            self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)
-            self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
+            refuse(root, "addition-on-old-target")
+            addition = fresh(root, "release-addition", "17")
             owner = Path(addition["owner_path"])
             owner_before = owner.read_bytes()
-            binary_before = delivery.sha(target / "release/fixture-app")
             extra_manifest.write_text(extra_manifest.read_text().replace('version="0.1.0"', 'version="0.2.0"'))
             command(["cargo", "generate-lockfile", "--offline"])
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "change existing member version"])
-            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "removed, renamed or version-changed"):
-                with delivery.optimized_artifact(runner(root, "version-changed"), package="fixture-app"):
-                    self.fail("version-changed handoff built")
-            self.assertEqual(delivery.sha(target / "release/fixture-app"), binary_before)
+            addition_env = {**env, "CARGO_TARGET_DIR": addition["target_directory"]}
+            refuse(root, "version-changed", "removed, renamed or version-changed", addition_env)
             self.assertEqual(owner.read_bytes(), owner_before)
-            print("real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified", flush=True)
+            self.assertEqual(inventory(target / "debug"), original_dev)
+            self.assertEqual(inventory(target / "release"), original_release)
+            self.assertEqual(stable_owner.read_bytes(), stable_owner_bytes)
 
 
 

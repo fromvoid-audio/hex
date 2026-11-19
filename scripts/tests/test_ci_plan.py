@@ -2336,6 +2336,122 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertEqual(command(str(binary)), "B")
             self.assertEqual(unrelated.read_bytes(), b"unrelated release artifact")
 
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_release_external_dependency_requires_exact_fresh_cache_lineage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            install_delivery_source_fixture(root)
+            (root / "app/src").mkdir(parents=True)
+            (root / "vendor/src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["app"]\nexclude=["vendor"]\nresolver="2"\n')
+            (root / ".gitignore").write_text('/target*/\n/artifacts/\n')
+            (root / "app/Cargo.toml").write_text(
+                '[package]\nname="selector-release"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal-selector={path="../vendor"}\n')
+            (root / "vendor/Cargo.toml").write_text(
+                '[package]\nname="external-selector"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "vendor/build.rs").write_text(
+                'fn main() {\n'
+                '    println!("cargo:rerun-if-changed=build.rs");\n'
+                '    let selector = std::fs::read_to_string("../scripts/selector.txt").unwrap();\n'
+                '    println!("cargo:rustc-env=SELECTOR_PROBE={}", selector.trim());\n'
+                '}\n')
+            (root / "vendor/src/lib.rs").write_text(
+                'pub fn selected() -> &\'static str { env!("SELECTOR_PROBE") }\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", external_selector::selected()); }\n')
+            selector = root / "scripts/selector.txt"
+            selector.write_text("A\n")
+            env = {**os.environ, "CARGO_CACHE_RUSTC_INFO": "0"}
+            target = root / "target-a"
+            target.mkdir()
+            fresh_target = root / "target-b"
+            fresh_target.mkdir()
+            state_dir = root / "artifacts/target-state"
+            argv = ["cargo", "build", "--release", "--offline", "--locked"]
+            binary_path = Path("release/selector-release")
+
+            def command(*args):
+                return subprocess.check_output(args, cwd=root, env=env, text=True).strip()
+
+            def runner(name, build_target=target):
+                return ci.LocalCiRunner(root, run_id=name, min_free_bytes=0,
+                                        env=dict(env, CARGO_TARGET_DIR=str(build_target)),
+                                        target_state_dir=state_dir)
+
+            def build(active, build_target, **options):
+                with active.guarded_release(requested_build_argv=argv, **options) as report:
+                    result = subprocess.run(argv, cwd=root, env=active.env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    binary = build_target / binary_path
+                    report.update(build_argv=argv, build_exit_code=0,
+                                  artifact=active.identify_release_artifact(binary, argv))
+                return report
+
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "release cache fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector A")
+            first = build(runner("release-a"), target)
+            old_binary = target / binary_path
+            self.assertEqual(command(str(old_binary)), "A")
+            old_owner = Path(first["owner_path"])
+            old_owner_bytes = old_owner.read_bytes()
+            sentinels = [target / "release/unrelated-artifact", target / "debug/unrelated-artifact"]
+            for path in sentinels:
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"unrelated")
+
+            selector.write_text("B\n")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "selector B")
+            with self.assertRaisesRegex(ci.TargetCacheError, "fresh release target"):
+                with runner("refuse-stale-release").guarded_release(requested_build_argv=argv):
+                    self.fail("changed source reached the optimized build with old dependency output")
+            self.assertEqual(old_owner.read_bytes(), old_owner_bytes)
+            self.assertEqual(command(str(old_binary)), "A")
+            for path in sentinels:
+                self.assertEqual(path.read_bytes(), b"unrelated")
+
+            with ci.FreshTargetReservation.acquire(root, str(fresh_target), {"run_id": "fresh"},
+                                                    state_dir=state_dir) as reservation:
+                with self.assertRaises(KeyboardInterrupt):
+                    with runner("interrupted-b", fresh_target).guarded_release(
+                            requested_build_argv=argv, reservation=reservation):
+                        raise KeyboardInterrupt
+            recovered = build(runner("recover-b", fresh_target), fresh_target, adopt=True)
+            self.assertEqual(recovered["state"], "ready")
+            self.assertEqual(command(str(fresh_target / binary_path)), "B")
+            reused = build(runner("reuse-b", fresh_target), fresh_target)
+            self.assertEqual(reused["action"], "reuse")
+            self.assertEqual(reused["cleanup_status"], "not_needed")
+
+            legacy_owner = Path(recovered["owner_path"])
+            old_pending = json.loads(legacy_owner.read_bytes())
+            old_pending["state"] = "pending"
+            old_pending.pop("build_cache_origin", None)
+            legacy_owner.write_text(json.dumps(old_pending))
+            legacy_bytes = legacy_owner.read_bytes()
+            with self.assertRaisesRegex(ci.TargetCacheError, "fresh release target"):
+                with runner("refuse-legacy-b", fresh_target).guarded_release(
+                        requested_build_argv=argv, adopt=True):
+                    self.fail("legacy pending owner reached optimized build without cache lineage")
+            self.assertEqual(legacy_owner.read_bytes(), legacy_bytes)
+            self.assertEqual(command(str(fresh_target / binary_path)), "B")
+
+            unowned = root / "target-unowned"
+            unowned.mkdir()
+            retained = unowned / "existing-artifact"
+            retained.write_bytes(b"unowned")
+            with self.assertRaisesRegex(ci.TargetCacheError, "fresh release target"):
+                with runner("refuse-unowned", unowned).guarded_release(
+                        requested_build_argv=argv, adopt=True):
+                    self.fail("adoption established a false empty origin")
+            self.assertEqual(retained.read_bytes(), b"unowned")
+
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
