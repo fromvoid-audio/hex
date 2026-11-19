@@ -151,12 +151,12 @@ fn compressor_bypass_transition_preserves_real_detector_history() {
 }
 
 #[test]
-fn reverb_bypass_transition_preserves_real_room_history_at_supported_rates() {
+fn reverb_power_transition_restarts_a_fresh_room_at_supported_rates() {
     for rate in [8_000, 44_100, 48_000, 192_000] {
         check_rate(
             &crate::reverb::REVERB_DEFINITION,
             rate,
-            RestartHistory::Warm,
+            RestartHistory::Fresh,
         );
     }
 }
@@ -258,4 +258,35 @@ fn reverb_bypass_hot_path_profile() {
         times[times.len() * 99 / 100],
         times[times.len() - 1]
     );
+}
+
+#[test]
+#[ignore = "manual release hot-path profile; no physical deadline acceptance"]
+fn reverb_settled_power_profile() {
+    use std::{hint::black_box, time::Instant};
+
+    assert!(!black_box(cfg!(debug_assertions)), "run with --release");
+    let definition = &crate::reverb::REVERB_DEFINITION;
+    for bypassed in [false, true] {
+        let mut runtime = chain(definition, bypassed, 48_000);
+        let mut times = Vec::with_capacity(4096);
+        for block in 0..4608 {
+            let mut input = [[0.25, -0.25]; 128];
+            let start = Instant::now();
+            runtime.begin_block();
+            runtime.process_block(black_box(&mut input)).unwrap();
+            runtime.commit_block();
+            let elapsed = start.elapsed().as_nanos();
+            black_box(input);
+            if block >= 512 {
+                times.push(elapsed);
+            }
+        }
+        times.sort_unstable();
+        println!(
+            "reverb 48k/128, 512 warmup +4096 measured blocks, off={bypassed}: p50={}ns p99={}ns",
+            times[times.len() / 2],
+            times[times.len() * 99 / 100],
+        );
+    }
 }
