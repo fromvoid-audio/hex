@@ -49,10 +49,6 @@ const COMMANDS: usize = 32;
 
 #[cfg(feature = "allocation-probe")]
 impl Callback {
-    #[cfg(feature = "stream-test-support")]
-    pub(crate) fn test_stream_successor_yielded(&self) -> bool {
-        self.yield_stream_successor_once
-    }
     /// Read-only headless control observation while the callback is quiescent.
     /// Empty is queue state, not graph/source application or native readiness.
     pub(crate) fn publication_queue_empty_on_control(&self) -> bool {

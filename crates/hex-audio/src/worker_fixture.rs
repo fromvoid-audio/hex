@@ -11,14 +11,6 @@ pub struct HeadlessBackend {
     errors: Option<Guard<ErrorCallbackOwner>>,
 }
 impl HeadlessBackend {
-    /// Observe the callback's bounded successor-yield decision after rendering.
-    #[cfg(feature = "stream-test-support")]
-    pub fn stream_successor_yielded_on_control(&mut self) -> Option<bool> {
-        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
-        let mut yielded = None;
-        owner.run(|callback, _| yielded = Some(callback.test_stream_successor_yielded()));
-        yielded
-    }
     pub(crate) fn new(data: Guard<NativeCallbackOwner>, errors: Guard<ErrorCallbackOwner>) -> Self {
         Self {
             data: Some(data),
