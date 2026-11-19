@@ -400,6 +400,9 @@ fn queued_launch_keeps_its_captured_off_choice_until_the_actual_boundary() {
         playback
             .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
             .unwrap();
+        // A launch exactly on a grid boundary is immediate. Move inside the
+        // first interval so this request actually waits for frame 500.
+        assert_eq!(render(playback, 1), vec![[0.0; 2]; 1]);
     }
     actual
         .try_apply_action(PlaybackAction::Session(
@@ -421,8 +424,8 @@ fn queued_launch_keeps_its_captured_off_choice_until_the_actual_boundary() {
     actual
         .try_apply_action(PlaybackAction::SetMetronome(false))
         .unwrap();
-    assert_eq!(render(&mut actual, 500), vec![[0.0; 2]; 500]);
-    assert_eq!(render(&mut oracle, 500), vec![[0.0; 2]; 500]);
+    assert_eq!(render(&mut actual, 499), vec![[0.0; 2]; 499]);
+    assert_eq!(render(&mut oracle, 499), vec![[0.0; 2]; 499]);
     let expected = render(&mut oracle, 600);
     assert!(expected.iter().flatten().any(|s| *s != 0.0));
     assert_eq!(render(&mut actual, 600), expected);
