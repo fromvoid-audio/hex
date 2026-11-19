@@ -355,8 +355,8 @@ impl DeviceEditTailPolicy {
     }
 }
 
-/// A fully preflighted transfer plan. It contains indices only; applying it
-/// moves runtime owners without allocating or dropping the previous chain.
+/// A fully preflighted transfer plan. Its bounded indices and transition
+/// choices move history without allocating or dropping the previous chain.
 pub(super) struct ReturnEffectTailPlan {
     carry: [Option<(usize, usize)>; RETURN_EFFECT_TAIL_CAPACITY],
     capture: [Option<(usize, usize)>; MAX_RETURN_TRACKS],
@@ -364,6 +364,7 @@ pub(super) struct ReturnEffectTailPlan {
     main_capture: Option<(usize, usize, u32)>,
     // A completed suffix needs no old DSP history and no retained tail owner.
     main_quiet_suffix: Option<usize>,
+    smooth_main_append: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -482,6 +483,7 @@ impl ReturnEffectTailPlan {
             bus_history: [ReturnBusHistory::Fresh; MAX_RETURN_TRACKS],
             main_capture: None,
             main_quiet_suffix: None,
+            smooth_main_append: false,
         };
         let mut occupied = [false; RETURN_EFFECT_TAIL_CAPACITY];
 
@@ -638,6 +640,14 @@ impl ReturnEffectTailPlan {
             start += 1;
         }
         if start == old.len() {
+            self.smooth_main_append = tail_policy == DeviceEditTailPolicy::RequireConfirmation
+                && current.can_smooth_native_append_from(old)
+                && super::handoff::configuration_matches_continuation(
+                    old,
+                    current,
+                    0..start,
+                    continuation,
+                );
             return Ok(());
         }
         if !current.can_inherit_from_excluding_old_range(old, start..old.len()) {
@@ -698,6 +708,18 @@ impl ReturnEffectTailPlan {
             current.can_inherit_with_completed_foreign_range(old, self.main_excluded(old.len()))
         } else {
             current.can_inherit_from_excluding_old_range(old, self.main_excluded(old.len()))
+        }
+    }
+
+    pub(super) fn transfer_main_history(
+        &self,
+        current: &mut NativeRuntimeChain,
+        old: &mut NativeRuntimeChain,
+    ) {
+        if self.smooth_main_append {
+            current.transfer_history_with_smoothed_native_append_from(old);
+        } else {
+            current.transfer_history_from(old);
         }
     }
     pub(super) fn validate_main(

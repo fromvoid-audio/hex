@@ -1038,14 +1038,41 @@ fn verify_silent_track_latency_edit(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+enum NativeAppendLocation {
+    Return,
+    Track,
+    Group,
+    Main,
+}
+
 #[test]
 fn return_delay_append_keeps_reverb_history_and_exact_publication_without_allocations()
 -> Result<(), Box<dyn Error>> {
+    native_append_case(NativeAppendLocation::Return)
+}
+
+#[test]
+fn track_group_and_main_delay_append_keeps_reverb_history_and_exact_publication_without_allocations()
+-> Result<(), Box<dyn Error>> {
+    for location in [
+        NativeAppendLocation::Track,
+        NativeAppendLocation::Group,
+        NativeAppendLocation::Main,
+    ] {
+        native_append_case(location)?;
+    }
+    Ok(())
+}
+
+fn native_append_case(location: NativeAppendLocation) -> Result<(), Box<dyn Error>> {
     use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy, PublicationReceiptState};
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
+    use hex_engine::OutputCaptureId;
     use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::TrackSelectionIds;
 
     const BLOCK: usize = 512;
     const DELAY: usize = 480;
@@ -1060,27 +1087,56 @@ fn return_delay_append_keeps_reverb_history_and_exact_publication_without_alloca
     else {
         return Err("expected source".into());
     };
-    let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
-        name: "room".into(),
-    })?
-    else {
-        return Err("expected return".into());
+    let owner = match location {
+        NativeAppendLocation::Return => {
+            let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
+                name: "room".into(),
+            })?
+            else {
+                return Err("expected return".into());
+            };
+            editor.execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })?;
+            Some(OutputCaptureId::Return(bus))
+        }
+        NativeAppendLocation::Track => Some(OutputCaptureId::Track(track)),
+        NativeAppendLocation::Group => {
+            let Created::Track(group) = editor.execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[track])?,
+                name: "room group".into(),
+            })?
+            else {
+                return Err("expected group".into());
+            };
+            Some(OutputCaptureId::Track(group))
+        }
+        NativeAppendLocation::Main => None,
     };
-    editor.execute(Command::SetReturnSend {
-        track,
-        return_track: bus,
-        gain: 1.0,
-    })?;
+    let append = |state| match owner {
+        Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state,
+        },
+        Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        },
+        None => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+    };
     let reverb = hex_engine::patch_native_device_parameter(
         &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?,
         hex_devices::reverb::parameter::DRY_WET,
         ParameterValue::Float(100.0),
     )?;
-    editor.execute(Command::InsertReturnDevice {
-        return_track: bus,
-        before: None,
-        state: reverb,
-    })?;
+    editor.execute(append(reverb))?;
     let mut source = vec![[0.0; 2]; 12_000];
     source[..BLOCK].fill([0.25, -0.125]);
     let media = BTreeMap::from([(asset, Audio::new(RATE, source)?)]);
@@ -1135,11 +1191,7 @@ fn return_delay_append_keeps_reverb_history_and_exact_publication_without_alloca
     for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
         state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Float(value))?;
     }
-    editor.execute(Command::InsertReturnDevice {
-        return_track: bus,
-        before: None,
-        state,
-    })?;
+    editor.execute(append(state))?;
     let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
     next.require_continuous_device_insert();
     let context = hex_engine::AudioSourceContext {
@@ -1189,7 +1241,10 @@ fn return_delay_append_keeps_reverb_history_and_exact_publication_without_alloca
                 .map(|tap| dry[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
                 .sum();
             let dry = dry[frame][lane];
-            assert!((output[lane] - (dry + (wet - dry) * mix)).abs() < 2e-6);
+            assert!(
+                (output[lane] - (dry + (wet - dry) * mix)).abs() < 2e-6,
+                "location={location:?} frame={frame} lane={lane}",
+            );
         }
     }
     control.request_shutdown();
