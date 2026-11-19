@@ -44,9 +44,13 @@ This policy needs no new long-term settings or configurable tail modes.
    existing repeats pass through the distortion.
 5. **move the running device across tracks.** Transfer its state to the
    destination, including a delay's existing repeats. Smooth both paths with a
-   short fade. Preserve ownership and eventual release of held voices. How to
-   chase notes already active on the destination remains an implementation
-   detail to resolve explicitly; the user has not selected chase semantics.
+   short fade. Voices already sounding on the source track move with the
+   instrument and must receive their proper releases. For destination input,
+   wait for note-on events at or after the handoff; do not chase notes whose
+   destination onset preceded it. A four-bar destination chord already halfway
+   through stays silent on the moved instrument; the next real note-on plays
+   normally. This rule is specific to cross-track instrument moves and does
+   not change insertion, off/on or other note-chase behavior.
 6. **preserve sound through visual track reorder.** Routing edits, including
    moving into a group, retain running track and group processor states and
    switch to the new route with a short fade.
@@ -103,6 +107,6 @@ documentation says device edits generally work without interruption and turning
 off devices retains latency. Deletion timing and a Live interruption dialog were
 not verified. No new reference runtime study is asserted here.
 
-The destination note-chase detail above is open. Fade lengths, transfer
-mechanics and compensation capacity need bounded implementation decisions and
-evidence; this brief does not choose them or claim they are already qualified.
+Fade lengths, transfer mechanics and compensation capacity need bounded
+implementation decisions and evidence; this brief does not choose them or
+claim they are already qualified.
