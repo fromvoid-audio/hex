@@ -160,7 +160,9 @@ impl SessionPlayback {
                 .position(|bus| bus.id.value() == id)
                 .and_then(|index| self.return_chains.get(index)),
             ProcessorChainOwner::Main => Some(&self.main_chain),
-            ProcessorChainOwner::Source(_) => None,
+            ProcessorChainOwner::Source(source) => self
+                .source_effect_removal_receiver(source)
+                .and_then(|receiver| self.source_effects.chain_for(receiver, source)),
         };
         chain.is_some_and(|chain| chain.native_removal_ready(transition))
     }
@@ -183,8 +185,22 @@ impl SessionPlayback {
                 .position(|bus| bus.id.value() == id)
                 .and_then(|index| self.return_chains.get_mut(index)),
             ProcessorChainOwner::Main => Some(&mut self.main_chain),
-            ProcessorChainOwner::Source(_) => None,
+            ProcessorChainOwner::Source(source) => {
+                let receiver = self.source_effect_removal_receiver(source)?;
+                self.source_effects.chain_for_mut(receiver, source)
+            }
         }
+    }
+
+    fn source_effect_removal_receiver(&self, source: u64) -> Option<usize> {
+        self.revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|track| {
+                track.receives_source_audio()
+                    && track.source_id().is_some_and(|id| id.value() == source)
+            })
     }
 
     fn native_removal_transition_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
@@ -218,6 +234,12 @@ impl SessionPlayback {
                 }
             }
         }
-        removal
+        let nested = self
+            .source_effects
+            .native_removal_transition_from(&previous.source_effects);
+        match (removal, nested) {
+            (Some(_), Some(_)) => None,
+            (main, nested) => main.or(nested),
+        }
     }
 }

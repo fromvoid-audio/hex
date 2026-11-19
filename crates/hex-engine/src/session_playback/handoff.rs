@@ -256,7 +256,7 @@ fn prepared_source_generator_matches(
     previous: &PreparedRevision,
     candidate: &PreparedRevision,
     source: hex_project::SourceId,
-    uncompensated: bool,
+    allow_mutable_power_switch: bool,
 ) -> bool {
     fn receiver(
         revision: &PreparedRevision,
@@ -273,7 +273,7 @@ fn prepared_source_generator_matches(
         && receiver(previous, source)
             .zip(receiver(candidate, source))
             .is_some_and(|(old, new)| {
-                let mutable_power_switch = uncompensated
+                let mutable_power_switch = allow_mutable_power_switch
                     && old.instrument_bypassed != new.instrument_bypassed
                     && (old.has_mutable_instrument() || new.has_mutable_instrument())
                     && old.canonical_track_id() == new.canonical_track_id()
@@ -926,20 +926,41 @@ impl SessionPlayback {
             {
                 return Err(incompatible);
             }
-            // A new stage starts empty. A stopped transport can retire a
-            // superseded stage only after its committed history is quiet.
+            use crate::source_effect_stage::SourceEffectRetirement;
+            use hex_lattice::ProcessorChainOwner;
+            let source_removal = self
+                .native_removal
+                .map(|removal| removal.transition)
+                .filter(|transition| {
+                    matches!(
+                        transition.identity().owner(),
+                        ProcessorChainOwner::Source(_)
+                    )
+                });
+            let retirement = if let Some(removal) = source_removal {
+                SourceEffectRetirement::Staged(removal)
+            } else if live && !previous.playing && !previous.monitor_source_releases {
+                SourceEffectRetirement::Quiet
+            } else {
+                SourceEffectRetirement::Keep
+            };
             Some(
                 self.source_effects
                     .plan_continuation(
                         &previous.source_effects,
                         live,
-                        live && !previous.playing && !previous.monitor_source_releases,
+                        retirement,
                         |source| {
                             prepared_source_generator_matches(
                                 &previous.revision,
                                 &self.revision,
                                 source,
-                                self.compensation.is_none() && previous.compensation.is_none(),
+                                self.compensation.is_none()
+                                    && previous.compensation.is_none()
+                                    && !source_removal.is_some_and(|removal| {
+                                        removal.identity().owner()
+                                            == ProcessorChainOwner::Source(source.value())
+                                    }),
                             )
                         },
                         |old, next| {
@@ -948,14 +969,13 @@ impl SessionPlayback {
                                 .arrangement()
                                 .tracks()
                                 .get(old)
-                                .and_then(|track| track.canonical_track_id())
-                                .is_some_and(|id| {
-                                    self.revision
-                                        .arrangement()
-                                        .tracks()
-                                        .get(next)
-                                        .and_then(|track| track.canonical_track_id())
-                                        == Some(id)
+                                .zip(self.revision.arrangement().tracks().get(next))
+                                .is_some_and(|(old, next)| {
+                                    old.canonical_track_id().is_some()
+                                        && old.canonical_track_id() == next.canonical_track_id()
+                                        && old.source_id() == next.source_id()
+                                        && old.receives_source_audio()
+                                        && next.receives_source_audio()
                                 })
                         },
                     )

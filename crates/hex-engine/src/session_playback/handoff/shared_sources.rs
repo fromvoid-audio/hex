@@ -3587,49 +3587,67 @@ mod tests {
         });
     }
 
+    fn source_owned_effects(
+        f: &mut Fixture,
+        effects: impl IntoIterator<Item = hex_lattice_contract::NativeDeviceState>,
+    ) -> (hex_project::DeviceId, Vec<hex_project::DeviceId>) {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        let instrument = f
+            .editor
+            .project()
+            .native_source(f.source)
+            .unwrap()
+            .instrument()
+            .id();
+        f.editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument,
+                state: hex_devices::fm4::device::FM4_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap();
+        for track in [f.receiver, f.contributor] {
+            f.editor
+                .execute(Command::BindTrackSource {
+                    track,
+                    source: None,
+                })
+                .unwrap();
+        }
+        let ids = effects
+            .into_iter()
+            .map(|state| {
+                let Created::Device(device) = f
+                    .editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state,
+                    })
+                    .unwrap()
+                else {
+                    panic!("source effect");
+                };
+                device
+            })
+            .collect();
+        for track in [f.receiver, f.contributor] {
+            f.editor
+                .execute(Command::BindTrackSource {
+                    track,
+                    source: Some(f.source),
+                })
+                .unwrap();
+        }
+        (instrument, ids)
+    }
+
     #[test]
     fn source_owned_gate_keeps_its_single_path_through_mutable_power_cycles() {
         on_control(|| {
             let mut f = fixture();
-            use hex_lattice_contract::NativeDeviceMetadata;
-            let instrument = f
-                .editor
-                .project()
-                .native_source(f.source)
-                .unwrap()
-                .instrument()
-                .id();
-            f.editor
-                .execute(Command::ReplaceDeviceState {
-                    device: instrument,
-                    state: hex_devices::fm4::device::FM4_DEFINITION
-                        .default_state()
-                        .unwrap(),
-                })
-                .unwrap();
-            for track in [f.receiver, f.contributor] {
-                f.editor
-                    .execute(Command::BindTrackSource {
-                        track,
-                        source: None,
-                    })
-                    .unwrap();
-            }
-            f.editor
-                .execute(Command::InsertNestedDevice {
-                    parent: instrument,
-                    state: crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID)
-                        .unwrap(),
-                })
-                .unwrap();
-            for track in [f.receiver, f.contributor] {
-                f.editor
-                    .execute(Command::BindTrackSource {
-                        track,
-                        source: Some(f.source),
-                    })
-                    .unwrap();
-            }
+            let gate = crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID).unwrap();
+            let (instrument, _) = source_owned_effects(&mut f, [gate]);
             let mut previous = playback(&f);
             let mut reference = playback(&f);
             assert!(previous.source_effects.has_chain(0));
@@ -3681,6 +3699,83 @@ mod tests {
             enabled.try_inherit_state_live_from(&mut successor).unwrap();
             enabled.render(&mut output).unwrap();
             assert_eq!(output, [[0.0; 2]; 64]);
+        });
+    }
+
+    #[test]
+    fn source_owned_removal_fades_once_and_keeps_the_held_generator() {
+        use crate::session_playback::NativeRemovalProgress;
+        use hex_devices::delay::DEFINITION;
+        use hex_lattice_contract::NativeDeviceMetadata;
+        on_control(|| {
+            let delay = DEFINITION.default_state().unwrap();
+            for surviving_gate in [false, true] {
+                let mut f = fixture();
+                let gate =
+                    crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID).unwrap();
+                let (_, devices) = source_owned_effects(
+                    &mut f,
+                    surviving_gate
+                        .then_some(gate)
+                        .into_iter()
+                        .chain([delay.clone()]),
+                );
+                let mut old = playback(&f);
+                let mut wet = playback(&f);
+                f.editor
+                    .execute(Command::RemoveDevice(*devices.last().unwrap()))
+                    .unwrap();
+                let mut next = playback(&f);
+                let mut dry = playback(&f);
+                for runtime in [&mut old, &mut wet, &mut dry] {
+                    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                    runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+                }
+                next.require_continuous_insert = true;
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old),
+                    Ok(NativeRemovalProgress::Fading)
+                );
+                assert_eq!(
+                    next.try_inherit_state_live_from(&mut old),
+                    Err(SessionPlaybackError::DeviceTransitionBusy)
+                );
+                let mut dry_pcm = [[0.0; 2]; 56];
+                let mut wet_pcm = dry_pcm;
+                let mut actual = dry_pcm;
+                dry.render(&mut dry_pcm).unwrap();
+                wet.render(&mut wet_pcm).unwrap();
+                assert!(dry_pcm.iter().any(|sample| sample[0].abs() > 0.01));
+                assert_ne!(wet_pcm, dry_pcm);
+                old.render(&mut actual[..11]).unwrap();
+                old.render(&mut actual[11..39]).unwrap();
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old),
+                    Ok(NativeRemovalProgress::Fading)
+                );
+                old.render(&mut actual[39..40]).unwrap();
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old),
+                    Ok(NativeRemovalProgress::Ready)
+                );
+                let report = next.try_inherit_state_live_from(&mut old).unwrap();
+                assert!(!report.running_audio_restart);
+                assert_eq!(next.performance_frame(), 169);
+                assert_eq!(next.source_effects.has_chain(0), surviving_gate);
+                next.render(&mut actual[40..]).unwrap();
+                for (index, actual) in actual.iter().enumerate() {
+                    let elapsed = (index + 1).min(40) as f32 / 40.0;
+                    for channel in 0..2 {
+                        let dry = dry_pcm[index][channel];
+                        let wet = wet_pcm[index][channel];
+                        let expected = dry + (wet - dry) * (1.0 - elapsed);
+                        assert!(
+                            (actual[channel] - expected).abs() < 1e-6,
+                            "{index} {channel}"
+                        );
+                    }
+                }
+            }
         });
     }
 
