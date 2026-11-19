@@ -4342,6 +4342,10 @@ impl Callback {
                                 fenced_restart,
                                 foreign_continuation,
                                 None,
+                                next.fresh_runtime_cancellation
+                                    .as_ref()
+                                    .and_then(|receipt| receipt.0.tempo_cut())
+                                    .map(|cut| &cut.anchor),
                             )
                         });
                         (prepared, false)

@@ -484,6 +484,24 @@ impl SessionPlayback {
         previous: &mut Self,
         anchor: &PreparedTempoAnchor,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.validate_tempo_cut(previous, anchor)?;
+        self.require_fresh_candidate()?;
+        self.inherit_state_planned_with_anchor(
+            previous,
+            None,
+            None,
+            true,
+            false,
+            None,
+            Some(anchor),
+            false,
+        )
+    }
+    pub(super) fn validate_tempo_cut(
+        &self,
+        previous: &Self,
+        anchor: &PreparedTempoAnchor,
+    ) -> Result<(), SessionPlaybackError> {
         // The weak handles keep allocation identities reserved even after a
         // graph expires. The two runtimes already own their live revisions;
         // pointer comparison neither upgrades nor drops a graph on callback.
@@ -511,17 +529,7 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
-        self.require_fresh_candidate()?;
-        self.inherit_state_planned_with_anchor(
-            previous,
-            None,
-            None,
-            true,
-            false,
-            None,
-            Some(anchor),
-            false,
-        )
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(

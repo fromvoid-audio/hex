@@ -308,6 +308,7 @@ impl Callback {
             false,
             false,
             Some(fade_remaining),
+            None,
         );
         match window {
             Ok(Some(_)) => Ok(true),

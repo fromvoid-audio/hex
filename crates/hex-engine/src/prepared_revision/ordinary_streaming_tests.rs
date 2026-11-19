@@ -492,9 +492,16 @@ impl MediaPages for Pages<'_> {
                 .iter()
                 .any(|extent| extent.source == key.into() && extent.page_index == index)
         );
-        (key == self.key && index == 0).then_some(BorrowedMediaPage {
-            page_index: 0,
-            frames: self.samples,
+        if key != self.key {
+            return None;
+        }
+        let start = usize::try_from(index)
+            .ok()?
+            .checked_mul(crate::STREAM_PAGE_FRAMES)?;
+        let remaining = self.samples.get(start..)?;
+        Some(BorrowedMediaPage {
+            page_index: index,
+            frames: &remaining[..remaining.len().min(crate::STREAM_PAGE_FRAMES)],
         })
     }
     fn request_page(&mut self, _: StreamSourceKey, _: u64) {
@@ -1964,6 +1971,211 @@ fn closed_latency_demand_matches_resident(upstream: bool) {
                 (oracle.performance_frame(), oracle.arrangement_frame())
             );
         }
+    }
+}
+
+#[test]
+fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
+    use crate::session_playback::PreparedTempoAnchor;
+    use hex_project::{Command, Project, Tempo};
+
+    let mut fixture = crate::signal_graph::tests::fixture(&[&[]], 12_288);
+    fixture
+        .editor
+        .execute(Command::SetLoopRegion {
+            start: 6100,
+            end: 6300,
+            enabled: true,
+        })
+        .unwrap();
+    fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track: fixture.tracks[0],
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                crate::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let asset = *fixture.media.keys().next().unwrap();
+    let key = StreamSourceKey::new(41, asset);
+    let sources = BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(
+            StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                12_288,
+                12_288,
+                hex_project::IDENTITY_CONVERSION,
+                [41; 32],
+            )
+            .unwrap(),
+        )),
+    )]);
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare_with_source_bank(
+                project,
+                crate::compile::SourceBank::Mixed(&sources, 41),
+                Arc::new(SineTable::new()),
+                None,
+                &effects,
+                &instruments,
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
+                None,
+                &[],
+            )
+            .unwrap(),
+        )
+    };
+    let previous = prepare(fixture.editor.project());
+    fixture
+        .editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    let candidate = prepare(fixture.editor.project());
+    let old_context = crate::AudioSourceContext {
+        project_generation: 41,
+        editor_revision: 1,
+    };
+    let new_context = crate::AudioSourceContext {
+        project_generation: 41,
+        editor_revision: 2,
+    };
+    for partition in [1, 257] {
+        let mut old = Playback::from_prepared(Arc::clone(&previous));
+        let mut next = Playback::from_prepared(Arc::clone(&candidate));
+        old.apply(PlaybackCommand::PlayFrom(6100));
+        let due = old.performance_frame() + 354;
+        let anchor = PreparedTempoAnchor::prepare_from_running_observation(
+            Arc::clone(&previous),
+            Arc::clone(&candidate),
+            old.position(),
+            old.performance_frame(),
+            old.arrangement_loop_state().unwrap(),
+            due,
+        )
+        .unwrap();
+        let mut demanded = Vec::new();
+        let premature = next
+            .stream_playback(new_context)
+            .preview_ordinary_tempo_cut(
+                &mut old.stream_playback(old_context),
+                partition,
+                &mut |extent| {
+                    demanded.push(extent);
+                    Ok(())
+                },
+                &anchor,
+            );
+        assert!(
+            premature.is_err(),
+            "an early preview cannot reserve the cut's pages"
+        );
+        assert!(demanded.is_empty());
+
+        let mut buffer = [[0.0; 2]; 257];
+        while old.performance_frame() < due {
+            let mut extents = Vec::new();
+            let frames = ((due - old.performance_frame()) as usize).min(partition);
+            let mut stream = old.stream_playback(old_context);
+            let current = stream
+                .visit_next_stream_chunk(frames, None, &mut |extent| {
+                    extents.push(extent);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(current.frames > 0);
+            assert!(extents.iter().all(|extent| extent.page_index == 1));
+            stream
+                .render_with_pages_and_signal_observers(
+                    &mut buffer[..current.frames],
+                    &mut Pages {
+                        samples: &fixture.samples,
+                        key,
+                        extents: &extents,
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let previous_clock = (
+            old.position(),
+            old.performance_frame(),
+            old.arrangement_loop_state(),
+        );
+        assert_eq!(previous_clock.0, 6254);
+        assert_eq!(previous_clock.2.unwrap().pass, 1);
+        let mut different = Playback::from_prepared(prepare(fixture.editor.project()));
+        assert!(
+            different
+                .stream_playback(new_context)
+                .preview_ordinary_tempo_cut(
+                    &mut old.stream_playback(old_context),
+                    partition,
+                    &mut |_| panic!("wrong candidate"),
+                    &anchor,
+                )
+                .is_err()
+        );
+        let preview = next
+            .stream_playback(new_context)
+            .preview_ordinary_tempo_cut(
+                &mut old.stream_playback(old_context),
+                partition,
+                &mut |extent| {
+                    demanded.push(extent);
+                    Ok(())
+                },
+                &anchor,
+            )
+            .unwrap();
+        assert_eq!(
+            previous_clock,
+            (
+                old.position(),
+                old.performance_frame(),
+                old.arrangement_loop_state()
+            )
+        );
+        assert_eq!(preview.performance_frame, due);
+        assert!(!demanded.is_empty());
+        assert!(demanded.iter().all(|extent| extent.page_index == 2));
+        next.try_inherit_runtime_with_tempo_anchor(&mut old, Some(41), Some(41), &anchor)
+            .unwrap();
+        let mut actual = Vec::new();
+        let mut stream = next.stream_playback(new_context);
+        let window = stream
+            .visit_next_stream_chunk(partition, None, &mut |extent| {
+                actual.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(preview, window);
+        assert_eq!(demanded, actual);
+        stream
+            .render_with_pages_and_signal_observers(
+                &mut buffer[..window.frames],
+                &mut Pages {
+                    samples: &fixture.samples,
+                    key,
+                    extents: &demanded,
+                },
+                None,
+                None,
+            )
+            .unwrap();
     }
 }
 

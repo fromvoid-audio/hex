@@ -244,6 +244,51 @@ impl SessionPlayback {
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
+        self.preview_stream_handoff_plan(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+            continuation,
+            None,
+        )
+    }
+
+    pub(crate) fn preview_ordinary_tempo_cut(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &handoff::PreparedTempoAnchor,
+    ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        self.validate_tempo_cut(previous, anchor)?;
+        self.preview_stream_handoff_plan(
+            previous,
+            maximum_frames,
+            None,
+            visit,
+            true,
+            false,
+            None,
+            Some(anchor),
+        )
+        .map(|(window, _)| window)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Stream demand and the exact handoff proof have separate inputs.
+    fn preview_stream_handoff_plan(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        anchor: Option<&handoff::PreparedTempoAnchor>,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
@@ -261,13 +306,15 @@ impl SessionPlayback {
             window: None,
         };
         let report = self
-            .inherit_state_planned(
+            .inherit_state_planned_with_anchor(
                 previous,
                 None,
                 Some(&mut demand),
                 true,
                 fenced_restart,
                 continuation,
+                anchor,
+                false,
             )
             .map_err(|error| {
                 // Keep a draining endpoint retryable. A frozen predecessor
