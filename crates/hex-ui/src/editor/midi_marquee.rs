@@ -28,8 +28,10 @@ impl EditorView {
                 clip: self.detail_clip_id()?,
                 beat_start: self.piano_beat_start,
                 beat_span: self.piano_beat_span.raw(),
-                pitch_low: self.piano_pitch_low,
-                pitch_rows: self.piano_pitch_rows,
+                pitch: super::PitchViewport::from_rows(
+                    self.piano_pitch_low,
+                    self.piano_pitch_rows,
+                )?,
             },
             bounds,
             selection_epoch: self.midi_selection.epoch(),

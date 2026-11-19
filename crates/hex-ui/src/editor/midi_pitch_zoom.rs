@@ -66,6 +66,11 @@ impl EditorView {
                 let Some(revision) = self.state.as_ref().map(|s| s.revision) else {
                     return false;
                 };
+                let Some(pitch) =
+                    super::PitchViewport::from_rows(self.piano_pitch_low, self.piano_pitch_rows)
+                else {
+                    return false;
+                };
                 self.cancel_midi_note_gesture();
                 self.midi_focus.focus(window);
                 self.piano_pitch_zoom = Some(Zoom {
@@ -76,8 +81,7 @@ impl EditorView {
                         clip,
                         beat_start: self.piano_beat_start,
                         beat_span: self.piano_beat_span.raw(),
-                        pitch_low: self.piano_pitch_low,
-                        pitch_rows: self.piano_pitch_rows,
+                        pitch,
                     },
                     viewport: window.viewport_size(),
                     detail_height: self.clip_detail_body_height,
@@ -96,11 +100,11 @@ impl EditorView {
                     cx.notify();
                     return true;
                 }
-                let rows = (f32::from(z.scene.pitch_rows) * (delta / 120.).clamp(-8., 8.).exp2())
+                let rows = (z.scene.pitch.span() as f32 * (delta / 120.).clamp(-8., 8.).exp2())
                     .round()
                     .clamp(1., 128.) as u8;
-                let low = (i16::from(z.scene.pitch_low)
-                    + (i16::from(z.scene.pitch_rows) - i16::from(rows)) / 2)
+                let low = (i16::from(z.scene.pitch.coverage().start)
+                    + (z.scene.pitch.coverage().len() as i16 - i16::from(rows)) / 2)
                     .clamp(0, 128 - i16::from(rows)) as u8;
                 // Preserve the original integer-row redraw threshold. The
                 // window lease still consumes a sub-row move exclusively.
