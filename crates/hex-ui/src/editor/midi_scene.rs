@@ -13,35 +13,6 @@ pub(super) fn zoom_limit(length: u64) -> u64 {
         .max(hex_project::BeatTime::ONE.raw() * 16)
 }
 
-/// Pitch wheel uses the current rows as one viewport, with a continuous pitch
-/// anchored under the pointer. Only integer row alignment and MIDI edges shift it.
-/// Each input batch is bounded to four wheel steps, as for horizontal zoom.
-pub(super) fn wheel_pitch_zoom(
-    pitch: super::PitchViewport,
-    fraction: f32,
-    steps: i8,
-) -> Option<super::PitchViewport> {
-    if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) || !(-4..=4).contains(&steps) {
-        return None;
-    }
-    if steps == 0 {
-        return Some(pitch);
-    }
-    let mut next = pitch.span().round().clamp(1.0, 128.0) as u16;
-    for _ in 0..steps.unsigned_abs() {
-        next = if steps < 0 {
-            (next * 4 / 5).max(1)
-        } else {
-            (next * 5).div_ceil(4).min(128)
-        };
-    }
-    let anchor = pitch.low() + (1.0 - f64::from(fraction)) * pitch.span();
-    let next_low = (anchor - (1.0 - f64::from(fraction)) * f64::from(next))
-        .round()
-        .clamp(0.0, f64::from(128 - next)) as u8;
-    super::PitchViewport::from_rows(next_low, next as u8)
-}
-
 pub(super) const MIN_HIT_WIDTH_PX: f32 = 4.0;
 pub(super) fn fit_span(clip_length: u64, beat: u64) -> u64 {
     if clip_length > 0 {
@@ -455,7 +426,7 @@ fn insert_geometry(key: SceneKey, start: u64, duration: u64, pitch: u8) -> Optio
 mod tests {
     use super::{
         HitCycle, MIN_HIT_WIDTH_PX, MidiScene, MidiSceneCache, SceneKey, clamp_start, fit_span,
-        pixel_bounds, wheel_pitch_zoom, zoom_span,
+        pixel_bounds, zoom_span,
     };
     use hex_project::{
         BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, TrackContentSnapshot,
@@ -925,43 +896,6 @@ mod tests {
                 scene.notes().len(),
                 build.as_secs_f64() * 1_000_000.0,
                 start.elapsed().as_secs_f64() * 1_000_000.0
-            );
-        }
-    }
-    #[test]
-    fn pitch_wheel_zoom_keeps_valid_rows_and_pointer_anchor_at_pitch_edges() {
-        for (low, rows) in [
-            (0, 1),
-            (127, 1),
-            (0, 128),
-            (48, 24),
-            (0, 12),
-            (116, 12),
-            (60, 1),
-            (40, 64),
-        ] {
-            for fraction in [0.0, 0.5, 1.0] {
-                for steps in [-4, -1, 0, 1, 4] {
-                    let pitch = crate::editor::PitchViewport::from_rows(low, rows).unwrap();
-                    let next = wheel_pitch_zoom(pitch, fraction, steps).unwrap();
-                    let (next_low, next_rows) = (next.low() as u8, next.span() as u8);
-                    if steps < 0 {
-                        assert!(next_rows <= rows);
-                    } else {
-                        assert!(next_rows >= rows);
-                    }
-                    let anchor = f32::from(low) + (1.0 - fraction) * f32::from(rows);
-                    let actual = f32::from(next_low) + (1.0 - fraction) * f32::from(next_rows);
-                    if next_low > 0 && u16::from(next_low) + u16::from(next_rows) < 128 {
-                        assert!((actual - anchor).abs() <= 0.5);
-                    }
-                }
-            }
-        }
-        for (fraction, steps) in [(f32::NAN, 1), (-0.1, 1), (1.1, 1), (0.5, i8::MIN), (0.5, 5)] {
-            assert_eq!(
-                wheel_pitch_zoom(crate::editor::PitchViewport::DEFAULT, fraction, steps),
-                None
             );
         }
     }

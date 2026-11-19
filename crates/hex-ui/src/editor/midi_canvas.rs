@@ -31,7 +31,26 @@ fn gesture_bounds_from(bounds: Bounds<gpui::Pixels>) -> [f32; 4] {
     ]
 }
 
+const MIDI_TOOLBAR_HEIGHT: f32 = 28.0;
+const PANEL_TOP_BORDER: f32 = 1.0;
+const NOTE_GRID_BORDER: f32 = 1.0;
+
 impl EditorView {
+    fn piano_panel_height(&self) -> f32 {
+        (self.clip_detail_body_height - self.midi_velocity.visible_height()).max(64.0)
+    }
+
+    /// Same resolved geometry the editor hands to the note grid and key gutter.
+    pub(super) fn piano_grid_height(&self) -> f32 {
+        (self.piano_panel_height()
+            - MIDI_TOOLBAR_HEIGHT
+            - super::timeline_strip::RULER_HEIGHT
+            - super::timeline_strip::LOOP_HEIGHT
+            - PANEL_TOP_BORDER
+            - 2.0 * NOTE_GRID_BORDER)
+            .max(0.0)
+    }
+
     pub(super) fn midi_editor(
         &mut self,
         _window: &gpui::Window,
@@ -42,7 +61,10 @@ impl EditorView {
         let source = state.project.midi_source(clip_id)?;
         let clip_len = source.source_length();
         let owner = (self.project_generation, clip_id);
+        let grid_height = self.piano_grid_height();
         if self.piano_view_clip != Some(owner) {
+            self.piano_pitch = super::PitchViewport::default_for_height(grid_height);
+            self.piano_pitch_note_fit = false;
             self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
             self.clear_midi_time_selection();
@@ -54,13 +76,20 @@ impl EditorView {
                 self.cancel_computer_keyboard();
             }
             self.piano_zoom_wheel_accum = 0.0;
-            self.piano_pitch_wheel_accum = 0.0;
             self.piano_beat_start = 0;
             self.piano_beat_span = BeatTime::from_raw(super::midi_scene::fit_span(
                 clip_len.raw(),
                 BeatTime::ONE.raw(),
             ));
+        } else if self.piano_pitch_grid_height != grid_height && !self.piano_pitch_note_fit {
+            let constrained = self.piano_pitch.constrain_to_height(grid_height);
+            if constrained != self.piano_pitch {
+                self.cancel_midi_note_gesture();
+                self.piano_pitch = constrained;
+            }
         }
+        self.piano_pitch_grid_height = grid_height;
+
         let arrangement = state.project.midi_clip(clip_id);
         let revision = state.revision;
         let generation = self.project_generation;
@@ -1216,9 +1245,7 @@ impl EditorView {
         .absolute()
         .inset_0()]);
         let mut panel = div()
-            .h(px((self.clip_detail_body_height
-                - self.midi_velocity.visible_height())
-            .max(64.0)))
+            .h(px(self.piano_panel_height()))
             .flex_shrink_0()
             .flex()
             .flex_row()
@@ -1360,7 +1387,7 @@ impl EditorView {
                     "toggle source looping · disabled loop markers are retained",
                 ))]);
         let toolbar = div()
-            .h(px(28.0))
+            .h(px(MIDI_TOOLBAR_HEIGHT))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -1717,18 +1744,8 @@ impl EditorView {
         {
             return false;
         }
-        let fraction = (y - bounds[1]) / bounds[3];
-        if !(0.0..=1.0).contains(&fraction) {
-            return false;
-        }
-        self.piano_pitch_wheel_accum = (self.piano_pitch_wheel_accum + delta).clamp(-320.0, 320.0);
-        let steps = (self.piano_pitch_wheel_accum / 80.0).trunc() as i8;
-        if steps == 0 {
-            return false;
-        }
-        self.piano_pitch_wheel_accum -= f32::from(steps) * 80.0;
-        let Some(next) = super::midi_scene::wheel_pitch_zoom(self.piano_pitch, fraction, steps)
-        else {
+        let fraction = (f64::from(y) - f64::from(bounds[1])) / f64::from(bounds[3]);
+        let Some(next) = self.piano_pitch.zoom_at(bounds[3], fraction, delta) else {
             return false;
         };
         if next == self.piano_pitch {
@@ -1736,6 +1753,7 @@ impl EditorView {
         }
         self.cancel_midi_note_gesture();
         self.piano_pitch = next;
+        self.piano_pitch_note_fit = false;
         true
     }
 
@@ -1903,13 +1921,14 @@ impl EditorView {
             .handle(
                 "midi-piano-keys".into(),
                 hex_widgets::SplitterHandleConfig::thin(
-                    hex_widgets::SplitterAxis::Vertical,
+                    hex_widgets::SplitterAxis::Horizontal,
                     theme::color(theme::PaletteRole::Surface),
                 ),
             )
             .relative()
             .w(px(38.))
-            .h_full()
+            .mt(px(NOTE_GRID_BORDER))
+            .h(px(self.piano_grid_height()))
             .flex_shrink_0();
         for pitch in viewport.coverage().rev() {
             let Some((top, bottom)) = viewport.visible_row(pitch) else {
