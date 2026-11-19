@@ -1519,12 +1519,11 @@ impl SessionPlayback {
                     .map(FreshHistory::RemovedTrack)
                 })
                 .or_else(|| {
-                    candidate
-                        .graph
-                        .has_one_more_node_than(&old.graph)
-                        .then(|| muted_isolated_latency_addition(self, previous))
-                        .flatten()
-                        .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
+                    (candidate.graph.has_one_more_node_than(&old.graph)
+                        || old.graph.has_one_more_node_than(&candidate.graph))
+                    .then(|| isolated_single_latency_edit(self, previous))
+                    .flatten()
+                    .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
                 })
                 .or_else(|| {
                     candidate
@@ -6900,11 +6899,11 @@ fn fresh_added_audio_track(
     if next_retained.is_some() { None } else { added }
 }
 
-/// Exactly one already-muted resident audio track gains a native latency processor.
+/// Exactly one resident audio track gains or loses its only native latency processor.
 /// Unchanged native Arrangement instruments use the ordinary voice handoff.
 /// Graph preflight independently proves isolation, equal maximum latency and
 /// silent discarded rings before any runtime state is moved.
-fn muted_isolated_latency_addition(
+fn isolated_single_latency_edit(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
 ) -> Option<(TrackId, u64)> {
@@ -7025,16 +7024,14 @@ fn muted_isolated_latency_addition(
         {
             continue;
         }
-        let [device] = after.device_chain.as_ref() else {
-            return None;
+        let device = match (before.device_chain.as_ref(), after.device_chain.as_ref()) {
+            ([], [device]) | ([device], []) => device,
+            _ => return None,
         };
         if changed.is_some()
-            || !before.device_chain.is_empty()
             || before.instrument_id.is_some()
             || before.source_id.is_some()
             || before.midi_source_index.is_some()
-            || !before.mix.muted()
-            || !after.mix.muted()
             || device.bypassed
             || !device.automation.is_empty()
             || device.modulation.is_some()
