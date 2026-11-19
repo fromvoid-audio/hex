@@ -190,6 +190,7 @@ struct Role {
 struct RenderHold {
     extents: Vec<StreamResourceExtent>,
     epoch: Option<u64>,
+    complete: bool,
 }
 pub(super) struct PreparedReadiness {
     catalog: CatalogLease,
@@ -645,14 +646,25 @@ impl ConstructorPageLoan {
     }
 
     /// After all contributing loans have checked the exact span's capacity,
-    /// use spare cache space for one missing page. This never grants a hold.
+    /// request a missing page. A complete current hold permits one eviction
+    /// outside the fade and pending roles. This never grants a fade hold.
     pub fn prewarm_fitting_outgoing_fade(&mut self, extents: &[StreamResourceExtent]) {
         if let Some(&missing) = extents
             .iter()
             .find(|&&extent| !self.pages.endpoint.has_extent(extent))
             && self.readiness.catalog_covers_extent(missing, None)
         {
-            self.pages.endpoint.prewarm_fade_extent(missing);
+            let current = &self.readiness.render_holds[RenderPageKind::Current.index()];
+            let retained = [
+                extents,
+                &self.readiness.roles[0].wanted,
+                &self.readiness.roles[1].wanted,
+                &self.readiness.roles[2].wanted,
+            ];
+            self.pages.endpoint.prewarm_fade_extent(
+                missing,
+                (current.epoch.is_some() && current.complete).then_some(&retained),
+            );
         }
     }
 
@@ -718,6 +730,7 @@ impl ConstructorPageLoan {
             .protect_present(crate::endpoint::RENDER_HOLD_PIN, &hold.extents);
         self.readiness.render_epoch = epoch;
         hold.epoch = Some(epoch);
+        hold.complete = complete;
         Ok((
             RenderPageReservation {
                 readiness_id: self.readiness.readiness_id,
@@ -750,6 +763,7 @@ impl ConstructorPageLoan {
         if hold.epoch.take().is_none() {
             return false;
         }
+        hold.complete = false;
         hold.extents.clear();
         self.pages.endpoint.replace_protection_union(
             crate::endpoint::RENDER_HOLD_PIN,

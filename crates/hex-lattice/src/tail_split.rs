@@ -271,25 +271,31 @@ impl TailSplit {
             old_output[index] = old_dry[index];
             new_output[index] = sample.map(|value| value * gain);
         }
-        // The old history must render wet even when it came from a bypassed
-        // owner; its audible dry-to-wet interpolation is applied afterward.
+        // Warm bypass can still contribute old history. Powered-off entries
+        // have already surrendered their history and keep the dry contribution.
         let old_metering = previous.metering;
         let new_metering = successor.metering;
         previous.metering = false;
         successor.metering = false;
-        previous.bypassed = false;
-        let old_result = NativeRuntimeChain::process_entry_with_foreign_inner(
-            previous,
-            old_output,
-            None,
-            frame_offset,
-            clock,
-            clock,
-            &mut RefuseForeign,
-            None,
-            None,
-        );
-        previous.bypassed = self.old_bypassed;
+        let old_powered_off = previous.powered_off(previous.scratch_bypass_ramp);
+        let old_result = if old_powered_off {
+            Ok(())
+        } else {
+            previous.bypassed = false;
+            let result = NativeRuntimeChain::process_entry_with_foreign_inner(
+                previous,
+                old_output,
+                None,
+                frame_offset,
+                clock,
+                clock,
+                &mut RefuseForeign,
+                None,
+                None,
+            );
+            previous.bypassed = self.old_bypassed;
+            result
+        };
         previous.metering = old_metering;
         let result = old_result.and_then(|()| {
             next.process_range_tapped_with_foreign_input_and_external(
@@ -336,7 +342,9 @@ impl TailSplit {
                 for lane in 0..2 {
                     let old_input = old_dry[index][lane];
                     let wet_input = old_input * previous.input_gain;
-                    let metered_old = if self.old_bypassed {
+                    let metered_old = if old_powered_off {
+                        old_input
+                    } else if self.old_bypassed {
                         old_input + (wet_input - old_input) * gains[index]
                     } else {
                         wet_input

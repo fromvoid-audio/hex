@@ -664,16 +664,9 @@ fn split_test_chain_with_automation(
     automation: hex_lattice::PreparedParameterAutomation,
 ) -> hex_lattice::NativeRuntimeChain {
     let rate = 8000;
-    let factory = DEFINITION
-        .prepare_runtime_factory(
-            state,
-            &DevicePreparationContext {
-                sample_rate: rate,
-                tuning: &TuningTable::default(),
-                resources: &EMPTY_DEVICE_RESOURCES,
-            },
-        )
-        .unwrap();
+    let factory =
+        super::super::DelayDefinition::prepare_owned(state, rate, automation.parameter_ids())
+            .unwrap();
     hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
         modulation: None,
         automation,
@@ -685,7 +678,7 @@ fn split_test_chain_with_automation(
         bypassed,
         sample_rate: rate,
         configuration: Some(Arc::new(state.clone())),
-        definition: factory,
+        definition: Some(PreparedProcessorFactory::Owned(Arc::new(factory))),
     }])
     .unwrap()
 }
@@ -1128,6 +1121,128 @@ fn owned_delay_bypass_retargets_from_the_audible_mix_across_handoffs() {
 }
 
 #[test]
+fn owned_delay_power_off_commits_silence_and_restarts_fresh() {
+    fn render(chain: &mut hex_lattice::NativeRuntimeChain, frames: &mut [StereoFrame]) {
+        chain.begin_block();
+        chain.process_block(frames).unwrap();
+        chain.commit_block();
+    }
+    let configured = state(&[
+        (LEFT_SYNC, ParameterValue::Bool(false)),
+        (TIME, ParameterValue::Float(10.0)),
+        (FEEDBACK, ParameterValue::Float(0.5)),
+        (DRY_WET, ParameterValue::Float(1.0)),
+        (FILTER, ParameterValue::Bool(false)),
+        (HIGH_QUALITY, ParameterValue::Bool(false)),
+    ]);
+    for partition in [1, 257] {
+        let mut wet = split_test_chain(&configured, false);
+        render(&mut wet, &mut [[0.25; 2]; 1600]);
+        assert!(!wet.committed_range_is_quiescent(0..1));
+        let mut off = split_test_chain(&configured, true);
+        off.transfer_history_from(&mut wet);
+
+        off.begin_block();
+        off.process_block(&mut [[0.0; 2]; 257]).unwrap();
+        off.rollback_block();
+        let mut first = [[0.0; 2]; 1];
+        render(&mut off, &mut first);
+        assert!(
+            first[0][0] > 0.25,
+            "rollback must preserve the echo and fade"
+        );
+        let mut off_output = [[0.125; 2]; 800];
+        for block in off_output.chunks_mut(partition) {
+            render(&mut off, block);
+        }
+        assert_eq!(off_output[39..], [[0.125; 2]; 761]);
+        assert!(off.committed_range_is_quiescent(0..1));
+
+        let mut on = split_test_chain(&configured, false);
+        on.transfer_history_from(&mut off);
+        let mut expected = [[0.0; 2]; 600];
+        expected[0] = [0.5; 2];
+        let mut actual = expected;
+        let mut fresh = split_test_chain(&configured, false);
+        for (actual, expected) in actual
+            .chunks_mut(partition)
+            .zip(expected.chunks_mut(partition))
+        {
+            render(&mut on, actual);
+            render(&mut fresh, expected);
+        }
+        // The runtime starts at the first sample. Only the output uses the
+        // short dry-to-wet ramp. Every later echo follows the fresh oracle.
+        assert_eq!(expected[..40], [[0.0; 2]; 40]);
+        assert!(expected[40..].iter().any(|frame| *frame != [0.0; 2]));
+        expected[0] = [0.5 - 0.5 / 40.0; 2];
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+
+    let mut wet = split_test_chain(&configured, false);
+    render(&mut wet, &mut [[0.25; 2]; 1600]);
+    let empty = hex_lattice::NativeRuntimeChain::new(Vec::new()).unwrap();
+    let removal = empty.native_removal_transition_from(&wet).unwrap();
+    assert!(wet.begin_native_removal(removal));
+    render(&mut wet, &mut [[0.25; 2]; 64]);
+    assert!(wet.native_removal_ready(removal));
+    wet.cancel_native_removal(removal);
+    let mut recovered = [[0.25; 2]; 40];
+    render(&mut wet, &mut recovered);
+    assert!(recovered[0][0] > 0.25);
+    assert!(recovered[39][0] > 0.49);
+}
+
+#[test]
+fn powered_off_delay_does_not_acknowledge_unprocessed_parameter_input() {
+    use super::super::automation;
+    use hex_lattice::{
+        NativeTransientInput, NativeTransientOperation, NativeTransientProcessing,
+        NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    let configured = free(10.0, 0.6);
+    let mut automation = hex_lattice::PreparedParameterAutomation::default();
+    automation
+        .arm_provider_input(
+            automation::descriptor(TIME).unwrap(),
+            automation::semantics(TIME).unwrap(),
+        )
+        .unwrap();
+    let input = NativeTransientInput {
+        identity: ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap(),
+        operation: NativeTransientOperation::Set(NativeTransientValue::Parameter {
+            id: TIME,
+            value: ParameterValue::Float(20.0),
+        }),
+    };
+    for bypassed in [true, false] {
+        let mut chain = split_test_chain_with_automation(
+            &configured,
+            bypassed,
+            Default::default(),
+            automation.clone(),
+        );
+        assert_eq!(chain.validate_transient_input(input).is_ok(), !bypassed);
+        let mut transient = NativeTransientProcessing::new(input);
+        chain.begin_block();
+        chain
+            .process_range_tapped_with_foreign_and_input(
+                0..1,
+                &mut [[0.25; 2]; 1],
+                0,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+                Some(&mut transient),
+                &mut |_, _, _, _, _, _| {},
+            )
+            .unwrap();
+        chain.commit_block();
+        assert_eq!(transient.applied.is_some(), !bypassed);
+    }
+}
+
+#[test]
 fn tail_split_meter_observes_the_combined_signal() {
     for initial_bypass in [false, true] {
         for gain in [-6000, 0, 6000] {
@@ -1230,8 +1345,8 @@ fn split_test_render(initial_bypass: bool, partition: usize, rollback: bool) -> 
     old.commit_block();
     reference.commit_block();
     assert_eq!(warm, expected_warm);
-    // One independently rendered active delay is the oracle for the sum of
-    // the split histories after enabling: echoes must not be duplicated.
+    // When the predecessor was powered off, only the newly supplied share of
+    // input can echo. Use a separately rendered delay with that input.
     let mut active_reference = split_test_chain(&configured, false);
     active_reference.inherit_from(&old);
     reference.begin_block();
@@ -1283,6 +1398,10 @@ fn split_test_render(initial_bypass: bool, partition: usize, rollback: bool) -> 
         split.commit_block().unwrap();
         if initial_bypass {
             let mut active = chunk.to_vec();
+            for (i, frame) in active.iter_mut().enumerate() {
+                let gain = (part * partition + i).min(40) as f32 / 40.0;
+                *frame = frame.map(|sample| sample * gain);
+            }
             active_reference.begin_block();
             active_reference.process_block(&mut active).unwrap();
             active_reference.commit_block();
@@ -1312,9 +1431,10 @@ fn split_test_render(initial_bypass: bool, partition: usize, rollback: bool) -> 
     let mut retained = [[0.0; 2]; 256];
     old.process_block(&mut retained).unwrap();
     old.commit_block();
-    assert!(
+    assert_eq!(
         retained.iter().flatten().any(|sample| sample.abs() > 1e-6),
-        "old echo must remain audible"
+        !initial_bypass,
+        "only an active predecessor retains an echo"
     );
     assert!(split.finish_retained_tail(&mut old).is_err());
     output
@@ -1366,6 +1486,10 @@ fn tail_split_tracks_tempo_change_across_segment_offsets() {
             let mut a = vec![[0.0; 2]; chunk.len()];
             let mut b = a.clone();
             let mut expected = chunk.to_vec();
+            for (i, frame) in expected.iter_mut().enumerate() {
+                let gain = (offset + i).min(40) as f32 / 40.0;
+                *frame = frame.map(|sample| sample * gain);
+            }
             old.begin_block();
             next.begin_block();
             reference.begin_block();
