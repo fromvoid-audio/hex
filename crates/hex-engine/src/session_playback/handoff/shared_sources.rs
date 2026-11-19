@@ -3378,7 +3378,7 @@ mod tests {
         on_control(|| {
             let mut f = fixture();
             let device = long_sampler_release(&mut f);
-            check_rapid_source_toggles(&mut f, device);
+            check_rapid_source_toggles(&mut f, device, None);
         });
     }
 
@@ -3426,15 +3426,16 @@ mod tests {
                         })
                         .unwrap();
                 }
-                check_rapid_source_toggles(&mut f, device);
+                check_rapid_source_toggles(&mut f, device, None);
             }
         });
     }
 
     #[test]
-    fn rapid_shared_analytic_reenable_preserves_the_original_release() {
+    fn rapid_shared_analytic_reenable_keeps_the_first_power_off_deadline() {
         on_control(|| {
-            let mut f = fixture();
+            // A rate whose 5 ms deadline needs rounding to a whole frame.
+            let mut f = fixture_at(44_100);
             let device = f
                 .editor
                 .project()
@@ -3450,11 +3451,18 @@ mod tests {
                 })
                 .unwrap();
             assert!(playback(&f).mutable_instruments.iter().all(Option::is_none));
-            check_rapid_source_toggles(&mut f, device);
+            let maximum_tail = f.editor.project().sample_rate().div_ceil(200) as usize;
+            check_rapid_source_toggles(&mut f, device, Some(maximum_tail));
         });
     }
 
-    fn check_rapid_source_toggles(f: &mut Fixture, device: hex_project::DeviceId) {
+    fn check_rapid_source_toggles(
+        f: &mut Fixture,
+        device: hex_project::DeviceId,
+        maximum_tail: Option<usize>,
+    ) {
+        const BLOCK: usize = 13;
+        const TOGGLES: [bool; 4] = [true, false, true, false];
         let mut current = playback(f);
         let mut reference = playback(f);
         let mut held = playback(f);
@@ -3464,7 +3472,7 @@ mod tests {
         }
         let mut boundary = [[0.0; 2]; 1];
         held.render(&mut boundary).unwrap();
-        for (turn, bypassed) in [true, false, true, false].into_iter().enumerate() {
+        for (turn, bypassed) in TOGGLES.into_iter().enumerate() {
             f.editor
                 .execute(Command::SetDeviceBypass { device, bypassed })
                 .unwrap();
@@ -3475,7 +3483,7 @@ mod tests {
                 disabled.try_inherit_state_from(&mut reference).unwrap();
                 reference = disabled;
             }
-            let mut actual = [[0.0; 2]; 13];
+            let mut actual = [[0.0; 2]; BLOCK];
             let mut expected = actual;
             candidate.render(&mut actual).unwrap();
             reference.render(&mut expected).unwrap();
@@ -3490,6 +3498,18 @@ mod tests {
             current = candidate;
         }
         let mut settled = [[1.0; 2]; 256];
+        if let Some(maximum_tail) = maximum_tail {
+            let mut expected = settled;
+            current.render(&mut settled).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(settled, expected, "rapid toggles cannot restart the fade");
+            assert!(
+                settled[maximum_tail - BLOCK * TOGGLES.len()..]
+                    .iter()
+                    .all(|frame| *frame == [0.0; 2]),
+                "the original receiver cut sets the power-off deadline"
+            );
+        }
         for _ in 0..4 {
             current.render(&mut settled).unwrap();
         }
