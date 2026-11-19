@@ -321,6 +321,10 @@ impl PreparedNativeProcessor for PreparedReverb {
         true
     }
 
+    fn supports_power_off(&self) -> bool {
+        true
+    }
+
     fn runtime_version(&self) -> u32 {
         3
     }
