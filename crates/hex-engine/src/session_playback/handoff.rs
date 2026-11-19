@@ -256,6 +256,7 @@ fn prepared_source_generator_matches(
     previous: &PreparedRevision,
     candidate: &PreparedRevision,
     source: hex_project::SourceId,
+    uncompensated: bool,
 ) -> bool {
     fn receiver(
         revision: &PreparedRevision,
@@ -272,9 +273,14 @@ fn prepared_source_generator_matches(
         && receiver(previous, source)
             .zip(receiver(candidate, source))
             .is_some_and(|(old, new)| {
+                let mutable_power_switch = uncompensated
+                    && old.instrument_bypassed != new.instrument_bypassed
+                    && (old.has_mutable_instrument() || new.has_mutable_instrument())
+                    && old.canonical_track_id() == new.canonical_track_id()
+                    && old.instrument_position() == new.instrument_position();
                 old.instrument_id.is_some()
                     && old.instrument_id == new.instrument_id
-                    && old.instrument_bypassed == new.instrument_bypassed
+                    && (old.instrument_bypassed == new.instrument_bypassed || mutable_power_switch)
                     && old.foreign_instrument.is_none()
                     && new.foreign_instrument.is_none()
                     && old
@@ -933,6 +939,7 @@ impl SessionPlayback {
                                 &previous.revision,
                                 &self.revision,
                                 source,
+                                self.compensation.is_none() && previous.compensation.is_none(),
                             )
                         },
                         |old, next| {
@@ -4554,6 +4561,7 @@ impl SessionPlayback {
         // instrument cross a publication boundary. Completed owners stay on
         // `previous` for control-side graph retirement.
         let mut active_tail_groups = [false; SESSION_TAIL_GROUP_CAPACITY];
+        let mut receiver_power_off_slots = [None; MAX_TRACKS];
         for release in &self.release_scratch {
             let Some(group) = release.location.tail_group() else {
                 continue;
@@ -4579,6 +4587,41 @@ impl SessionPlayback {
             let Some(tail) = tail.as_ref().filter(|tail| !tail.committed_is_quiescent()) else {
                 continue;
             };
+            if tail.powers_off_through_receiver() {
+                let old_receiver = previous
+                    .routes
+                    .iter()
+                    .position(|route| route.id == tail.track_id)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let receiver = track_map[old_receiver];
+                let old = &previous.revision.arrangement().tracks()[old_receiver];
+                let Some(next) =
+                    self.revision
+                        .arrangement()
+                        .tracks()
+                        .get(receiver)
+                        .filter(|track| {
+                            track.instrument_bypassed
+                                && track.instrument_id == tail.runtime.expression_identity
+                                && track.source_id() == old.source_id()
+                                && track.receives_source_audio()
+                        })
+                else {
+                    // The receiver or the instrument was replaced during the
+                    // fade. Its source stays on the donor for retirement.
+                    continue;
+                };
+                if self.compensation.is_some()
+                    || next.instrument_position() != old.instrument_position()
+                    || previous.source_effects.has_chain(old_receiver)
+                        != self.source_effects.has_chain(receiver)
+                {
+                    return Err(SessionPlaybackError::DeviceTransitionBusy);
+                }
+                let slot =
+                    u16::try_from(slot).map_err(|_| SessionPlaybackError::ReleaseBankFull)?;
+                receiver_power_off_slots[receiver] = Some(slot);
+            }
             if !tail.sends.is_empty()
                 && (self.compensation.is_some()
                     || tail.sends.iter().any(|(id, _)| {
@@ -4635,6 +4678,7 @@ impl SessionPlayback {
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
         let mut power_off_mutable = [false; MAX_TRACKS];
+        let mut power_off_through_receiver = [false; MAX_TRACKS];
         let mut retain_mutable_sends = [false; MAX_TRACKS];
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
@@ -5067,24 +5111,51 @@ impl SessionPlayback {
                 .device_chains
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            // A stateful receiver requires a separate proof that its existing
-            // suffix can stay in the active path while only the source retires.
-            let power_off = powered_off_receivers[old_index]
+            let receiver = track_map[old_index];
+            let uncompensated_power = powered_off_receivers[old_index]
                 && self.compensation.is_none()
-                && previous.compensation.is_none()
-                && !previous.source_effects.has_chain(old_index)
-                && !self.source_effects.has_chain(track_map[old_index])
+                && previous.compensation.is_none();
+            let source_stage = previous.source_effects.has_chain(old_index);
+            let next_source_stage = self.source_effects.has_chain(receiver);
+            let static_chain = uncompensated_power
                 && self
                     .device_chains
-                    .get(track_map[old_index])
+                    .get(receiver)
                     .is_some_and(|chain| chain.static_processing_matches(old_chain));
+            let routed_fade = uncompensated_power
+                && (!static_chain || source_stage || next_source_stage)
+                && old_track_tail_slots[old_index].is_none()
+                && candidate_track.is_some_and(|track| {
+                    track.receives_source_audio()
+                        && track.instrument_position() == old_track.instrument_position()
+                })
+                && self.device_chains.get(receiver).is_some_and(|chain| {
+                    chain.len() == old_chain.len()
+                        && chain.configuration_matches_range(old_chain, 0..chain.len())
+                        && chain.can_inherit_from(old_chain)
+                })
+                && source_stage == next_source_stage
+                && (!source_stage
+                    || (old_track.instrument_output_gain == 1.0
+                        && source_transfer.is_some_and(|transfer| {
+                            old_track.source_id().is_some_and(|source| {
+                                self.source_effects.has_continued_source(transfer, source)
+                            })
+                        })));
+            let power_off = routed_fade
+                || (uncompensated_power && static_chain && !source_stage && !next_source_stage);
+            if uncompensated_power && !power_off {
+                return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+            }
             power_off_mutable[old_index] = power_off;
+            power_off_through_receiver[old_index] = routed_fade;
             if let Some(cutoff) = cut_mutable_gateoffs.get_mut(old_index) {
                 *cutoff = !candidate_enabled && !power_off;
             } else {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
-            if !old_track.sends().is_empty()
+            if !routed_fade
+                && !old_track.sends().is_empty()
                 && candidate_track.is_some_and(|track| {
                     track.instrument_bypassed && track.instrument_id == old_track.instrument_id
                 })
@@ -5114,10 +5185,12 @@ impl SessionPlayback {
             }
             let suffix_start =
                 tail_runtime_suffix_start(old_chain, old_track.instrument_position())?;
-            *old_track_tail_output_active
-                .get_mut(old_index)
-                .ok_or(SessionPlaybackError::DeviceRuntime)? =
-                !old_chain.committed_range_is_quiescent(suffix_start..old_chain.len());
+            if !routed_fade {
+                *old_track_tail_output_active
+                    .get_mut(old_index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)? =
+                    !old_chain.committed_range_is_quiescent(suffix_start..old_chain.len());
+            }
             let existing_slot = old_track_tail_slots.get(old_index).copied().flatten();
             let slot = existing_slot.or_else(|| {
                 (0..self.tail_groups.len()).find(|slot| {
@@ -5142,7 +5215,10 @@ impl SessionPlayback {
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
-            if old_track_tail_slots[old_index].is_none() {
+            if routed_fade {
+                receiver_power_off_slots[receiver] =
+                    Some(u16::try_from(slot).map_err(|_| SessionPlaybackError::ReleaseBankFull)?);
+            } else if old_track_tail_slots[old_index].is_none() {
                 old_track_tail_slots[old_index] = Some(slot);
                 old_track_tail_metadata[old_index] =
                     Some((suffix_start, old_track.instrument_suffix_matrix()));
@@ -6112,14 +6188,23 @@ impl SessionPlayback {
                 } else {
                     Default::default()
                 };
-                *candidate = Some(MutableInstrumentTail::new(
+                let mut tail = MutableInstrumentTail::new(
                     track_id,
                     old_runtime,
                     sends,
                     power_off_mutable[old_index].then_some(sample_rate),
-                ));
+                );
+                if power_off_through_receiver[old_index] {
+                    let track = &previous.revision.arrangement().tracks()[old_index];
+                    tail = tail.with_power_off_receiver(track.instrument_output_gain);
+                    // The existing group bank reserves this slot. No downstream
+                    // DSP is moved out of the active receiver.
+                    self.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+                }
+                *candidate = Some(tail);
             }
         }
+        self.receiver_power_off_slots = receiver_power_off_slots;
         for (index, route) in self.route_scratch.iter().enumerate() {
             let old_index = previous
                 .routes

@@ -3500,6 +3500,191 @@ mod tests {
     }
 
     #[test]
+    fn power_fade_enters_the_live_stateful_receiver_once() {
+        on_control(|| {
+            let mut f = fixture();
+            let instrument = long_sampler_release(&mut f);
+            let Created::Device(gate) = f
+                .editor
+                .execute(Command::InsertDevice {
+                    track: f.receiver,
+                    before: None,
+                    state: crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID)
+                        .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("Gate");
+            };
+            let mut previous = playback(&f);
+            let mut reference = playback(&f);
+            for runtime in [&mut previous, &mut reference] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+            }
+            let observed = |runtime: &mut SessionPlayback| {
+                let mut input = [[0.0; 2]; 64];
+                let mut count = 0;
+                let mut output = [[0.0; 2]; 64];
+                runtime
+                    .render_with_node_signal_observer(
+                        &mut output,
+                        Some(&mut |node, phase, offset, frames| {
+                            if node.device_id == gate.value()
+                                && phase == crate::NodeSignalPhase::Input
+                            {
+                                assert_eq!(offset, count, "one active receiver processor");
+                                count += frames.len();
+                                input[offset..count].copy_from_slice(frames);
+                            }
+                        }),
+                    )
+                    .unwrap();
+                assert_eq!(count, input.len());
+                (input, output)
+            };
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_from(&mut previous).unwrap();
+            let (mut expected, uninterrupted) = observed(&mut reference);
+            assert_ne!(expected[0], [0.0; 2]);
+            apply_power_fade(&mut expected, 0, 40);
+            let (actual, output) = observed(&mut disabled);
+            assert_eq!(
+                actual, expected,
+                "the live Gate consumes the bounded source fade"
+            );
+            assert_eq!(
+                output[0], uninterrupted[0],
+                "receiver detector history survives the cut"
+            );
+            assert!(
+                disabled
+                    .tail_groups
+                    .iter()
+                    .flatten()
+                    .all(|chain| chain.is_empty())
+            );
+
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: false,
+                })
+                .unwrap();
+            let mut enabled = playback(&f);
+            enabled.try_inherit_state_live_from(&mut disabled).unwrap();
+            let (input, _) = observed(&mut enabled);
+            assert_eq!(
+                input, [[0.0; 2]; 64],
+                "fresh kernel cannot replay the old note"
+            );
+        });
+    }
+
+    #[test]
+    fn source_owned_gate_keeps_its_single_path_through_mutable_power_cycles() {
+        on_control(|| {
+            let mut f = fixture();
+            use hex_lattice_contract::NativeDeviceMetadata;
+            let instrument = f
+                .editor
+                .project()
+                .native_source(f.source)
+                .unwrap()
+                .instrument()
+                .id();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: instrument,
+                    state: hex_devices::fm4::device::FM4_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap();
+            for track in [f.receiver, f.contributor] {
+                f.editor
+                    .execute(Command::BindTrackSource {
+                        track,
+                        source: None,
+                    })
+                    .unwrap();
+            }
+            f.editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID)
+                        .unwrap(),
+                })
+                .unwrap();
+            for track in [f.receiver, f.contributor] {
+                f.editor
+                    .execute(Command::BindTrackSource {
+                        track,
+                        source: Some(f.source),
+                    })
+                    .unwrap();
+            }
+            let mut previous = playback(&f);
+            let mut reference = playback(&f);
+            assert!(previous.source_effects.has_chain(0));
+            for runtime in [&mut previous, &mut reference] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+            }
+            let mut uninterrupted = [[0.0; 2]; 1];
+            reference.render(&mut uninterrupted).unwrap();
+            assert_ne!(uninterrupted[0], [0.0; 2]);
+
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_live_from(&mut previous).unwrap();
+            assert!(disabled.receiver_power_off_slots[0].is_some());
+            let mut output = [[0.0; 2]; 64];
+            disabled.render(&mut output[..13]).unwrap();
+            let mut successor = playback(&f);
+            successor
+                .try_inherit_state_live_from(&mut disabled)
+                .unwrap();
+
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: false,
+                })
+                .unwrap();
+            let mut enabled = playback(&f);
+            assert_eq!(
+                enabled.try_inherit_state_live_from(&mut successor),
+                Err(SessionPlaybackError::DeviceTransitionBusy)
+            );
+            successor.render(&mut output[13..]).unwrap();
+            assert_eq!(output[0], uninterrupted[0]);
+            assert_eq!(output[40..], [[0.0; 2]; 24]);
+            assert!(
+                successor
+                    .tail_groups
+                    .iter()
+                    .flatten()
+                    .all(|chain| chain.is_empty())
+            );
+            enabled.try_inherit_state_live_from(&mut successor).unwrap();
+            enabled.render(&mut output).unwrap();
+            assert_eq!(output, [[0.0; 2]; 64]);
+        });
+    }
+
+    #[test]
     fn static_utility_receiver_preserves_its_processing_during_power_fade() {
         on_control(|| {
             use hex_devices::utility::{UTILITY_DEFINITION as utility, parameter as p};

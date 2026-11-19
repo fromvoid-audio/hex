@@ -617,6 +617,9 @@ pub struct SessionPlayback {
     // A pure foreign suffix admitted with an unchanged grouped clock and graph.
     tail_proven_grouped: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
+    // A routed fade owns just the source. The receiver's active path keeps
+    // the single processor chain and routes its own sends as usual.
+    receiver_power_off_slots: [Option<u16>; MAX_TRACKS],
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
@@ -1056,6 +1059,7 @@ impl SessionPlayback {
             has_tail_route_sends: _,
             tail_proven_grouped: _,
             tail_mutable_instruments,
+            receiver_power_off_slots: _,
             tail_mixes: _,
             tail_suffix_starts: _,
             tail_suffix_matrices: _,
@@ -2355,6 +2359,7 @@ impl SessionPlayback {
             has_tail_route_sends: false,
             tail_proven_grouped: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
+            receiver_power_off_slots: [None; MAX_TRACKS],
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
