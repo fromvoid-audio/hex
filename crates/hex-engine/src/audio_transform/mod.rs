@@ -1058,15 +1058,8 @@ impl AudioTransformPreparation {
     /// planning. Processing roots that materialize PCM keep their original
     /// resident boundary; this pure query grants no decoding/admission custody.
     pub fn clip_requires_resident_source(clip: &hex_project::Clip) -> bool {
-        clip.audio_edit().is_some_and(|edit| {
-            (edit.content_view.is_some() && edit.plain_reversed_source(clip).is_none())
-                || edit.placement.is_some()
-                || edit.domain.events.is_some()
-                || edit.domain.pitch_cents != 0
-                || edit.domain.warp_enabled
-                || !edit.domain.source_gain.is_empty()
-                || !edit.domain.fade.is_neutral()
-        })
+        clip.audio_edit()
+            .is_some_and(|edit| edit_requires_resident_source(clip, edit))
     }
 
     fn compile_clip_at_tempo(
@@ -1080,9 +1073,34 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        let fade = checked_frame_outer_fade(clip, tempo_map)?;
+        self.compile_captured_clip_at_tempo(tempo_map, clip, edit, asset, source, fade)
+    }
+
+    fn compile_captured_clip_at_tempo(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        fade: Option<hex_project::ClipFade>,
+    ) -> Result<Option<Clip>, Invalid> {
+        if fade.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
+            return Err(Invalid(
+                "clip source fade differs from its processing clock",
+            ));
+        }
         if edit.is_long_inactive_warp_root(clip.duration()) {
             return direct_clip(clip, source).map(Some);
         }
+        let finish = |prepared: Clip| {
+            let prepared = prepared.with_gain(clip.gain());
+            match fade {
+                Some(fade) => prepared.with_fade(fade).map(Some),
+                None => Ok(Some(prepared)),
+            }
+        };
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
             && let Ok((map, law)) =
                 streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)
@@ -1123,7 +1141,7 @@ impl AudioTransformPreparation {
             .map(|prepared| Some(prepared.with_gain(clip.gain())));
         }
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, pitched) = source
-            && edit.is_plain_pitch_capture(clip)
+            && edit.is_plain_pitch_source(clip)
             && clip.source_length() == asset.playback_frames()
         {
             let expected =
@@ -1139,7 +1157,7 @@ impl AudioTransformPreparation {
                 0,
                 clip.duration(),
                 false,
-                edit.domain.fade,
+                fade.unwrap_or(edit.domain.fade),
             )
             .map(|prepared| Some(prepared.with_gain(clip.gain())));
         }
@@ -1161,7 +1179,7 @@ impl AudioTransformPreparation {
                     length,
                     false,
                 )
-                .map(|prepared| Some(prepared.with_gain(clip.gain())));
+                .and_then(finish);
             }
             return self
                 .compile_content(tempo_map, clip, edit, asset, source)
@@ -1174,7 +1192,7 @@ impl AudioTransformPreparation {
         }
         let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
         let domain = &edit.domain;
-        let direct = !Self::clip_requires_resident_source(clip);
+        let direct = !edit_requires_resident_source(clip, edit);
         if direct && matches!(source, PreparedAudioSourceRef::Streamed(_)) {
             if !domain.looping && view_start >= domain.source_length {
                 return Ok(None);
@@ -1215,9 +1233,8 @@ impl AudioTransformPreparation {
                     domain.looping,
                 )?,
             }
-            .with_source_phase(phase)?
-            .with_gain(clip.gain());
-            return Ok(Some(compiled));
+            .with_source_phase(phase)?;
+            return finish(compiled);
         }
         let PreparedAudioSourceRef::Resident(source) = source else {
             return Err(Invalid(
@@ -1233,8 +1250,29 @@ impl AudioTransformPreparation {
             view_end - view_start,
             false,
         )
-        .map(|clip_engine| Some(clip_engine.with_gain(clip.gain())))
+        .and_then(finish)
     }
+}
+
+pub(crate) fn checked_frame_outer_fade(
+    clip: &hex_project::Clip,
+    tempo: &hex_project::TempoMap,
+) -> Result<Option<hex_project::ClipFade>, Invalid> {
+    Ok(clip
+        .projected_outer_fade(tempo)?
+        .map(|fade| fade.frame_playback_envelope())
+        .transpose()?)
+}
+
+fn edit_requires_resident_source(clip: &hex_project::Clip, edit: &AudioClipEdit) -> bool {
+    (edit.content_view.is_some() && edit.plain_reversed_source(clip).is_none())
+        || edit.placement.is_some()
+        || edit.domain.events.is_some()
+        || edit.domain.pitch_cents != 0
+        || edit.domain.warp_enabled
+        || !edit.domain.source_gain.is_empty()
+        || (edit.domain.fade_clock == hex_project::AudioClipFadeClock::LegacyRoot
+            && !edit.domain.fade.is_neutral())
 }
 
 /// A root's processing origin only enters its render through tempo points

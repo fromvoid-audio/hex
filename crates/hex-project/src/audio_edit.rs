@@ -530,13 +530,21 @@ impl AudioClipEdit {
     /// Exact V2 full-frame pitch and frame-clock fade captured from an unlooped clip.
     /// Callers must also establish that the clip covers the complete asset.
     pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
+        self.domain.fade_clock == AudioClipFadeClock::LegacyRoot && self.is_plain_pitch_source(clip)
+    }
+
+    /// Exact full-asset pitch processing shape for source selection. The
+    /// caller separately checks the asset and any destination-only fade slot.
+    pub fn is_plain_pitch_source(&self, clip: &Clip) -> bool {
+        let outer = self.domain.fade_clock == AudioClipFadeClock::Outer;
         if self.domain.pitch_cents == 0
             || clip.source_offset != 0
             || clip.source_length != clip.duration
             || clip.looping
             || clip.source_phase != 0
             || !clip.fade.is_neutral()
-            || self.domain.fade.validate_segment(clip.duration).is_err()
+            || (!outer && self.domain.fade.validate_segment(clip.duration).is_err())
+            || (outer && self.domain.fade.offset() != 0 && self.domain.fade_start != 0)
         {
             return false;
         }
@@ -545,6 +553,10 @@ impl AudioClipEdit {
         domain.pitch_cents = self.domain.pitch_cents;
         domain.warp_resampler = WarpResampler::V2;
         domain.fade = self.domain.fade;
+        if outer {
+            domain.fade_clock = AudioClipFadeClock::Outer;
+            domain.fade_start = self.domain.fade_start;
+        }
         self == &expected
     }
 
@@ -605,8 +617,14 @@ impl AudioClipEdit {
             && self.domain.events.is_none()
             && self.domain.musical_event_source.is_none()
             && self.domain.source_gain.is_empty()
-            && self.domain.fade.is_neutral()
-            && self.domain.fade_start == 0
+            && match self.domain.fade_clock {
+                AudioClipFadeClock::LegacyRoot => {
+                    self.domain.fade.is_neutral() && self.domain.fade_start == 0
+                }
+                AudioClipFadeClock::Outer => {
+                    self.domain.fade.offset() == 0 || self.domain.fade_start == 0
+                }
+            }
             && self.domain.fade_projection.is_none())
         .then_some((self.domain.source_offset, length))
     }
@@ -1094,7 +1112,9 @@ impl AudioClipEdit {
         }
         length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
             && (self.is_plain_reversed_capture(clip)
-                || self.is_plain_pitch_capture(clip)
+                || (self.domain.fade_clock == AudioClipFadeClock::Outer
+                    && self.plain_reversed_source(clip).is_some())
+                || self.is_plain_pitch_source(clip)
                 || self.is_streamed_repitch_root()
                 || self.is_streamed_granular_root()
                 || self.is_long_inactive_warp_root(length)
@@ -1289,7 +1309,7 @@ impl AudioClipEdit {
             return Err(transform_domain_limit(tempo.sample_rate()));
         }
         if length > MAX_AUDIO_DOMAIN_FRAMES
-            && self.is_plain_pitch_capture(clip)
+            && self.is_plain_pitch_source(clip)
             && clip.source_length != asset_frames
         {
             return Err(Invalid("long pitch requires the complete audio source"));

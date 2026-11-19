@@ -47,7 +47,7 @@ pub(crate) fn matching_streamed_pitch(
         && raw.source_rate() == asset.source_sample_rate()
         && raw.source_frames() == asset.source_frames()
         && raw.conversion_version() == asset.conversion_version()
-        && edit.is_plain_pitch_capture(clip)
+        && edit.is_plain_pitch_source(clip)
         && clip.source_length() == asset.playback_frames()
         && raw
             .with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)
@@ -164,7 +164,7 @@ pub(super) fn pitched_source_index(
 ) -> Option<usize> {
     if !clip
         .audio_edit()
-        .is_some_and(|edit| edit.is_plain_pitch_capture(clip))
+        .is_some_and(|edit| edit.is_plain_pitch_source(clip))
     {
         return None;
     }

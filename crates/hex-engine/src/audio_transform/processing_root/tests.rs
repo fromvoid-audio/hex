@@ -399,3 +399,155 @@ fn prepared_frame_placement_applies_one_outer_fade_over_event_pcm() {
         }
     }
 }
+
+#[test]
+fn forward_frame_crop_applies_the_destination_fade_after_processing() {
+    let (mut editor, id, media) = frame_fixture();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: id,
+            edge: hex_project::TrimEdge::Left,
+            frame: 16,
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    Arc::make_mut(&mut row.edit.as_mut().unwrap().domain).fade =
+        ClipFade::new(128, 0, 41, 19).unwrap();
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let clip = project.clip(id).unwrap();
+    let edit = clip.audio_edit().unwrap();
+    assert!(edit.content_view.is_none() && edit.placement.is_none());
+    let source = &media[&clip.asset()];
+    let asset = project.asset(clip.asset()).unwrap();
+    let event = edit.domain.events.as_ref().unwrap().events[0];
+    let fade = ClipFade::new(clip.duration(), 0, 41, 19).unwrap();
+    let context = isolated(64 * 1024, 64 * 1024, 8);
+    let prepare = |fade| {
+        let mut prospective = edit.clone();
+        let domain = Arc::make_mut(&mut prospective.domain);
+        domain.fade_clock = AudioClipFadeClock::Outer;
+        domain.fade = fade;
+        context
+            .compile_captured_clip_at_tempo(
+                project.tempo_map(),
+                clip,
+                &prospective,
+                asset,
+                super::super::PreparedAudioSourceRef::Resident(source),
+                Some(fade),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let compiled = prepare(fade);
+    let changed = prepare(ClipFade::new(clip.duration(), 0, 13, 37).unwrap());
+    assert!(
+        compiled
+            .audio
+            .as_ref()
+            .unwrap()
+            .shares_pcm_with(changed.audio.as_ref().unwrap())
+    );
+    let mix = crate::Project::new(
+        project.sample_rate(),
+        vec![crate::Track::new(vec![compiled], 1.0, false).unwrap()],
+    )
+    .unwrap();
+    let mut renderer = crate::Renderer::new(&mix);
+    renderer.seek(clip.start());
+    renderer.play();
+    let mut pcm = vec![[0.0; 2]; clip.duration() as usize];
+    for block in pcm.chunks_mut(37) {
+        renderer.render(block).unwrap();
+    }
+    for (index, sample) in pcm.into_iter().enumerate() {
+        let root_frame = edit.view_start + index as u64;
+        let event_fade = event.fade.unwrap().shape().gain_at(root_frame);
+        let expected = source.frames()[root_frame as usize]
+            .map(|sample| (sample * event_fade * event.gain.linear()) * fade.gain_at(index as u64));
+        assert_eq!(sample, expected, "frame {index}");
+    }
+}
+
+#[test]
+fn verified_frame_pitch_and_reverse_share_stream_identity_with_outer_fades() {
+    use crate::{StreamSourceKey, StreamedSourceMetadata, compile::PreparedAudioSourceRef};
+
+    for reversed in [false, true] {
+        let (mut editor, id, _) = fixture(false);
+        editor
+            .execute(Command::SetClipFades {
+                clip: id,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(if reversed {
+                Command::ReverseClips(vec![id])
+            } else {
+                Command::SetAudioClipPitch {
+                    clip: id,
+                    cents: 100,
+                }
+            })
+            .unwrap();
+        let project = editor.project();
+        let clip = project.clip(id).unwrap();
+        let asset = project.asset(clip.asset()).unwrap();
+        let edit = clip.audio_edit().unwrap();
+        let raw = Arc::new(
+            StreamedSourceMetadata::new(
+                StreamSourceKey::new(11, asset.id()),
+                project.sample_rate(),
+                asset.source_sample_rate(),
+                asset.source_frames(),
+                asset.playback_frames(),
+                asset.conversion_version(),
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let derived = if reversed {
+            Arc::clone(&raw)
+        } else {
+            Arc::new(
+                raw.with_plain_pitch(edit.domain.pitch_cents, edit.domain.warp_resampler)
+                    .unwrap(),
+            )
+        };
+        let pitched = BTreeMap::from([(derived.key(), Arc::clone(&derived))]);
+        let source = || {
+            if reversed {
+                PreparedAudioSourceRef::Streamed(&raw)
+            } else {
+                PreparedAudioSourceRef::StreamedWithPitch(&raw, &pitched)
+            }
+        };
+        let context = super::super::AudioTransformPreparation::default();
+        for (fade_in, fade_out) in [(151, 513), (334, 712)] {
+            let mut prospective = edit.clone();
+            let domain = Arc::make_mut(&mut prospective.domain);
+            domain.fade_clock = AudioClipFadeClock::Outer;
+            domain.fade = ClipFade::new(clip.duration(), 0, fade_in, fade_out).unwrap();
+            let fade = domain.fade;
+            let compiled = context
+                .compile_captured_clip_at_tempo(
+                    project.tempo_map(),
+                    clip,
+                    &prospective,
+                    asset,
+                    source(),
+                    Some(fade),
+                )
+                .unwrap()
+                .unwrap();
+            let metadata = compiled.metadata.unwrap();
+            assert!(compiled.audio.is_none());
+            assert_eq!(metadata.reversed, reversed);
+            assert_eq!(metadata.fade, Some(fade));
+            assert!(Arc::ptr_eq(metadata.streamed.as_ref().unwrap(), &derived));
+        }
+    }
+}
