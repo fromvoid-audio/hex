@@ -64,21 +64,11 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<[f3
     frames
 }
 
-#[derive(Clone, Copy)]
-enum RestartHistory {
-    Warm,
-    Fresh,
-}
-
-fn check(definition: &'static dyn NativeDeviceDefinition) {
-    check_rate(definition, 48_000, RestartHistory::Warm);
-}
-
-fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32, restart: RestartHistory) {
+fn check_power_transition(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
     let ramp_frames = rate.div_ceil(200) as usize;
     for old_bypassed in [false, true] {
         let mut wet_reference = chain(definition, false, rate);
-        if !old_bypassed || matches!(restart, RestartHistory::Warm) {
+        if !old_bypassed {
             render(&mut wet_reference, 1024, 64);
         }
         let wet = render(&mut wet_reference, ramp_frames + 60, 1);
@@ -112,15 +102,11 @@ fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32, restar
 
 #[test]
 fn auto_pan_power_transition_uses_its_history_until_off_and_restarts_fresh() {
-    check_rate(
-        &crate::auto_pan::AUTO_PAN_DEFINITION,
-        48_000,
-        RestartHistory::Fresh,
-    );
+    check_power_transition(&crate::auto_pan::AUTO_PAN_DEFINITION, 48_000);
 }
 #[test]
 fn gate_power_transition_uses_its_detector_until_off_and_reopens_fresh() {
-    check_rate(&crate::gate::GATE_DEFINITION, 48_000, RestartHistory::Fresh);
+    check_power_transition(&crate::gate::GATE_DEFINITION, 48_000);
 }
 
 #[test]
@@ -146,18 +132,89 @@ fn gate_power_reversal_preserves_the_open_detector() {
 }
 
 #[test]
-fn compressor_bypass_transition_preserves_real_detector_history() {
-    check(&crate::compressor::COMPRESSOR_DEFINITION);
+fn compressor_power_transition_uses_its_detector_until_off_and_restarts_fresh() {
+    check_power_transition(&crate::compressor::COMPRESSOR_DEFINITION, 48_000);
+}
+
+#[test]
+fn compressor_power_reversals_and_settled_off_follow_the_external_key() {
+    use hex_lattice::StereoAuxiliaryBlock;
+    use hex_lattice_contract::NativeDeviceMetadata;
+
+    const DRY: [f32; 2] = [0.0625, -0.03125];
+    const KEY: [f32; 2] = [0.0, 0.75];
+    const QUIET_KEY: [f32; 2] = [0.0; 2];
+    const BLOCK: usize = 256;
+    const WARMUP: usize = 16 * BLOCK;
+    const FADE: usize = 240;
+
+    let definition = &crate::compressor::COMPRESSOR_DEFINITION;
+    let make_chain = |bypassed| {
+        chain_state(
+            definition,
+            definition.default_state().unwrap(),
+            bypassed,
+            48_000,
+        )
+    };
+    let render_keyed = |chain: &mut NativeRuntimeChain, key: [f32; 2], frames| {
+        let key = [key; BLOCK];
+        let mut output = vec![DRY; frames];
+        for chunk in output.chunks_mut(BLOCK) {
+            let length = chunk.len();
+            let block =
+                StereoAuxiliaryBlock::new(chunk, Some(&key[..length]), &mut [], BLOCK).unwrap();
+            chain.begin_block();
+            chain
+                .process_auxiliary_stage(
+                    0,
+                    block,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut |_, _, _, _, _, _| {},
+                )
+                .unwrap();
+            chain.commit_block();
+        }
+        output
+    };
+
+    for off_frames in [64, 2 * BLOCK] {
+        let mut on = make_chain(false);
+        let warmed = render_keyed(&mut on, KEY, WARMUP);
+        assert!(warmed[WARMUP - 1][0] < DRY[0] * 0.75);
+
+        let mut off = make_chain(true);
+        off.transfer_history_from(&mut on);
+        let off_output = render_keyed(&mut off, KEY, off_frames);
+        assert!(off_output[0][0] < DRY[0]);
+        if off_frames > FADE {
+            assert!(off_output[FADE..].iter().all(|frame| *frame == DRY));
+        }
+
+        let mut reference = make_chain(false);
+        if off_frames < FADE {
+            render_keyed(&mut reference, KEY, WARMUP + off_frames);
+        }
+        let expected = render_keyed(&mut reference, QUIET_KEY, BLOCK);
+        let mut resumed = make_chain(false);
+        resumed.transfer_history_from(&mut off);
+        let actual = render_keyed(&mut resumed, QUIET_KEY, BLOCK);
+        assert_eq!(
+            actual[FADE..],
+            expected[FADE..],
+            "incorrect external-key detector after {off_frames} off frames",
+        );
+    }
 }
 
 #[test]
 fn reverb_power_transition_restarts_a_fresh_room_at_supported_rates() {
     for rate in [8_000, 44_100, 48_000, 192_000] {
-        check_rate(
-            &crate::reverb::REVERB_DEFINITION,
-            rate,
-            RestartHistory::Fresh,
-        );
+        check_power_transition(&crate::reverb::REVERB_DEFINITION, rate);
     }
 }
 
