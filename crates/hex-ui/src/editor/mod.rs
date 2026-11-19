@@ -177,8 +177,10 @@ mod group_overview;
 mod midi_loop_notes;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod midi_loop_profile;
+mod midi_pitch_viewport;
 mod midi_ruler;
 mod midi_scene;
+use midi_pitch_viewport::PitchViewport;
 mod midi_selection;
 mod midi_source_controls;
 mod midi_step;

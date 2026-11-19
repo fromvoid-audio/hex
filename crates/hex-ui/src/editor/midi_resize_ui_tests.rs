@@ -148,8 +148,11 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                     clip,
                     beat_start: v.piano_beat_start,
                     beat_span: v.piano_beat_span.raw(),
-                    pitch_low: v.piano_pitch_low,
-                    pitch_rows: v.piano_pitch_rows,
+                    pitch: crate::editor::PitchViewport::from_rows(
+                        v.piano_pitch_low,
+                        v.piano_pitch_rows,
+                    )
+                    .unwrap(),
                 },
                 source.notes(),
             );
