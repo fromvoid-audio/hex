@@ -65,35 +65,6 @@ impl PreparedEventSourcePeaks {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn event_source_summary_releases_its_independent_budget_on_cancel_and_drop() {
-        let frames = [[0.125, -0.5]; 128];
-        let bytes = PreparedEventSourcePeaks::storage_bytes(frames.len());
-        let budget = Arc::new(Budget::new(bytes));
-        let mut polls = 0;
-        assert!(
-            PreparedEventSourcePeaks::capture(&frames, &budget, || {
-                polls += 1;
-                polls == 2
-            })
-            .is_none()
-        );
-        assert_eq!(budget.used(), 0);
-        let summary = PreparedEventSourcePeaks::capture(&frames, &budget, || false).unwrap();
-        assert_eq!(budget.used(), bytes);
-        assert!(PreparedEventSourcePeaks::capture(&frames, &budget, || false).is_none());
-        let retained = Arc::clone(&summary);
-        drop(summary);
-        assert_eq!(budget.used(), bytes);
-        drop(retained);
-        assert_eq!(budget.used(), 0);
-    }
-}
-
 pub(super) struct PeakBins {
     peaks: Vec<PreparedAudioPeak>,
     end: usize,
@@ -134,5 +105,34 @@ impl PeakBins {
                 peak.max[channel] = peak.max[channel].max(value);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_source_summary_releases_its_independent_budget_on_cancel_and_drop() {
+        let frames = [[0.125, -0.5]; 128];
+        let bytes = PreparedEventSourcePeaks::storage_bytes(frames.len());
+        let budget = Arc::new(Budget::new(bytes));
+        let mut polls = 0;
+        assert!(
+            PreparedEventSourcePeaks::capture(&frames, &budget, || {
+                polls += 1;
+                polls == 2
+            })
+            .is_none()
+        );
+        assert_eq!(budget.used(), 0);
+        let summary = PreparedEventSourcePeaks::capture(&frames, &budget, || false).unwrap();
+        assert_eq!(budget.used(), bytes);
+        assert!(PreparedEventSourcePeaks::capture(&frames, &budget, || false).is_none());
+        let retained = Arc::clone(&summary);
+        drop(summary);
+        assert_eq!(budget.used(), bytes);
+        drop(retained);
+        assert_eq!(budget.used(), 0);
     }
 }
