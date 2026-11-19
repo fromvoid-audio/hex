@@ -193,6 +193,14 @@ impl CancellablePublicationReceipt {
 pub(crate) struct PublicationReceiptOwner(pub(super) CancellablePublicationReceipt);
 
 impl PublicationReceiptOwner {
+    pub(crate) fn tempo_cut(&self) -> Option<&FencedTempoCut> {
+        self.0.tempo_cut()
+    }
+
+    pub(crate) fn is_device_insert(&self) -> bool {
+        self.0.device_insert_basis().is_some()
+    }
+
     pub(super) fn device_insert_deadline(&self) -> Option<Instant> {
         self.0
             .device_insert_basis()

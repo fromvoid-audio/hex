@@ -231,3 +231,38 @@ fn owner_sources_impl(
         .ok()
         .unwrap()
 }
+
+pub(super) fn prepare_candidate(
+    control: &mut crate::prepared::Control,
+    project: &hex_project::Project,
+    metadata: &hex_engine::StreamedSourceMetadata,
+    domain: crate::AudioCandidateDomainToken,
+    context: hex_engine::AudioSourceContext,
+) -> crate::AudioCandidatePreparationToken {
+    hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        let quote = effects.quote(project, 1).unwrap();
+        let token = control
+            .reserve_audio_candidate_preparation(
+                crate::AudioCandidatePreparationReservation {
+                    source_capacity: quote.source_capacity,
+                    storage: quote.storage_reservation(0).unwrap(),
+                    member_rows: quote.member_rows,
+                    transfer_rows: quote.transfer_rows,
+                    handle_rows: quote.handle_rows,
+                },
+                vec![domain],
+            )
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        assert_eq!(
+            control
+                .prepare_audio_candidate_on_control(token, |cell| {
+                    cell.add_streamed_source_on_control(metadata.clone())?;
+                    effects.prepare(cell, project, metadata.key().generation(), context, None)
+                })
+                .unwrap(),
+            crate::AudioCandidatePreparationProgress::Ready
+        );
+        Ok(token)
+    })
+    .unwrap()
+}

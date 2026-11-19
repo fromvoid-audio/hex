@@ -28,6 +28,8 @@ mod reverb;
 mod scalar;
 #[cfg(feature = "allocation-probe")]
 pub(in crate::prepared) mod stream_fixture;
+#[cfg(all(feature = "allocation-probe", feature = "stream-test-support"))]
+mod tempo_cut;
 #[cfg(feature = "allocation-probe")]
 mod utility_fixture;
 use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
