@@ -1522,7 +1522,7 @@ impl SessionPlayback {
                     let approved_cut = confirmed_insert && !force_restart;
                     (candidate.graph.has_one_more_node_than(&old.graph)
                         || old.graph.has_one_more_node_than(&candidate.graph))
-                    .then(|| isolated_single_latency_edit(self, previous, approved_cut))
+                    .then(|| single_track_latency_edit(self, previous, approved_cut))
                     .flatten()
                     .map(|(track, device)| FreshHistory::ChangedTrack {
                         track,
@@ -6906,9 +6906,10 @@ fn fresh_added_audio_track(
 
 /// Exactly one resident audio track gains or loses its only native latency processor.
 /// Unchanged native Arrangement instruments use the ordinary voice handoff.
-/// Graph preflight proves isolation and equal maximum latency. A continuous
-/// edit needs silent local rings; the approved held cut may retire donor PCM.
-fn isolated_single_latency_edit(
+/// Graph preflight proves equal maximum latency and retained route timing.
+/// A continuous edit needs silent rings. A track sending to a Return also
+/// needs a quiet old device so it cannot introduce a newly detached tail.
+fn single_track_latency_edit(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
     approved_cut: bool,
@@ -6979,7 +6980,7 @@ fn isolated_single_latency_edit(
             }
         };
     let mut changed = None;
-    for (before, after) in old.iter().zip(new) {
+    for (index, (before, after)) in old.iter().zip(new).enumerate() {
         let id = before.canonical_track_id()?;
         if after.canonical_track_id() != Some(id)
             || before.mix != after.mix
@@ -7035,6 +7036,13 @@ fn isolated_single_latency_edit(
             _ => return None,
         };
         if changed.is_some()
+            || before.sends() != after.sends()
+            || (!before.sends().is_empty()
+                && (approved_cut
+                    || !previous
+                        .device_chains
+                        .get(index)
+                        .is_some_and(|chain| chain.committed_range_is_quiescent(0..chain.len()))))
             || before.instrument_id.is_some()
             || before.source_id.is_some()
             || before.midi_source_index.is_some()
