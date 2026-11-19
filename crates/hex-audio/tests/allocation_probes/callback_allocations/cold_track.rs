@@ -1037,3 +1037,163 @@ fn verify_silent_track_latency_edit(
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn return_delay_append_keeps_reverb_history_and_exact_publication_without_allocations()
+-> Result<(), Box<dyn Error>> {
+    use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy, PublicationReceiptState};
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+
+    const BLOCK: usize = 512;
+    const DELAY: usize = 480;
+    const RAMP: usize = 240;
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
+        name: "reverb input".into(),
+        path: "memory/reverb-input.wav".into(),
+        sample_rate: RATE,
+        frames: 12_000,
+    })?
+    else {
+        return Err("expected source".into());
+    };
+    let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
+        name: "room".into(),
+    })?
+    else {
+        return Err("expected return".into());
+    };
+    editor.execute(Command::SetReturnSend {
+        track,
+        return_track: bus,
+        gain: 1.0,
+    })?;
+    let reverb = hex_engine::patch_native_device_parameter(
+        &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?,
+        hex_devices::reverb::parameter::DRY_WET,
+        ParameterValue::Float(100.0),
+    )?;
+    editor.execute(Command::InsertReturnDevice {
+        return_track: bus,
+        before: None,
+        state: reverb,
+    })?;
+    let mut source = vec![[0.0; 2]; 12_000];
+    source[..BLOCK].fill([0.25, -0.125]);
+    let media = BTreeMap::from([(asset, Audio::new(RATE, source)?)]);
+    let table = Arc::new(SineTable::new());
+    let prepare = |project: &Project| {
+        PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
+    };
+    let original = prepare(editor.project())?;
+    let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&original))?;
+    oracle.apply(PlaybackCommand::Play);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control.configure_device_resource_publication_on_control(
+        hex_engine::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 256,
+            root_rows: 128,
+            max_retained_bytes: 20_000_000,
+            max_construction_peak_bytes: 20_000_000,
+        },
+    )?;
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 1,
+        editor_revision: 0,
+    };
+    let initial = control
+        .publish_with_admission_and_source_on_control(
+            Playback::try_from_prepared_with_session(original)?,
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .map_err(|_| "initial publication")?;
+    control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+    let mut warm = [[0.0; 2]; BLOCK];
+    for _ in 0..12 {
+        oracle.render(&mut warm)?;
+        let mut actual = [[0.0; 2]; BLOCK];
+        measured_block(&mut callback, &mut actual);
+        assert_eq!(actual, warm);
+    }
+    let predecessor = control.status.recording_source().ok_or("original source")?;
+    assert_eq!(
+        (predecessor.context, predecessor.audio_revision),
+        (context, initial)
+    );
+    let cut = control.status.position.load(Ordering::Acquire);
+
+    let mut state = DEFINITION.default_state()?;
+    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+        state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Bool(false))?;
+    }
+    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+        state = DEFINITION.patch_parameter(&state, parameter, ParameterValue::Float(value))?;
+    }
+    editor.execute(Command::InsertReturnDevice {
+        return_track: bus,
+        before: None,
+        state,
+    })?;
+    let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
+    next.require_continuous_device_insert();
+    let context = hex_engine::AudioSourceContext {
+        editor_revision: 1,
+        ..context
+    };
+    let fence = control
+        .capture_fresh_runtime_fence()
+        .ok_or("device edit fence")?;
+    let submitted = control
+        .publish_with_admission_and_source_on_control(
+            next,
+            PublicationPolicy::DeviceInsert { predecessor, fence },
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .map_err(|_| "append publication")?;
+    let receipt = control
+        .fresh_runtime_receipt(submitted)
+        .ok_or("append receipt")?;
+    let mut actual = [[0.0; 2]; BLOCK * 3];
+    let mut dry = actual;
+    for (actual, dry) in actual.chunks_mut(BLOCK).zip(dry.chunks_mut(BLOCK)) {
+        measured_block(&mut callback, actual);
+        oracle.render(dry)?;
+    }
+    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+    assert_eq!(
+        control.status.recording_source(),
+        Some(AppliedAudioSource {
+            context,
+            audio_revision: submitted,
+            ..predecessor
+        })
+    );
+    assert_eq!(
+        control.status.position.load(Ordering::Acquire),
+        cut + actual.len() as u64
+    );
+    assert!(control.status.playing.load(Ordering::Acquire));
+    assert!(dry[..RAMP].iter().flatten().any(|v| v.abs() > 1e-6));
+    assert!(actual[DELAY..].iter().flatten().any(|v| v.abs() > 1e-6));
+    for (frame, output) in actual.iter().enumerate() {
+        let mix = (frame + 1).min(RAMP) as f32 / RAMP as f32;
+        for lane in 0..2 {
+            let wet: f32 = (1..=frame / DELAY)
+                .map(|tap| dry[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
+                .sum();
+            let dry = dry[frame][lane];
+            assert!((output[lane] - (dry + (wet - dry) * mix)).abs() < 2e-6);
+        }
+    }
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut warm);
+    control.reclaim();
+    Ok(())
+}

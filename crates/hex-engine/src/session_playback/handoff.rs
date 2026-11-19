@@ -5674,13 +5674,11 @@ impl SessionPlayback {
             else {
                 continue;
             };
-            if return_tail_plan.inherit_bus(new_index)
-                && let (Some(candidate), Some(old)) = (
-                    self.return_chains.get_mut(new_index),
-                    previous.return_chains.get_mut(old_index),
-                )
-            {
-                candidate.transfer_history_from(old);
+            if let (Some(candidate), Some(old)) = (
+                self.return_chains.get_mut(new_index),
+                previous.return_chains.get_mut(old_index),
+            ) {
+                return_tail_plan.transfer_bus_history(new_index, candidate, old);
             }
         }
         for (old_index, _) in previous.routes.iter().enumerate() {
