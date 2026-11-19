@@ -1092,6 +1092,131 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
 struct QuietTrackEffect;
 
 #[test]
+fn native_eq_append_keeps_live_foreign_track_and_delivers_eq_signal() {
+    use hex_devices::eq::{EQ_DEFINITION, EQ_TYPE_ID, EqState, Node, NodeId};
+
+    // The second track has pending PCM in the compensation ring when the EQ
+    // is inserted. The hosted effect still holds the first track's impulse.
+    let mut f = fixture(&[&[], &[]], 64);
+    let track = f.tracks[0];
+    let owner = ProcessorChainOwner::Track(track.value());
+    let Created::Device(hosted) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted effect");
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut playing = prepare(f.editor.project());
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut foreign = Borrowed::new(owner, hosted.value());
+    let mut first = [[0.0; 2]; 7];
+    playing
+        .render_with_foreign_processors(&mut first, None, None, None, &mut foreign)
+        .unwrap();
+    assert_eq!(first, [[0.0; 2]; 7]);
+
+    let Created::Device(eq) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: EQ_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("eq");
+    };
+    let mut appended = prepare(f.editor.project());
+    appended
+        .preview_stream_handoff_with_policy_and_report(
+            &mut playing,
+            32,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+        )
+        .unwrap();
+    let report = appended.try_inherit_state_live_from(&mut playing).unwrap();
+    assert!(!report.running_audio_restart());
+
+    let mut output = [[0.0; 2]; 32];
+    let mut eq_output = [[0.0; 2]; 32];
+    let identity = crate::PostNodeIdentity::new(owner, eq.value(), EQ_TYPE_ID);
+    let mut observe = |node, phase, offset: usize, frames: &[Frame]| {
+        if node == identity && phase == crate::NodeSignalPhase::Output {
+            eq_output[offset..offset + frames.len()].copy_from_slice(frames);
+        }
+    };
+    foreign.next_offset = 0;
+    appended
+        .render_with_foreign_processors(&mut output, None, Some(&mut observe), None, &mut foreign)
+        .unwrap();
+    let impulse_index = 19 - first.len();
+    assert_eq!(
+        eq_output[impulse_index],
+        f.samples[0].map(|sample| sample * 0.25)
+    );
+    assert_eq!(
+        output[impulse_index],
+        f.samples[0].map(|sample| sample * 1.25)
+    );
+    assert_eq!(foreign.next_offset, output.len());
+
+    let mut settings = EqState::default();
+    settings
+        .add(Node::new(NodeId::new(1).unwrap(), 1_000.0, 6.0, 0).unwrap())
+        .unwrap();
+    f.editor
+        .execute(Command::ReplaceDeviceState {
+            device: eq,
+            state: settings.encode().unwrap(),
+        })
+        .unwrap();
+    let mut edited = prepare(f.editor.project());
+    let report = edited.try_inherit_state_live_from(&mut appended).unwrap();
+    assert!(!report.running_audio_restart());
+    foreign.next_offset = 0;
+    let mut output = [[0.0; 2]; 64];
+    edited
+        .render_with_foreign_processors(&mut output, None, None, None, &mut foreign)
+        .unwrap();
+    assert_eq!(foreign.next_offset, output.len());
+    let last_sample = f.samples.len() - 1;
+    assert_ne!(
+        output[last_sample + 19 - first.len() - 32],
+        f.samples[last_sample].map(|sample| sample * 1.25),
+        "the new band should affect the next impulse"
+    );
+}
+
+#[test]
 fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
     foreign_tail_capacity_preserves_the_playing_owner(false);
 }
