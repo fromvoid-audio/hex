@@ -929,6 +929,22 @@ impl SessionPlayback {
                                 source,
                             )
                         },
+                        |old, next| {
+                            previous
+                                .revision
+                                .arrangement()
+                                .tracks()
+                                .get(old)
+                                .and_then(|track| track.canonical_track_id())
+                                .is_some_and(|id| {
+                                    self.revision
+                                        .arrangement()
+                                        .tracks()
+                                        .get(next)
+                                        .and_then(|track| track.canonical_track_id())
+                                        == Some(id)
+                                })
+                        },
                     )
                     .ok_or(incompatible)?,
             )

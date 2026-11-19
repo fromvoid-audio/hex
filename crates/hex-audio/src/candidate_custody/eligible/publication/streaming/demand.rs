@@ -338,7 +338,8 @@ impl StateView<'_> {
             // an old active window can retry after speculative pins clear.
             let mut failed_window = false;
             for _ in 0..workspace.limit {
-                let Some(failure) = loan.take_failure() else {
+                let Some((failure, outgoing_revision)) = loan.take_failure_with_outgoing_revision()
+                else {
                     break;
                 };
                 // Pool pressure is retryable after ready pages are pumped and
@@ -354,6 +355,15 @@ impl StateView<'_> {
                     && failure.kind == hex_stream::StreamFailureKind::SourceChanged
                     && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_));
                 workspace.read_failed |= current_read_failure(failure, demanded);
+                if let Some(revision) = outgoing_revision
+                    && !matches!(
+                        failure.kind,
+                        hex_stream::StreamFailureKind::CapacityExhausted
+                            | hex_stream::StreamFailureKind::Cancelled
+                    )
+                {
+                    pages.inner.outgoing_failure = Some((revision, failure));
+                }
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {
