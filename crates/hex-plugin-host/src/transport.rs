@@ -776,7 +776,8 @@ pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
     pub dense_parameter: Option<DenseParameterRequest>,
-    /// Program frozen at the accepted physical quantum opening.
+    /// Opening program, also the conservative frontier for retained history
+    /// when a later clock region changed programs inside the quantum.
     pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
     /// origin. The copied clock stays with the transport's in-flight request.
@@ -1424,6 +1425,9 @@ impl Callback {
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
+        let clock_epoch = authored
+            .as_ref()
+            .and_then(|segment| segment.program.authored_clock_epoch());
         if initial_offset != 0
             && self.authored_origins.program.is_some()
             && self.authored_origins.program != program
@@ -1463,7 +1467,7 @@ impl Callback {
                     None
                 };
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
-                self.authored_origins.program = program;
+                self.authored_origins.open(program, clock_epoch);
                 stage.state.input.timing = (timing.at)(index);
                 if stage.state.input.timing.is_some_and(|origin| {
                     !origin.is_valid()
@@ -1517,10 +1521,15 @@ impl Callback {
                         });
                     }
                 }
-            } else if origin.is_some() && self.authored_origins.frames[offset - 1].is_none() {
-                // Starting a new authored run after unavailable history needs
-                // an SDK call of its own. Otherwise the first parameter point
-                // interpolates backward from the previous call's held value.
+            } else if origin.is_some()
+                && (self
+                    .authored_origins
+                    .switch_clock(offset, program, clock_epoch)?
+                    || self.authored_origins.frames[offset - 1].is_none())
+            {
+                // A new clock region or resumed history gets its own SDK call.
+                // Its first parameter point must not interpolate backward into
+                // the preceding region.
                 let change = (timing.at)(index)
                     .filter(|origin| origin.playing)
                     .ok_or(Fault::Protocol)?;
