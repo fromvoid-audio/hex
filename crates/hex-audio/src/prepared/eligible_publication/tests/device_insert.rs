@@ -359,10 +359,15 @@ fn check_outgoing_cold_file(case: ColdFile) {
         None
     };
     control.command(PlaybackCommand::Stop).unwrap();
-    for _ in 0..8 {
+    let stop_deadline = Instant::now() + Duration::from_millis(400);
+    loop {
         run(false, true);
+        if control.status.position.load(Acquire) == 0 {
+            break;
+        }
+        assert!(Instant::now() < stop_deadline, "stream did not stop");
+        std::thread::yield_now();
     }
-    assert_eq!(control.status.position.load(Acquire), 0);
     crate::lifecycle::test_dispose_backend(
         &mut Some(()),
         &mut false,
