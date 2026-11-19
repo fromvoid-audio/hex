@@ -3,6 +3,7 @@
 //! and measured scopes local to each test.
 
 mod audio_event_placement_allocations;
+mod compiled_sparse_fade;
 
 mod callback_allocations;
 mod callback_session_batch;
