@@ -736,6 +736,49 @@ fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
 }
 
 #[test]
+fn arrangement_toggle_mute_ramps_the_installed_resident_audio_once() {
+    use hex_project::Command;
+    use hex_session::service::ResidentSourceOrigin;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(524_288);
+    h.next();
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let track = imported.state.project.tracks()[0].id();
+    let (import_revision, _) = h.applied(initial);
+    // Use the ordinary edit publisher for the outgoing canonical graph.
+    let before = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
+    let (old_revision, old_metadata) = h.applied(import_revision);
+    assert_eq!(old_metadata.source_origin, ResidentSourceOrigin::CanonicalCandidate);
+    h.audio.as_mut().unwrap().control.command(PlaybackCommand::Play).unwrap();
+    for _ in 0..4 {
+        h.render();
+    }
+    assert_eq!(h.render(), [[0.125; 2]; 64]);
+
+    let outcome = h.run(Request::Edit(Command::ToggleMute(track)));
+    assert!(outcome.state.project.track(track).unwrap().muted());
+    assert_eq!(outcome.state.revision, before.state.revision + 1);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(status.applied_revision.load(Acquire), old_revision);
+    for block in 0..4 {
+        for (offset, pcm) in h.render().into_iter().enumerate() {
+            let frame = block * 64 + offset;
+            let expected = 0.125 * (1.0 - (frame + 1).min(240) as f32 / 240.0);
+            assert!((pcm[0] - expected).abs() < 1e-6, "frame {frame}: {pcm:?}");
+            assert!((pcm[1] - expected).abs() < 1e-6, "frame {frame}: {pcm:?}");
+        }
+    }
+    assert_eq!(
+        status.recording_source().unwrap().context.editor_revision,
+        outcome.state.revision
+    );
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+}
+
+#[test]
 fn held_clip_and_event_gains_reach_the_callback_without_editing_history() {
     use hex_project::{AudioEventEdit, ClipGain, Command};
     use hex_session::service::{ArrangementGainAudition, GainEdit, ResidentSourceOrigin};
