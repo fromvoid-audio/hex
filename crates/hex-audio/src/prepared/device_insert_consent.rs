@@ -173,10 +173,10 @@ impl PublicationControl {
             },
             consent.candidate.project_generation,
             Some(consent.candidate),
-            Some(DeviceInsertAdmission {
+            Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                 bind: &mut bind_receipt,
                 approved: Some(consent),
-            }),
+            })),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
             admit,
@@ -585,9 +585,11 @@ mod tests {
                     true,
                     false,
                     Some(candidate),
-                    approval.map(|approved| DeviceInsertAdmission {
-                        bind: &mut bind_receipt,
-                        approved: Some(approved),
+                    approval.map(|approved| {
+                        FencedAdmission::DeviceInsert(DeviceInsertAdmission {
+                            bind: &mut bind_receipt,
+                            approved: Some(approved),
+                        })
                     }),
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     None,
@@ -669,10 +671,10 @@ mod tests {
                     true,
                     false,
                     Some(consent.candidate),
-                    Some(DeviceInsertAdmission {
+                    Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                         approved: Some(consent),
                         bind: &mut |_| {},
-                    }),
+                    })),
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     None,
                 )

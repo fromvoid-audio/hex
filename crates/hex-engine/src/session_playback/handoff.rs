@@ -41,6 +41,7 @@ fn direct_return_tail_graph(graph: &crate::signal_graph::SignalGraph) -> bool {
 /// This does not authorize publication or validate host commands, routes,
 /// output faults, or cancellation. The loop-aware constructor binds a
 /// canonical loop state; transient section loops remain unsupported.
+#[derive(Debug)]
 pub struct PreparedTempoAnchor {
     previous: Weak<PreparedRevision>,
     candidate: Weak<PreparedRevision>,

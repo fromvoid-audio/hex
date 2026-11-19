@@ -298,6 +298,7 @@ pub enum PlaybackHandoffRejection {
     StreamedPageCapacity = 14,
     ForeignTailSourcePaused = 15,
     DeviceInsertNeedsConfirmation = 16,
+    TempoCutMissed = 17,
 }
 
 impl PlaybackHandoffRejection {
@@ -356,6 +357,7 @@ impl PlaybackHandoffRejection {
             14 => Some(Self::StreamedPageCapacity),
             15 => Some(Self::ForeignTailSourcePaused),
             16 => Some(Self::DeviceInsertNeedsConfirmation),
+            17 => Some(Self::TempoCutMissed),
             _ => None,
         }
     }
@@ -396,6 +398,9 @@ impl PlaybackHandoffRejection {
             }
             Self::DeviceInsertNeedsConfirmation => {
                 "device insertion needs confirmation before interrupting playback"
+            }
+            Self::TempoCutMissed => {
+                "scheduled tempo edit missed its cut · previous audio continues"
             }
             Self::SourceHistoryUnavailable => {
                 "source history cannot transfer live · previous audio continues"

@@ -1,24 +1,25 @@
-//! One scheduled seek in the existing fresh-publication slot. No new queue,
-//! graph owner or callback destructor is introduced. Preparation readiness
-//! selects the next boundary on the old graph; the callback renders its prefix,
-//! installs the exact fresh candidate, then renders its suffix. Stop/cancel and
-//! the source/route/command fence remain effective while the candidate waits.
+//! A scheduled seek or tempo edit uses the existing publication slot. The
+//! callback renders the old prefix, rechecks the exact cut, then renders the
+//! suffix. Stop and cancellation stay effective while either candidate waits.
 use super::*;
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod midi_tests;
 
-pub(super) enum QuantizedSeekRender {
+pub(super) enum ScheduledCutRender {
     NotHandled,
     Unchanged,
     Switched,
 }
 
 impl Callback {
-    pub(super) fn quantized_seek_publication_due(&mut self) -> bool {
+    pub(super) fn scheduled_publication_due(&mut self) -> bool {
         let Some(next) = self.deferred.as_mut() else {
             return true;
         };
+        if let PublicationPolicy::InheritAtTempoCut(fence) = next.policy {
+            return self.tempo_publication_due(fence);
+        }
         let PublicationPolicy::InstallQuantizedSeekWhenReady {
             fence,
             quantization,
@@ -51,7 +52,7 @@ impl Callback {
                 match old.playback.quantized_seek_frame(quantization) {
                     Ok(due) => next.scheduled_cut_frame = Some(due),
                     Err(_) => {
-                        return self.reject_quantized_seek_publication(
+                        return self.reject_scheduled_publication(
                             PlaybackHandoffRejection::SessionRuntime,
                         );
                     }
@@ -63,11 +64,14 @@ impl Callback {
         };
         match result {
             Ok(due) => due,
-            Err(reason) => self.reject_quantized_seek_publication(reason),
+            Err(reason) => self.reject_scheduled_publication(reason),
         }
     }
 
-    fn reject_quantized_seek_publication(&mut self, reason: PlaybackHandoffRejection) -> bool {
+    pub(super) fn reject_scheduled_publication(
+        &mut self,
+        reason: PlaybackHandoffRejection,
+    ) -> bool {
         if let Some(mut next) = self.deferred.take() {
             if let Some(streams) = next.streams.as_mut() {
                 streams.cancel_install(&mut self.domain_pages);
@@ -79,39 +83,45 @@ impl Callback {
         false
     }
 
-    pub(super) fn render_quantized_seek(
+    pub(super) fn render_scheduled_cut(
         &mut self,
         output: &mut [Frame],
-    ) -> Result<QuantizedSeekRender, Invalid> {
-        let Some(due) = self
-            .deferred
-            .as_ref()
-            .filter(|next| {
-                matches!(
-                    next.policy,
-                    PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
-                )
-            })
-            .and_then(|next| next.scheduled_cut_frame)
-        else {
-            return Ok(QuantizedSeekRender::NotHandled);
+    ) -> Result<ScheduledCutRender, Invalid> {
+        let Some((due, tempo)) = self.deferred.as_ref().and_then(|next| match next.policy {
+            PublicationPolicy::InheritAtTempoCut(_) => {
+                next.tempo_cut().map(|cut| (cut.performance_frame, true))
+            }
+            PublicationPolicy::InstallQuantizedSeekWhenReady { .. } => {
+                next.scheduled_cut_frame.map(|frame| (frame, false))
+            }
+            _ => None,
+        }) else {
+            return Ok(ScheduledCutRender::NotHandled);
         };
         let Some(old) = self.active.as_ref().and_then(ActivePublication::legacy) else {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         };
         if !old.playback.playing() {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         }
         let Some(distance) = due.checked_sub(old.playback.performance_frame()) else {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         };
         let Ok(prefix) = usize::try_from(distance) else {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         };
         if prefix > output.len() {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         }
         let old_revision = old.revision;
+        let (old_position, old_performance, old_loop) = (
+            old.playback.position(),
+            old.playback.performance_frame(),
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .and_then(|graph| graph.playback.audible_timing().1),
+        );
         let (before, after) = output.split_at_mut(prefix);
         self.render_project(before, 0)?;
         // Revalidate immediately before the swap, including a cancellation or
@@ -126,6 +136,10 @@ impl Callback {
         let suffix_start = self.scheduled_transport();
         self.render_project(after, prefix)?;
         if switched {
+            if tempo {
+                self.audible_clock
+                    .push(old_position, old_performance, prefix, old_loop);
+            }
             let played = match (suffix_start, self.scheduled_transport()) {
                 (Some((_, start, true)), Some((_, end, _))) => {
                     usize::try_from(end.saturating_sub(start))
@@ -134,9 +148,9 @@ impl Callback {
                 _ => 0,
             };
             self.record_audible_run(suffix_start, played);
-            Ok(QuantizedSeekRender::Switched)
+            Ok(ScheduledCutRender::Switched)
         } else {
-            Ok(QuantizedSeekRender::Unchanged)
+            Ok(ScheduledCutRender::Unchanged)
         }
     }
 }
