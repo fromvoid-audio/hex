@@ -906,3 +906,127 @@ fn square_and_saw_edges_ramp_over_one_millisecond_at_full_depth() {
         }
     }
 }
+
+#[test]
+fn auto_pan_power_off_skips_automation_and_restarts_at_initial_phase() {
+    use hex_lattice::{
+        NativeInstrumentClock, NativeRuntimeChain, ParameterAutomationLane,
+        ParameterAutomationPoint, PreparedParameterAutomation, PreparedProcessorFactory,
+        PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
+    };
+    use std::{cell::Cell, sync::Arc};
+
+    struct Clock(Cell<usize>);
+
+    impl NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            Some(0)
+        }
+
+        fn arrangement_beat_at_offset(&self, _: usize) -> Option<u64> {
+            self.0.set(self.0.get() + 1);
+            Some(0)
+        }
+    }
+
+    const RATE: u32 = 8_000;
+    const DRY: StereoFrame = [0.25, -0.125];
+    let state = Arc::new(patch(
+        &AUTO_PAN_DEFINITION.default_state().unwrap(),
+        parameter::RATE,
+        20.0,
+    ));
+    let factory = AutoPanDefinition::prepare_owned(&state, RATE, &[parameter::AMOUNT]).unwrap();
+    let automation = PreparedParameterAutomation::new(
+        vec![ParameterAutomationLane {
+            descriptor: factory
+                .parameter_automation_descriptor(parameter::AMOUNT)
+                .unwrap(),
+            semantics: factory
+                .parameter_modulation_semantics(parameter::AMOUNT)
+                .unwrap(),
+            points: 0..2,
+        }],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 0,
+                normalized: 1.0,
+                step: true,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 1 << 32,
+                normalized: 0.75,
+                step: true,
+            },
+        ],
+    )
+    .unwrap();
+    let prepare = |bypassed| {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            owner: ProcessorChainOwner::Main,
+            device_id: 1,
+            device_type: AUTO_PAN_TYPE_ID,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: RATE,
+            configuration: Some(Arc::clone(&state)),
+            definition: Some(PreparedProcessorFactory::Legacy(Arc::new(factory))),
+            automation: automation.clone(),
+            modulation: None,
+            meter: Default::default(),
+        }])
+        .unwrap()
+    };
+    let clock = Clock(Cell::new(0));
+    let process = |chain: &mut NativeRuntimeChain, frames: &mut [StereoFrame]| {
+        chain.begin_block();
+        chain
+            .process_range_with_clock(0..1, frames, Some(&clock), Some(&clock))
+            .unwrap();
+    };
+
+    let mut wet = prepare(false);
+    process(&mut wet, &mut [DRY; 107]);
+    wet.commit_block();
+    let mut off = prepare(true);
+    off.transfer_history_from(&mut wet);
+    let mut refused = [DRY; 40];
+    process(&mut off, &mut refused);
+    off.rollback_block();
+
+    let mut retried = [DRY; 40];
+    process(&mut off, &mut retried);
+    off.commit_block();
+    assert_eq!(refused, retried);
+    assert_ne!(retried[0], DRY);
+    assert_eq!(retried[39], DRY);
+
+    let queries = clock.0.get();
+    let mut dry = [DRY; 177];
+    process(&mut off, &mut dry);
+    off.commit_block();
+    assert_eq!(dry, [DRY; 177]);
+    assert_eq!(
+        clock.0.get(),
+        queries,
+        "powered-off Auto Pan queried automation"
+    );
+
+    let mut on = prepare(false);
+    on.transfer_history_from(&mut off);
+    let mut actual = [DRY; 83];
+    process(&mut on, &mut actual);
+    on.commit_block();
+    assert!(clock.0.get() > queries);
+
+    let mut fresh = prepare(false);
+    let mut expected = [DRY; 83];
+    process(&mut fresh, &mut expected);
+    fresh.commit_block();
+    // The final ramp sample still uses the transition's blend arithmetic.
+    assert_eq!(
+        actual[40..],
+        expected[40..],
+        "restart must use fresh phase and authored controls"
+    );
+}
