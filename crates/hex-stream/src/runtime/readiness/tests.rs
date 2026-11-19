@@ -401,6 +401,12 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
         loan.reserve_current_quantum(&oversized),
         Err(RenderPageRefusal::Capacity)
     ));
+    let prefetches = loan.pages.stats().prefetched_requests;
+    assert!(matches!(
+        loan.reserve_outgoing_fade(&oversized),
+        Err(RenderPageRefusal::Capacity)
+    ));
+    assert_eq!(loan.pages.stats().prefetched_requests, prefetches);
     assert!(loan.cancel(ProtectionRole::Transition, pending.request_epoch));
     let current = [extent(0), extent(1), extent(4)];
     let original = [
@@ -570,6 +576,12 @@ fn outgoing_fade_and_current_window_share_capacity_but_release_independently() {
             Err(RenderPageRefusal::NotResident)
         ));
         let fade = loan.reserve_outgoing_fade(&[extent(0), extent(1)]).unwrap();
+        let prefetches = loan.pages.stats().prefetched_requests;
+        assert!(matches!(
+            loan.reserve_outgoing_fade(&[extent(3)]),
+            Err(RenderPageRefusal::Busy)
+        ));
+        assert_eq!(loan.pages.stats().prefetched_requests, prefetches);
         let current = loan
             .reserve_current_quantum(&[extent(1), extent(2)])
             .unwrap();

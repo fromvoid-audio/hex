@@ -63,8 +63,8 @@ impl ActiveView<'_> {
         )
     }
 
-    /// A fade can start only with the complete span protected. A cache miss
-    /// leaves no partial reservation on either domain. Capacity is terminal.
+    /// A fade starts with the complete span protected. A fitting miss may
+    /// request lookahead and leaves neither domain partly held. Capacity is terminal.
     pub(crate) fn reserve_outgoing_fade(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -75,6 +75,19 @@ impl ActiveView<'_> {
             Ok(Some(pins))
         } else {
             pins.release(domains);
+            let workspace = self
+                .state
+                .streaming
+                .as_ref()
+                .ok_or(QuantumFailure::Invalid)?;
+            // Every domain fit before any speculative work. A later attempt
+            // must project the current clock again before acquiring a hold.
+            for token in self.state.domain_refs.into_iter().flatten() {
+                let pages =
+                    super::demand::envelope(domains, token).map_err(|_| QuantumFailure::Invalid)?;
+                let loan = pages.inner.loan.as_mut().ok_or(QuantumFailure::Invalid)?;
+                loan.prewarm_fitting_outgoing_fade(&workspace.quantum_extents[token.slot]);
+            }
             Ok(None)
         }
     }
