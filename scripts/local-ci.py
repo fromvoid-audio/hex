@@ -2545,7 +2545,7 @@ class LocalCiRunner:
                 if not reuse and (record is not None or populated or adopt):
                     raise TargetCacheError(
                         "release cache does not prove an empty origin for these inputs; "
-                        "use --fresh-release-target with a separate empty directory"
+                        "choose a fresh release target with --fresh-release-target"
                     )
             else:
                 reuse = same_owner and record["state"] == "ready" and not adopt
