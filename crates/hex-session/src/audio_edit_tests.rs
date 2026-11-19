@@ -1095,7 +1095,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
             Command::MoveClip {
                 clip: second,
                 track,
-                start: 8_064,
+                start: 16_200,
             },
             Some(&previous),
         )
@@ -1106,12 +1106,39 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     else {
         panic!("group")
     };
+    let child = session
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .sources[1]
+        .id;
+    let grouped_sources = |session: &Session, revision: &hex_engine::PreparedRevision| {
+        let grouped = session.audio_clip_waveforms.borrow()[&group]
+            .group_event_sources
+            .as_ref()
+            .unwrap()
+            .clone();
+        let view = &revision.arrangement().audio_clip_views()[0];
+        assert!(Arc::ptr_eq(
+            &grouped.prepared,
+            view.group_event_sources.as_ref().unwrap()
+        ));
+        assert!(grouped.waveform(u64::MAX).is_none());
+        grouped
+    };
+    assert!(
+        previous.arrangement().audio_clip_views()[0]
+            .sparse
+            .is_some()
+    );
+    let sparse_sources = grouped_sources(&session, &previous);
     let (_, repeated) = session
         .command_prepared_revision(
             Command::ResizeAudioClipView {
                 clip: group,
                 operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
-                    project_frame: 10_000,
+                    project_frame: 20_000,
                 },
             },
             Some(&previous),
@@ -1130,29 +1157,44 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         .unwrap();
     let views = session.audio_clip_waveforms.borrow();
     let root = views[&group].preview_root.as_ref().unwrap();
-    assert_eq!(root.waveform.source_frames(), 8_192);
+    assert_eq!(root.waveform.source_frames(), 16_328);
     assert_eq!(
         root.waveform
-            .peaks_for_frames(8_000, 8_064)
+            .peaks_for_frames(8_016, 16_184)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.0, 0.0); 2]
     );
     assert_eq!(
         root.waveform
-            .peaks_for_frames(8_064, 8_192)
+            .peaks_for_frames(16_200, 16_328)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.25, 0.25), (-0.5, -0.5)]
     );
-    assert_eq!(views[&group].length, 10_000);
+    assert_eq!(views[&group].length, 20_000);
     // The looped clip still exposes outer-clip peaks, built from the shared
     // root rather than a materialized repeat, and distinct from its root preview.
     assert_eq!(views[&group].offset, 0);
-    assert_eq!(views[&group].waveform.source_frames(), 10_000);
+    assert_eq!(views[&group].waveform.source_frames(), 20_000);
     assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
     let root_waveform = Arc::clone(&root.waveform);
     drop(views);
+    let loop_sources = grouped_sources(&session, &cropped);
+    let waveform = loop_sources.waveform(child).unwrap();
+    assert_eq!(waveform.source_frames(), 128);
+    assert!(waveform.bounded_samples(0..1, 1).is_none());
+    assert!(Arc::ptr_eq(
+        waveform,
+        sparse_sources.waveform(child).unwrap()
+    ));
+    assert_eq!(
+        waveform
+            .peaks_for_frames(0, 128)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.25, 0.25), (-0.5, -0.5)],
+    );
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
     renderer.play();
     let mut output = [[0.0; 2]; 257];
@@ -1190,6 +1232,35 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     renderer.play();
     renderer.render(&mut samples).unwrap();
     assert_eq!(samples, output);
+
+    let gain = hex_project::ClipGain::new(-6_000).unwrap();
+    let (_, edited) = session
+        .command_prepared_revision(
+            Command::EditAudioEvents {
+                clip: group,
+                operation: hex_project::AudioEventEdit::SetRetainedGain {
+                    sources: vec![child],
+                    event: 1,
+                    gain,
+                },
+            },
+            Some(&restored),
+        )
+        .unwrap();
+    let updated = grouped_sources(&session, &edited);
+    assert!(!Arc::ptr_eq(&loop_sources, &updated));
+    assert_eq!(
+        updated
+            .waveform(child)
+            .unwrap()
+            .peaks_for_frames(0, 128)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [
+            (0.25 * gain.linear(), 0.25 * gain.linear()),
+            (-0.5 * gain.linear(), -0.5 * gain.linear())
+        ],
+    );
 }
 
 #[test]

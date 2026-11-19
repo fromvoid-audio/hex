@@ -911,6 +911,7 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
         clip,
         AudioClipWaveform {
             event_source: None,
+            group_event_sources: None,
             neutral_musical: None,
             waveform: Arc::clone(&waveform),
             offset: 0,

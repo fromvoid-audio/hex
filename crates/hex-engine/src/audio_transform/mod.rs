@@ -37,7 +37,8 @@ mod mapping;
 mod preview_peaks;
 pub use preview_peaks::{
     PreparedDirectedEventRead, PreparedDirectedEventSpan, PreparedEventOccurrence,
-    PreparedEventOccurrences, PreparedEventSourcePeaks, PreparedMusicalEventSourceClock,
+    PreparedEventOccurrences, PreparedEventSourcePeaks, PreparedGroupEventSources,
+    PreparedMusicalEventSourceClock,
 };
 mod processing_root;
 mod view;
@@ -421,6 +422,7 @@ struct Entry {
     prepared: Audio,
     event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
     event_source_occurrences: Option<Arc<PreparedEventOccurrences>>,
+    group_event_sources: Option<Arc<PreparedGroupEventSources>>,
     bytes: usize,
 }
 
@@ -806,6 +808,13 @@ impl AudioTransformPreparation {
         self.prepared_sidecar(audio, |entry| entry.event_source_occurrences.clone())
     }
 
+    pub(crate) fn group_event_sources(
+        &self,
+        audio: &Audio,
+    ) -> Option<Arc<PreparedGroupEventSources>> {
+        self.prepared_sidecar(audio, |entry| entry.group_event_sources.clone())
+    }
+
     fn capture_event_occurrence(
         &self,
         table: &mut Option<PreparedEventOccurrences>,
@@ -1128,6 +1137,7 @@ impl AudioTransformPreparation {
             prepared: audio.clone(),
             event_source_peaks,
             event_source_occurrences: None,
+            group_event_sources: None,
             bytes,
         })?;
         Ok(audio)

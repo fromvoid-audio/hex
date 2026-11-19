@@ -257,11 +257,34 @@ impl AudioTransformPreparation {
                 .ok_or(Invalid("grouped audio byte count overflow"))
         };
         let root_bytes = bytes_for(root_length)?;
+        let prepared_bytes = if root_only {
+            root_bytes
+        } else {
+            bytes_for(clip.duration())?
+        };
+        // Child display reads share the preparation work ceiling and the
+        // separate peak budget. A refusal abandons this optional table.
+        let peak_budget = preview_peaks::event_source_budget();
+        let mut event_sources = if self.entry_limit > 0
+            && prepared_bytes <= self.cache_limit
+            && events
+                .sources
+                .iter()
+                .try_fold(work, |used, child| {
+                    used.checked_add(child.clip.duration())
+                        .filter(|total| *total <= MAX_AUDIO_DOMAIN_FRAMES)
+                })
+                .is_some()
+        {
+            PreparedGroupEventSources::admit(events.sources.len(), peak_budget)
+        } else {
+            None
+        };
         let root_charge = self.reserve_with_eviction(root_bytes)?;
         let output_reservation = if root_only {
             None
         } else {
-            Some(self.reserve_with_eviction(bytes_for(clip.duration())?)?)
+            Some(self.reserve_with_eviction(prepared_bytes)?)
         };
         let mut root_pcm = Vec::new();
         root_pcm
@@ -297,6 +320,28 @@ impl AudioTransformPreparation {
                     PreparedAudioSourceRef::Resident(source.audio),
                 )?
             };
+            if let Some(table) = &mut event_sources {
+                let peaks = usize::try_from(root.clip.duration())
+                    .ok()
+                    .and_then(|frames| {
+                        PreparedEventSourcePeaks::capture_with(
+                            frames,
+                            None,
+                            peak_budget,
+                            |index| {
+                                compiled.as_ref().map_or(Some([0.0; 2]), |clip| {
+                                    child_sample(clip, index as u64).ok()
+                                })
+                            },
+                            || self.cancelled(),
+                        )
+                    });
+                if let Some(peaks) = peaks {
+                    table.push(root.id, peaks);
+                } else {
+                    event_sources = None;
+                }
+            }
             for event in events
                 .events
                 .iter()
@@ -323,28 +368,13 @@ impl AudioTransformPreparation {
                         return Err(Invalid("audio preparation cancelled"));
                     }
                     if let Some(compiled) = compiled.as_ref() {
-                        let position = compiled
-                            .start
-                            .checked_add(source_start)
-                            .and_then(|start| start.checked_add(offset as u64))
+                        let child_frame = source_start
+                            .checked_add(offset as u64)
                             .ok_or(Invalid("grouped audio source position overflow"))?;
-                        let metadata = compiled.metadata.as_deref();
-                        let mut sample =
-                            compiled.at(position, metadata.map_or(0, |m| m.source_phase));
-                        if let Some(fade) = metadata.and_then(|m| m.fade.as_ref()) {
-                            let gain = fade.gain_at(position - compiled.start);
-                            sample[0] *= gain;
-                            sample[1] *= gain;
-                        }
-                        let gain = metadata.map_or(1.0, |m| m.gain);
-                        if gain != 1.0 {
-                            sample[0] *= gain;
-                            sample[1] *= gain;
-                        }
+                        let mut sample = child_sample(compiled, child_frame)?;
                         if let Some(fade) = event.fade {
-                            let at = source_start
-                                .checked_add(offset as u64)
-                                .and_then(|at| at.checked_sub(fade.source_start()))
+                            let at = child_frame
+                                .checked_sub(fade.source_start())
                                 .filter(|at| *at < fade.shape().span())
                                 .ok_or(Invalid("grouped event sample exceeds its fade domain"))?;
                             let gain = fade.shape().gain_at(at);
@@ -446,10 +476,31 @@ impl AudioTransformPreparation {
             prepared: audio.clone(),
             event_source_peaks: None,
             event_source_occurrences: None,
+            group_event_sources: event_sources.map(PreparedGroupEventSources::finish),
             bytes: std::mem::size_of_val(audio.frames()),
         })?;
         Ok(audio)
     }
+}
+
+fn child_sample(compiled: &Clip, child_frame: u64) -> Result<crate::Frame, Invalid> {
+    let position = compiled
+        .start
+        .checked_add(child_frame)
+        .ok_or(Invalid("grouped audio source position overflow"))?;
+    let metadata = compiled.metadata.as_deref();
+    let mut sample = compiled.at(position, metadata.map_or(0, |m| m.source_phase));
+    if let Some(fade) = metadata.and_then(|m| m.fade.as_ref()) {
+        let gain = fade.gain_at(child_frame);
+        sample[0] *= gain;
+        sample[1] *= gain;
+    }
+    let gain = metadata.map_or(1.0, |m| m.gain);
+    if gain != 1.0 {
+        sample[0] *= gain;
+        sample[1] *= gain;
+    }
+    Ok(sample)
 }
 
 fn group_tempo(edit: &AudioClipEdit) -> Result<&hex_project::TempoMap, Invalid> {
