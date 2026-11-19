@@ -1398,7 +1398,7 @@ fn resident_eq8_power_reverses_wet_or_restarts_silent_at_the_callback_boundary()
             .patch_parameter(&state, parameter, value)
             .unwrap();
     }
-    resident_eq_power_reverses_wet_or_restarts_silent(state);
+    resident_filter_power_reverses_wet_or_restarts_silent(state, None);
 }
 
 #[test]
@@ -1409,11 +1409,36 @@ fn resident_flexible_eq_power_reverses_wet_or_restarts_silent_at_the_callback_bo
     let mut node = Node::new(NodeId::new(1).unwrap(), 40.0, 12.0, 0).unwrap();
     node.q = 8.0;
     state.add(node).unwrap();
-    resident_eq_power_reverses_wet_or_restarts_silent(state.encode().unwrap());
+    resident_filter_power_reverses_wet_or_restarts_silent(state.encode().unwrap(), None);
 }
 
-fn resident_eq_power_reverses_wet_or_restarts_silent(
+#[test]
+fn resident_utility_dc_filter_power_reverses_wet_or_restarts_silent() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    resident_filter_power_reverses_wet_or_restarts_silent(state, None);
+}
+
+#[test]
+fn resident_utility_automated_dc_filter_power_reverses_wet_or_restarts_silent() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+
+    resident_filter_power_reverses_wet_or_restarts_silent(
+        UTILITY_DEFINITION.default_state().unwrap(),
+        Some(parameter::DC_REMOVE),
+    );
+}
+
+fn resident_filter_power_reverses_wet_or_restarts_silent(
     state: hex_lattice_contract::NativeDeviceState,
+    automate_enabled: Option<hex_lattice_contract::ParameterId>,
 ) {
     const SILENCE: Frame = [0.0; 2];
     const FADE: usize = 240;
@@ -1427,8 +1452,21 @@ fn resident_eq_power_reverses_wet_or_restarts_silent(
         })
         .unwrap()
     else {
-        panic!("EQ insertion");
+        panic!("filter insertion");
     };
+    if let Some(parameter) = automate_enabled {
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(1.0).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
     let on = prepare(editor.project());
     editor
         .execute(Command::SetDeviceBypass {
@@ -1511,7 +1549,7 @@ fn resident_eq_power_reverses_wet_or_restarts_silent(
                 ),
                 _ => assert_eq!(
                     block, [SILENCE; BLOCK],
-                    "settled EQ kept its old filter history"
+                    "settled filter power kept its old history"
                 ),
             }
         }
