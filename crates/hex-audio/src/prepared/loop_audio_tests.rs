@@ -1771,3 +1771,148 @@ fn live_track_audio_playback_wrapper_has_no_allocations_or_frees() {
     );
     assert!(output.iter().any(|frame| *frame != [0.0; 2]));
 }
+
+/// Four authored event-faded kicks, repeated by the clip and wrapped by the
+/// Arrangement scope. The independent sample oracle separates the kick attack
+/// from any extra seam impulse; all sample/peak construction stays off callback.
+#[test]
+fn faded_kicks_keep_inner_and_scope_wrap_samples_without_allocations() {
+    use hex_project::{AudioEventEdit, AudioEventFade, AudioViewResizeOperation, ClipFade};
+    const RATE: u32 = 16_000;
+    const KICK: usize = 8_000;
+    const BAR: usize = 4 * KICK;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "original kick".into(),
+            path: "original-kick.wav".into(),
+            sample_rate: RATE,
+            frames: KICK as u64,
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let fade = ClipFade::new(KICK as u64, 0, 32, 128).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(AudioEventFade::new(0, fade).unwrap()),
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::ScopeRange {
+                start: 0,
+                end: KICK as u64,
+                looping: true,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: BAR as u64,
+            },
+        })
+        .unwrap();
+    let samples: Vec<_> = (0..KICK)
+        .map(|i| {
+            let t = i as f32 / RATE as f32;
+            let x = (std::f32::consts::TAU * (70.0 * t + 30.0 * t * (-40.0 * t).exp())).cos()
+                * (-12.0 * t).exp()
+                * 0.7;
+            [x, -x * 0.5]
+        })
+        .collect();
+    // Endpoint zeros are authored fades, not an assumption about the transient.
+    assert!(samples[0][0] > 0.5);
+    let expected: Vec<_> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, f)| f.map(|s| s * fade.gain_at(i as u64)))
+        .collect();
+    assert_eq!(expected[0], [0.0; 2]);
+    assert_eq!(expected[KICK - 1], [0.0; 2]);
+    let media = BTreeMap::from([(asset, Audio::new(RATE, samples).unwrap())]);
+    for scope_bars in [1, 4] {
+        let end = BAR * scope_bars;
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: end as u64,
+                },
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: end as u64,
+                enabled: true,
+            })
+            .unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        for block in [1, 127, 257, 512] {
+            let (mut control, mut callback) = channel(RATE).unwrap();
+            control
+                .publish(Playback::try_from_prepared_with_session(Arc::clone(&prepared)).unwrap())
+                .unwrap();
+            let first = if block == 1 { end - 64 } else { 0 };
+            control
+                .command(PlaybackCommand::PlayFrom(first as u64))
+                .unwrap();
+            let length = if block == 1 { 192 } else { end * 2 + KICK };
+            let mut output = vec![[0.0; 2]; length];
+            let counts = allocation_counter::measure(|| {
+                for chunk in output.chunks_mut(block) {
+                    callback.begin_block();
+                    callback.render(chunk).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            for (i, actual) in output.iter().enumerate() {
+                let i = first + i;
+                let at = i % end;
+                let remaining = end - at;
+                let seam_frames = 43; // round(16000 * 128 / 48000)
+                let gain = if remaining <= seam_frames {
+                    (remaining - 1) as f32 / (seam_frames - 1) as f32
+                } else {
+                    1.0
+                };
+                let oracle = expected[i % KICK].map(|s| s * gain);
+                assert!(
+                    (actual[0] - oracle[0]).abs() < 1e-6 && (actual[1] - oracle[1]).abs() < 1e-6,
+                    "bars={scope_bars} block={block} frame={i}: {actual:?} != {oracle:?}"
+                );
+            }
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+}
