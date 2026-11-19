@@ -99,6 +99,8 @@ pub use audio_only_inputs::{
 pub mod native_device_resources;
 /// The loaded Sampler's existing authored gain control.
 pub use hex_devices::sampler::catalog::GAIN as SAMPLER_GAIN_PARAMETER;
+#[cfg(feature = "instrument-test-support")]
+pub mod compiled_fade_conformance;
 mod owned_shared;
 mod pcm_arc;
 mod sparse_audio;
@@ -841,6 +843,37 @@ impl Clip {
         }
         Ok(self)
     }
+    /// Set the finite destination-clock envelope on control, outside render.
+    /// Preserves source, gain, streamed and sparse metadata. This builder may
+    /// allocate or reclaim metadata; never call it in the audio callback.
+    pub fn with_fade(mut self, fade: hex_project::ClipFade) -> Result<Self, Invalid> {
+        fade.validate_segment(self.end - self.start)
+            .map_err(|error| Invalid(error.0))?;
+        let fade = (!fade.is_neutral()).then_some(fade);
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.fade = fade;
+            if fade.is_none()
+                && metadata.source_phase == 0
+                && !metadata.reversed
+                && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
+                && metadata.gain == 1.0
+            {
+                self.metadata = None;
+            }
+        } else if fade.is_some() {
+            self.metadata = Some(Box::new(ClipMetadata {
+                gain: 1.0,
+                source_phase: 0,
+                reversed: false,
+                fade,
+                streamed: None,
+                sparse: None,
+            }));
+        }
+        Ok(self)
+    }
+
     /// Control-side clip gain preparation, preserving the compact unity path.
     pub fn with_gain(mut self, gain: hex_project::ClipGain) -> Self {
         let linear = gain.linear();
@@ -2378,6 +2411,13 @@ impl Track {
                 let from = output_start + (root.start - first);
                 for (offset, sample) in audio.frames()[packed].iter().copied().enumerate() {
                     let index = from + offset;
+                    let mut sample = sample;
+                    if let Some(fade) = fade {
+                        let position = span_start + (index - output_start) as u64;
+                        let gain = fade.gain_at(position - clip.start);
+                        sample[0] *= gain;
+                        sample[1] *= gain;
+                    }
                     source_mix.add_captured(
                         &mut output[index],
                         sample.map(|channel| channel * clip_gain),
