@@ -226,6 +226,7 @@ impl OrdinaryStreams {
         fenced_restart: bool,
         foreign_continuation: bool,
         confirmed_fade: Option<u32>,
+        tempo_anchor: Option<&hex_engine::session_playback::PreparedTempoAnchor>,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let mut empty = None;
         let mut old = previous.map(|(runtime, context, revision)| StateView {
@@ -250,6 +251,7 @@ impl OrdinaryStreams {
                 fenced_restart,
                 foreign_continuation,
                 confirmed_fade,
+                tempo_anchor,
             },
             hex_stream::ProtectionRole::Candidate,
         )

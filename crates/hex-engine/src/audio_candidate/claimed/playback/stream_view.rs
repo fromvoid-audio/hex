@@ -331,6 +331,24 @@ impl StreamPlayback<'_> {
         }
     }
 
+    /// Plan the first page window at the exact prepared tempo cut. The donor
+    /// must already be at the named running frame and loop pass. This checks
+    /// revision identities but leaves transport, DSP and page custody unchanged.
+    pub fn preview_ordinary_tempo_cut(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        match (&mut self.runtime, &mut previous.runtime) {
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
+                next.preview_ordinary_tempo_cut(old, maximum_frames, visit, anchor)
+            }
+            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+        }
+    }
+
     /// Preview with state retained by this ordinary candidate. The host must
     /// independently validate the source and transaction at preview and commit.
     pub fn preview_ordinary_with_stored_foreign_continuation(

@@ -724,6 +724,7 @@ impl Callback {
                     fenced_restart: false,
                     foreign_continuation: false,
                     confirmed_fade: confirmed_insert.then_some(0),
+                    tempo_anchor: None,
                 }
             });
             next.prepare_install(
