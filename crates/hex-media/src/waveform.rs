@@ -7,6 +7,7 @@ use std::{
 };
 
 mod overrange;
+mod retained_samples;
 pub use overrange::Overrange;
 
 #[cfg(test)]
