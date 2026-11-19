@@ -2657,6 +2657,7 @@ impl EditorView {
                         state.project.tempo_map(),
                         start,
                         end,
+                        None,
                     )
                     .unwrap_or_default()
                 } else {
@@ -3010,12 +3011,13 @@ impl EditorView {
             && clip_pixel_width > 0.0
             && !fade.is_neutral()
         {
-            let samples = if clip.audio_edit().is_some() && fade_preview.is_none() {
+            let samples = if clip.audio_edit().is_some() {
                 super::waveform::projected_fade_envelope_samples(
                     clip,
                     state.project.tempo_map(),
                     visible_start,
                     visible_end,
+                    fade_preview,
                 )
                 .unwrap_or_default()
             } else {
