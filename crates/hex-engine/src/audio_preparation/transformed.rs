@@ -493,7 +493,7 @@ pub(super) fn construct_origin(
         .and_then(|track| track.clips().iter().find(|clip| clip.id() == slot.clip))
         .ok_or(AudioStorageError::SourceMismatch)?;
     let transforms = crate::audio_transform::AudioTransformPreparation::new_uncached_on_control();
-    let mut compiled = if let Some(events) = clip
+    let compiled = if let Some(events) = clip
         .audio_edit()
         .and_then(|edit| edit.domain.events.as_ref())
         .filter(|events| !events.sources.is_empty())
@@ -540,12 +540,27 @@ pub(super) fn construct_origin(
             )
             .map_err(invalid)?
     };
+    install_compiled_origin(project, clip, slot, compiled)
+}
+
+// Validate the semantic result before copying PCM into its persistent native
+// slot. No compiler-owned buffer becomes a callback or publication authority.
+fn install_compiled_origin(
+    project: &hex_project::Project,
+    clip: &hex_project::Clip,
+    slot: &mut SourceSlot,
+    mut compiled: Option<crate::Clip>,
+) -> Result<(), AudioStorageError> {
     if let Some(compiled) = compiled.as_ref() {
         let metadata = compiled.metadata.as_ref();
         if compiled.start != slot.start
             || compiled.end != slot.end
             || metadata.is_some_and(|metadata| {
-                metadata.source_phase != 0 || metadata.fade.is_some() || metadata.streamed.is_some()
+                metadata.source_phase != 0
+                    || metadata.streamed.is_some()
+                    || metadata.fade.is_some_and(|fade| {
+                        !slot.reserve_fade || fade.validate_segment(slot.end - slot.start).is_err()
+                    })
             })
             || metadata.map_or(1.0, |metadata| metadata.gain) != slot.gain
         {
@@ -610,3 +625,6 @@ pub(super) fn construct_origin(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod fade_tests;
