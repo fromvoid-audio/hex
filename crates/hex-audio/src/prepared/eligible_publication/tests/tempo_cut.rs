@@ -133,6 +133,7 @@ fn verify_cut(outcome: Outcome) {
         std::thread::yield_now();
     }
     let predecessor = control.status.applied_audio_source().unwrap();
+    control.reclaim();
     let performance = control.status.performance_frame.load(Acquire);
     editor
         .execute(Command::SetProjectTempo {
@@ -154,8 +155,9 @@ fn verify_cut(outcome: Outcome) {
     // before its next wrap. This separates the tempo handoff from the wrap.
     let position = control.status.position.load(Acquire);
     let due = performance + (6300 - position) + 280;
+    let (_, fence) = control.capture_running_transport_fence().unwrap();
     let (ticket, receipt) = control
-        .stage_verified_tempo_cut(token, context, predecessor, due)
+        .stage_verified_tempo_cut(token, context, predecessor, fence, due)
         .unwrap();
     measured_render(&mut data, &mut out);
     entered

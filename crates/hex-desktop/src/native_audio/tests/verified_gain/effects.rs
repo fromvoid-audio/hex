@@ -307,7 +307,7 @@ fn wait_for_audio(h: &Harness) {
 fn verified_track_limiter_running_tempo_edit_preserves_beat_and_audio() {
     let _native = native_fixture();
     for partition in [1, 257] {
-        verified_limiter_tempo_case(partition, None);
+        verified_limiter_tempo_case(partition, None, false);
     }
 }
 
@@ -315,11 +315,21 @@ fn verified_track_limiter_running_tempo_edit_preserves_beat_and_audio() {
 fn verified_track_limiter_running_tempo_edit_wraps_the_retimed_loop() {
     let _native = native_fixture();
     for partition in [1, 257] {
-        verified_limiter_tempo_case(partition, Some(6015..6207));
+        verified_limiter_tempo_case(partition, Some(6015..6207), false);
     }
 }
 
-fn verified_limiter_tempo_case(partition: usize, loop_range: Option<std::ops::Range<u64>>) {
+#[test]
+fn verified_tempo_command_stop_preserves_the_project_and_audio_source() {
+    let _native = native_fixture();
+    verified_limiter_tempo_case(257, None, true);
+}
+
+fn verified_limiter_tempo_case(
+    partition: usize,
+    loop_range: Option<std::ops::Range<u64>>,
+    stop: bool,
+) {
     let files = Files::new();
     let mut h = actual_native_harness();
     h.wait = Duration::from_secs(3);
@@ -356,42 +366,92 @@ fn verified_limiter_tempo_case(partition: usize, loop_range: Option<std::ops::Ra
         before: None,
         state: limiter,
     });
-    let mut previous = h.applied(h.context.unwrap());
+    h.applied(h.context.unwrap());
+    let initial = loop_range.as_ref().map_or_else(
+        || PlaybackCommand::Play,
+        |range| PlaybackCommand::PlayFrom(range.start),
+    );
     if let Some(range) = &loop_range {
         h.run(Request::Edit(Command::SetLoopRegion {
             start: range.start,
             end: range.end,
             enabled: true,
         }));
-        previous = h.applied(h.context.unwrap());
     }
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(match &loop_range {
-            Some(range) => PlaybackCommand::PlayFrom(range.start),
-            None => PlaybackCommand::Play,
-        })
-        .unwrap();
+    let previous = h.applied(h.context.unwrap());
+    h.audio.as_mut().unwrap().control.command(initial).unwrap();
     wait_for_audio(&h);
+
+    let old = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .transport_observation()
+        .unwrap();
     let old_tempo = imported.state.project.tempo_map().clone();
-    let edited = h.run(Request::Edit(Command::SetProjectTempo {
+    let staged = h.run(Request::Edit(Command::SetProjectTempo {
         tempo: hex_project::Tempo::new(90_000_000).unwrap(),
     }));
-    let target = h.context.unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let (before, after) = loop {
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        let old = status.applied_audio_source();
-        let before = status.position.load(Acquire);
+    assert!(
+        !staged.request_complete,
+        "tempo committed before its audio cut"
+    );
+    assert_eq!(staged.state.revision, previous.context.editor_revision);
+    assert_eq!(staged.state.project.tempo_map(), &old_tempo);
+
+    let status = || h.audio.as_ref().unwrap().status().unwrap();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while !status().publication_in_flight() {
+        if let Ok(event) = h.service.as_ref().unwrap().try_event() {
+            panic!(
+                "tempo request finished before queueing: {:?}, {:?}",
+                event.status, event.error
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "verified tempo edit did not queue"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(status().transport_observation(), Some(old));
+    assert_eq!(status().applied_audio_source(), Some(previous));
+    if stop {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+        let event = h.next();
+        assert!(event.request_complete);
+        assert!(event.error.is_some());
+        assert_eq!(event.state.revision, previous.context.editor_revision);
+        assert_eq!(event.state.project.tempo_map(), &old_tempo);
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source(),
+            Some(previous)
+        );
+        return;
+    }
+    let lead = crate::native_audio::verified_graph_edit::TEMPO_CUT_LEAD_FRAMES;
+    let due = old.performance_frame + lead;
+    let render = |frames: usize| {
         let mut output = [[0.0; 2]; 257];
         let mut backend = h.backend.lock().unwrap();
         let measured = allocation_counter::measure(|| {
             backend
                 .as_mut()
                 .unwrap()
-                .render(&mut output[..partition])
+                .render(&mut output[..frames])
                 .unwrap();
         });
         assert_eq!(
@@ -403,54 +463,90 @@ fn verified_limiter_tempo_case(partition: usize, loop_range: Option<std::ops::Ra
             ),
             (0, 0, 0, 0)
         );
-        drop(backend);
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        if old.is_some_and(|source| source == previous)
-            && status
-                .applied_audio_source()
-                .is_some_and(|source| source.context == target)
-        {
-            break (before, status.position.load(Acquire));
-        }
-        assert!(
-            Instant::now() < deadline,
-            "verified tempo edit did not publish: {:?}",
-            status.rejected_revision()
-        );
-        std::thread::sleep(Duration::from_millis(1));
     };
-    let beat = old_tempo.frame_to_beat(before).unwrap();
-    let expected = edited
+    let prefix = if partition == 1 { 0 } else { 113 };
+    let prefix_start = due - prefix as u64;
+    while status().performance_frame.load(Acquire) < prefix_start {
+        let remaining = prefix_start - status().performance_frame.load(Acquire);
+        render(remaining.min(128) as usize);
+        assert!(Instant::now() < deadline, "predecessor stopped advancing");
+        assert_eq!(status().applied_audio_source(), Some(previous));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(h.service.as_ref().unwrap().try_event().is_err());
+    render(partition);
+    let after = status().transport_observation().unwrap();
+    let installed = status().applied_audio_source().unwrap();
+    assert_ne!(
+        installed,
+        previous,
+        "callback did not install at the cut: {:?}",
+        status().rejected_revision()
+    );
+    assert_eq!(after.performance_frame, due + (partition - prefix) as u64);
+    let edited = h.next();
+    assert!(edited.request_complete);
+    assert!(edited.error.is_none(), "{:?}", edited.error);
+    assert_eq!(edited.state.revision, previous.context.editor_revision + 1);
+    assert_eq!(installed.context, h.context.unwrap());
+
+    let raw_cut = old.arrangement_frame + lead;
+    let old_cut = loop_range.as_ref().map_or(raw_cut, |range| {
+        range.start + (raw_cut - range.start) % (range.end - range.start)
+    });
+    let beat = old_tempo.frame_to_beat(old_cut).unwrap();
+    let mapped = edited
         .state
         .project
         .tempo_map()
         .beat_to_frame(beat)
         .unwrap();
-    let advanced = expected + partition as u64;
-    let expected = if let Some(old_range) = &loop_range {
+    let advanced = mapped + (partition - prefix) as u64;
+    let expected = if loop_range.is_some() {
         let region = edited.state.project.loop_region().unwrap();
         assert!(region.enabled());
         assert_eq!(region.start()..region.end(), 8020..8276);
-        assert!(old_range.contains(&before));
-        assert!((region.start()..region.end()).contains(&expected));
-        if partition == 257 {
-            assert!(advanced >= region.end(), "publication block must wrap");
-        }
         region.start() + (advanced - region.start()) % (region.end() - region.start())
     } else {
         advanced
     };
-    assert_eq!(after, expected, "partition {partition}");
-    let status = h.audio.as_ref().unwrap().status().unwrap();
-    assert!(status.playing.load(Acquire));
-    assert!(status.rejected_revision().is_none());
+    assert_eq!(after.arrangement_frame, expected, "partition {partition}");
+    assert!(after.playing);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            .is_none()
+    );
     if loop_range.is_some() {
-        // Clear any samples buffered in the limiter before observing new audio.
-        for _ in 0..8 {
+        // One full period of the retimed loop returns to the same position.
+        for _ in 0..4 {
             h.render();
         }
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire),
+            expected,
+        );
     }
     wait_for_audio(&h);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source(),
+        Some(installed)
+    );
 }
 
 #[test]

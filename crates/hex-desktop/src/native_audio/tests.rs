@@ -275,18 +275,22 @@ impl WorkerAudioSink for ObservedSink {
     fn confirms_verified_device_inserts(&self) -> bool {
         self.inner.confirms_verified_device_inserts()
     }
-    fn begin_verified_device_insert(
-        &mut self,
-        attempt: hex_session::service::VerifiedDeviceInsertAttempt,
-    ) -> Result<(), String> {
-        self.inner.begin_verified_device_insert(attempt)
+    fn verified_tempo_playing(&mut self) -> bool {
+        self.inner.verified_tempo_playing()
     }
-    fn finish_verified_device_insert(
+
+    fn begin_verified_graph_edit(
         &mut self,
-        attempt: &hex_session::service::VerifiedDeviceInsertAttempt,
+        attempt: hex_session::service::VerifiedGraphEditAttempt,
+    ) -> Result<(), String> {
+        self.inner.begin_verified_graph_edit(attempt)
+    }
+    fn finish_verified_graph_edit(
+        &mut self,
+        attempt: &hex_session::service::VerifiedGraphEditAttempt,
         installed: bool,
     ) {
-        self.inner.finish_verified_device_insert(attempt, installed);
+        self.inner.finish_verified_graph_edit(attempt, installed);
     }
     fn offer_device_insert_consent(
         &mut self,

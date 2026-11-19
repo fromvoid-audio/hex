@@ -384,6 +384,7 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context: hex_engine::AudioSourceContext,
         predecessor: AppliedAudioSource,
+        expected_fence: FreshRuntimeFence,
         cut_performance_frame: u64,
     ) -> Result<(crate::AudioCandidateTicket, CancellablePublicationReceipt), &'static str> {
         let stale = "tempo cut requires the exact running verified source";
@@ -399,8 +400,9 @@ impl PublicationControl {
         }
         let (observation, fence) = self
             .capture_running_transport_fence()
-            .filter(|(observation, _)| {
-                observation.audio_revision == predecessor.audio_revision
+            .filter(|(observation, fence)| {
+                *fence == expected_fence
+                    && observation.audio_revision == predecessor.audio_revision
                     && observation.control_generation == predecessor.context.project_generation
                     && observation.performance_frame < cut_performance_frame
             })

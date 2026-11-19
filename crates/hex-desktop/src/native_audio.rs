@@ -33,8 +33,8 @@ mod route_follow;
 mod sampler;
 mod section_edit;
 mod verified_clip_move;
-mod verified_device_insert;
 mod verified_gain;
+mod verified_graph_edit;
 use verified_gain::{PreviewWatermark, VerifiedKey, VerifiedSource};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
@@ -144,7 +144,7 @@ pub(super) struct NativeAudioSink {
     route_follow: route_follow::RouteFollow,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     verified_preview: Option<VerifiedSource>,
-    verified_insert: Option<verified_device_insert::Insert>,
+    verified_edit: Option<verified_graph_edit::Edit>,
     verified_clip_control: verified_clip_move::VerifiedClipControl,
     preview_watermark: Option<PreviewWatermark>,
     verified_last: Option<VerifiedKey>,
@@ -232,7 +232,7 @@ impl NativeAudioSink {
             route_follow: Default::default(),
             desired: None,
             verified_preview: None,
-            verified_insert: None,
+            verified_edit: None,
             verified_clip_control: Default::default(),
             preview_watermark: None,
             verified_last: None,
@@ -310,7 +310,7 @@ impl NativeAudioSink {
         {
             self.last_stopped_frame = control.status.position.load(Acquire);
         }
-        if let Some(insert) = self.verified_insert.take() {
+        if let Some(insert) = self.verified_edit.take() {
             insert
                 .attempt
                 .refused("audio output closed · restart audio to recover".into());
@@ -706,18 +706,15 @@ impl NativeAudioSink {
             return;
         };
         self.maintain_returns(control);
-        let insert = self.verified_insert.clone();
-        if insert
-            .as_ref()
-            .is_some_and(|insert| !insert.attempt.preparing())
-        {
+        let edit = self.verified_edit.clone();
+        if edit.as_ref().is_some_and(|edit| !edit.attempt.preparing()) {
             // The editor owns the terminal. Keep the old desired source from
             // republishing across the receipt while it decides or commits.
             return;
         }
-        let Some(snapshot) = insert
+        let Some(snapshot) = edit
             .as_ref()
-            .map(|insert| VerifiedSource::Canonical(Arc::clone(insert.attempt.source())))
+            .map(|edit| VerifiedSource::Canonical(Arc::clone(edit.attempt.source())))
             .or_else(|| self.verified_preview.clone())
             .or_else(|| {
                 self.desired
@@ -730,8 +727,8 @@ impl NativeAudioSink {
         let context = snapshot.context();
         let key = snapshot.key();
         if !control.audio_candidate_claims_available() {
-            if let Some(insert) = insert.as_ref() {
-                insert.attempt.refused(
+            if let Some(edit) = edit.as_ref() {
+                edit.attempt.refused(
                     "audio ownership cleanup is incomplete · save project and restart hex".into(),
                 );
                 return;
@@ -746,9 +743,8 @@ impl NativeAudioSink {
             return;
         }
         if control.status.device_fault.load(Acquire) || control.status.render_fault.load(Acquire) {
-            if let Some(insert) = insert.as_ref() {
-                insert
-                    .attempt
+            if let Some(edit) = edit.as_ref() {
+                edit.attempt
                     .refused("audio output closed · restart audio to recover".into());
                 return;
             }
@@ -800,8 +796,7 @@ impl NativeAudioSink {
                 return;
             }
         }
-        if insert.is_none()
-            && (self.verified_blocked == Some(key) || self.verified_last == Some(key))
+        if edit.is_none() && (self.verified_blocked == Some(key) || self.verified_last == Some(key))
         {
             return;
         }
@@ -908,13 +903,13 @@ impl NativeAudioSink {
                 }
             }
         }
-        self.advance_preparation(control, policy, insert.as_ref());
+        self.advance_preparation(control, policy, edit.as_ref());
     }
     fn advance_preparation(
         &mut self,
         control: &mut hex_audio::prepared::PublicationControl,
         policy: AudioPolicy,
-        insert: Option<&verified_device_insert::Insert>,
+        edit: Option<&verified_graph_edit::Edit>,
     ) {
         let Some(mut pending) = self.preparation.take() else {
             return;
@@ -940,31 +935,31 @@ impl NativeAudioSink {
                     self.observe(context, "busy", EditorPublicationState::Busy);
                     return;
                 };
-                let projection =
-                    DomainSources::capture(pending.snapshot.canonical(), pending.catalog).and_then(
-                        |sources| {
-                            sources
-                                .prepare_for_snapshot(
-                                    pending.snapshot.canonical(),
-                                    policy.stream,
-                                    policy.granular,
-                                    || match insert {
-                                        Some(insert) => insert
-                                            .cancellation
-                                            .as_ref()
-                                            .is_some_and(|c| c.is_cancelled()),
-                                        // The desired snapshot already committed. Document
-                                        // intent supersedes request-owned work; replacement of
-                                        // this source is driven by the next committed snapshot.
-                                        None => self
-                                            .request_cancellation
-                                            .as_ref()
-                                            .is_some_and(|c| c.is_shutting_down()),
-                                    },
-                                )
-                                .map(|(definitions, granular)| (sources, definitions, granular))
-                        },
-                    );
+                let projection = DomainSources::capture(
+                    pending.snapshot.canonical(),
+                    pending.catalog,
+                )
+                .and_then(|sources| {
+                    sources
+                        .prepare_for_snapshot(
+                            pending.snapshot.canonical(),
+                            policy.stream,
+                            policy.granular,
+                            || match edit {
+                                Some(edit) => {
+                                    edit.cancellation.as_ref().is_some_and(|c| c.is_cancelled())
+                                }
+                                // The desired snapshot already committed. Document
+                                // intent supersedes request-owned work; replacement of
+                                // this source is driven by the next committed snapshot.
+                                None => self
+                                    .request_cancellation
+                                    .as_ref()
+                                    .is_some_and(|c| c.is_shutting_down()),
+                            },
+                        )
+                        .map(|(definitions, granular)| (sources, definitions, granular))
+                });
                 let (sources, definitions, granular) = match projection {
                     Ok(pair) => pair,
                     Err(error) => {
@@ -1140,14 +1135,9 @@ impl NativeAudioSink {
             self.observe(context, "busy", EditorPublicationState::Busy);
             return;
         };
-        let submitted = match insert.as_ref() {
-            Some(insert) => control
-                .stage_verified_device_insert(
-                    pending.token,
-                    context,
-                    insert.predecessor,
-                    insert.approval,
-                )
+        let submitted = match edit.as_ref() {
+            Some(edit) => edit
+                .stage(control, pending.token, context)
                 .map(|(ticket, receipt)| (ticket, Some(receipt))),
             None => control
                 .stage_audio_candidate_preparation(pending.token, context.project_generation)
@@ -1164,14 +1154,13 @@ impl NativeAudioSink {
                     ticket,
                     domain: pending.domain,
                 });
-                if let Some((insert, receipt)) = insert.as_ref().zip(receipt) {
-                    insert
-                        .attempt
+                if let Some((edit, receipt)) = edit.as_ref().zip(receipt) {
+                    edit.attempt
                         .submitted(Box::new(resident::InsertReceipt::new(
                             hex_session::service::ResidentGraphSubmission {
                                 context,
                                 audio_revision: revision,
-                                output_identity: insert.predecessor.output_identity,
+                                output_identity: edit.predecessor.output_identity,
                             },
                             receipt,
                         )));
@@ -1234,10 +1223,10 @@ impl NativeAudioSink {
         self.preparation = Some(pending);
     }
     fn refuse_verified_source(&mut self, source: &VerifiedSource, error: String) {
-        if let Some(insert) = self.verified_insert.as_ref()
-            && Arc::ptr_eq(insert.attempt.source(), source.canonical_arc())
+        if let Some(edit) = self.verified_edit.as_ref()
+            && Arc::ptr_eq(edit.attempt.source(), source.canonical_arc())
         {
-            insert.attempt.refused(error);
+            edit.attempt.refused(error);
             return;
         }
         let context = source.context();
@@ -1261,19 +1250,26 @@ impl WorkerAudioSink for NativeAudioSink {
         self.output.is_some() && self.output_generation.is_some()
     }
 
-    fn begin_verified_device_insert(
-        &mut self,
-        attempt: hex_session::service::VerifiedDeviceInsertAttempt,
-    ) -> Result<(), String> {
-        self.begin_verified_insert(attempt)
+    fn verified_tempo_playing(&mut self) -> bool {
+        self.output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .is_some_and(|control| control.status.playing.load(Acquire))
     }
 
-    fn finish_verified_device_insert(
+    fn begin_verified_graph_edit(
         &mut self,
-        attempt: &hex_session::service::VerifiedDeviceInsertAttempt,
+        attempt: hex_session::service::VerifiedGraphEditAttempt,
+    ) -> Result<(), String> {
+        self.begin_verified_edit(attempt)
+    }
+
+    fn finish_verified_graph_edit(
+        &mut self,
+        attempt: &hex_session::service::VerifiedGraphEditAttempt,
         installed: bool,
     ) {
-        self.finish_verified_insert(attempt, installed);
+        self.finish_verified_edit(attempt, installed);
     }
 
     fn device_insert_receipt(

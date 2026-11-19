@@ -669,17 +669,23 @@ pub trait WorkerAudioSink: Send {
         false
     }
 
-    /// Prepare the immutable source of an uncommitted editor transaction.
-    fn begin_verified_device_insert(
-        &mut self,
-        _attempt: super::VerifiedDeviceInsertAttempt,
-    ) -> Result<(), String> {
-        Err("verified device inserts are unavailable on this output".into())
+    /// Whether the verified transport is running. The stage request
+    /// separately proves the canonical source and captures its exact fence.
+    fn verified_tempo_playing(&mut self) -> bool {
+        false
     }
 
-    fn finish_verified_device_insert(
+    /// Prepare the immutable source of an uncommitted editor transaction.
+    fn begin_verified_graph_edit(
         &mut self,
-        _attempt: &super::VerifiedDeviceInsertAttempt,
+        _attempt: super::VerifiedGraphEditAttempt,
+    ) -> Result<(), String> {
+        Err("verified graph edits are unavailable on this output".into())
+    }
+
+    fn finish_verified_graph_edit(
+        &mut self,
+        _attempt: &super::VerifiedGraphEditAttempt,
         _installed: bool,
     ) {
     }
