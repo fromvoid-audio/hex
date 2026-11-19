@@ -1051,6 +1051,12 @@ fn failed_effect_requests_original_cancellation_without_claiming_disposal() {
 }
 
 #[cfg(feature = "allocation-probe")]
+pub(crate) fn with_source_bank_held_for_test(root: &CandidateRoot, run: impl FnOnce()) {
+    let _bank = lock(&root.0.eligible.bank);
+    run();
+}
+
+#[cfg(feature = "allocation-probe")]
 pub(crate) fn original_worker_awaits_endpoint(root: &CandidateRoot, binding: Binding) -> bool {
     let work = lock(&root.0.eligible.work);
     let bank = lock(&root.0.eligible.bank);

@@ -11,7 +11,7 @@ use hex_plugin_host::native::{
     self, Cancellation, Pending, PreparationDisposal, PreparationFailure,
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
-use std::sync::atomic::AtomicU8;
+use std::sync::{TryLockError, atomic::AtomicU8};
 
 mod capture;
 mod completion;
@@ -952,23 +952,38 @@ impl CandidateRoot {
     ) -> Option<NativeSourcePreparationProgress> {
         self.0.eligible.native_source_progress(binding)
     }
-    pub(crate) fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
-        let bank = self.0.eligible.bank.try_lock().ok()?;
-        let slot = bank.sources.slots.get(bank.sources.index(binding)?)?;
+    /// Distinguish a deferred observation from missing or retiring custody.
+    /// This holds no source or graph admission after the query returns.
+    pub(crate) fn try_native_source_endpoint_installed(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<bool>, &'static str> {
+        let bank = match self.0.eligible.bank.try_lock() {
+            Ok(bank) => bank,
+            Err(TryLockError::WouldBlock) => return Err("native preparation is busy"),
+            Err(TryLockError::Poisoned(_)) => return Ok(None),
+        };
+        let Some(slot) = bank
+            .sources
+            .index(binding)
+            .and_then(|index| bank.sources.slots.get(index))
+        else {
+            return Ok(None);
+        };
         if bank.closing
             || slot.phase != Phase::Accepted
             || slot.retiring
             || slot.cancellation_requested
         {
-            return None;
+            return Ok(None);
         }
-        Some(
+        Ok(Some(
             slot.endpoint_loaned
                 && slot
                     .endpoint_return
                     .as_ref()
                     .is_some_and(|signal| signal.installed.load(Ordering::Acquire)),
-        )
+        ))
     }
     pub(crate) fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
         self.with_native_source_endpoint(binding, |loaned, endpoint| {
