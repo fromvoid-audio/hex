@@ -106,6 +106,7 @@ pub(in crate::service) struct Pending {
     pub(in crate::service) cut_tracks: Option<Arc<hex_project::TrackClipboard>>,
     pub(in crate::service) document_intent: u64,
     pub(in crate::service) plugin: Option<plugin_effect::Pending>,
+    pub(in crate::service) proposal_control: Option<Arc<PluginEffectControl>>,
     pub(in crate::service) publish_created: bool,
 }
 
@@ -134,6 +135,7 @@ struct VerifiedAttempt {
     retiring_gain: Option<DevicePreviewIdentity>,
     confirmation: Option<ResidentGraphSubmission>,
     tempo_cut: bool,
+    proposal_control: Option<Arc<PluginEffectControl>>,
     prepare_until: Instant,
     state: std::sync::Mutex<VerifiedState>,
 }
@@ -152,6 +154,7 @@ impl VerifiedGraphEditAttempt {
         retiring_gain: Option<DevicePreviewIdentity>,
         confirmation: Option<ResidentGraphSubmission>,
         tempo_cut: bool,
+        proposal_control: Option<Arc<PluginEffectControl>>,
     ) -> Self {
         Self(Arc::new(VerifiedAttempt {
             source,
@@ -159,6 +162,7 @@ impl VerifiedGraphEditAttempt {
             retiring_gain,
             confirmation,
             tempo_cut,
+            proposal_control,
             prepare_until: Instant::now() + std::time::Duration::from_secs(10),
             state: std::sync::Mutex::new(VerifiedState::Preparing),
         }))
@@ -179,6 +183,16 @@ impl VerifiedGraphEditAttempt {
     }
     pub fn needs_tempo_cut(&self) -> bool {
         self.0.tempo_cut
+    }
+
+    /// Bind the caller's cancellation to the very receipt being queued.
+    pub fn bind_proposal_receipt(
+        &self,
+        receipt: impl FnOnce() -> Box<dyn DeviceInsertAudioReceipt>,
+    ) {
+        if let Some(control) = &self.0.proposal_control {
+            control.bind_device_insert_receipt(receipt());
+        }
     }
 
     pub fn same_attempt(&self, other: &Self) -> bool {
@@ -277,6 +291,14 @@ impl Drop for Receipt {
 }
 
 impl Pending {
+    fn insertion_control(&self) -> Option<&PluginEffectControl> {
+        self.proposal_control.as_deref().or_else(|| {
+            self.plugin
+                .as_ref()
+                .map(|plugin| plugin.insertion.control.as_ref())
+        })
+    }
+
     pub(in crate::service) fn submission(&self) -> Option<ResidentGraphSubmission> {
         match &self.prepared {
             Prepared::Resident(resident) => Some(resident.receipt.0.submission()),
@@ -312,9 +334,8 @@ impl Pending {
     pub(in crate::service) fn poll(&self, cancel: bool) -> Option<Progress> {
         let cancel = cancel
             || self
-                .plugin
-                .as_ref()
-                .is_some_and(|plugin| plugin.insertion.control.is_cancelled());
+                .insertion_control()
+                .is_some_and(PluginEffectControl::is_cancelled);
         if let Some(offer) = self.confirmation.as_ref() {
             if cancel {
                 offer.cancel();
@@ -339,12 +360,10 @@ impl Pending {
         }
         let submission = self.submission()?;
         let deadline = sink.offer_device_insert_consent(submission)?;
-        if self.plugin.as_ref().is_some_and(|plugin| {
-            !plugin
-                .insertion
-                .control
-                .release_refused_insert_receipt(submission)
-        }) {
+        if self
+            .insertion_control()
+            .is_some_and(|control| !control.release_refused_insert_receipt(submission))
+        {
             return None;
         }
         let offer = DeviceInsertConfirmation::new(submission, deadline, operation);
@@ -371,6 +390,7 @@ impl Pending {
                     attempt.retiring_gain(),
                     Some(refused),
                     false,
+                    self.proposal_control.clone(),
                 );
                 sink.begin_verified_graph_edit(retry.clone())
                     .map_err(SessionError::NativeAudio)?;
@@ -379,7 +399,10 @@ impl Pending {
                 return Ok(());
             }
         };
-        let inputs = session.resident_seek_inputs(admission, current, None)?;
+        let inputs = Inputs {
+            device_insert_control: self.proposal_control.as_deref(),
+            ..session.resident_seek_inputs(admission, current, None)?
+        };
         let metadata = canonical_metadata(&resident.snapshot, refused.context);
         inputs.publish_tagged_with_policy(
             &mut resident.snapshot,
@@ -490,6 +513,7 @@ pub(in crate::service) fn submit_browser_edit(
     resident: &mut Option<Snapshot>,
     admission: sampler_export::Admission<'_>,
     document_intent: u64,
+    proposal_control: Option<&Arc<PluginEffectControl>>,
 ) -> Result<BrowserEdit, SessionError> {
     let context = hex_engine::AudioSourceContext {
         project_generation,
@@ -515,6 +539,7 @@ pub(in crate::service) fn submit_browser_edit(
                         admission,
                         resident.as_ref(),
                         None,
+                        proposal_control.map(Arc::as_ref),
                         document_intent,
                     )
                     .map(BrowserEdit::from_pending);
@@ -528,11 +553,17 @@ pub(in crate::service) fn submit_browser_edit(
                         sink,
                         document_intent,
                         None,
+                        proposal_control.cloned(),
                     )
                     .map(BrowserEdit::from_pending);
             }
             _ => {}
         }
+    }
+    // The synchronous fallback has no cancellable audio receipt. Its commit
+    // and cancellation race at admission, before it changes the project.
+    if proposal_control.is_some_and(|control| !control.begin_commit()) {
+        return Err(SessionError::Invalid("device insertion was cancelled"));
     }
     let (created, prepared) = super::execute_command(
         session,
@@ -556,6 +587,7 @@ impl BrowserEdit {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)] // Exact source, worker, gesture and insertion intent.
     pub(in crate::service) fn stage_verified_graph_edit(
         &mut self,
         command: Command,
@@ -564,6 +596,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         document_intent: u64,
         gesture: Option<&crate::device_gesture::GestureSnapshot>,
+        proposal_control: Option<Arc<PluginEffectControl>>,
     ) -> Result<Option<Pending>, SessionError> {
         crate::validate_command_media(&command)?;
         let predecessor = state
@@ -625,8 +658,14 @@ impl Session {
             next,
             self,
         ));
-        let attempt =
-            VerifiedGraphEditAttempt::new(source, predecessor, retiring_gain, None, tempo_cut);
+        let attempt = VerifiedGraphEditAttempt::new(
+            source,
+            predecessor,
+            retiring_gain,
+            None,
+            tempo_cut,
+            proposal_control,
+        );
         if tempo_cut {
             // Retain the exact running audio source before offline projection.
             sink.begin_verified_graph_edit(attempt.clone())
@@ -668,6 +707,7 @@ impl Session {
             cut_tracks: None,
             document_intent,
             plugin: None,
+            proposal_control: None,
             publish_created: true,
         }))
     }
@@ -683,6 +723,7 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
         plugin: Option<&PluginEffectControl>,
+        proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
         let staged = (|| {
@@ -724,6 +765,7 @@ impl Session {
             };
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
+                device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };
             let mut snapshot = inputs.prepare_transition(
@@ -738,8 +780,11 @@ impl Session {
                 context,
             )?;
             snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
-            if plugin.is_some_and(PluginEffectControl::is_cancelled) {
-                return Err(SessionError::Invalid("vst3 insertion was cancelled"));
+            if plugin
+                .or(proposal_control)
+                .is_some_and(PluginEffectControl::is_cancelled)
+            {
+                return Err(SessionError::Invalid("device insertion was cancelled"));
             }
             let metadata = canonical_metadata(&snapshot, context);
             inputs.publish_tagged_with_policy(
@@ -767,6 +812,7 @@ impl Session {
                 cut_tracks: None,
                 document_intent,
                 plugin: None,
+                proposal_control: None,
                 publish_created: true,
             }))
         })();

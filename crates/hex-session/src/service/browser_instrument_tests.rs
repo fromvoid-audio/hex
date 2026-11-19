@@ -265,6 +265,7 @@ fn device_track_requests_apply_captured_gain_atomically() {
                     type_id: DeviceTypeId::from_static("hex.utility"),
                     destination: ArrangementDeviceDestination::NewTrack { before_track: None },
                     new_track_gain: Some(gain),
+                    control: None,
                 }
             } else {
                 Request::InsertBrowserInstrumentTrack {

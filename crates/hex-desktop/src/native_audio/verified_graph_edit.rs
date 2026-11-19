@@ -37,9 +37,24 @@ impl Edit {
         &'static str,
     > {
         match self.transition {
-            Transition::DeviceInsert(approval) => {
-                control.stage_verified_device_insert(token, context, self.predecessor, approval)
-            }
+            Transition::DeviceInsert(approval) => control.stage_verified_device_insert(
+                token,
+                context,
+                self.predecessor,
+                approval,
+                |receipt| {
+                    self.attempt.bind_proposal_receipt(|| {
+                        Box::new(resident::InsertReceipt::new(
+                            hex_session::service::ResidentGraphSubmission {
+                                context,
+                                audio_revision: receipt.revision(),
+                                output_identity: receipt.output_identity(),
+                            },
+                            receipt.clone(),
+                        ))
+                    });
+                },
+            ),
             Transition::TempoCut(fence) => {
                 let (observation, _) = control
                     .capture_running_transport_fence()

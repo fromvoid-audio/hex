@@ -3,7 +3,8 @@
 use super::*;
 use gpui::{Div, div, prelude::*, rgb};
 use hex_session::service::{
-    PluginEffectControl, PluginEffectDestination, PluginEffectInsertion, PluginEffectSelection,
+    ArrangementDeviceDestination, PluginEffectControl, PluginEffectDestination,
+    PluginEffectInsertion, PluginEffectSelection,
 };
 
 gpui::actions!(hex_plugin_proposal, [ActivatePluginProposal]);
@@ -108,6 +109,7 @@ pub(super) struct PluginProposal {
     pub(super) destination: PluginEffectDestination,
     pub(super) before: Option<hex_project::DeviceId>,
     name: String,
+    loading: &'static str,
 }
 
 pub(super) struct FailedPluginProposal {
@@ -254,7 +256,7 @@ impl EditorView {
         let (proposal, control, error) = self.plugin_proposal()?;
         let title = hex_session::service::text::verbatim(&proposal.name);
         let failed = error.is_some();
-        let detail = error.unwrap_or("loading vst3").to_owned();
+        let detail = error.unwrap_or(proposal.loading).to_owned();
         let tooltip = super::display_error::DisplayError::from(detail.clone());
         let control = Arc::clone(control);
         let focus = self
@@ -411,6 +413,7 @@ impl EditorView {
             event
                 .plugin_effect_complete
                 .iter()
+                .chain(event.device_insert_proposal_complete.iter())
                 .find(|terminal| Arc::ptr_eq(&pending.control, &terminal.control))
         }) else {
             return;
@@ -424,27 +427,117 @@ impl EditorView {
         installed: bool,
         error: Option<&str>,
     ) -> bool {
-        if self
-            .pending_plugin_effect
+        Self::settle_device_proposal(
+            &mut self.pending_plugin_effect,
+            &mut self.failed_plugin_proposal,
+            control,
+            installed,
+            error,
+        )
+    }
+
+    pub(super) fn settle_device_proposal(
+        pending: &mut Option<PendingPluginEffect>,
+        failed: &mut Option<FailedPluginProposal>,
+        control: &Arc<PluginEffectControl>,
+        installed: bool,
+        error: Option<&str>,
+    ) -> bool {
+        if pending
             .as_ref()
             .is_none_or(|pending| !Arc::ptr_eq(&pending.control, control))
         {
             return false;
         }
-        let Some(pending) = self.pending_plugin_effect.take() else {
+        let Some(pending) = pending.take() else {
             return false;
         };
         if let Some(trace) = &pending.trace {
             trace.complete(installed);
         }
         if !installed && !pending.control.is_cancelled() {
-            self.failed_plugin_proposal = Some(FailedPluginProposal {
+            *failed = Some(FailedPluginProposal {
                 proposal: pending.proposal.clone(),
                 control: Arc::clone(control),
-                error: error.unwrap_or("vst3 load failed").into(),
+                error: error.unwrap_or("device load failed").into(),
             });
         }
         true
+    }
+
+    pub(super) fn insert_builtin_arrangement_device(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        target: ArrangementDeviceDestination,
+        new_track_gain: Option<f32>,
+    ) {
+        use hex_engine::NativeDeviceClass;
+        use hex_project::TrackDeviceSlot;
+        if self.pending_plugin_effect.is_some() {
+            self.error = Some("wait for the pending device insertion".into());
+            return;
+        }
+        let Some(state) = &self.state else {
+            return;
+        };
+        let slot = match class {
+            NativeDeviceClass::Effect => TrackDeviceSlot::Effect,
+            NativeDeviceClass::Instrument => TrackDeviceSlot::Instrument,
+        };
+        let destination = match (target, class) {
+            (ArrangementDeviceDestination::NewTrack { before_track }, _) => {
+                PluginEffectDestination::NewTrack {
+                    before_track,
+                    slot,
+                    gain: new_track_gain.unwrap_or(1.0),
+                    track_identity: state.project.next_identity(),
+                }
+            }
+            (
+                ArrangementDeviceDestination::ExistingTrack { track, instrument },
+                NativeDeviceClass::Instrument,
+            ) => instrument.map_or(PluginEffectDestination::Instrument(track), |instrument| {
+                PluginEffectDestination::ReplaceInstrument { track, instrument }
+            }),
+            (
+                ArrangementDeviceDestination::ExistingTrack { track, .. },
+                NativeDeviceClass::Effect,
+            ) => PluginEffectDestination::Track(track),
+        };
+        let name = hex_engine::native_device_catalog_for_class(class)
+            .ok()
+            .and_then(|entries| entries.into_iter().find(|entry| entry.type_id == type_id))
+            .map_or_else(
+                || type_id.as_str().unwrap_or("device").to_owned(),
+                |entry| entry.name,
+            );
+        let control = Arc::new(PluginEffectControl::default());
+        if self.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
+            project_generation: context.project_generation,
+            revision: context.editor_revision,
+            class,
+            type_id,
+            destination: target,
+            new_track_gain,
+            control: Some(Arc::clone(&control)),
+        }) {
+            let status = format!("loading device · {name}");
+            self.pending_plugin_effect = Some(PendingPluginEffect {
+                control,
+                trace: None,
+                status,
+                proposal: PluginProposal {
+                    destination,
+                    before: None,
+                    name,
+                    loading: "loading device",
+                },
+            });
+            self.failed_plugin_proposal = None;
+            self.error = None;
+        }
     }
 
     pub(super) fn insert_browser_plugin_effect(
@@ -494,7 +587,7 @@ impl EditorView {
             _ => (destination, before),
         };
         if self.pending_plugin_effect.is_some() {
-            self.error = Some("wait for the pending vst3 insertion".into());
+            self.error = Some("wait for the pending device insertion".into());
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -540,6 +633,7 @@ impl EditorView {
                     destination,
                     before,
                     name: selection.class_name.clone(),
+                    loading: "loading vst3",
                 },
             });
             self.failed_plugin_proposal = None;

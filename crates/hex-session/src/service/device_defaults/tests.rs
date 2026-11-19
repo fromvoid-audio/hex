@@ -162,6 +162,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                     before_track: None,
                 },
                 new_track_gain: Some(0.5),
+                control: None,
             },
             7 => Request::InsertBrowserInstrumentTrack {
                 project_generation: 0,
@@ -193,6 +194,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                         .map(hex_project::Device::id),
                 },
                 new_track_gain: None,
+                control: None,
             },
             10 => Request::DropNativeDevice {
                 project_generation: 0,

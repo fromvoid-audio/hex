@@ -348,6 +348,9 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// Built-in insertion intent and its canonical terminal, even when
+    /// validation refused it before an audio receipt could exist.
+    pub device_insert_proposal_complete: Option<PluginEffectCompletion>,
     /// The staged graph edit is waiting for a one-shot decision from the editor.
     pub device_insert_confirmation: Option<DeviceInsertConfirmation>,
     /// Terminal for the exact audio-confirmed graph edit.
@@ -920,6 +923,7 @@ pub enum Request {
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
         new_track_gain: Option<f32>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Copy one captured Arrangement source to a new normal Console column.
     /// Resolve stamps before any gesture barrier, source preparation or history.
@@ -2966,6 +2970,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                device_insert_proposal_complete: None,
                 device_insert_confirmation: None,
                 device_insert_complete: None,
                 plugin_parameter_observation: false,
@@ -3013,6 +3018,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            device_insert_proposal_complete: None,
             device_insert_confirmation: None,
             device_insert_complete: None,
             plugin_parameter_observation: false,
@@ -3578,6 +3584,20 @@ fn run_worker(
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let mut device_insert_proposal = None;
+        let mut repeated_device_insert = false;
+        let mut device_insert_proposal_accepted = false;
+        if let Request::DropBrowserDeviceOnArrangement {
+            control: Some(control),
+            ..
+        } = &request
+        {
+            if control.claim() {
+                device_insert_proposal = Some(Arc::clone(control));
+            } else {
+                repeated_device_insert = true;
+            }
+        }
         let request_recovery_kind = deferred_recovery_kind(&request);
         let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
         let midi_note_update = matches!(
@@ -5453,6 +5473,13 @@ fn run_worker(
         } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
         {
             error = Some("section edits require a revision-bound section request".into());
+        } else if repeated_device_insert {
+            error = Some("device insertion request was already submitted".into());
+        } else if device_insert_proposal
+            .as_ref()
+            .is_some_and(|control| control.is_cancelled())
+        {
+            status = Some("device insertion was cancelled".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
         } else if sampler_refusal {
@@ -6159,6 +6186,7 @@ fn run_worker(
                         };
                         let terminal = match progress {
                             Progress::PreparationFailed => {
+                                device_insert_proposal = pending.proposal_control.take();
                                 error = pending.preparation_error();
                                 if let Some(attempt) = pending.verified_attempt()
                                     && let Some(sink) = events.resident_audio()
@@ -6225,6 +6253,7 @@ fn run_worker(
                             "tempo edit"
                         };
                         let Some(submission) = pending.submission() else {
+                            device_insert_proposal = pending.proposal_control.take();
                             if let Some(attempt) = pending.verified_attempt()
                                 && let Some(sink) = events.resident_audio()
                             {
@@ -6245,6 +6274,7 @@ fn run_worker(
                                 )
                             });
                         request_complete = plugin.is_none();
+                        device_insert_proposal = pending.proposal_control.take();
                         let outcome = match terminal {
                             DeviceInsertAudioState::Installed => {
                                 let cut_devices = pending.cut_devices.take();
@@ -6296,7 +6326,9 @@ fn run_worker(
                                 DeviceInsertOutcome::OutputClosed
                             }
                             DeviceInsertAudioState::Cancelled => {
-                                if was_offered {
+                                if was_offered
+                                    || device_insert_proposal.as_ref().is_some_and(|control| control.is_cancelled())
+                                {
                                     status = Some("device edit cancelled".into());
                                 } else {
                                     error = Some(
@@ -6312,6 +6344,7 @@ fn run_worker(
                             }
                             DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
                                 pending.plugin = plugin;
+                                pending.proposal_control = device_insert_proposal.take();
                                 pending_device_insert = Some(pending);
                                 continue 'requests;
                             }
@@ -6323,6 +6356,7 @@ fn run_worker(
                             });
                         }
                         let accepted = outcome == DeviceInsertOutcome::Installed;
+                        device_insert_proposal_accepted = accepted;
                         if let Some(sink) = events.resident_audio() {
                             if let Some(attempt) = verified.as_ref() {
                                 sink.finish_verified_graph_edit(attempt, accepted);
@@ -6407,6 +6441,7 @@ fn run_worker(
                                                     admission,
                                                     resident_snapshot.as_ref(),
                                                     Some(&pending.insertion.control),
+                                                    None,
                                                     request_document_intent,
                                                 )
                                                 .map_err(|e| e.to_string())?;
@@ -6498,6 +6533,7 @@ fn run_worker(
                     type_id,
                     destination,
                     new_track_gain,
+                    ..
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -6537,6 +6573,7 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                             request_document_intent,
+                            device_insert_proposal.as_ref(),
                         )
                         .map_err(|error| {
                             hex_storage::text::lowercase_outside_verbatim(&error.to_string())
@@ -6544,6 +6581,7 @@ fn run_worker(
                     }) {
                         Ok(BrowserEdit::Pending(mut staged)) => {
                             staged.publish_created = false;
+                            staged.proposal_control = device_insert_proposal.take();
                             pending_device_insert = Some(*staged);
                             request_complete = false;
                             status = Some("device edit pending · waiting for audio".into());
@@ -6552,6 +6590,7 @@ fn run_worker(
                             // No Created::Track focus response: this drop preserves prior selection.
                             unsaved = true;
                             replacement_revision = Some(prepared);
+                            device_insert_proposal_accepted = true;
                             status = Some("device added to arrangement".into());
                         }
                         Ok(BrowserEdit::Unchanged) => status = Some("no change".into()),
@@ -6681,6 +6720,7 @@ fn run_worker(
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 request_document_intent,
+                                None,
                             ) {
                                 Ok(BrowserEdit::Pending(mut staged)) => {
                                     staged.publish_created = false;
@@ -7180,6 +7220,7 @@ fn run_worker(
                                 sink,
                                 request_document_intent,
                                 device_gesture.snapshot().as_ref(),
+                                None,
                             )
                         });
                     match result {
@@ -7234,6 +7275,7 @@ fn run_worker(
                                     sink,
                                     admission,
                                     resident_snapshot.as_ref(),
+                                    None,
                                     None,
                                     request_document_intent,
                                 )?;
@@ -8161,6 +8203,7 @@ fn run_worker(
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 request_document_intent,
+                                None,
                             ) {
                                 Ok(BrowserEdit::Pending(staged)) => {
                                     pending_device_insert = Some(*staged);
@@ -9069,6 +9112,7 @@ fn run_worker(
                                 compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
                                 sink,
                                 request_document_intent,
+                                None,
                                 None,
                             )
                         });
@@ -11018,6 +11062,9 @@ fn run_worker(
             sampler_load_complete,
             sampler_edit_complete,
             plugin_effect_complete,
+            device_insert_proposal_complete: device_insert_proposal.map(|control| {
+                PluginEffectCompletion::finish(control, device_insert_proposal_accepted)
+            }),
             device_insert_confirmation,
             device_insert_complete,
             plugin_parameter_observation,
@@ -14669,6 +14716,7 @@ mod service_tests {
                 type_id: utility,
                 destination: ArrangementDeviceDestination::NewTrack { before_track: None },
                 new_track_gain: None,
+                control: None,
             })
             .expect("arrangement drop during parameter gesture");
         let refused_arrangement = next_event(&service);

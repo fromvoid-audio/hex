@@ -2008,6 +2008,7 @@ fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
                     class,
                     type_id,
                     destination,
+                    control: None,
                 })
                 .unwrap();
             let applied = next_event(&service);
@@ -2123,6 +2124,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
                             .map(hex_project::Device::id)
                     },
                 },
+                control: None,
             })
             .unwrap();
         let refused = next_event(&service);
@@ -2152,6 +2154,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
                 class: NativeDeviceClass::Effect,
                 type_id: DeviceTypeId::from_static("hex.utility"),
                 destination,
+                control: None,
             })
             .unwrap();
         let refused = next_event(&service);

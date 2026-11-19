@@ -22,6 +22,8 @@ pub(super) fn clear_recovery(
     time_move: &mut Option<super::time_selection::PendingTimeRangeMove>,
     pending_loop: &mut Option<super::loop_rail::PendingLoop>,
     clip_loop: &mut super::clip_loop::State,
+    pending_device: &mut Option<super::plugin_effect::PendingPluginEffect>,
+    failed_device: &mut Option<super::plugin_effect::FailedPluginProposal>,
 ) {
     if recovery
         .deferred_edit
@@ -42,6 +44,20 @@ pub(super) fn clear_recovery(
     }
     if recovery.holds_clip_play_start() {
         clip_loop.retire_deferred_play_start();
+    }
+    if let Some(edit) = recovery.deferred_edit.as_ref()
+        && let Request::DropBrowserDeviceOnArrangement {
+            control: Some(control),
+            ..
+        } = edit.request.as_ref()
+    {
+        EditorView::settle_device_proposal(
+            pending_device,
+            failed_device,
+            control,
+            false,
+            Some("audio recovery did not complete"),
+        );
     }
     recovery.fail();
 }
@@ -243,6 +259,10 @@ impl EditorView {
         let time_duplicate = pending.kind == DeferredEditKind::TimeDuplicate;
         let loop_region = pending.kind == DeferredEditKind::LoopRegion;
         let clip_play_start = pending.kind == DeferredEditKind::ClipPlayStart;
+        let control = match pending.request.as_ref() {
+            Request::DropBrowserDeviceOnArrangement { control, .. } => control.clone(),
+            _ => None,
+        };
         if (sample_drop && !self.pending_sample_drop_matches(&pending.request))
             || (time_duplicate && !self.pending_time_duplicate_matches(&pending.request))
             || (loop_region && !self.pending_loop_matches(&pending.request))
@@ -295,6 +315,9 @@ impl EditorView {
             self.loop_state_installed(false);
         } else if clip_play_start {
             self.retire_pending_clip_loop();
+        } else if let Some(control) = control {
+            let error = self.error.as_ref().map(ToString::to_string);
+            self.retire_plugin_effect(&control, false, error.as_deref());
         }
     }
 
@@ -370,6 +393,8 @@ impl EditorView {
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
                 &mut self.clip_loop,
+                &mut self.pending_plugin_effect,
+                &mut self.failed_plugin_proposal,
             );
             return;
         }
@@ -554,6 +579,8 @@ impl EditorView {
             &mut self.pending_time_range_move,
             &mut self.pending_loop,
             &mut self.clip_loop,
+            &mut self.pending_plugin_effect,
+            &mut self.failed_plugin_proposal,
         );
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;

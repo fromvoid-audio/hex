@@ -126,7 +126,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
     }
 
     #[allow(clippy::result_large_err)]
-    fn publish_resident(
+    fn publish_resident_transition(
         &mut self,
         playback: Playback,
         resources: Option<&PreparedDeviceResources>,
@@ -135,6 +135,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         policy: ResidentPublicationPolicy,
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        inputs: ResidentPublicationInputs<'_>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         let result = (|| {
             let captured = resources
@@ -176,7 +177,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         };
         if let ResidentPublicationPolicy::DeviceInsert { predecessor, .. } = policy {
             assert_eq!(Some(predecessor), fixture.active);
-            fixture.candidate = Some(Arc::new(FixtureReceipt {
+            let receipt = Arc::new(FixtureReceipt {
                 submission: ResidentGraphSubmission {
                     output_identity: observation.output_identity,
                     audio_revision: observation.audio_revision,
@@ -184,7 +185,11 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
                 },
                 state: AtomicU8::new(PENDING),
                 deadline: Instant::now() + Duration::from_millis(250),
-            }));
+            });
+            if let Some(control) = inputs.device_insert_control {
+                control.bind_device_insert_receipt(Box::new(Arc::clone(&receipt)));
+            }
+            fixture.candidate = Some(receipt);
         } else {
             fixture.active = Some(observation);
         }
@@ -314,6 +319,80 @@ impl Drop for SavedFile {
 }
 
 #[test]
+fn builtin_browser_proposal_cancel_fences_the_callback_and_completes_exactly_once() {
+    let (service, fixture, initial) = service();
+    let initial_runtime = fixture.lock().unwrap().active;
+    let insert = |control| Request::DropBrowserDeviceOnArrangement {
+        project_generation: 0,
+        revision: initial.state.revision,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
+        destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+        new_track_gain: None,
+        control: Some(control),
+    };
+    let control = Arc::new(PluginEffectControl::default());
+    service.submit(insert(Arc::clone(&control))).unwrap();
+    let staged = receive(&service);
+    assert!(staged.error.is_none(), "{:?}", staged.error);
+    assert!(!staged.request_complete);
+    assert!(staged.device_insert_proposal_complete.is_none());
+    assert_eq!(staged.state.project, initial.state.project);
+    let exact = fixture.lock().unwrap().candidate.clone().unwrap();
+    assert!(control.cancel());
+    // The callback tries immediately after Cancel, before Session polling.
+    assert!(
+        exact
+            .state
+            .compare_exchange(PENDING, INSTALLED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    );
+    let refused = receive(&service);
+    let terminal = refused.device_insert_proposal_complete.unwrap();
+    assert!(Arc::ptr_eq(&terminal.control, &control));
+    assert!(!terminal.accepted);
+    assert_eq!(
+        refused.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(refused.state.project, initial.state.project);
+    assert_eq!(fixture.lock().unwrap().active, initial_runtime);
+
+    service.submit(insert(control)).unwrap();
+    let replayed = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
+    assert!(replayed.error.unwrap().contains("already submitted"));
+    assert!(replayed.device_insert_proposal_complete.is_none());
+    assert_eq!(replayed.state.project, initial.state.project);
+
+    let committed = Arc::new(PluginEffectControl::default());
+    service.submit(insert(Arc::clone(&committed))).unwrap();
+    assert!(!receive(&service).request_complete);
+    let receipt = fixture.lock().unwrap().candidate.clone().unwrap();
+    assert_eq!(
+        receipt
+            .state
+            .compare_exchange(PENDING, INSTALLED, Ordering::AcqRel, Ordering::Acquire),
+        Ok(PENDING)
+    );
+    assert!(!committed.cancel());
+    let accepted = receive(&service);
+    let terminal = accepted.device_insert_proposal_complete.unwrap();
+    assert!(Arc::ptr_eq(&terminal.control, &committed));
+    assert!(terminal.accepted);
+    assert_eq!(
+        accepted.device_insert_complete.unwrap().submission,
+        receipt.submission
+    );
+    assert_eq!(
+        accepted.state.project.tracks().len(),
+        initial.state.project.tracks().len() + 1
+    );
+}
+
+#[test]
 fn browser_device_insertions_wait_for_the_exact_install_receipt() {
     let (service, fixture, _) = service();
     service
@@ -373,6 +452,7 @@ fn browser_device_insertions_wait_for_the_exact_install_receipt() {
             type_id,
             destination: ArrangementDeviceDestination::NewTrack { before_track: None },
             new_track_gain: None,
+            control: None,
         },
     ];
     for (index, request) in requests.into_iter().enumerate() {

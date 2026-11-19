@@ -501,6 +501,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             instrument: None,
         },
         new_track_gain: None,
+        control: None,
     };
     let recovery = editor.update(cx, |v, _| {
         v.service = service;
@@ -634,7 +635,20 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             );
             assert_eq!(v.worker_requests_pending, 1, "repeats do not queue edits");
         } else {
-            assert!(v.enqueue_device_barrier(request()));
+            v.insert_builtin_arrangement_device(
+                AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: revision,
+                },
+                NativeDeviceClass::Effect,
+                DeviceTypeId::from_static("hex.eq"),
+                ArrangementDeviceDestination::ExistingTrack {
+                    track: target,
+                    instrument: None,
+                },
+                None,
+            );
+            assert!(v.pending_plugin_effect.is_some(), "{:?}", v.error);
         }
         let generation = v
             .recovery
@@ -688,6 +702,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         if outcome == EditRecovery::Failed {
             v.fail_audio_recovery("fixture audio recovery failed");
             assert!(v.recovery.deferred_edit.is_none());
+            if edit == EditFixture::Effect {
+                assert!(v.pending_plugin_effect.is_none());
+                assert!(v.failed_plugin_proposal.is_some());
+            }
             assert!(v.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
             assert!(v.pending_loop_region().is_none());
@@ -738,6 +756,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         if outcome == EditRecovery::ProjectChanged {
             assert!(v.service.try_event().is_err());
+            if edit == EditFixture::Effect {
+                assert!(v.pending_plugin_effect.is_none());
+                assert!(v.failed_plugin_proposal.is_some());
+            }
             assert!(v.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
             assert!(v.pending_loop_region().is_none());

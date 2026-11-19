@@ -249,6 +249,8 @@ impl EditorView {
             &mut self.pending_time_range_move,
             &mut self.pending_loop,
             &mut self.clip_loop,
+            &mut self.pending_plugin_effect,
+            &mut self.failed_plugin_proposal,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -1986,6 +1988,8 @@ impl EditorView {
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
                 &mut self.clip_loop,
+                &mut self.pending_plugin_effect,
+                &mut self.failed_plugin_proposal,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2592,6 +2596,8 @@ impl EditorView {
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
                 &mut self.clip_loop,
+                &mut self.pending_plugin_effect,
+                &mut self.failed_plugin_proposal,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;

@@ -267,7 +267,7 @@ impl EditorView {
                 if valid && let NativeDeviceDragSource::Browser {class, type_id} = drag.source {
                     let destination = ArrangementDeviceDestination::NewTrack {before_track};
                     match view.device_track_gain(destination) {
-                        Ok(new_track_gain) => { view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination, new_track_gain}); }
+                        Ok(new_track_gain) => { view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination, new_track_gain, control: None}); }
                         Err(error) => view.error = Some(error.into()),
                     }
                 } else { view.error = Some("device drop canceled · target changed, editing is busy, or source is not a browser device".into()); }

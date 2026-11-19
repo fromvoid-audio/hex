@@ -7,7 +7,7 @@ use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use hex_plugin_catalog::PluginRole;
 use hex_project::TrackDeviceSlot;
-use hex_session::service::{ArrangementDeviceDestination, PluginEffectDestination, Request};
+use hex_session::service::{ArrangementDeviceDestination, PluginEffectDestination};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ArrangementDropTarget {
@@ -182,17 +182,16 @@ impl EditorView {
                     return;
                 }
             };
-            if self.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
-                project_generation: drag.project_generation,
-                revision: drag.revision,
-                class: *class,
-                type_id: *type_id,
-                destination: preview.destination,
-                new_track_gain: gain,
-            }) {
-                self.error = None;
-                self.status = "adding device to arrangement".into();
-            }
+            self.insert_builtin_arrangement_device(
+                hex_engine::AudioSourceContext {
+                    project_generation: drag.project_generation,
+                    editor_revision: drag.revision,
+                },
+                *class,
+                *type_id,
+                preview.destination,
+                gain,
+            );
         } else {
             self.error =
                 Some("device drop canceled · target or project changed, or editing is busy".into());
