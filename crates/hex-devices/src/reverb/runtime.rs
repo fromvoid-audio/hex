@@ -355,12 +355,16 @@ impl PreparedNativeProcessor for PreparedReverb {
 struct Ring {
     samples: Box<[f32]>,
     cursor: usize,
+    // Before the first wrap after reset, only samples before the cursor are
+    // valid. Older taps read as zero without clearing the backing allocation.
+    filled: bool,
 }
 impl Ring {
     fn new(capacity: usize) -> Self {
         Self {
             samples: vec![0.0; capacity].into_boxed_slice(),
             cursor: 0,
+            filled: false,
         }
     }
     fn read(&self, delay: f32) -> f32 {
@@ -380,22 +384,36 @@ impl Ring {
         } else {
             a - 1
         };
-        self.samples[a] + fraction * (self.samples[b] - self.samples[a])
+        let (newer, older) = if self.filled || whole < self.cursor {
+            (self.samples[a], self.samples[b])
+        } else if whole == self.cursor {
+            (self.samples[a], 0.0)
+        } else {
+            (0.0, 0.0)
+        };
+        newer + fraction * (older - newer)
     }
     fn push(&mut self, value: f32) {
         self.samples[self.cursor] = clean(value);
         self.cursor += 1;
         if self.cursor == self.samples.len() {
             self.cursor = 0;
+            self.filled = true;
         }
     }
     fn clear(&mut self) {
-        self.samples.fill(0.0);
         self.cursor = 0;
+        self.filled = false;
     }
     fn copy(&mut self, source: &Self) {
-        self.samples.copy_from_slice(&source.samples);
+        let valid = if source.filled {
+            source.samples.len()
+        } else {
+            source.cursor
+        };
+        self.samples[..valid].copy_from_slice(&source.samples[..valid]);
         self.cursor = source.cursor;
+        self.filled = source.filled;
     }
 }
 fn clean(value: f32) -> f32 {
@@ -557,8 +575,13 @@ impl ReverbRuntime {
             .chain(allpasses.iter().flatten())
             .enumerate()
         {
-            let Ring { samples, cursor } = ring;
+            let Ring {
+                samples,
+                cursor,
+                filled,
+            } = ring;
             inline(cursor);
+            inline(filled);
             *heap_bytes.get_mut(index)? = samples.len().checked_mul(std::mem::size_of::<f32>())?;
             observed += 1;
         }
