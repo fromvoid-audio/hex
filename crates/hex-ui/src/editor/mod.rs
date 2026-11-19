@@ -268,6 +268,7 @@ mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
 mod track_name;
+mod track_proposals;
 mod track_reorder;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_reorder_ui_test;
@@ -550,6 +551,7 @@ fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_source_picker_keys(cx);
     device_panel::bind_source_manager_keys(cx);
     device_panel::bind_keyboard_keys(cx);
+    plugin_effect::bind_keys(cx);
     section_launch::bind_keys(cx);
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
@@ -933,7 +935,7 @@ pub(super) struct EditorView {
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
     device_gesture_barriers: VecDeque<Request>,
-    effect_bus_barrier: device_gesture::EffectBusBarrierState,
+    catalog_barrier: device_gesture::CatalogBarrierState,
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     sample_recorder: sample_recorder::Recorder,
@@ -979,6 +981,8 @@ pub(super) struct EditorView {
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_track_clipboard: Option<track_clipboard::Pending>,
+    pending_empty_tracks: Vec<track_defaults::PendingEmptyTrack>,
+    next_empty_track_id: u64,
     // Input context only: a committed cut can remove its focused header.
     // The next real selection intent or document generation invalidates it.
     track_clipboard_context: Option<(u64, u64)>,
@@ -1002,6 +1006,8 @@ pub(super) struct EditorView {
     drag_bounce_held: bool,
     pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
+    failed_plugin_proposal: Option<plugin_effect::FailedPluginProposal>,
+    proposed_plugin_action_focus: Option<gpui::FocusHandle>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1750,7 +1756,7 @@ impl EditorView {
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
             device_gesture_barriers: VecDeque::new(),
-            effect_bus_barrier: Default::default(),
+            catalog_barrier: Default::default(),
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             sample_recorder: Default::default(),
@@ -1795,6 +1801,8 @@ impl EditorView {
             requested_audio_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_track_clipboard: None,
+            pending_empty_tracks: Vec::new(),
+            next_empty_track_id: 0,
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
@@ -1812,6 +1820,8 @@ impl EditorView {
             drag_bounce_held: false,
             pending_bounce_drop: None,
             pending_plugin_effect: None,
+            failed_plugin_proposal: None,
+            proposed_plugin_action_focus: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,
@@ -2251,7 +2261,7 @@ impl EditorView {
             };
             if let Some(row) = row {
                 self.track_scroll
-                    .scroll_to_item(row, gpui::ScrollStrategy::Top);
+                    .scroll_to_item(self.arrangement_list_row(row), gpui::ScrollStrategy::Top);
             }
         }
     }

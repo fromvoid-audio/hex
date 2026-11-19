@@ -6,8 +6,7 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use hex_plugin_catalog::PluginRole;
-use hex_project::TrackDeviceSlot;
-use hex_session::service::{ArrangementDeviceDestination, PluginEffectDestination, Request};
+use hex_session::service::{ArrangementDeviceDestination, PluginEffectDestination};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ArrangementDropTarget {
@@ -143,34 +142,19 @@ impl EditorView {
         if let (true, Some(preview), NativeDeviceDragSource::PluginEffect(selection)) =
             (valid, captured, source)
         {
-            let destination = match preview.destination {
+            match preview.destination {
                 ArrangementDeviceDestination::ExistingTrack { track, .. } => {
-                    PluginEffectDestination::Track(track)
+                    self.insert_plugin_effect(
+                        selection,
+                        PluginEffectDestination::Track(track),
+                        None,
+                        cx,
+                    );
                 }
                 ArrangementDeviceDestination::NewTrack { before_track } => {
-                    let Some(state) = self.state.as_ref() else {
-                        return;
-                    };
-                    let gain = match self.track_defaults.captured_gain() {
-                        Ok(gain) => gain,
-                        Err(error) => {
-                            self.error = Some(error.into());
-                            cx.notify();
-                            return;
-                        }
-                    };
-                    PluginEffectDestination::NewTrack {
-                        before_track,
-                        slot: match selection.role {
-                            PluginRole::Instrument => TrackDeviceSlot::Instrument,
-                            PluginRole::Effect => TrackDeviceSlot::Effect,
-                        },
-                        gain,
-                        track_identity: state.project.next_identity(),
-                    }
+                    self.insert_plugin_track(selection, before_track, cx);
                 }
-            };
-            self.insert_plugin_effect(selection, destination, None, cx);
+            }
         } else if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
             (valid, captured, source)
         {
@@ -182,17 +166,16 @@ impl EditorView {
                     return;
                 }
             };
-            if self.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
-                project_generation: drag.project_generation,
-                revision: drag.revision,
-                class: *class,
-                type_id: *type_id,
-                destination: preview.destination,
-                new_track_gain: gain,
-            }) {
-                self.error = None;
-                self.status = "adding device to arrangement".into();
-            }
+            self.insert_builtin_arrangement_device(
+                hex_engine::AudioSourceContext {
+                    project_generation: drag.project_generation,
+                    editor_revision: drag.revision,
+                },
+                *class,
+                *type_id,
+                preview.destination,
+                gain,
+            );
         } else {
             self.error =
                 Some("device drop canceled · target or project changed, or editing is busy".into());

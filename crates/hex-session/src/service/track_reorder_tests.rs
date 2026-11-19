@@ -62,6 +62,7 @@ fn reorder_track_worker_preserves_cached_pcm_devices_and_one_history_edge() {
             class: NativeDeviceClass::Instrument,
             type_id: DeviceTypeId::from_static("hex.instrument.sine"),
             new_track_gain: None,
+            control: None,
         },
     );
     let midi_track = midi.state.project.tracks()[1].id();

@@ -82,6 +82,7 @@ fn effect_bus_cancel_and_actual_refused_terminal_retire_only_dependent_add(
             );
             assert!(v.device_gesture.snapshot().is_none());
             assert!(v.device_gesture_barriers.is_empty());
+            assert!(v.pending_plugin_effect.is_none());
         });
         // A retired proof cannot poison a later independent, explicitly selected Add.
         editor.update(&mut visual, |v, _| v.error = None);
@@ -303,6 +304,7 @@ fn effect_bus_invalid_deferred_intent_cannot_finalize_unrelated_live_control(
                 class,
                 type_id,
                 before: anchor,
+                ..
             } = &mut request
             else {
                 panic!("typed addition");

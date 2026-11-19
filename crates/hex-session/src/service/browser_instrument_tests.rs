@@ -18,6 +18,7 @@ fn request(revision: u64, kind: &'static str) -> Request {
         class: hex_engine::NativeDeviceClass::Instrument,
         type_id: DeviceTypeId::from_static(kind),
         new_track_gain: None,
+        control: None,
     }
 }
 
@@ -107,6 +108,7 @@ fn browser_enter_worker_refuses_unknown_wrong_class_and_stale_without_mutation()
                 class,
                 type_id: DeviceTypeId::from_static(kind),
                 new_track_gain: None,
+                control: None,
             })
             .unwrap();
         let refused = event(&service);
@@ -265,6 +267,7 @@ fn device_track_requests_apply_captured_gain_atomically() {
                     type_id: DeviceTypeId::from_static("hex.utility"),
                     destination: ArrangementDeviceDestination::NewTrack { before_track: None },
                     new_track_gain: Some(gain),
+                    control: None,
                 }
             } else {
                 Request::InsertBrowserInstrumentTrack {
@@ -273,6 +276,7 @@ fn device_track_requests_apply_captured_gain_atomically() {
                     class: hex_engine::NativeDeviceClass::Instrument,
                     type_id: DeviceTypeId::from_static("hex.instrument.sine"),
                     new_track_gain: Some(gain),
+                    control: None,
                 }
             }
         };

@@ -1647,6 +1647,15 @@ pub(super) fn request(value: &Request) -> Description {
             description.nested("destination", self::effect_bus_destination(destination));
             description
         }
+        Request::LoadTrackCatalogDevice {
+            project_generation,
+            revision,
+            track,
+            type_id,
+            ..
+        } => {
+            describe!("load_track_catalog_device"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "type_id" => type_id.as_str()]; omitted="class,placement")
+        }
         Request::DropBrowserDeviceOnArrangement {
             project_generation,
             revision,
@@ -1787,6 +1796,7 @@ pub(super) fn request(value: &Request) -> Description {
             track,
             before,
             replace,
+            ..
         } => {
             let mut description = describe!("drop_native_device"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "before" => before.map(|id| id.value()), "replace" => replace.map(|id| id.value())]; omitted="");
             description.nested("source", self::device_drop_source(source));

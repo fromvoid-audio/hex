@@ -25,6 +25,7 @@ fn insert_bus(service: &Service, state: &ViewState, destination: EffectBusDestin
             class: NativeDeviceClass::Effect,
             type_id: LIMITER,
             before: None,
+            control: None,
         },
     )
 }

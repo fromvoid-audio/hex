@@ -2172,6 +2172,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             &mut admit,
             None,
             None,
+            None,
         )
         .unwrap()
     else {
@@ -2221,6 +2222,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             &mut admit,
             None,
             None,
+            None,
         )
         .unwrap()
     else {
@@ -2241,6 +2243,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
             None,
             None,
         )
@@ -2330,6 +2333,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
                 &mut admit,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(matches!(
@@ -2361,6 +2365,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             &mut admit,
             None,
             None,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation retirement is waiting"));
@@ -2374,6 +2379,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
             None,
             None,
         )

@@ -348,6 +348,9 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// Built-in insertion intent and its canonical terminal, even when
+    /// validation refused it before an audio receipt could exist.
+    pub device_insert_proposal_complete: Option<PluginEffectCompletion>,
     /// The staged graph edit is waiting for a one-shot decision from the editor.
     pub device_insert_confirmation: Option<DeviceInsertConfirmation>,
     /// Terminal for the exact audio-confirmed graph edit.
@@ -883,6 +886,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         new_track_gain: Option<f32>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
     InsertPluginEffect(PluginEffectInsertion),
@@ -911,6 +915,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         before: Option<hex_project::DeviceId>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
@@ -920,6 +925,7 @@ pub enum Request {
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
         new_track_gain: Option<f32>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Copy one captured Arrangement source to a new normal Console column.
     /// Resolve stamps before any gesture barrier, source preparation or history.
@@ -1041,6 +1047,7 @@ pub enum Request {
         track: hex_project::TrackId,
         before: Option<hex_project::DeviceId>,
         replace: Option<hex_project::DeviceId>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     AddNativeDevice {
         track: hex_project::TrackId,
@@ -1052,6 +1059,17 @@ pub enum Request {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
+    },
+    /// A picker load follows the captured track/slot through catalog defaults,
+    /// preparation, and the exact callback install receipt.
+    LoadTrackCatalogDevice {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        placement: TrackCatalogPlacement,
+        control: Arc<PluginEffectControl>,
     },
     CompareDevice {
         owner: preset::Owner,
@@ -1271,6 +1289,22 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Exact cancellation carried by a browser or catalog insertion through
+    /// gesture barriers, preparation, and callback installation.
+    pub fn builtin_device_insert_control(&self) -> Option<&Arc<PluginEffectControl>> {
+        match self {
+            Self::InsertBrowserInstrumentTrack { control, .. }
+            | Self::InsertEffectBusDevice { control, .. }
+            | Self::DropBrowserDeviceOnArrangement { control, .. }
+            | Self::DropNativeDevice {
+                source: NativeDeviceDropSource::Browser { .. },
+                control,
+                ..
+            } => control.as_ref(),
+            Self::LoadTrackCatalogDevice { control, .. } => Some(control),
+            _ => None,
+        }
+    }
     /// Read responses do not acknowledge ordered editor mutations.
     pub fn is_read_only_observation(&self) -> bool {
         matches!(
@@ -1428,6 +1462,39 @@ impl Request {
 pub enum EffectBusDestination {
     Main,
     Return(hex_project::ReturnId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackCatalogPlacement {
+    Insert {
+        before: Option<hex_project::DeviceId>,
+    },
+    ReplaceInstrument(hex_project::DeviceId),
+}
+
+impl TrackCatalogPlacement {
+    /// Match the captured slot against canonical project state after a known
+    /// parameter gesture, or before worker-side catalog construction.
+    pub fn matches_track(
+        self,
+        class: hex_engine::NativeDeviceClass,
+        track: &hex_project::Track,
+    ) -> bool {
+        use hex_engine::NativeDeviceClass::{Effect, Instrument};
+        match (self, class) {
+            (Self::Insert { before }, Effect) => before.is_none_or(|anchor| {
+                track
+                    .instrument()
+                    .is_some_and(|device| device.id() == anchor)
+                    || track.devices().iter().any(|device| device.id() == anchor)
+            }),
+            (Self::Insert { before: None }, Instrument) => track.instrument().is_none(),
+            (Self::ReplaceInstrument(id), Instrument) => {
+                track.instrument().is_some_and(|device| device.id() == id)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2966,6 +3033,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                device_insert_proposal_complete: None,
                 device_insert_confirmation: None,
                 device_insert_complete: None,
                 plugin_parameter_observation: false,
@@ -3013,6 +3081,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            device_insert_proposal_complete: None,
             device_insert_confirmation: None,
             device_insert_complete: None,
             plugin_parameter_observation: false,
@@ -3491,6 +3560,7 @@ fn run_worker(
                 || matches!(
                     &queued.request,
                     Request::MoveExistingClips { .. }
+                        | Request::LoadTrackCatalogDevice { .. }
                         | Request::Edit(
                             Command::SetLoopRegion { .. }
                                 | Command::ToggleLoopRegion
@@ -3578,6 +3648,24 @@ fn run_worker(
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let mut device_insert_proposal = None;
+        let mut repeated_device_insert = false;
+        let mut device_insert_proposal_accepted = false;
+        let loading_track_catalog = matches!(&request, Request::LoadTrackCatalogDevice { .. });
+        let replacing_catalog_instrument = matches!(
+            &request,
+            Request::LoadTrackCatalogDevice {
+                placement: TrackCatalogPlacement::ReplaceInstrument(_),
+                ..
+            }
+        );
+        if let Some(control) = request.builtin_device_insert_control() {
+            if control.claim() {
+                device_insert_proposal = Some(Arc::clone(control));
+            } else {
+                repeated_device_insert = true;
+            }
+        }
         let request_recovery_kind = deferred_recovery_kind(&request);
         let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
         let midi_note_update = matches!(
@@ -4771,6 +4859,7 @@ fn run_worker(
                 class,
                 type_id,
                 new_track_gain,
+                ..
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("instrument insertion canceled · project changed".to_owned())
@@ -4809,6 +4898,7 @@ fn run_worker(
                 class,
                 type_id,
                 before,
+                ..
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("effect insertion canceled · project changed".to_owned())
@@ -4824,6 +4914,31 @@ fn run_worker(
                         *before,
                     )
                     .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
+                },
+            ),
+            Request::LoadTrackCatalogDevice {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                track,
+                class,
+                type_id,
+                placement,
+                ..
+            } => Some(
+                if *expected_generation != project_generation || *expected_revision != revision {
+                    Err("device picker load canceled · project changed".into())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active device edit before loading a device".into())
+                } else {
+                    device_defaults::track_picker_command(
+                        session.project(),
+                        *track,
+                        *class,
+                        *type_id,
+                        *placement,
+                        defaults_root,
+                    )
                 },
             ),
             Request::ReplaceDeviceModulation {
@@ -5392,8 +5507,8 @@ fn run_worker(
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
-        let sampler_refusal = private_sampler
-            && !events.resident_publication_enabled()
+        let sampler_without_resident = private_sampler && !events.resident_publication_enabled();
+        let sampler_refusal = sampler_without_resident
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
@@ -5453,9 +5568,16 @@ fn run_worker(
         } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
         {
             error = Some("section edits require a revision-bound section request".into());
+        } else if repeated_device_insert {
+            error = Some("device insertion request was already submitted".into());
+        } else if device_insert_proposal
+            .as_ref()
+            .is_some_and(|control| control.is_cancelled())
+        {
+            status = Some("device insertion was cancelled".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
-        } else if sampler_refusal {
+        } else if sampler_refusal || (loading_track_catalog && sampler_without_resident) {
             error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; other history steps and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, other history steps and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
@@ -6159,6 +6281,7 @@ fn run_worker(
                         };
                         let terminal = match progress {
                             Progress::PreparationFailed => {
+                                device_insert_proposal = pending.proposal_control.take();
                                 error = pending.preparation_error();
                                 if let Some(attempt) = pending.verified_attempt()
                                     && let Some(sink) = events.resident_audio()
@@ -6225,6 +6348,7 @@ fn run_worker(
                             "tempo edit"
                         };
                         let Some(submission) = pending.submission() else {
+                            device_insert_proposal = pending.proposal_control.take();
                             if let Some(attempt) = pending.verified_attempt()
                                 && let Some(sink) = events.resident_audio()
                             {
@@ -6245,6 +6369,7 @@ fn run_worker(
                                 )
                             });
                         request_complete = plugin.is_none();
+                        device_insert_proposal = pending.proposal_control.take();
                         let outcome = match terminal {
                             DeviceInsertAudioState::Installed => {
                                 let cut_devices = pending.cut_devices.take();
@@ -6296,7 +6421,9 @@ fn run_worker(
                                 DeviceInsertOutcome::OutputClosed
                             }
                             DeviceInsertAudioState::Cancelled => {
-                                if was_offered {
+                                if was_offered
+                                    || device_insert_proposal.as_ref().is_some_and(|control| control.is_cancelled())
+                                {
                                     status = Some("device edit cancelled".into());
                                 } else {
                                     error = Some(
@@ -6312,6 +6439,7 @@ fn run_worker(
                             }
                             DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
                                 pending.plugin = plugin;
+                                pending.proposal_control = device_insert_proposal.take();
                                 pending_device_insert = Some(pending);
                                 continue 'requests;
                             }
@@ -6323,6 +6451,7 @@ fn run_worker(
                             });
                         }
                         let accepted = outcome == DeviceInsertOutcome::Installed;
+                        device_insert_proposal_accepted = accepted;
                         if let Some(sink) = events.resident_audio() {
                             if let Some(attempt) = verified.as_ref() {
                                 sink.finish_verified_graph_edit(attempt, accepted);
@@ -6407,6 +6536,7 @@ fn run_worker(
                                                     admission,
                                                     resident_snapshot.as_ref(),
                                                     Some(&pending.insertion.control),
+                                                    None,
                                                     request_document_intent,
                                                 )
                                                 .map_err(|e| e.to_string())?;
@@ -6465,6 +6595,9 @@ fn run_worker(
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
                 }
+                Request::LoadTrackCatalogDevice { .. } => {
+                    error = Some("device picker request was not prepared; select it again".into());
+                }
                 Request::PaintMidiClip(_) => {
                     error = Some("clip paint target was not resolved".into());
                 }
@@ -6498,6 +6631,7 @@ fn run_worker(
                     type_id,
                     destination,
                     new_track_gain,
+                    ..
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -6537,6 +6671,7 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                             request_document_intent,
+                            device_insert_proposal.as_ref(),
                         )
                         .map_err(|error| {
                             hex_storage::text::lowercase_outside_verbatim(&error.to_string())
@@ -6544,6 +6679,7 @@ fn run_worker(
                     }) {
                         Ok(BrowserEdit::Pending(mut staged)) => {
                             staged.publish_created = false;
+                            staged.proposal_control = device_insert_proposal.take();
                             pending_device_insert = Some(*staged);
                             request_complete = false;
                             status = Some("device edit pending · waiting for audio".into());
@@ -6552,6 +6688,7 @@ fn run_worker(
                             // No Created::Track focus response: this drop preserves prior selection.
                             unsaved = true;
                             replacement_revision = Some(prepared);
+                            device_insert_proposal_accepted = true;
                             status = Some("device added to arrangement".into());
                         }
                         Ok(BrowserEdit::Unchanged) => status = Some("no change".into()),
@@ -6565,6 +6702,7 @@ fn run_worker(
                     track,
                     before,
                     replace,
+                    ..
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -6681,9 +6819,11 @@ fn run_worker(
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 request_document_intent,
+                                device_insert_proposal.as_ref(),
                             ) {
                                 Ok(BrowserEdit::Pending(mut staged)) => {
                                     staged.publish_created = false;
+                                    staged.proposal_control = device_insert_proposal.take();
                                     pending_device_insert = Some(*staged);
                                     request_complete = false;
                                     status = Some("device edit pending · waiting for audio".into());
@@ -6691,6 +6831,7 @@ fn run_worker(
                                 Ok(BrowserEdit::Applied(_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                    device_insert_proposal_accepted = true;
                                     status = Some(match source {
                                         NativeDeviceDropSource::Browser { .. }
                                             if replace.is_some() =>
@@ -7161,6 +7302,66 @@ fn run_worker(
                 {
                     error = Some("vst3 recovery lost its resident publication path".into());
                 }
+                Request::Edit(command) if device_insert_proposal.is_some() => {
+                    // Catalog additions and picker replacements are resolved through
+                    // their existing default/owner validation and gesture barrier.
+                    // Keep their Created result after the exact install.
+                    let result = resident_audio::device_insert::submit_browser_edit(
+                        &mut session,
+                        command,
+                        &state,
+                        project_generation,
+                        compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                        &mut events,
+                        &mut resident_snapshot,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
+                        request_document_intent,
+                        device_insert_proposal.as_ref(),
+                    );
+                    match result {
+                        Ok(BrowserEdit::Pending(mut staged)) => {
+                            staged.publish_created = !replacing_catalog_instrument;
+                            staged.proposal_control = device_insert_proposal.take();
+                            pending_device_insert = Some(*staged);
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(BrowserEdit::Applied(new, prepared)) => {
+                            if session.project() != state.project.as_ref() {
+                                if !replacing_catalog_instrument {
+                                    created = Some(new);
+                                }
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                            }
+                            device_insert_proposal_accepted = true;
+                            status = Some(
+                                if replacing_catalog_instrument {
+                                    "device replaced"
+                                } else {
+                                    "device inserted"
+                                }
+                                .into(),
+                            );
+                        }
+                        Ok(BrowserEdit::Unchanged) => {
+                            device_insert_proposal_accepted = device_insert_proposal
+                                .as_ref()
+                                .is_some_and(|control| control.begin_commit());
+                            status = Some("no change".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 Request::Edit(command)
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
                         && resident_audio::device_insert::graph_edit_operation(&command)
@@ -7180,6 +7381,7 @@ fn run_worker(
                                 sink,
                                 request_document_intent,
                                 device_gesture.snapshot().as_ref(),
+                                None,
                             )
                         });
                     match result {
@@ -7234,6 +7436,7 @@ fn run_worker(
                                     sink,
                                     admission,
                                     resident_snapshot.as_ref(),
+                                    None,
                                     None,
                                     request_document_intent,
                                 )?;
@@ -8161,6 +8364,7 @@ fn run_worker(
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 request_document_intent,
+                                None,
                             ) {
                                 Ok(BrowserEdit::Pending(staged)) => {
                                     pending_device_insert = Some(*staged);
@@ -9069,6 +9273,7 @@ fn run_worker(
                                 compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
                                 sink,
                                 request_document_intent,
+                                None,
                                 None,
                             )
                         });
@@ -11018,6 +11223,9 @@ fn run_worker(
             sampler_load_complete,
             sampler_edit_complete,
             plugin_effect_complete,
+            device_insert_proposal_complete: device_insert_proposal.map(|control| {
+                PluginEffectCompletion::finish(control, device_insert_proposal_accepted)
+            }),
             device_insert_confirmation,
             device_insert_complete,
             plugin_parameter_observation,
@@ -14345,6 +14553,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("drop utility from browser");
         let added_effect = next_event(&service);
@@ -14364,6 +14573,7 @@ mod service_tests {
                 track: first_track,
                 before: Some(utility_id),
                 replace: None,
+                control: None,
             })
             .expect("drop sine into empty instrument slot");
         let added_instrument = next_event(&service);
@@ -14406,6 +14616,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("occupied instrument drop");
         let occupied = next_event(&service);
@@ -14429,6 +14640,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(utility_id),
+                control: None,
             })
             .expect("invalid replacement target");
         let invalid_replace = next_event(&service);
@@ -14452,6 +14664,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(instrument_id),
+                control: None,
             })
             .expect("existing-device drag cannot claim replacement intent");
         let invalid_source = next_event(&service);
@@ -14475,6 +14688,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(instrument_id),
+                control: None,
             })
             .expect("replace sine in its instrument card");
         let replaced = next_event(&service);
@@ -14551,6 +14765,7 @@ mod service_tests {
                 track: destination_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("move instrument to destination");
         let moved_instrument = next_event(&service);
@@ -14583,6 +14798,7 @@ mod service_tests {
                 track: destination_track,
                 before: Some(utility_id),
                 replace: None,
+                control: None,
             })
             .expect("anchor from another track");
         let rejected_anchor = next_event(&service);
@@ -14608,6 +14824,7 @@ mod service_tests {
                     track: destination_track,
                     before: None,
                     replace: None,
+                    control: None,
                 })
                 .expect("stale device drop");
             let rejected = next_event(&service);
@@ -14669,6 +14886,7 @@ mod service_tests {
                 type_id: utility,
                 destination: ArrangementDeviceDestination::NewTrack { before_track: None },
                 new_track_gain: None,
+                control: None,
             })
             .expect("arrangement drop during parameter gesture");
         let refused_arrangement = next_event(&service);
@@ -14692,6 +14910,7 @@ mod service_tests {
                 track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("drop during parameter gesture");
         let refused = next_event(&service);

@@ -1,11 +1,49 @@
 //! Fresh catalog construction only. Disk I/O and provider validation run on the
 //! existing control worker before canonical preparation; supplied state never
 //! enters this resolver. The queue captures application-directory configuration.
-use super::preset;
+use super::{TrackCatalogPlacement, native_device_name, preset};
 use hex_engine::NativeDeviceClass;
-use hex_project::{Command, DeviceInitialization};
+use hex_lattice_contract::DeviceTypeId;
+use hex_project::{Command, DeviceInitialization, Project, TrackId};
 use hex_storage::preset::PresetContents;
 use std::path::Path;
+
+pub(super) fn track_picker_command(
+    project: &Project,
+    track: TrackId,
+    class: NativeDeviceClass,
+    type_id: DeviceTypeId,
+    placement: TrackCatalogPlacement,
+    root: Option<&Path>,
+) -> Result<Command, String> {
+    if !project
+        .track(track)
+        .is_some_and(|track| placement.matches_track(class, track))
+    {
+        return Err("device picker target changed".into());
+    }
+    let state = hex_engine::default_native_device_state_for_class(class, type_id)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let command = match placement {
+        TrackCatalogPlacement::ReplaceInstrument(device) => {
+            Command::ReplaceDeviceState { device, state }
+        }
+        TrackCatalogPlacement::Insert { .. } if class == NativeDeviceClass::Instrument => {
+            Command::LoadInstrument {
+                track,
+                replacing: None,
+                state,
+                device_name: native_device_name(class, type_id)?,
+            }
+        }
+        TrackCatalogPlacement::Insert { before } => Command::InsertDevice {
+            track,
+            before,
+            state,
+        },
+    };
+    initialize(command, class, root)
+}
 
 pub(super) fn initialize(
     mut command: Command,

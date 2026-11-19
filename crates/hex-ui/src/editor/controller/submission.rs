@@ -38,6 +38,7 @@ pub(super) struct PendingKinds {
     track_reorder: bool,
     duplicate: bool,
     track_clipboard: bool,
+    empty_track: Option<u64>,
     device_duplicate: bool,
     midi_drag: bool,
     fade: bool,
@@ -110,6 +111,7 @@ impl EditorView {
                 track_reorder: self.pending_track_reorder_matches(request),
                 duplicate: self.pending_duplicate_matches(request),
                 track_clipboard: self.pending_track_clipboard_matches(request),
+                empty_track: self.pending_empty_track_for_request(request),
                 device_duplicate: self.device_panel.pending_duplicate_matches(request),
                 midi_drag: self.pending_midi_drag_matches(request),
                 fade: self.pending_fade_matches(request),
@@ -215,6 +217,9 @@ impl EditorView {
         }
         if kinds.track_clipboard {
             self.track_clipboard_submitted();
+        }
+        if let Some(id) = kinds.empty_track {
+            self.empty_track_submitted(id);
         }
         if kinds.device_duplicate {
             self.device_panel
@@ -350,6 +355,9 @@ impl EditorView {
         if kinds.track_clipboard {
             visible |= self.pending_track_clipboard.take().is_some();
         }
+        if let Some(id) = kinds.empty_track {
+            visible |= self.retire_empty_track(id);
+        }
         if kinds.device_duplicate {
             visible |= self.device_panel.pending_duplicate.take().is_some();
         }
@@ -385,6 +393,12 @@ impl EditorView {
             Refusal::Closed => "project worker stopped",
             Refusal::QueueFull => "request queue full · edit was not applied",
         };
+        if let Request::InsertPluginEffect(insertion) = request {
+            visible |= self.retire_plugin_effect(&insertion.control, false, Some(message));
+        }
+        if let Some(control) = request.builtin_device_insert_control() {
+            visible |= self.retire_plugin_effect(control, false, Some(message));
+        }
         if kinds.project_rate {
             self.project_rate_settings.refused(message.into());
             visible = true;

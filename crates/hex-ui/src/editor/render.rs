@@ -641,6 +641,7 @@ impl Render for EditorView {
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
         self.reconcile_detail_context();
+        self.restore_proposed_plugin_focus(window);
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();

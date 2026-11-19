@@ -112,8 +112,8 @@ impl PluginEffectDestination {
     }
 }
 
-/// Per-request intent and cancellation, following the existing export/import atomic
-/// admission pattern. It owns no native token, descriptor, source or endpoint.
+/// Per-request cancellation for hosted and built-in insertions. It owns no
+/// native token, descriptor, source or endpoint.
 /// Cancellation can win until final publication admission begins.
 #[derive(Debug, Default)]
 pub struct PluginEffectControl {
@@ -134,6 +134,10 @@ impl PluginEffectControl {
 
     pub fn opens_editor(&self) -> bool {
         self.open_editor
+    }
+
+    pub(super) fn claim(&self) -> bool {
+        !self.claimed.swap(true, Ordering::AcqRel)
     }
 
     pub fn cancel(&self) -> bool {
@@ -365,12 +369,19 @@ pub enum PluginEffectPreparationState {
     Ready(hex_lattice_contract::NativeDeviceState),
 }
 
-/// Exact request terminal, delivered with the canonical view after commit or
-/// refusal. A consumed FIFO request alone does not complete native preparation.
+/// Exact insertion terminal, delivered with the canonical view after commit
+/// or refusal. FIFO consumption alone does not complete device preparation.
 #[derive(Clone, Debug)]
 pub struct PluginEffectCompletion {
     pub control: Arc<PluginEffectControl>,
     pub accepted: bool,
+}
+
+impl PluginEffectCompletion {
+    pub(super) fn finish(control: Arc<PluginEffectControl>, accepted: bool) -> Self {
+        control.finish();
+        Self { control, accepted }
+    }
 }
 
 /// The canonical worker retains at most one preparation. Native ownership stays
@@ -382,7 +393,7 @@ pub(super) struct Pending {
 }
 impl Pending {
     pub fn new(insertion: PluginEffectInsertion, project: &Project) -> Result<Self, String> {
-        if insertion.control.claimed.swap(true, Ordering::AcqRel) {
+        if !insertion.control.claim() {
             return Err("vst3 insertion request was already submitted".into());
         }
         Ok(Self {
@@ -431,10 +442,6 @@ impl Pending {
         {
             sink.finish_plugin_effect(&self.insertion.control, accepted);
         }
-        self.insertion.control.finish();
-        PluginEffectCompletion {
-            control: self.insertion.control,
-            accepted,
-        }
+        PluginEffectCompletion::finish(self.insertion.control, accepted)
     }
 }

@@ -31,6 +31,9 @@ mod fade_calculation;
 mod console_track_page;
 #[path = "track_meters.rs"]
 mod track_meters;
+#[allow(dead_code)]
+#[path = "../../src/editor/track_proposals.rs"]
+mod track_proposals;
 
 #[allow(dead_code)]
 #[path = "../../src/editor/fade_handle_geometry.rs"]

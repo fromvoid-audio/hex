@@ -249,6 +249,8 @@ impl EditorView {
             &mut self.pending_time_range_move,
             &mut self.pending_loop,
             &mut self.clip_loop,
+            &mut self.pending_plugin_effect,
+            &mut self.failed_plugin_proposal,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -1376,6 +1378,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
+        visible_change |= self.retire_abandoned_empty_track();
         visible_change |= self.retire_abandoned_device_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
         visible_change |= self.retire_abandoned_locator_adds();
@@ -1986,6 +1989,8 @@ impl EditorView {
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
                 &mut self.clip_loop,
+                &mut self.pending_plugin_effect,
+                &mut self.failed_plugin_proposal,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2556,10 +2561,12 @@ impl EditorView {
         let created_note_selection = self.take_created_note_selection(&event);
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
+        self.observe_empty_track(&event);
         if event.project_replaced {
             self.time_selection_key_held = false;
             self.section_loop_key = Default::default();
             self.pending_plugin_effect.take();
+            self.failed_plugin_proposal.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
@@ -2591,6 +2598,8 @@ impl EditorView {
                 &mut self.pending_time_range_move,
                 &mut self.pending_loop,
                 &mut self.clip_loop,
+                &mut self.pending_plugin_effect,
+                &mut self.failed_plugin_proposal,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -2794,7 +2803,7 @@ impl EditorView {
             } else {
                 None
             };
-        self.observe_effect_bus_barrier(&event);
+        self.observe_catalog_barrier(&event);
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
         if !event.project_replaced {
@@ -3006,7 +3015,7 @@ impl EditorView {
             }
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
-            self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
+            self.refuse_catalog_barriers("device load canceled · project replaced");
             self.edit_cursor = None;
             self.clip_drop_cursor_epoch = None;
             self.locked_play_start = None;
@@ -3369,7 +3378,7 @@ impl EditorView {
             if let Some(snapshot) = self.device_gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
-            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was retired");
+            self.refuse_catalog_barriers("device load canceled · device edit was retired");
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,
@@ -3512,7 +3521,7 @@ impl EditorView {
                 self.error = Some(message.into());
             }
         }
-        if let Some(reason) = self.take_effect_bus_barrier_error() {
+        if let Some(reason) = self.take_catalog_barrier_error() {
             self.error = Some(reason.into());
         }
         self.finish_sampler_parameter(sampler_edit_complete);
@@ -3694,6 +3703,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::LoadTrackCatalogDevice { .. }
                 | Request::InsertPluginEffect(_)
                 | Request::CompareDevice { .. }
                 | Request::LoadDevicePreset { .. }
@@ -3927,6 +3937,24 @@ impl EditorView {
             self.last_enqueued_native_device_replace = Some((*device, *class, **type_id));
         }
         #[cfg(test)]
+        if let Request::LoadTrackCatalogDevice {
+            track,
+            class,
+            type_id,
+            placement,
+            ..
+        } = &request
+        {
+            match placement {
+                hex_session::service::TrackCatalogPlacement::Insert { .. } => {
+                    self.last_enqueued_native_device_add = Some((*track, *class, *type_id));
+                }
+                hex_session::service::TrackCatalogPlacement::ReplaceInstrument(device) => {
+                    self.last_enqueued_native_device_replace = Some((*device, *class, *type_id));
+                }
+            }
+        }
+        #[cfg(test)]
         if let Request::DropNativeDevice {
             project_generation,
             revision,
@@ -3934,6 +3962,7 @@ impl EditorView {
             track,
             before,
             replace,
+            ..
         } = &request
         {
             self.last_enqueued_native_device_drop = Some(EnqueuedNativeDeviceDrop {
@@ -4051,6 +4080,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::LoadTrackCatalogDevice { .. }
                 | Request::InsertPluginEffect(_)
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }

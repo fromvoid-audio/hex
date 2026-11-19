@@ -163,6 +163,8 @@ fn activate(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
+    use hex_session::service::{PluginEffectControl, TrackCatalogPlacement};
+
     let Some(before) = device_add::before(view, owner) else {
         view.device_panel.message = Some("device insertion cancelled · chain changed".into());
         close(view, window, cx);
@@ -172,26 +174,28 @@ fn activate(
         return;
     };
     let request = match owner {
-        DevicePanelOwner::Track(track) => match (
-            class,
-            state
+        DevicePanelOwner::Track(track) => {
+            let instrument = state
                 .project
                 .track(track)
                 .and_then(|track| track.instrument())
-                .map(hex_project::Device::id),
-        ) {
-            (NativeDeviceClass::Instrument, Some(device)) => Request::ReplaceNativeDevice {
-                device,
-                class,
-                type_id: Box::new(type_id),
-            },
-            _ => Request::AddNativeDevice {
+                .map(hex_project::Device::id);
+            let placement = match (class, instrument) {
+                (NativeDeviceClass::Instrument, Some(device)) => {
+                    TrackCatalogPlacement::ReplaceInstrument(device)
+                }
+                _ => TrackCatalogPlacement::Insert { before },
+            };
+            Request::LoadTrackCatalogDevice {
+                project_generation: view.project_generation,
+                revision: state.revision,
                 track,
                 class,
-                type_id: Box::new(type_id),
-                before,
-            },
-        },
+                type_id,
+                placement,
+                control: std::sync::Arc::new(PluginEffectControl::default()),
+            }
+        }
         DevicePanelOwner::Main | DevicePanelOwner::Return(_) => {
             if class != NativeDeviceClass::Effect {
                 return;
@@ -206,7 +210,7 @@ fn activate(
         }
         DevicePanelOwner::Source(_) => return,
     };
-    if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
+    if finalize_controls(view, cx) && view.enqueue_catalog_device(request) {
         view.device_panel.message = None;
         close(view, window, cx);
     }

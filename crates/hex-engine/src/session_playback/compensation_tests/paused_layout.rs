@@ -140,12 +140,7 @@ fn playing_latency_layout_change_restarts_audio_without_stopping() {
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
 }
 
-/// Resident linear PCM demonstrates why a primed graph cannot use the host
-/// cursor as its processing clock when latency changes. This is not a live
-/// publication contract: loops, commands, automation and source custody still
-/// require independent proof.
-#[test]
-fn primed_pcm_origin_requires_processing_clock_offset() {
+fn latency_origin_revisions() -> (TrackId, [Arc<PreparedRevision>; 2]) {
     let mut f = fixture(&[&[]], 4096);
     for audio in f.media.values_mut() {
         *audio = crate::Audio::new(
@@ -154,15 +149,23 @@ fn primed_pcm_origin_requires_processing_clock_offset() {
         )
         .unwrap();
     }
-    let no_latency = prepare(&f);
+    let dry = prepare(&f);
+    let track = f.tracks[0];
     f.editor
         .execute(Command::InsertDevice {
-            track: f.tracks[0],
+            track,
             before: None,
             state: limiter(),
         })
         .unwrap();
-    let with_latency = prepare(&f);
+    (track, [dry, prepare(&f)])
+}
+
+/// Resident linear PCM exposes the processing clock offset. A matching
+/// waveform alone cannot authorize a live publication.
+#[test]
+fn primed_pcm_origin_requires_processing_clock_offset() {
+    let (_, [no_latency, with_latency]) = latency_origin_revisions();
     let delay = with_latency.arrangement().main_latency_frames() as u64;
     assert_eq!(delay, 72);
     for (label, old_revision, new_revision, old_delay, new_delay) in [
@@ -181,12 +184,28 @@ fn primed_pcm_origin_requires_processing_clock_offset() {
                 .unwrap();
             let mut old_pcm = [[0.0; 2]; 257];
             let mut primed_pcm = old_pcm;
+            let mut fresh_pcm = old_pcm;
+            let mut fresh = SessionPlayback::new(Arc::clone(new_revision)).unwrap();
+            fresh.play_from(1024).unwrap();
             for chunk in old_pcm.chunks_mut(partition) {
                 old.render(chunk).unwrap();
             }
             for chunk in primed_pcm.chunks_mut(partition) {
                 primed.render(chunk).unwrap();
             }
+            for chunk in fresh_pcm.chunks_mut(partition) {
+                fresh.render(chunk).unwrap();
+            }
+            assert!(
+                fresh_pcm[..new_delay as usize]
+                    .iter()
+                    .all(|frame| *frame == [0.0; 2]),
+                "{label} unprimed pipeline fill"
+            );
+            assert!(
+                (fresh_pcm[new_delay as usize][0] - 1024.0 / 8192.0).abs() < 1e-6,
+                "{label} unprimed source origin"
+            );
             for i in 0..257 {
                 let old_expected = (1024 + i as u64 - old_delay) as f32 / 8192.0;
                 let new_expected = (1024 + i as u64 - new_delay) as f32 / 8192.0;
@@ -212,6 +231,53 @@ fn primed_pcm_origin_requires_processing_clock_offset() {
                 aligned.render(chunk).unwrap();
             }
             assert_eq!(aligned_pcm, old_pcm, "{label} partition={partition}");
+        }
+    }
+}
+
+#[test]
+fn content_aligned_latency_priming_changes_the_quantized_route_cut() {
+    let (track, revisions) = latency_origin_revisions();
+    // At 120 bpm the 1/32 grid falls every 3000 frames. Choose cuts close
+    // enough to the same boundary for the candidate clock to cross it.
+    for (old, new, host_cut, primed_cut, host_target, primed_target) in [
+        (0, 1, 2990, 3062, 3000, 6000),
+        (1, 0, 3010, 2938, 6000, 3000),
+        (1, 1, 2990, 2990, 3000, 3000),
+    ] {
+        let mut donor = SessionPlayback::new(Arc::clone(&revisions[old])).unwrap();
+        donor.play_from(0).unwrap();
+        donor.render(&mut vec![[0.0; 2]; host_cut]).unwrap();
+        let mut primed = SessionPlayback::new(Arc::clone(&revisions[new])).unwrap();
+        let origin =
+            host_cut as u64 - u64::from(revisions[old].arrangement().main_latency_frames());
+        primed.play_from(origin).unwrap();
+        let latency = revisions[new].arrangement().main_latency_frames() as usize;
+        primed.render(&mut vec![[0.0; 2]; latency]).unwrap();
+        assert_eq!(primed.performance_frame, primed_cut);
+        assert_eq!(primed.arrangement_frame, primed_cut);
+        assert_eq!(donor.performance_frame, host_cut as u64);
+        assert!(matches!(
+            primed.try_inherit_state_live_from(&mut donor),
+            Err(SessionPlaybackError::CandidateAlreadyUsed)
+        ));
+        assert_eq!(donor.performance_frame, host_cut as u64);
+        for (playback, target) in [(&mut donor, host_target), (&mut primed, primed_target)] {
+            playback
+                .apply(SessionPlaybackCommand::StopTrack {
+                    track,
+                    quantization: LaunchQuantization::ThirtySecond,
+                })
+                .unwrap();
+            assert_eq!(
+                playback
+                    .route_status(0)
+                    .unwrap()
+                    .pending
+                    .unwrap()
+                    .performance_frame,
+                target
+            );
         }
     }
 }

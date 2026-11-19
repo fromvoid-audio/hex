@@ -789,9 +789,14 @@ fn browser_device_double_click_appends_once_and_preserves_history(cx: &mut TestA
         });
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     }
+    editor.read_with(&visual, |view, _| {
+        assert!(view.pending_plugin_effect.is_some());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
     pump_until(&editor, cx, idle);
     let changed = editor.read_with(cx, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.pending_plugin_effect.is_none());
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.track(track).unwrap().devices().len(), 2);
         assert_eq!(

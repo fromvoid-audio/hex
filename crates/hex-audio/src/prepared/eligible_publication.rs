@@ -314,18 +314,20 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context_generation: u64,
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
-        self.stage_audio_candidate_preparation_inner(token, context_generation, None, None)
+        self.stage_audio_candidate_preparation_inner(token, context_generation, None, None, |_| {})
     }
 
     /// Stage a device edit prepared from the exact canonical project revision
     /// on this verified output. Installation is acknowledged after the real
     /// constructor graph and its stream protection move on callback.
+    /// Bind the exact receipt on control before the callback can claim it.
     pub fn stage_verified_device_insert(
         &mut self,
         token: crate::AudioCandidatePreparationToken,
         context: hex_engine::AudioSourceContext,
         predecessor: AppliedAudioSource,
         approval: Option<DeviceInsertConsent>,
+        bind_receipt: impl FnOnce(&CancellablePublicationReceipt),
     ) -> Result<(crate::AudioCandidateTicket, CancellablePublicationReceipt), &'static str> {
         let stale = "device insert requires the exact installed verified source";
         if !self.status.verified_streaming_mode.load(Acquire)
@@ -372,6 +374,7 @@ impl PublicationControl {
             context.project_generation,
             None,
             Some(&receipt),
+            bind_receipt,
         )?;
         self.latest_fresh_runtime_cancellation = Some(receipt.clone());
         Ok((ticket, receipt))
@@ -432,6 +435,7 @@ impl PublicationControl {
             context.project_generation,
             None,
             Some(&receipt),
+            |_| {},
         )?;
         self.latest_fresh_runtime_cancellation = Some(receipt.clone());
         Ok((ticket, receipt))
@@ -459,6 +463,7 @@ impl PublicationControl {
             context.project_generation,
             Some(context),
             None,
+            |_| {},
         )
     }
     fn stage_audio_candidate_preparation_inner(
@@ -467,6 +472,7 @@ impl PublicationControl {
         context_generation: u64,
         expected_context: Option<hex_engine::AudioSourceContext>,
         receipt: Option<&CancellablePublicationReceipt>,
+        bind_receipt: impl FnOnce(&CancellablePublicationReceipt),
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
@@ -505,6 +511,7 @@ impl PublicationControl {
             |mut queued| {
                 if let Some(receipt) = receipt {
                     queued.bind_receipt(PublicationReceiptOwner(receipt.clone()));
+                    bind_receipt(receipt);
                 }
                 chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
             },
