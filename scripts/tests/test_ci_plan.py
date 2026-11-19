@@ -339,7 +339,7 @@ class ScopeTests(unittest.TestCase):
                 steps = {step.step_id: step for step in ci.planned_steps({"scope": scope})}
                 self.assertIn("--lib", steps["ui-feature-tests"].argv)
                 self.assertNotIn("--test", steps["ui-feature-tests"].argv)
-                for target in ("midi_pressure_boundary", "sample_recorder_layout"):
+                for target in ("midi_pressure_boundary", "sample_recorder_layout", "operator_focus"):
                     step = steps[f"ui-{target.replace('_', '-')}-tests"]
                     self.assertEqual(step.argv,
                                      ("cargo", "test", "-p", "hex-ui", "--features",
@@ -352,7 +352,7 @@ class ScopeTests(unittest.TestCase):
         health = {"python": False, "workspace_inputs": False, "packages": ["hex-ui"]}
         steps = {step.step_id: step for step in ci.planned_steps({"scope": "rust", "health": health})}
         self.assertEqual(steps["health-tests"].argv, ("cargo", "test", "-p", "hex-ui", "--locked"))
-        for target in ("midi_pressure_boundary", "sample_recorder_layout"):
+        for target in ("midi_pressure_boundary", "sample_recorder_layout", "operator_focus"):
             self.assertFalse(any(target in step.argv for step in steps.values()))
 
     def test_hex_ui_standalone_targets_require_the_reviewed_features(self):
@@ -369,7 +369,7 @@ class ScopeTests(unittest.TestCase):
             (): {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
                  "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"},
             ("ui-unit-tier",): set(plan.UI_UNIT_FEATURES),
-            ("ui-test-support",): {"midi_pressure_boundary", "sample_recorder_layout"},
+            ("ui-test-support",): {"midi_pressure_boundary", "sample_recorder_layout", "operator_focus"},
         })
 
     def test_shared_theme_selects_unit_and_path_consumer_configurations(self):
@@ -3231,6 +3231,33 @@ class ModuleScopeTests(unittest.TestCase):
                 self.assertEqual(len(matches), int(path != cases[-1]))
                 if matches:
                     self.assertEqual(matches[0].step_id, "ui-consumer-sample_recorder_layout")
+                    self.assertTrue(matches[0].requires_tests)
+                    self.assertIn("ui-test-support", matches[0].argv)
+
+    def test_operator_focus_is_selected_from_its_owners_and_target(self):
+        root = SCRIPTS.parent
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        cases = ("src/editor/device_panel/operator_panel.rs",
+                 "src/editor/device_panel/operator_focus_fixture.rs",
+                 "src/editor/device_panel/tests/operator_tab_tests.rs",
+                 "tests/operator_focus.rs", "src/editor/user_errors.rs")
+        for path in cases:
+            with self.subTest(path=path):
+                paths = [f"crates/hex-ui/{path}"]
+                filters = plan.module_test_filters(root, paths, inventory, [owner])
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {owner: "ui-test-support"},
+                            "module_filters": filters}
+                steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                          "boundary": boundary, "cargo_inventory": inventory,
+                                          "paths": paths})
+                matches = [step for step in steps if "operator_focus" in step.argv]
+                self.assertEqual(len(matches), int(path != cases[-1]))
+                if matches:
+                    self.assertEqual(matches[0].step_id, "ui-consumer-operator_focus")
                     self.assertTrue(matches[0].requires_tests)
                     self.assertIn("ui-test-support", matches[0].argv)
 

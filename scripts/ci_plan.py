@@ -581,10 +581,14 @@ UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
                          "editor::track_reorder::subtree::": "track_group_focus",
                          "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary",
-                         "editor::sample_recorder::": "sample_recorder_layout"}
+                         "editor::sample_recorder::": "sample_recorder_layout",
+                         "editor::device_panel::operator_panel::": "operator_focus",
+                         "editor::device_panel::operator_focus_fixture::": "operator_focus",
+                         "editor::device_panel::tests::operator_tab_tests::": "operator_focus"}
 UI_EXTRA_TEST_FEATURES = {
     "midi_pressure_boundary": "ui-test-support",
     "sample_recorder_layout": "ui-test-support",
+    "operator_focus": "ui-test-support",
 }
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
@@ -608,6 +612,9 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::device_panel::rattle_panel::": (
         "editor::device_panel::tests::rattle_ui_tests::rattle_display_reads_authored_automation_and_manual_draft_precedence",
         "editor::device_panel::tests::rattle_ui_tests::rattle_track_return_panel_fits_and_drive_draft_commits_one_undo",
+    ),
+    "editor::device_panel::operator_focus_fixture::": (
+        "editor::device_panel::tests::operator_tab_tests::",
     ),
     "editor::device_panel::vst3_parameters::scrollbar::": (
         "editor::device_panel::vst3_parameters::tests::vst3_header_and_list_bounds_stay_fixed_across_touch_states",
@@ -1096,6 +1103,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 continue
             if file == directory / "tests" / "sample_recorder_layout.rs" and file.is_file():
                 filters.setdefault(owner, set()).add("editor::sample_recorder::")
+                continue
+            if file == directory / "tests" / "operator_focus.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::device_panel::tests::operator_tab_tests::")
                 continue
             relative_path = file.relative_to(directory).as_posix()
             harness_target = UI_UNIT_HARNESS_FILES.get(relative_path)
