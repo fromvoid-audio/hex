@@ -7,6 +7,185 @@ use hex_session::device_gesture::{ParameterId, ParameterValue};
 use hex_session::service::ResidentSeekHistory;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
+enum HeldLocatorSeek {
+    Accepted,
+    StaleRevision,
+    WrongOutput,
+    Cancelled,
+    ConsumedStop,
+}
+
+#[test]
+fn held_locator_checkpoint_allows_actual_resident_seek_publication() {
+    held_locator_seek(HeldLocatorSeek::Accepted);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_stale_revision() {
+    held_locator_seek(HeldLocatorSeek::StaleRevision);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_wrong_output() {
+    held_locator_seek(HeldLocatorSeek::WrongOutput);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_cancelled_seek() {
+    held_locator_seek(HeldLocatorSeek::Cancelled);
+}
+
+#[test]
+fn held_locator_checkpoint_refuses_seek_after_consumed_stop() {
+    held_locator_seek(HeldLocatorSeek::ConsumedStop);
+}
+
+fn held_locator_seek(case: HeldLocatorSeek) {
+    use std::time::{Duration, Instant};
+    let _native = native_fixture();
+    let files = Files::new();
+    let journal = files.0.join("held-locator.hex-journal");
+    let mut h = ResidentHarness::with_recovery(8192, journal.clone());
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let imported = h.run(Request::ImportToNewTrack {
+        path: files.wav(48_000, 8192),
+        before_track: None,
+        start: 0,
+    });
+    applied = h.applied(applied).0;
+    let track = imported.state.project.tracks()[0].id();
+    let reverb = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.reverb",
+    ))
+    .unwrap();
+    h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: reverb,
+    }));
+    applied = h.applied(applied).0;
+    let mut gate = hex_session::service::hold_next_checkpoint(journal.clone()).unwrap();
+    h.service
+        .submit(Request::Edit(Command::AddArrangementLocator { frame: 129 }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match gate.try_entered() {
+            Ok(()) => break,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(error) => panic!("checkpoint gate: {error}"),
+        }
+        assert!(Instant::now() < deadline, "checkpoint did not enter");
+        std::thread::yield_now();
+    }
+    let view = loop {
+        if let Ok(view) = h.service.try_arrangement_edit_view() {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "committed locator view missing");
+        std::thread::yield_now();
+    };
+    let state = view.state.upgrade().unwrap();
+    let locator = state.project.arrangement_locators().first().unwrap();
+    assert_eq!(locator.frame(), 129);
+    let (locator_audio, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, state.revision);
+    assert!(
+        metadata.requires_preroll,
+        "fixture must require a stateful seek"
+    );
+    assert!(
+        h.service.try_event().is_err(),
+        "checkpoint terminal is still held"
+    );
+    let mut intent = h.seek_intent(1, state.revision, None, None);
+    let expected_output = intent.fence.output_identity;
+    intent.destination_frame = locator.frame();
+    match case {
+        HeldLocatorSeek::Accepted => {}
+        HeldLocatorSeek::StaleRevision => intent.project_revision += 1,
+        HeldLocatorSeek::WrongOutput => intent.fence.output_identity += 1,
+        HeldLocatorSeek::ConsumedStop => {
+            h.audio.as_ref().unwrap().control.stop();
+            h.render();
+        }
+        HeldLocatorSeek::Cancelled => intent
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release),
+    }
+    let requested_revision = intent.project_revision;
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    let result = h.seek_result();
+    assert_eq!(result.request_id, 1);
+    assert_eq!(result.project_generation, view.project_generation);
+    assert_eq!(result.project_revision, requested_revision);
+    assert!(
+        h.service.try_event().is_err(),
+        "seek terminal must remain ordered"
+    );
+    match case {
+        HeldLocatorSeek::Accepted => {
+            let hex_session::service::ResidentPublicationAcceptance::Submitted {
+                audio_revision,
+                output_identity,
+            } = result.result.unwrap()
+            else {
+                panic!("seek must submit to the real resident callback");
+            };
+            assert_eq!(output_identity, expected_output);
+            let (installed, metadata) = h.applied(locator_audio);
+            assert_eq!(installed, audio_revision);
+            assert_eq!(metadata.context.project_generation, view.project_generation);
+            assert_eq!(metadata.context.editor_revision, state.revision);
+            assert_eq!(metadata.seek_request, Some(1));
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(
+                h.audio.as_ref().unwrap().control.output_identity(),
+                Some(expected_output)
+            );
+            assert_eq!(status.applied_revision.load(Acquire), audio_revision);
+            assert!(status.playing.load(Acquire));
+            assert!(status.position.load(Acquire) >= locator.frame());
+        }
+        _ => {
+            let error = result.result.unwrap_err();
+            let expected = match case {
+                HeldLocatorSeek::StaleRevision | HeldLocatorSeek::Cancelled => {
+                    "seek target changed or was cancelled"
+                }
+                HeldLocatorSeek::WrongOutput | HeldLocatorSeek::ConsumedStop => "runtime changed",
+                HeldLocatorSeek::Accepted => unreachable!("accepted case handled above"),
+            };
+            assert!(error.contains(expected), "unexpected refusal: {error}");
+            h.render();
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.applied_revision.load(Acquire), locator_audio);
+            assert!(!status.playing.load(Acquire));
+        }
+    }
+    assert!(
+        h.service.try_event().is_err(),
+        "checkpoint terminal remains held after seek"
+    );
+    gate.release().unwrap();
+    let locator_terminal = h.next();
+    assert!(
+        matches!(locator_terminal.created, Some(Created::ArrangementLocator(id)) if id == locator.id())
+    );
+    assert_eq!(locator_terminal.state.revision, state.revision);
+    let seek_terminal = h.next();
+    assert_eq!(
+        seek_terminal.error.is_some(),
+        matches!(
+            case,
+            HeldLocatorSeek::StaleRevision | HeldLocatorSeek::Cancelled
+        )
+    );
+    assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
+}
+
 #[test]
 fn explicit_native_history_matches_linear_pcm_and_keeps_refused_old_owner() {
     std::thread::Builder::new()
@@ -15,6 +194,144 @@ fn explicit_native_history_matches_linear_pcm_and_keeps_refused_old_owner() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn streamed_pending_fresh_seek_preserves_undo_and_redo() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| streamed_pending_history_case(false))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn streamed_pending_section_preserves_undo_and_redo() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| streamed_pending_history_case(true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn streamed_pending_history_case(section: bool) {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(4);
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let imported = h.run(Request::ImportToNewTrack {
+        path: files.wav(48_000, 32_768),
+        before_track: None,
+        start: 0,
+    });
+    applied = h.applied(applied).0;
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+    let track = imported.state.project.tracks()[0].id();
+    let before = if section {
+        let configured = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 129,
+            end: 513,
+            enabled: true,
+        }));
+        applied = h.applied(applied).0;
+        configured.state.project.snapshot()
+    } else {
+        imported.state.project.snapshot()
+    };
+    let renamed = h.run(Request::Edit(Command::RenameTrack {
+        track,
+        name: "history target".into(),
+    }));
+    applied = h.applied(applied).0;
+    let after = renamed.state.project.snapshot();
+    assert_ne!(before, after);
+    let mut revision = renamed.state.revision;
+    let mut history = (renamed.state.can_undo, renamed.state.can_redo);
+
+    for (request_id, action, expected, retry_expected) in [
+        (1, Request::Undo, &after, &before),
+        (2, Request::Redo, &before, &after),
+    ] {
+        let mut intent = h.seek_intent(request_id, revision, None, None);
+        intent.destination_frame = 129;
+        if section {
+            intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+                region: hex_project::LoopRegion::new(129, 513, true).unwrap(),
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            });
+        }
+        h.service.submit_resident_arrangement_seek(intent).unwrap();
+        let submitted = h.next();
+        assert!(submitted.error.is_none(), "{:?}", submitted.error);
+        let accepted = h.seek_result().result.unwrap();
+        let hex_session::service::ResidentPublicationAcceptance::Submitted {
+            audio_revision, ..
+        } = accepted
+        else {
+            panic!("seek must be submitted before callback installation")
+        };
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+
+        h.service.submit(action).unwrap();
+        let refused = h.next();
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("publication already pending")),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(refused.state.revision, revision);
+        assert_eq!(&refused.state.project.snapshot(), expected);
+        assert_eq!((refused.state.can_undo, refused.state.can_redo), history);
+        if request_id == 1 {
+            assert!(refused.state.can_undo);
+        } else {
+            assert!(refused.state.can_redo);
+        }
+
+        let (installed, metadata) = h.applied(applied);
+        assert_eq!(installed, audio_revision);
+        assert_eq!(metadata.seek_request, Some(request_id));
+        if section {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert!((129..513).contains(&status.position.load(Acquire)));
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+        }
+        applied = installed;
+        let retried = h.run(if request_id == 1 {
+            Request::Undo
+        } else {
+            Request::Redo
+        });
+        assert_eq!(&retried.state.project.snapshot(), retry_expected);
+        revision = retried.state.revision;
+        history = (retried.state.can_undo, retried.state.can_redo);
+        applied = h.applied(applied).0;
+    }
 }
 
 fn edit(h: &mut ResidentHarness, applied: &mut u64, command: Command) -> Event {
@@ -56,6 +373,12 @@ fn assert_pcm(
 }
 
 fn history_case() {
+    let profile = std::env::var_os("HEX_TEST_HISTORY_READINESS_PROFILE").is_some();
+    assert!(
+        !profile || !cfg!(debug_assertions),
+        "profile requires an optimized build"
+    );
+    let setup_started = Instant::now();
     let _native = native_fixture();
     let files = Files::new();
     let frames = 32_768;
@@ -204,11 +527,18 @@ fn history_case() {
         )
         .unwrap(),
     );
+    if profile {
+        println!(
+            "HISTORY_READY_SETUP,rate=48000,tracks=2,voices=1,feedback=0.3,streamed_frames={frames},track_effect=dc_remove,return_effect=dc_remove,setup_us={}",
+            setup_started.elapsed().as_micros()
+        );
+    }
     for (id, destination, playing) in [(1, 512, true), (3, 24_004, false)] {
         let mut intent = h.seek_intent(id, authored.state.revision, None, None);
         intent.history = ResidentSeekHistory::Preserve;
         intent.destination_frame = destination;
         intent.start_playing = playing;
+        let submitted_at = Instant::now();
         h.service.submit_resident_arrangement_seek(intent).unwrap();
         assert!(h.next().error.is_none());
         let result = h.seek_result();
@@ -218,7 +548,16 @@ fn history_case() {
         else {
             panic!("native submission")
         };
+        let submitted_result_at = Instant::now();
         let (revision, metadata) = h.applied(applied);
+        if profile {
+            println!(
+                "HISTORY_READY_SAMPLE,destination={destination},start_playing={playing},submit_to_accept_us={},accept_to_ack_us={},submit_to_ack_us={}",
+                submitted_result_at.duration_since(submitted_at).as_micros(),
+                submitted_result_at.elapsed().as_micros(),
+                submitted_at.elapsed().as_micros()
+            );
+        }
         assert_eq!(revision, audio_revision);
         assert_eq!(metadata.seek_request, Some(id));
         applied = revision;
@@ -312,4 +651,122 @@ fn history_case() {
             .load(Acquire),
         applied
     );
+}
+
+#[test]
+fn streamed_section_launch_tracks_audible_clock_with_main_latency() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let _native = native_fixture();
+            let files = Files::new();
+            let mut h = ResidentHarness::with_frame_limit(4);
+            assert!(h.next().error.is_none());
+            let mut applied = h.applied(0).0;
+            let imported = h.run(Request::ImportToNewTrack {
+                path: files.wav(48_000, 32_768),
+                before_track: None,
+                start: 0,
+            });
+            applied = h.applied(applied).0;
+            assert!(
+                imported
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .sources()
+                    .values()
+                    .any(|source| matches!(
+                        source,
+                        hex_session::AudioSourceBinding::VerifiedFile(_)
+                    ))
+            );
+            let configured = h.run(Request::Edit(Command::SetLoopRegion {
+                start: 16_000,
+                end: 16_384,
+                enabled: true,
+            }));
+            assert!(configured.error.is_none(), "{:?}", configured.error);
+            applied = h.applied(applied).0;
+            let limiter = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            let limiter = hex_engine::patch_native_device_parameter(
+                &limiter,
+                ParameterId::from_static(6),
+                ParameterValue::Choice(2),
+            )
+            .unwrap();
+            let edited = h.run(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state: limiter,
+            }));
+            assert!(edited.error.is_none(), "{:?}", edited.error);
+            applied = h.applied(applied).0;
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            for _ in 0..8 {
+                h.render();
+            }
+            let mut intent = h.seek_intent(1, edited.state.revision, None, None);
+            intent.destination_frame = 16_000;
+            intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+                region: hex_project::LoopRegion::new(16_000, 16_384, true).unwrap(),
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            });
+            h.service.submit_resident_arrangement_seek(intent).unwrap();
+            let submitted = h.next();
+            assert!(submitted.error.is_none(), "{:?}", submitted.error);
+            let hex_session::service::ResidentPublicationAcceptance::Submitted {
+                audio_revision,
+                ..
+            } = h.seek_result().result.unwrap()
+            else {
+                panic!("section publication must be submitted")
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let first = loop {
+                h.pump();
+                let pcm = h.render();
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                if status.applied_revision.load(Acquire) == audio_revision {
+                    break pcm;
+                }
+                assert_eq!(status.applied_revision.load(Acquire), applied);
+                assert!(
+                    Instant::now() < deadline,
+                    "streamed section did not install"
+                );
+                std::thread::yield_now();
+            };
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.position.load(Acquire), 16_064);
+            assert_eq!(status.audible_position.load(Acquire), 16_000);
+            assert!(first.iter().flatten().all(|sample| sample.is_finite()));
+            let mut heard = false;
+            for block in 2..=12 {
+                let pcm = h.render();
+                assert!(pcm.iter().flatten().all(|sample| sample.is_finite()));
+                if block >= 7 {
+                    heard |= pcm.iter().flatten().any(|sample| sample.abs() > 0.001);
+                }
+                let elapsed = block * 64;
+                assert_eq!(status.position.load(Acquire), 16_000 + elapsed % 384);
+                assert_eq!(
+                    status.audible_position.load(Acquire),
+                    16_000 + elapsed.saturating_sub(288) % 384
+                );
+            }
+            assert!(heard, "streamed audio must be heard after the delay fills");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

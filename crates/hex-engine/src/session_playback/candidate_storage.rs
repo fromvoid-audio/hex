@@ -14,11 +14,14 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            paused_source_monitor,
+            defer_paused_source_monitor: _,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
+            authored_clock_epoch: _,
             gain_recording_override: _,
             live_gain: _,
             live_gain_scratch: _,
@@ -33,6 +36,8 @@ impl SessionPlayback {
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            pending_shared_chase: _, // inline and charged by size_of::<Self>()
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
@@ -56,12 +61,16 @@ impl SessionPlayback {
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
             tail_output_active: _,
             tail_output_scratch: _,
+            detached_tail_group_limit: _,
             releases,
             release_scratch,
             retained_contexts,
@@ -80,11 +89,14 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             monitor_source_releases: _,
+            stopped_input: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
             live_restart: _,
+            foreign_continuation,
+            require_continuous_insert: _,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
         if !source_effects.is_empty()
@@ -92,8 +104,10 @@ impl SessionPlayback {
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
+            || paused_source_monitor.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
+            || foreign_continuation.is_some()
             || mutable_instruments
                 .iter()
                 .flatten()

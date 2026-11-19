@@ -56,8 +56,9 @@ pub struct ProjectOutputTap<'a, 'observer> {
     returns: &'a [ReturnId],
     observer: &'a mut ProjectSignalObserver<'observer>,
     timing: Option<&'a mut ProjectTimingObserver<'observer>>,
-    // Callback-relative start of the current render part. `Playback` splits a
-    // callback only at a transport declick boundary and restores zero after.
+    timing_only: bool,
+    // Callback-relative start of the current render part. Nested playback
+    // splits add their offsets and restore the enclosing part afterward.
     part_offset: usize,
 }
 impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
@@ -69,7 +70,9 @@ impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
     }
     /// Forward a speculative borrowed span through a chunk-offset adapter.
     pub fn observe(&mut self, signal: ProjectSignal, offset: usize, frames: &[Frame]) {
-        (self.observer)(signal, offset, frames);
+        if !self.timing_only || signal == ProjectSignal::Unavailable {
+            (self.observer)(signal, offset, frames);
+        }
     }
     pub fn new(
         tracks: &'a [u64],
@@ -94,19 +97,44 @@ impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
             returns,
             observer,
             timing: None,
+            timing_only: false,
             part_offset: 0,
         })
+    }
+    /// Observe transport timing and availability without exposing any PCM.
+    /// All observations remain speculative until the complete callback succeeds.
+    pub fn timing_only(
+        timing: &'a mut ProjectTimingObserver<'observer>,
+        observer: &'a mut ProjectSignalObserver<'observer>,
+    ) -> Self {
+        Self {
+            tracks: &[],
+            returns: &[],
+            observer,
+            timing: Some(timing),
+            timing_only: true,
+            part_offset: 0,
+        }
+    }
+    /// Whether this tap is structurally unable to publish project PCM.
+    pub fn is_timing_only(&self) -> bool {
+        self.timing_only
     }
     /// Observe the playing transport alongside PCM. Stopped output has no clock.
     pub fn with_timing(mut self, timing: &'a mut ProjectTimingObserver<'observer>) -> Self {
         self.timing = Some(timing);
         self
     }
-    pub(crate) fn set_part_offset(&mut self, offset: usize) {
-        self.part_offset = offset;
+    pub(crate) fn replace_part_offset(&mut self, offset: usize) -> usize {
+        std::mem::replace(&mut self.part_offset, offset)
+    }
+    pub(crate) fn part_offset(&self) -> usize {
+        self.part_offset
     }
     pub(crate) fn main(&mut self, frames: &[Frame]) {
-        (self.observer)(ProjectSignal::Master, self.part_offset, frames);
+        if !self.timing_only {
+            (self.observer)(ProjectSignal::Master, self.part_offset, frames);
+        }
     }
     pub(crate) fn unavailable(&mut self) {
         (self.observer)(ProjectSignal::Unavailable, 0, &[]);

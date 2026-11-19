@@ -1,12 +1,20 @@
 //! Shared fixture for Verified-streaming native worker, publication and callback tests.
 use super::*;
+mod arrangement;
+mod effects;
 mod group;
+mod tempo_deadline;
 
 pub(in crate::native_audio) fn actual_native_harness() -> Harness {
+    native_harness_with(|_| {})
+}
+
+fn native_harness_with(configure: impl FnOnce(&mut NativeAudioSink)) -> Harness {
     let backend = Arc::new(Mutex::new(None));
     let factory_backend = Arc::clone(&backend);
     let (events, receiver) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
+    configure(&mut sink);
     assert!(sink.resident_publication_enabled());
     sink.output_factory = Some(Box::new(move |rate| {
         let mut slot = factory_backend.lock().unwrap();

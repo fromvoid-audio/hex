@@ -150,6 +150,91 @@ pub(crate) fn split_midi(
 mod tests {
     use super::*;
     use crate::{AudioDomainClock, Command, Editor, WarpResampler};
+
+    #[test]
+    fn long_plain_reverse_keeps_source_and_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: 20_000_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let reversed = editor.project().snapshot();
+        let clip = editor.project().clip(clip).unwrap();
+        assert_eq!(
+            clip.audio_edit().unwrap().plain_reversed_source(clip),
+            Some((0, 20_000_000))
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), reversed);
+    }
+
+    #[test]
+    fn plain_reversed_source_reports_exact_extent_and_rejects_processing() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: crate::TrimEdge::Left,
+                frame: 1_000,
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let clip = editor.project().clip(clip).unwrap();
+        let edit = clip.audio_edit().unwrap();
+        assert_eq!(
+            edit.plain_reversed_source(clip),
+            Some((clip.source_offset(), clip.duration()))
+        );
+
+        let mut pitch = edit.clone();
+        Arc::make_mut(&mut pitch.domain).pitch_cents = 100;
+        assert_eq!(pitch.plain_reversed_source(clip), None);
+        let mut looping = edit.clone();
+        Arc::make_mut(&mut looping.domain).looping = true;
+        assert_eq!(looping.plain_reversed_source(clip), None);
+        let mut crop = edit.clone();
+        crop.view_start += 1;
+        assert_eq!(crop.plain_reversed_source(clip), None);
+        let mut forward = edit.clone();
+        forward.content_view.as_mut().unwrap().window.reversed = false;
+        assert_eq!(forward.plain_reversed_source(clip), None);
+    }
     #[test]
     fn musical_unwarped_reverse_projects_the_retained_source_cycle_edges() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

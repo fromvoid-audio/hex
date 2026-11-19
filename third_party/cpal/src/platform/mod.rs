@@ -732,6 +732,11 @@ mod platform_impl {
 mod platform_impl {
     #[cfg_attr(docsrs, doc(cfg(any(target_os = "macos", target_os = "ios"))))]
     pub use crate::host::coreaudio::Host as CoreAudioHost;
+    #[cfg(target_os = "macos")]
+    pub use crate::host::coreaudio::{
+        OutputTiming as CoreAudioOutputTiming, OutputTimingReceipt as CoreAudioOutputTimingReceipt,
+        WorkerTimeConstraint as CoreAudioWorkerTimeConstraint,
+    };
     #[cfg(all(feature = "jack", target_os = "macos"))]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "jack", target_os = "macos"))))]
     pub use crate::host::jack::Host as JackHost;

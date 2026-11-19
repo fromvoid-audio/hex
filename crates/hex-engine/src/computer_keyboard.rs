@@ -271,6 +271,8 @@ struct Voice {
     age: u64,
     gate: Option<u64>,
     id: u64,
+    // Input-local proof only; source custody must be checked before replay.
+    muted_source_onset: bool,
 }
 
 pub(crate) enum KeyboardClock<'a> {
@@ -1575,6 +1577,7 @@ impl ComputerKeyboardRuntime {
                     age: 0,
                     gate: None,
                     id: self.scratch_next_id,
+                    muted_source_onset: false,
                 });
                 events[len] = NativeInstrumentEvent::NoteOn {
                     frame_offset: 0,
@@ -2595,7 +2598,7 @@ mod pitch_domain_tests {
 
 #[cfg(test)]
 #[path = "computer_keyboard_clock_admission_tests.rs"]
-mod clock_admission_tests;
+pub(crate) mod clock_admission_tests;
 
 #[cfg(test)]
 #[path = "computer_keyboard/tuning_tests.rs"]

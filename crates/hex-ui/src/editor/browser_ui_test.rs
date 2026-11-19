@@ -171,6 +171,587 @@ fn browser_drag_fixture_with_tracks(
     (handle, editor, tracks, directory, path)
 }
 
+fn windowed_audition_matches_resident_pcm(cx: &mut TestAppContext, rate: u32, fraction: f64) {
+    use hex_audio::sample_preview::Phase;
+    use std::sync::atomic::AtomicBool;
+
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(rate, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let expected = hex_session::service::PreviewSources::default()
+        .prepare_playback(&path, rate, &AtomicBool::new(false))
+        .unwrap();
+    let start = super::audition_geometry::frame_at_fraction(expected.frames().len(), fraction);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    // Finish startup preference/scan callbacks before installing the test output.
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    let replay_path = path.clone();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: rate,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.browser.loading = false;
+        view.browser.error = None;
+        view.play_browser_sample_from(path, fraction, cx);
+        assert!(
+            view.browser.playback_in_flight.is_some(),
+            "request not started: {} {:?}",
+            view.status,
+            view.error
+        );
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let first = loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            break frame[0];
+        }
+        if std::time::Instant::now() >= deadline {
+            let detail = editor.read_with(&visual, |view, _| {
+                format!(
+                    "status={} error={:?} in_flight={} snapshot={:?}",
+                    view.status,
+                    view.error,
+                    view.browser.playback_in_flight.is_some(),
+                    view.audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.preview_snapshot())
+                )
+            });
+            editor.update(&mut visual, |view, _| {
+                view.cancel_browser_sample_playback();
+                view.audio.take().unwrap().control.close();
+            });
+            backend.close();
+            drop(output);
+            panic!("first window did not play: {detail}");
+        }
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(first, expected.frames()[start]);
+    assert!(
+        editor.read_with(&visual, |view, _| view.browser.playback_in_flight.is_some()),
+        "continuation remains active after the first window starts"
+    );
+    let mut position = start + 1;
+    while position < expected.frames().len() {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        let count = (expected.frames().len() - position).min(128);
+        let mut rendered = vec![[0.0; 2]; count];
+        backend.render(&mut rendered).unwrap();
+        assert_eq!(
+            rendered,
+            expected.frames()[position..position + count],
+            "gap at {position}"
+        );
+        position += count;
+    }
+    let snapshot = editor.read_with(&visual, |view, _| {
+        view.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .preview_snapshot()
+            .unwrap()
+    });
+    assert_eq!(
+        (snapshot.phase, snapshot.frame),
+        (Phase::Finished, expected.frames().len() as u64)
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.play_browser_sample_from(replay_path, fraction, cx);
+    });
+    let replay_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            assert_eq!(frame[0], expected.frames()[start]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < replay_deadline,
+            "warm replay did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| {
+        view.cancel_browser_sample_playback();
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_matches_pcm_at_output_rate(cx: &mut TestAppContext) {
+    windowed_audition_matches_resident_pcm(cx, 48_000, 0.0);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_matches_resampled_scrub_pcm(cx: &mut TestAppContext) {
+    windowed_audition_matches_resident_pcm(cx, 44_100, 0.25);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_supersession_and_stop_silence_the_old_source(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, directory, first) = browser_drag_fixture(cx);
+    std::fs::write(&first, mono_pcm_wav(20_000)).unwrap();
+    let second = directory.0.join("second.wav");
+    let mut bytes = mono_pcm_wav(20_000);
+    for sample in bytes[44..].chunks_exact_mut(2) {
+        sample.copy_from_slice(&8_000_i16.to_le_bytes());
+    }
+    std::fs::write(&second, bytes).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(first, 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first source did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.play_browser_sample_from(second, 0.0, cx)
+    });
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        assert!(
+            frame == [[0.0; 2]; 1] || frame == [[8_000.0 / 32_768.0; 2]; 1],
+            "old source returned after supersession"
+        );
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            assert_eq!(frame, [[8_000.0 / 32_768.0; 2]; 1]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "replacement source did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| view.cancel_browser_sample_playback());
+    let mut frame = [[1.0; 2]; 1];
+    backend.render(&mut frame).unwrap();
+    assert_eq!(frame, [[0.0; 2]; 1]);
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn browser_windowed_audition_reports_source_change_and_stops(cx: &mut TestAppContext) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path.clone(), 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source did not start");
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    std::fs::write(&path, mono_pcm_wav(20_001)).unwrap();
+    loop {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        let mut frames = [[0.0; 2]; 128];
+        backend.render(&mut frames).unwrap();
+        let error = editor.read_with(&visual, |view, _| {
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("audio file changed"))
+        });
+        if error {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "changed source was not reported"
+        );
+    }
+    let mut frame = [[1.0; 2]; 1];
+    backend.render(&mut frame).unwrap();
+    assert_eq!(frame, [[0.0; 2]; 1]);
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn browser_adpcm_audition_keeps_resident_fallback(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    use std::sync::atomic::AtomicBool;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(
+        &path,
+        include_bytes!("../../../hex-media/tests/fixtures/adpcm_ima_wav-1.wav"),
+    )
+    .unwrap();
+    assert!(
+        hex_session::service::PreviewWindowSource::open(&path, 48_000, &AtomicBool::new(false))
+            .is_err()
+    );
+    let expected = hex_session::service::PreviewSources::default()
+        .prepare_playback(&path, 48_000, &AtomicBool::new(false))
+        .unwrap();
+    assert!(!expected.frames().is_empty());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path, 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        let playing = editor.read_with(&visual, |view, _| {
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .preview_snapshot()
+                .unwrap()
+                .phase
+                == Phase::Playing
+        });
+        if playing {
+            assert_eq!(frame[0], expected.frames()[0]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "resident fallback did not play"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| {
+        view.cancel_browser_sample_playback();
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn stale_browser_audition_cannot_cancel_a_replacement_output_or_request(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let mut client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    let first = client.preview_request().unwrap();
+    client
+        .preview_publish(
+            first,
+            hex_engine::Audio::new(48_000, vec![[0.5; 2]; 16]).unwrap(),
+        )
+        .unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.browser.playback_output = Some((identity.wrapping_add(1), first));
+        view.browser.playback_phase = Phase::Playing;
+        assert!(view.poll_browser_sample_playback());
+    });
+    let mut frame = [[0.0; 2]; 1];
+    backend.render(&mut frame).unwrap();
+    assert_eq!(
+        frame, [[0.5; 2]; 1],
+        "old output identity canceled the new output"
+    );
+    editor.update(&mut visual, |view, _| {
+        let audio = view.audio.as_mut().unwrap();
+        let second = audio.control.preview_request().unwrap();
+        audio
+            .control
+            .preview_publish(
+                second,
+                hex_engine::Audio::new(48_000, vec![[0.75; 2]; 16]).unwrap(),
+            )
+            .unwrap();
+        view.browser.playback_output = Some((identity, first));
+        view.browser.playback_phase = Phase::Playing;
+        assert!(view.poll_browser_sample_playback());
+    });
+    backend.render(&mut frame).unwrap();
+    assert_eq!(
+        frame, [[0.75; 2]; 1],
+        "old generation canceled a newer preview"
+    );
+    editor.update(&mut visual, |view, cx| {
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path, 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "windowed source did not start"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    editor.update(&mut visual, |view, _| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        let token = control.preview_request().unwrap();
+        control
+            .preview_publish(
+                token,
+                hex_engine::Audio::new(48_000, vec![[0.875; 2]; 64]).unwrap(),
+            )
+            .unwrap();
+    });
+    let mut replacement_started = false;
+    for _ in 0..8 {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        backend.render(&mut frame).unwrap();
+        if frame == [[0.875; 2]; 1] {
+            replacement_started = true;
+        } else {
+            assert!(
+                !replacement_started && frame == [[0.0; 2]; 1],
+                "old window producer canceled the newer request"
+            );
+        }
+    }
+    assert!(replacement_started, "replacement preview did not start");
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn windowed_browser_audition_handles_device_fault_and_output_replacement(cx: &mut TestAppContext) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    std::fs::write(&path, mono_pcm_wav(20_000)).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let client = output.take_client().unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.browser.section = BrowserSection::Samples;
+        view.play_browser_sample_from(path.clone(), 0.0, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        backend.render(&mut frame).unwrap();
+        if frame == [[4_000.0 / 32_768.0; 2]; 1] {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source did not start");
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+    }
+    backend.report_device_error().unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.poll_browser_sample_playback());
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Unavailable
+        );
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+    drop(output);
+    let (mut replacement, mut replacement_backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let mut client = replacement.take_client().unwrap();
+    let token = client.preview_request().unwrap();
+    client
+        .preview_publish(
+            token,
+            hex_engine::Audio::new(48_000, vec![[0.625; 2]; 64]).unwrap(),
+        )
+        .unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "replacement".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+    });
+    for _ in 0..8 {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+        let mut frame = [[0.0; 2]; 1];
+        replacement_backend.render(&mut frame).unwrap();
+        assert_eq!(
+            frame, [[0.625; 2]; 1],
+            "old browser task affected replacement output"
+        );
+    }
+    editor.update(&mut visual, |view, _| {
+        view.audio.take().unwrap().control.close()
+    });
+    replacement_backend.close();
+    drop(replacement);
+}
+
 #[gpui::test]
 fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);

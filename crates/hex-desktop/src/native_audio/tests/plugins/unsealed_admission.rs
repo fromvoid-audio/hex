@@ -79,6 +79,7 @@ fn unsealed_native_source_refusal_keeps_built_verified_candidate_for_retry() {
                 48_000,
                 hex_audio::plugin_effects::PluginProfile::Effect,
                 None,
+                None,
             )
             .unwrap();
         wait_for_native_facts(control, binding);

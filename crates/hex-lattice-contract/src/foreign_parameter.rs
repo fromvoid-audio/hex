@@ -5,6 +5,8 @@
 /// need separate endpoints at several SDK slices, so this exceeds the target
 /// metadata limit. The native VST3 helper mirrors this wire capacity.
 pub const MAX_FOREIGN_PARAMETER_POINTS: usize = 128;
+/// Additional SDK timing slices in one hosted block, after its opening slice.
+pub const MAX_FOREIGN_TIMING_CHANGES: usize = 7;
 
 /// Distinct parameters armed on one foreign source. The control owner reserves
 /// their metadata independently of the PCM point queue.

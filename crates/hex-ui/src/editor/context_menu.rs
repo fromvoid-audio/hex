@@ -40,7 +40,12 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    AudioInput {
+        id: Option<hex_audio::input_devices::InputDeviceId>,
+        name: gpui::SharedString,
+    },
     SourcePicker(device_panel::SourcePickerChoice),
+    SourceManager(device_panel::SourceManagerAction),
     HistoryPlayback(super::history_playback::MenuAction),
     Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
@@ -617,6 +622,7 @@ impl EditorView {
         self.dismiss_context_menu(window, cx);
         match action {
             EditorContextAction::SourcePicker(choice) => choice.perform(self, window, cx),
+            EditorContextAction::SourceManager(action) => action.perform(self, window, cx),
             EditorContextAction::HistoryPlayback(action) => {
                 self.history_playback_menu_action(action, cx)
             }
@@ -675,6 +681,10 @@ impl EditorView {
                     self.set_input_quantization(policy);
                     cx.notify();
                 }
+            }
+            EditorContextAction::AudioInput { id, name } => {
+                self.select_audio_input(id, name);
+                cx.notify();
             }
             EditorContextAction::LaunchQuantization {
                 generation,
@@ -940,7 +950,9 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::AudioInput { .. } => self.audio_recorder.blocks_edits(),
                 EditorContextAction::SourcePicker(choice) => !choice.current(self),
+                EditorContextAction::SourceManager(action) => !action.current(self),
                 EditorContextAction::HistoryPlayback(action) => {
                     !self.history_playback_menu_current(action)
                 }
@@ -1065,7 +1077,10 @@ impl EditorView {
             if !menu.items.iter().any(|item| {
                 matches!(
                     item.action,
-                    EditorContextAction::Automation(_) | EditorContextAction::SourcePicker(_)
+                    EditorContextAction::Automation(_)
+                        | EditorContextAction::AudioInput { .. }
+                        | EditorContextAction::SourcePicker(_)
+                        | EditorContextAction::SourceManager(_)
                 )
             }) {
                 return crate::context_menu::popup(
@@ -1092,7 +1107,12 @@ impl EditorView {
 
 pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
     match &item.action {
+        EditorContextAction::AudioInput { id: Some(_), name } => {
+            hex_session::service::text::verbatim(name).into()
+        }
+        EditorContextAction::AudioInput { name, .. } => name.clone(),
         EditorContextAction::SourcePicker(choice) => choice.label.clone(),
+        EditorContextAction::SourceManager(action) => action.label.clone(),
         EditorContextAction::Tags(action) => action.label(),
         EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
             if item.label == "parameter" =>

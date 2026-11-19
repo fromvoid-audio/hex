@@ -76,6 +76,7 @@ fn diagrams_stage_keyboard_choices_without_context_or_transport_edits_and_commit
 ) {
     cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let source = state.project.track(track).unwrap().source_id().unwrap();
     let original = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -174,6 +175,32 @@ fn diagrams_stage_keyboard_choices_without_context_or_transport_edits_and_commit
     visual.run_until_parked();
     assert!(visual.debug_bounds(popup(device)).is_none());
     editor.read_with(&visual, |view, _| {
-        assert!(!view.device_panel.operator_previews.contains_key(&device))
+        let preview = view
+            .device_panel
+            .operator_previews
+            .get(&device)
+            .expect("retained source preview");
+        assert_eq!(preview.routing_popup, None);
     });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::BindTrackSource {
+            track,
+            source: Some(source)
+        })))
+    });
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .source_id()
+            == Some(source)
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(popup(device)).is_none(),
+        "old popup must not reopen after rebinding"
+    );
 }

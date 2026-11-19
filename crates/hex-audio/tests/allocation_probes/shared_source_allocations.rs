@@ -32,6 +32,60 @@ fn playback(
 }
 
 #[test]
+fn independent_paused_track_monitor_renders_and_drains_without_allocations()
+-> Result<(), Box<dyn Error>> {
+    use hex_engine::session_playback::{MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, PausedTrackMonitor};
+    let mut editor = Editor::new(Project::new(48_000)?, 16)?;
+    let Created::Track(track) = editor.execute(Command::AddTrack {
+        name: "input".into(),
+    })?
+    else {
+        return Err("missing input track".into());
+    };
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )?;
+    editor.execute(Command::InsertDevice {
+        track,
+        before: None,
+        state: limiter,
+    })?;
+    let revision = prepared(editor.project())?;
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    assert!((1..256).contains(&latency));
+    let mut monitor = PausedTrackMonitor::prepare_on_control(
+        Arc::clone(&revision),
+        track,
+        MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    )?;
+    let arrangement = Playback::try_from_prepared_with_session(revision)?;
+    let mut first = [[0.0; 2]; 1];
+    let mut drain = [[0.0; 2]; 256];
+    let mut results = (Ok(()), Ok(true));
+    let stats = allocation_counter::measure(|| {
+        results.0 =
+            arrangement.render_with_paused_track_monitor(&mut monitor, &[[0.125; 2]], &mut first);
+        results.1 = arrangement.drain_paused_track_monitor(&mut monitor, &mut drain);
+    });
+    results.0?;
+    assert!(!results.1?);
+    assert_eq!(
+        (
+            stats.count_total,
+            stats.bytes_total,
+            stats.count_current,
+            stats.bytes_current
+        ),
+        (0, 0, 0, 0),
+    );
+    assert_eq!(first, [[0.0; 2]; 1]);
+    assert!(drain[latency - 1].iter().all(|sample| *sample > 0.0));
+    assert_eq!(arrangement.position(), 0);
+    Ok(())
+}
+
+#[test]
 fn compensated_shared_analytic_receiver_has_no_callback_allocations() -> Result<(), Box<dyn Error>>
 {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
@@ -970,5 +1024,308 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
         }
         control.reclaim();
     }
+    Ok(())
+}
+
+#[test]
+fn shared_authored_unmute_chase_allocates_and_frees_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(48_000)?, 32)?;
+    let Created::Track(receiver) = editor.execute(Command::InsertTrackWithDevice {
+        name: "source".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_devices::native_instrument_registry()?
+            .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)?,
+    })?
+    else {
+        return Err("source track missing".into());
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .and_then(|track| track.source_id())
+        .ok_or("source missing")?;
+    let Created::Track(contributor) = editor.execute(Command::AddMidiTrack {
+        name: "contributor".into(),
+    })?
+    else {
+        return Err("contributor missing".into());
+    };
+    editor.execute(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    })?;
+    for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4)?,
+        })?
+        else {
+            return Err("clip missing".into());
+        };
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(3)?,
+            pitch,
+            velocity: 100,
+            channel: 0,
+        })?;
+    }
+    editor.execute(Command::Mute {
+        track: contributor,
+        muted: true,
+    })?;
+    let input = Arc::new(ComputerKeyboardInput::default());
+    let initial = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        Arc::clone(&input),
+    )?;
+    let reference_initial = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        Arc::clone(&input),
+    )?;
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    let (mut reference_control, mut reference_callback) = prepared::channel(48_000)?;
+    reference_control
+        .publish_with_policy_and_context_generation(
+            reference_initial,
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .map_err(|error| error.reason)?;
+    reference_control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "command queue full")?;
+    control
+        .publish_with_policy_and_context_generation(initial, PublicationPolicy::InheritRuntime, 7)
+        .map_err(|error| error.reason)?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "command queue full")?;
+    let mut output = [[0.0; 2]; 257];
+    callback.begin_block();
+    callback.render(&mut output)?;
+    let mut reference_output = [[0.0; 2]; 257];
+    reference_callback.begin_block();
+    reference_callback.render(&mut reference_output)?;
+    assert_eq!(output, reference_output);
+    editor.execute(Command::Mute {
+        track: contributor,
+        muted: false,
+    })?;
+    let candidate = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        input,
+    )?;
+    let revision = control
+        .publish_with_policy_and_context_generation(candidate, PublicationPolicy::InheritRuntime, 7)
+        .map_err(|error| error.reason)?;
+    let mut result = None;
+    let stats = allocation_counter::measure(|| {
+        callback.begin_block();
+        result = Some(callback.render(&mut output));
+    });
+    result.ok_or("render missing")??;
+    assert_eq!(
+        (
+            stats.count_total,
+            stats.bytes_total,
+            stats.count_current,
+            stats.bytes_current
+        ),
+        (0, 0, 0, 0),
+        "{stats:?}"
+    );
+    assert_eq!(
+        control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        revision
+    );
+    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status.render_fault_snapshot().is_none());
+    reference_callback.begin_block();
+    reference_callback.render(&mut reference_output)?;
+    assert!(
+        output
+            .iter()
+            .zip(reference_output)
+            .any(|(actual, muted)| (actual[0] - muted[0]).abs() > 0.000_001
+                || (actual[1] - muted[1]).abs() > 0.000_001),
+        "the admitted contributor must sound in the measured callback"
+    );
+    Ok(())
+}
+
+#[test]
+fn shared_live_unmute_chase_allocates_and_frees_nothing_in_callback() -> Result<(), Box<dyn Error>>
+{
+    let mut editor = Editor::new(Project::new(48_000)?, 32)?;
+    let Created::Track(receiver) = editor.execute(Command::InsertTrackWithDevice {
+        name: "source".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_devices::native_instrument_registry()?
+            .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)?,
+    })?
+    else {
+        return Err("source track missing".into());
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .and_then(|track| track.source_id())
+        .ok_or("source missing")?;
+    let Created::Track(contributor) = editor.execute(Command::AddMidiTrack {
+        name: "contributor".into(),
+    })?
+    else {
+        return Err("contributor missing".into());
+    };
+    editor.execute(Command::BindTrackSource {
+        track: contributor,
+        source: Some(source),
+    })?;
+    for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+        let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4)?,
+        })?
+        else {
+            return Err("clip missing".into());
+        };
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(3)?,
+            pitch,
+            velocity: 100,
+            channel: 0,
+        })?;
+    }
+    editor.execute(Command::Mute {
+        track: contributor,
+        muted: true,
+    })?;
+    let input = Arc::new(ComputerKeyboardInput::default());
+    input.set_key(0, Some((64, 100, 1)))?;
+    let reference_input = Arc::new(ComputerKeyboardInput::default());
+    let initial = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        Arc::clone(&input),
+    )?;
+    let reference_initial = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        Arc::clone(&reference_input),
+    )?;
+    let (mut control, mut callback) = prepared::channel(48_000)?;
+    let (mut reference_control, mut reference_callback) = prepared::channel(48_000)?;
+    reference_control
+        .publish_with_policy_and_context_generation(
+            reference_initial,
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .map_err(|error| error.reason)?;
+    reference_control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "command queue full")?;
+    control
+        .publish_with_policy_and_context_generation(initial, PublicationPolicy::InheritRuntime, 7)
+        .map_err(|error| error.reason)?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "command queue full")?;
+    let mut output = [[0.0; 2]; 257];
+    callback.begin_block();
+    callback.render(&mut output)?;
+    let mut reference_output = [[0.0; 2]; 257];
+    reference_callback.begin_block();
+    reference_callback.render(&mut reference_output)?;
+    assert_eq!(output, reference_output);
+    editor.execute(Command::Mute {
+        track: contributor,
+        muted: false,
+    })?;
+    let candidate = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        input,
+    )?;
+    let reference_candidate = playback(
+        editor.project(),
+        prepared(editor.project())?,
+        contributor,
+        reference_input,
+    )?;
+    let reference_revision = reference_control
+        .publish_with_policy_and_context_generation(
+            reference_candidate,
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .map_err(|error| error.reason)?;
+    let revision = control
+        .publish_with_policy_and_context_generation(candidate, PublicationPolicy::InheritRuntime, 7)
+        .map_err(|error| error.reason)?;
+    let mut result = None;
+    let stats = allocation_counter::measure(|| {
+        callback.begin_block();
+        result = Some(callback.render(&mut output));
+    });
+    result.ok_or("render missing")??;
+    assert_eq!(
+        (
+            stats.count_total,
+            stats.bytes_total,
+            stats.count_current,
+            stats.bytes_current
+        ),
+        (0, 0, 0, 0),
+        "{stats:?}"
+    );
+    assert_eq!(
+        control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        revision
+    );
+    assert!(control.status.rejected_revision().is_none());
+    assert!(control.status.render_fault_snapshot().is_none());
+    reference_callback.begin_block();
+    reference_callback.render(&mut reference_output)?;
+    assert_eq!(
+        reference_control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        reference_revision
+    );
+    assert!(reference_control.status.rejected_revision().is_none());
+    assert!(
+        output
+            .iter()
+            .zip(reference_output)
+            .any(|(actual, muted)| (actual[0] - muted[0]).abs() > 0.000_001
+                || (actual[1] - muted[1]).abs() > 0.000_001),
+        "the held live key must sound in the measured callback"
+    );
     Ok(())
 }

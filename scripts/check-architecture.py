@@ -31,7 +31,7 @@ ALLOWED = {
     'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage'},
+    'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage', 'hex-warp'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
     'hex-preferences': set(),

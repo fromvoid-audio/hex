@@ -103,6 +103,29 @@ pub(super) fn modulation_semantics(id: ParameterId) -> Option<ParameterSemantics
     semantics(id).filter(|semantics| semantics.modulation == ParameterModulation::SampleRate)
 }
 
+pub(super) fn prepare_fixed_factory(
+    state: &NativeDeviceState,
+    rate: u32,
+    ids: &[ParameterId],
+) -> Result<Factory, DeviceContractError> {
+    if !(8000..=192000).contains(&rate) {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    if ids.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(DeviceContractError::UnsupportedProcessingClass);
+    }
+    // Match the registry: targeted automation validates asset-free metadata;
+    // the default factory decodes state, with source admission owned by the host.
+    if !ids.is_empty() {
+        state.require_asset_free_processing()?;
+    }
+    let mut admitted = [false; COUNT];
+    for &id in ids {
+        admitted[slot(id).ok_or(DeviceContractError::UnsupportedProcessingClass)?] = true;
+    }
+    Ok(Factory::automated(decode(state)?, rate, admitted))
+}
+
 pub(super) fn prepare(
     state: &NativeDeviceState,
     context: &DevicePreparationContext<'_>,
@@ -136,14 +159,10 @@ pub(super) fn prepare(
             ))),
         });
     }
-    let mut admitted = [false; COUNT];
-    for &id in ids {
-        admitted[slot(id).ok_or(DeviceContractError::UnsupportedProcessingClass)?] = true;
-    }
     Ok(PreparedRuntimeDevice {
         matrix: StereoMatrix::identity(),
         processor: Some(PreparedProcessorFactory::Owned(Arc::new(
-            Factory::automated(decode(state)?, context.sample_rate, admitted),
+            prepare_fixed_factory(state, context.sample_rate, ids)?,
         ))),
     })
 }

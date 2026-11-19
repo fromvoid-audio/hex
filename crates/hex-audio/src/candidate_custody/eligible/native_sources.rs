@@ -11,6 +11,7 @@ use hex_plugin_host::native::{
     self, Cancellation, Pending, PreparationDisposal, PreparationFailure,
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
+use std::sync::{TryLockError, atomic::AtomicU8};
 
 mod capture;
 mod completion;
@@ -31,7 +32,7 @@ pub(super) use references::References;
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
 struct EndpointSignal {
-    requested: AtomicBool,
+    requested: AtomicU8,
     // Written only by actual callback installation/return. Queue admission is
     // not an endpoint ACK and this observation grants no graph admission.
     installed: AtomicBool,
@@ -42,18 +43,67 @@ struct EndpointSignal {
 impl EndpointSignal {
     fn new() -> Self {
         Self {
-            requested: AtomicBool::new(false),
+            requested: AtomicU8::new(0),
             installed: AtomicBool::new(false),
             runtime_required: AtomicBool::new(false),
         }
     }
     fn load(&self, order: Ordering) -> bool {
-        self.requested.load(order)
+        self.requested.load(order) & RETURN_REQUESTED != 0
     }
-    fn store(&self, value: bool, order: Ordering) {
-        self.requested.store(value, order);
+    fn request_return(&self) {
+        self.requested.fetch_or(RETURN_REQUESTED, Ordering::AcqRel);
+    }
+    fn reserve(&self) -> Option<EndpointReturnFence<'_>> {
+        self.requested
+            .compare_exchange(0, RETURN_RESERVED, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(EndpointReturnFence {
+            signal: self,
+            decided: false,
+        })
     }
 }
+// A request is sticky until the endpoint is returned. The reserved bit is
+// held only by the callback and never delays a control-side return request.
+const RETURN_REQUESTED: u8 = 1;
+const RETURN_RESERVED: u8 = 2;
+
+pub(crate) struct EndpointReturnFence<'a> {
+    signal: &'a EndpointSignal,
+    decided: bool,
+}
+impl EndpointReturnFence<'_> {
+    pub(crate) fn is_live(&self) -> bool {
+        !self.signal.load(Ordering::Acquire)
+    }
+    pub(crate) fn try_order_before_return(&mut self) -> bool {
+        if self.decided
+            || self
+                .signal
+                .requested
+                .compare_exchange(
+                    RETURN_RESERVED,
+                    RETURN_RESERVED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+        {
+            return false;
+        }
+        self.decided = true;
+        true
+    }
+}
+impl Drop for EndpointReturnFence<'_> {
+    fn drop(&mut self) {
+        self.signal
+            .requested
+            .fetch_and(!RETURN_RESERVED, Ordering::Release);
+    }
+}
+
 /// Per-cell allowances charged for the whole configured pool before any child
 /// or cancellation pair starts. These are reserved capacity, not allocated bytes
 /// or a producer/resource witness. The same fixed pool also reserves its
@@ -208,7 +258,7 @@ impl Bank {
                 && let Some(signal) = &source.endpoint_return
                 && !signal.runtime_required.load(Ordering::Acquire)
             {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
         }
     }
@@ -217,7 +267,7 @@ impl Bank {
             if slot.phase != Phase::Vacant {
                 slot.retiring = true;
                 if let Some(signal) = &slot.endpoint_return {
-                    signal.store(true, Ordering::Release);
+                    signal.request_return();
                 }
                 // A fully constructed effect retires through its existing
                 // joining worker/SDK stop. In-flight preparation cancels now.
@@ -366,6 +416,7 @@ impl Custody {
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
     ) -> Result<Binding, &'static str> {
         self.begin_native_source_between(
             identity,
@@ -375,6 +426,7 @@ impl Custody {
             preparation,
             restore,
             trust,
+            timings,
             native::PreparationCancellation::new_on_control,
             || {},
         )
@@ -390,6 +442,7 @@ impl Custody {
         mut preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
         make_cancellation: impl FnOnce() -> Result<
             native::PreparationCancellation,
             hex_plugin_host::Error,
@@ -514,6 +567,7 @@ impl Custody {
                 preparation,
                 cancellation,
                 trust,
+                timings,
             ),
         }));
         let cell = &mut work.sources.cells[index];
@@ -592,7 +646,7 @@ impl Custody {
                 && let Some(signal) = &slot.endpoint_return
                 && !signal.runtime_required.load(Ordering::Acquire)
             {
-                signal.store(true, Ordering::Release);
+                signal.request_return();
             }
             if slot.processor.is_none() {
                 slot.request_cancellation()
@@ -874,6 +928,7 @@ impl CandidateRoot {
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
     ) -> Result<Binding, &'static str> {
         self.require_native_source_control_open()?;
         let result = self.0.eligible.begin_native_source(
@@ -884,6 +939,7 @@ impl CandidateRoot {
             preparation,
             restore,
             trust,
+            timings,
         );
         // A failed or late-closing construction already belongs to Root. Its
         // disposal must progress even when the preparing caller stops polling.
@@ -896,23 +952,38 @@ impl CandidateRoot {
     ) -> Option<NativeSourcePreparationProgress> {
         self.0.eligible.native_source_progress(binding)
     }
-    pub(crate) fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
-        let bank = self.0.eligible.bank.try_lock().ok()?;
-        let slot = bank.sources.slots.get(bank.sources.index(binding)?)?;
+    /// Distinguish a deferred observation from missing or retiring custody.
+    /// This holds no source or graph admission after the query returns.
+    pub(crate) fn try_native_source_endpoint_installed(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<bool>, &'static str> {
+        let bank = match self.0.eligible.bank.try_lock() {
+            Ok(bank) => bank,
+            Err(TryLockError::WouldBlock) => return Err("native preparation is busy"),
+            Err(TryLockError::Poisoned(_)) => return Ok(None),
+        };
+        let Some(slot) = bank
+            .sources
+            .index(binding)
+            .and_then(|index| bank.sources.slots.get(index))
+        else {
+            return Ok(None);
+        };
         if bank.closing
             || slot.phase != Phase::Accepted
             || slot.retiring
             || slot.cancellation_requested
         {
-            return None;
+            return Ok(None);
         }
-        Some(
+        Ok(Some(
             slot.endpoint_loaned
                 && slot
                     .endpoint_return
                     .as_ref()
                     .is_some_and(|signal| signal.installed.load(Ordering::Acquire)),
-        )
+        ))
     }
     pub(crate) fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
         self.with_native_source_endpoint(binding, |loaned, endpoint| {
@@ -920,9 +991,50 @@ impl CandidateRoot {
         })
     }
 
+    pub(crate) fn take_native_source_transport_space(&self, binding: Binding) -> bool {
+        let cancellation = {
+            let Ok(bank) = self.0.eligible.bank.try_lock() else {
+                return false;
+            };
+            let Some(slot) = bank
+                .sources
+                .index(binding)
+                .and_then(|i| bank.sources.slots.get(i))
+            else {
+                return false;
+            };
+            if bank.closing
+                || slot.phase != Phase::Accepted
+                || slot.retiring
+                || slot.cancellation_requested
+            {
+                return false;
+            }
+            slot.cancellation.clone()
+        };
+        cancellation.is_some_and(|token| token.take_transport_space_on_control())
+    }
+
     pub(crate) fn take_native_source_failure_diagnostic(&self, binding: Binding) -> Option<String> {
         self.with_native_source_endpoint(binding, |_, endpoint| {
             endpoint.take_failure_diagnostic_on_control()
+        })?
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn take_native_source_slow_exchange(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_slow_exchange_on_control()
+        })?
+    }
+    pub(crate) fn take_native_source_concealed_output(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        self.with_native_source_endpoint(binding, |_, endpoint| {
+            endpoint.take_concealed_output_on_control()
         })?
     }
     fn with_native_source_endpoint<T>(

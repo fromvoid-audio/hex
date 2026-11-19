@@ -21,11 +21,12 @@ struct Slot {
     busy: bool,
     suspended: bool,
     worker_owned: bool,
+    combined_configuration: bool,
     pcm_frames: u64,
     ever_used: bool,
     request: Option<Request>,
     response: Option<ResidentPublicationResponse>,
-    cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    cancellation: Option<CancellablePublicationReceipt>,
 }
 impl Slot {
     fn virgin(&self) -> bool {
@@ -43,6 +44,33 @@ pub(super) struct ResidentForwarding {
     slot: Mutex<Slot>,
 }
 impl ResidentForwarding {
+    /// Exclude client exposure while the two pre-exposure reservations are
+    /// installed. The lock is held only for this state change, never across
+    /// allocation or native root configuration.
+    pub(super) fn begin_combined_configuration(&self, status: &Status) -> Result<(), &'static str> {
+        let mut slot = self
+            .slot
+            .try_lock()
+            .map_err(|_| "resident forwarding admission is busy")?;
+        if slot.combined_configuration
+            || !slot.virgin()
+            || status.client_exposed.load(Acquire)
+            || status.closing.load(Acquire)
+        {
+            return Err("combined reservation requires unexposed virgin endpoints");
+        }
+        slot.combined_configuration = true;
+        Ok(())
+    }
+
+    pub(super) fn finish_combined_configuration(&self) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.combined_configuration = false;
+    }
+
     pub(super) fn claim_worker_publication_on_control(
         &self,
         status: &Status,
@@ -57,13 +85,16 @@ impl ResidentForwarding {
         slot.worker_owned = true;
         Ok(())
     }
-    pub(super) fn expose_client_on_control(&self, status: &Status) -> bool {
+    pub(super) fn expose_client_on_control(&self, status: &Status) -> Option<bool> {
         let slot = self
             .slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.combined_configuration || status.closing.load(Acquire) {
+            return None;
+        }
         status.client_exposed.store(true, Release);
-        slot.worker_owned
+        Some(slot.worker_owned)
     }
     pub(super) fn new() -> Arc<Self> {
         let shared = Arc::new(Self {
@@ -209,10 +240,11 @@ impl Client {
         };
         slot.cancellation
             .as_ref()
-            .filter(|c| c.revision == revision)
-            .map_or(FreshRuntimeCancellationResult::UnknownRevision, |c| {
-                c.request_cancel()
-            })
+            .filter(|receipt| receipt.revision() == revision)
+            .map_or(
+                FreshRuntimeCancellationResult::UnknownRevision,
+                CancellablePublicationReceipt::cancel,
+            )
     }
     /// Nonblocking; a contended slot remains pending. The accepted revision is
     /// still distinct from Status.applied_revision produced by the callback.
@@ -258,9 +290,7 @@ impl PublicationControl {
             };
             std::mem::replace(
                 &mut slot.cancellation,
-                self.latest_fresh_runtime_cancellation
-                    .as_ref()
-                    .map(Arc::clone),
+                self.latest_fresh_runtime_cancellation.clone(),
             )
         };
         // A possibly final cancellation handle never drops under the cell lock
@@ -275,6 +305,11 @@ impl PublicationControl {
     /// Call only on the Session worker. No mutex spans publication, allocation,
     /// graph retirement, or a potentially owning destructor.
     pub fn poll_resident_publication(&mut self) {
+        if let Some(receipt) = self.latest_fresh_runtime_cancellation.as_ref()
+            && (self.status.device_fault.load(Acquire) || self.status.render_fault.load(Acquire))
+        {
+            receipt.close_device_insert_on_fault();
+        }
         let request = self
             .resident_forwarding
             .as_ref()

@@ -1171,6 +1171,121 @@ fn actual_sdk_playback_does_not_replay_stale_editor_values() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn active_native_editor_gesture_is_not_overwritten_by_host_feedback() {
+    let case = Case::new();
+    let end = case.root.join("editor-end");
+    let end_gate = end.clone();
+    let setup = case.setup_restore(150);
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_EDITOR_END_RELEASE", end_gate);
+        },
+    )
+    .unwrap();
+    fs::write(case.release(), b"begin and hold the editor drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        if edits.pending >= 2 {
+            break;
+        }
+        assert!(Instant::now() < until, "editor backlog did not arrive");
+        thread::yield_now();
+    }
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(ParameterPoint {
+            frame: 7,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance.exchange_on_worker(input).unwrap();
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.75,
+        "host feedback must not overwrite an active native editor gesture"
+    );
+    fs::write(end, b"release the editor drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        if edits.pending >= 2 {
+            break;
+        }
+        assert!(Instant::now() < until, "final editor point did not arrive");
+        thread::yield_now();
+    }
+    let mut next_block = 1;
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        instance
+            .exchange_on_worker(request(instance.configuration(), next_block))
+            .unwrap();
+        next_block += 1;
+        let delivered = instance.poll_parameter_edits_on_worker().unwrap();
+        if delivered.as_slice().iter().any(|edit| {
+            edit.kind == protocol::ParameterEditKind::Perform && edit.normalized == 0.875
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "final editor point was not processed"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "a lagging processor observation must not replay over the final native target"
+    );
+    let delayed = instance
+        .exchange_on_worker(request(instance.configuration(), next_block))
+        .unwrap();
+    next_block += 1;
+    assert_eq!(
+        delayed.parameters.as_slice(),
+        &[ParameterPoint {
+            frame: 7,
+            id: 7,
+            normalized: 0.25,
+        }],
+        "processor observations still reach the caller"
+    );
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "output-only feedback must not reintroduce the lagging value"
+    );
+    let mut authored = request(instance.configuration(), next_block);
+    authored
+        .parameters
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance.exchange_on_worker(authored).unwrap();
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.5);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_saturated_drag_keeps_final_values_and_gesture_boundaries() {
     assert_saturated_editor_drags(87, 1);
 }

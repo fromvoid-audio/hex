@@ -252,6 +252,18 @@ impl EditorView {
         }
         false
     }
+
+    /// A refused or disconnected job has no terminal to release its UI.
+    pub(super) fn abandon_bounce(&mut self) -> bool {
+        let Some(control) = self.bounce_control.take() else {
+            return false;
+        };
+        control.cancel();
+        if let Some(drop) = self.pending_bounce_drop.take() {
+            drop.drag.retire();
+        }
+        true
+    }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -559,6 +571,11 @@ mod tests {
             assert_eq!(p.snapshot().tracks, original.tracks);
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_some());
+        let progress = visual
+            .debug_bounds("bounce-status-progress")
+            .expect("bounce shows progress before the terminal is received");
+        let status = visual.debug_bounds("editor-status-bar").unwrap();
+        assert!(progress.top() >= status.top() && progress.bottom() <= status.bottom());
         crate::editor::clip_drag_ui_test::assert_clip_move_guides(&mut visual, x);
         assert!(
             visual
@@ -587,6 +604,7 @@ mod tests {
             p.snapshot()
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_none());
+        assert!(visual.debug_bounds("bounce-status-progress").is_none());
         assert!(visual.debug_bounds("clip-move-guide-line").is_none());
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);

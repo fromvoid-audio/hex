@@ -43,6 +43,17 @@ pub enum StreamHandleLocation {
     FailureProducer,
     FailureConsumer,
     KernelPlan(usize),
+    SourceManifest(usize),
+    GranularRequestProducer,
+    GranularRequestConsumer,
+    GranularResultProducer,
+    GranularResultConsumer,
+    GranularOwnerStop,
+    GranularWorkerStop,
+    GranularOwnerEpoch,
+    GranularWorkerEpoch,
+    GranularManifest(usize),
+    GranularKernel(usize),
     ScalarSource(usize),
     ScalarProjection(usize),
     ScalarCursorSource,
@@ -69,6 +80,16 @@ impl StreamHandleLocation {
         Self::FailureProducer,
         Self::FailureConsumer,
     ];
+    const GRANULAR: [Self; 8] = [
+        Self::GranularRequestProducer,
+        Self::GranularRequestConsumer,
+        Self::GranularResultProducer,
+        Self::GranularResultConsumer,
+        Self::GranularOwnerStop,
+        Self::GranularWorkerStop,
+        Self::GranularOwnerEpoch,
+        Self::GranularWorkerEpoch,
+    ];
     fn queue(self) -> bool {
         matches!(
             self,
@@ -92,6 +113,7 @@ pub struct StreamOwningHandleObligation {
 pub enum OpaqueStreamHandleGroup {
     CatalogChannel,
     WorkerThread,
+    GranularWorkerThread,
     UnregisteredCallerAliases,
     UnobservedConstructor,
 }
@@ -289,7 +311,8 @@ pub struct AudioStreamStorageSummary {
     pub opaque_cost_obligations: usize,
     /// Explicit actual selected Arc fields: two owners/two pair handles,
     /// owner+worker stop handles, catalog-result owner, eight queue halves,
-    /// each worker plan's kernel handle and three fields per selected lease.
+    /// each worker reader manifest/plan handle, each granular queue/atomic/source
+    /// handle and three fields per selected lease.
     /// Opaque std and unregistered external handles remain separate groups.
     pub unresolved_known_stream_handles: usize,
     pub unresolved_opaque_handle_groups: usize,
@@ -468,6 +491,37 @@ impl<'a> AudioStreamStorageLedger<'a> {
                         })
                     }))
                     .chain(
+                        (0..data.map_or(0, |d| d.worker.manifest_handles)).map(move |i| {
+                            Ok(StreamOwningHandleObligation {
+                                domain: index,
+                                location: StreamHandleLocation::SourceManifest(i),
+                            })
+                        }),
+                    )
+                    .chain(
+                        data.ok()
+                            .and_then(|d| d.worker.granular)
+                            .into_iter()
+                            .flat_map(move |granular| {
+                                StreamHandleLocation::GRANULAR
+                                    .into_iter()
+                                    .chain(
+                                        (0..granular.worker.bank.manifest_handles)
+                                            .map(StreamHandleLocation::GranularManifest),
+                                    )
+                                    .chain(
+                                        (0..granular.worker.bank.kernel_handles)
+                                            .map(StreamHandleLocation::GranularKernel),
+                                    )
+                                    .map(move |location| {
+                                        Ok(StreamOwningHandleObligation {
+                                            domain: index,
+                                            location,
+                                        })
+                                    })
+                            }),
+                    )
+                    .chain(
                         (0..data.map_or(0, |d| d.worker.scalar_source_handles))
                             .flat_map(move |i| {
                                 [
@@ -528,6 +582,10 @@ impl<'a> AudioStreamStorageLedger<'a> {
             [
                 Some(OpaqueStreamHandleGroup::CatalogChannel),
                 Some(OpaqueStreamHandleGroup::WorkerThread),
+                domain
+                    .footprint()
+                    .is_ok_and(|d| d.worker.granular.is_some())
+                    .then_some(OpaqueStreamHandleGroup::GranularWorkerThread),
                 Some(OpaqueStreamHandleGroup::UnregisteredCallerAliases),
                 unknown.then_some(OpaqueStreamHandleGroup::UnobservedConstructor),
             ]
@@ -631,7 +689,19 @@ impl<'a> AudioStreamStorageLedger<'a> {
                             n.checked_add(if data.worker.constructor_complete {
                                 data.worker
                                     .kernel_handles
-                                    .checked_add(data.worker.scalar_source_handles.checked_mul(2)?)
+                                    .checked_add(data.worker.manifest_handles)
+                                    .and_then(|n| {
+                                        n.checked_add(
+                                            data.worker.granular.map_or(Some(0), |g| {
+                                                g.worker.shared_handle_bound()
+                                            })?,
+                                        )
+                                    })
+                                    .and_then(|n| {
+                                        n.checked_add(
+                                            data.worker.scalar_source_handles.checked_mul(2)?,
+                                        )
+                                    })
                                     .and_then(|n| {
                                         n.checked_add(data.worker.scalar_cursor_handle_bound)
                                     })?
@@ -679,10 +749,16 @@ impl<'a> AudioStreamStorageLedger<'a> {
                 .filter(|(_, kind)| *kind == OpaqueStreamHandleGroup::UnobservedConstructor)
                 .count(),
             unresolved_opaque_handle_groups: self
-                .domains
-                .len()
-                .checked_mul(2)
-                .ok_or(AudioStreamStorageError::Overflow)?,
+                .opaque_handle_obligations()
+                .filter(|(_, group)| {
+                    matches!(
+                        group,
+                        OpaqueStreamHandleGroup::CatalogChannel
+                            | OpaqueStreamHandleGroup::WorkerThread
+                            | OpaqueStreamHandleGroup::GranularWorkerThread
+                    )
+                })
+                .count(),
             unresolved_unregistered_caller_handle_groups: self.domains.len(),
             unresolved_source_domain_bindings: self.roots.streamed_handle_obligations(),
             unresolved_domain_retirements: self.domains.len(),
@@ -814,12 +890,15 @@ mod tests {
         let s = report.summary().unwrap().require_listed_data().unwrap();
         assert_eq!(s.distinct_domains, 1);
         assert_eq!(s.opaque_cost_obligations, 6);
-        assert_eq!(s.unresolved_known_stream_handles, 16);
+        assert_eq!(s.unresolved_known_stream_handles, 17);
         let handles = report
             .owning_handle_obligations()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(handles.len(), s.unresolved_known_stream_handles);
+        // One raw reader retains a manifest handle beside its conversion
+        // plan; this report selects the original pair without caller leases.
+        assert_eq!(handles.len(), StreamHandleLocation::FIXED.len() + 2);
         for location in StreamHandleLocation::FIXED {
             assert!(
                 handles
@@ -897,7 +976,7 @@ mod tests {
         assert_eq!(s.roots.unresolved_handles, 4);
         assert_eq!(s.unresolved_source_domain_bindings, 4);
         assert_eq!(s.opaque_cost_obligations, 12);
-        assert_eq!(s.unresolved_known_stream_handles, 16 * 2 + 6);
+        assert_eq!(s.unresolved_known_stream_handles, 17 * 2 + 6);
         assert_eq!(
             report
                 .owning_handle_obligations()
@@ -998,7 +1077,7 @@ mod tests {
                 .require_listed_data()
                 .unwrap()
                 .unresolved_known_stream_handles,
-            17
+            19
         );
         // An ordinary read query after reporting must not retain a catalog
         // guard; that would deadlock this control-side query.

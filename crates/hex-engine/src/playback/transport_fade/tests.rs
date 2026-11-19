@@ -124,6 +124,80 @@ fn fade_length_scales_with_rate_and_is_at_least_one_frame() {
 }
 
 #[test]
+fn device_insert_handoff_holds_exact_cursor_and_ramps_the_successor() {
+    for block in [1, 64, 512] {
+        let mut old = session_playback();
+        let mut next = session_playback();
+        let mut output = Vec::new();
+        declicked(&mut old, PlaybackCommand::Play);
+        render(&mut old, block, 1000, &mut output);
+        let performance = old.performance_frame();
+        assert!(old.begin_device_insert_cut());
+        render(&mut old, block, F + 16, &mut output);
+        assert_eq!(output[1000], [127.0 / 128.0, -127.0 / 128.0]);
+        assert!(
+            output[1000 + F - 1..]
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert!(old.device_insert_held());
+        assert!(!old.playing());
+        assert_eq!(old.position(), 1000 + F as u64);
+        assert_eq!(old.performance_frame(), performance + F as u64);
+        assert_eq!(old.take_transport_fade_completion(), None);
+
+        next.try_inherit_runtime_in_control_context(&mut old, Some(1), Some(1))
+            .unwrap();
+        assert!(next.device_insert_held());
+        assert_eq!(next.position(), 1000 + F as u64);
+        next.release_device_insert_cut();
+        assert!(next.playing());
+        assert!(!next.device_insert_held());
+        output.clear();
+        render(&mut next, block, F, &mut output);
+        assert_eq!(output[0], [1.0 / 128.0, -1.0 / 128.0]);
+        assert_eq!(output[F - 1], [1.0, -1.0]);
+        assert_eq!(next.position(), 1000 + 2 * F as u64);
+    }
+}
+
+#[test]
+fn abandoned_device_insert_reverses_a_partial_fade_without_moving_the_cursor() {
+    let mut playback = session_playback();
+    let mut output = Vec::new();
+    declicked(&mut playback, PlaybackCommand::Play);
+    assert!(playback.begin_device_insert_cut());
+    render(&mut playback, 512, F / 2, &mut output);
+    assert_eq!(output[F / 2 - 1], [0.5, -0.5]);
+    assert_eq!(playback.position(), F as u64 / 2);
+    playback.release_device_insert_cut();
+    assert!(playback.playing());
+    assert_eq!(playback.position(), F as u64 / 2);
+    render(&mut playback, 512, F / 2 + 1, &mut output);
+    assert_eq!(output[F / 2], [65.0 / 128.0, -65.0 / 128.0]);
+    assert_eq!(output[F - 1..], [[1.0, -1.0]; 2]);
+}
+
+#[test]
+fn priority_stop_supersedes_a_device_insert_even_after_the_cut() {
+    for elapsed in [F / 2, F] {
+        let mut playback = session_playback();
+        let mut output = Vec::new();
+        declicked(&mut playback, PlaybackCommand::Play);
+        assert!(playback.begin_device_insert_cut());
+        render(&mut playback, 512, elapsed, &mut output);
+        playback.apply_priority_stop(&crate::computer_keyboard::KeyboardActivationClock::default());
+        playback.release_device_insert_cut();
+        assert!(!playback.playing());
+        assert!(!playback.device_insert_held());
+        assert_eq!(playback.position(), 0);
+        output.clear();
+        render(&mut playback, 512, F, &mut output);
+        assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+    }
+}
+
+#[test]
 fn render_failure_after_fade_clears_the_complete_output_buffer() {
     let mut playback = linear_playback();
     declicked(&mut playback, PlaybackCommand::Play);
@@ -515,4 +589,28 @@ fn project_taps_observe_each_render_part_at_its_callback_offset() {
         .render_with_signal_observers(&mut output, None, Some(&mut tap))
         .unwrap();
     assert_eq!(seen, [(0, F), (F, 512 - F)]);
+}
+
+#[test]
+fn project_tap_offsets_compose_and_restore_across_nested_declick_parts() {
+    let mut playback = session_playback();
+    declicked(&mut playback, PlaybackCommand::Play);
+    playback.render(&mut [[0.0; 2]; 512]).unwrap();
+    declicked(&mut playback, PlaybackCommand::Pause);
+    let mut seen = Vec::new();
+    let mut observe = |signal: ProjectSignal, offset: usize, frames: &[Frame]| {
+        if signal == ProjectSignal::Master {
+            seen.push((offset, frames.len()));
+        }
+    };
+    let mut tap = ProjectOutputTap::new(&[], &mut observe).unwrap();
+    crate::playback::with_part_offset(Some(&mut tap), 31, |tap| {
+        playback
+            .render_with_signal_observers(&mut [[0.0; 2]; 512], None, tap)
+            .unwrap();
+    });
+    playback
+        .render_with_signal_observers(&mut [[0.0; 2]; 2], None, Some(&mut tap))
+        .unwrap();
+    assert_eq!(seen, [(31, F), (31 + F, 512 - F), (0, 2)]);
 }

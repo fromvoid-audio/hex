@@ -253,7 +253,8 @@ fn first_paint_preserves_all_64_held_or_released_analytic_voices_and_undo_stays_
                 next.try_inherit_state_from(&mut old),
                 Ok(SessionHandoffReport {
                     cancelled_pending: [None; MAX_TRACKS],
-                    cancelled_pending_len: 0
+                    cancelled_pending_len: 0,
+                    running_audio_restart: false,
                 })
             );
             assert_eq!(

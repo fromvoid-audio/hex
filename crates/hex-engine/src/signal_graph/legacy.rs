@@ -44,6 +44,7 @@ impl RendererRuntime {
                 compensation
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        authored_clock_epoch: None,
                         tempo_micro_bpm: project
                             .tempo_map
                             .as_ref()

@@ -39,6 +39,9 @@ impl NativeInstrumentClock for OriginWindow<'_> {
     fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.stamp(offset).map(|stamp| stamp.arrangement_frame)
     }
+    fn authored_clock_epoch_at_offset(&self, offset: usize) -> Option<std::num::NonZeroU64> {
+        self.stamp(offset)?.authored_clock_epoch
+    }
     fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.stamp(offset)
             .filter(|stamp| stamp.transport_is_running)

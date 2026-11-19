@@ -463,6 +463,7 @@ impl EditorView {
             || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
         {
@@ -530,6 +531,7 @@ impl EditorView {
             || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
             || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
         {
@@ -662,6 +664,9 @@ impl EditorView {
         value: ParameterValue,
         end: Option<End>,
     ) -> Result<Option<GestureKey>, &'static str> {
+        if self.audio_recorder.blocks_edits() {
+            return Err("finish the audio recording before automation recording");
+        }
         if self.automation_close_preflight.frozen() {
             return Err("close is pending · automation recording is unavailable");
         }

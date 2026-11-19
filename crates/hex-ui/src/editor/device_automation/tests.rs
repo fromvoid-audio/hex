@@ -1,6 +1,37 @@
 use super::*;
 use hex_lattice_contract::ParameterId;
 use hex_project::{Command, Created, Editor};
+
+#[test]
+fn unassigned_source_panel_does_not_create_track_automation_lanes() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "unassigned".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let project = editor.project();
+    let device = project.native_source(source).unwrap().instrument();
+    let owner = Owner::Source(source);
+    assert!(!owner_exists(project, owner));
+    assert!(devices(project, owner).is_empty());
+    let target = Target {
+        generation: 0,
+        owner,
+        device: device.id(),
+        kind: DeviceAutomationTarget::HostInputGain,
+        class: NativeDeviceClass::Instrument,
+        provider: Some(device.state().type_id()),
+        vst3_class: None,
+    };
+    assert!(target.identity_current(project, 0).is_none());
+}
+
 pub(super) fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor

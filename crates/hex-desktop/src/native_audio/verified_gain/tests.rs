@@ -15,6 +15,61 @@ use std::{
 };
 
 #[test]
+fn verified_plain_pitch_reaches_the_worker_and_callback() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 16_384)));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    h.run(Request::Edit(hex_project::Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    let pitched = h.run(Request::Edit(hex_project::Command::SetAudioClipPitch {
+        clip,
+        cents: 700,
+    }));
+    assert_eq!(
+        pitched
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_plain_pitch_sources()
+            .count(),
+        1
+    );
+    h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        if output.iter().flatten().any(|sample| sample.abs() > 0.1) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pitched stream did not reach callback"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
 fn restored_stream_source_recovers_through_actual_desktop_restart() {
     let _native = native_fixture();
     let files = Files::new();
@@ -717,9 +772,26 @@ fn verified_gain_case(session: bool) {
         value: ParameterValue::Float(0.75),
     }));
     wait(&h, applied.audio_revision, 0.75);
-    let removed = h.run(Request::Edit(hex_project::Command::RemoveTrack(track)));
+    let pending = h.run(Request::Edit(hex_project::Command::RemoveTrack(track)));
+    assert!(!pending.request_complete);
+    assert!(pending.state.project.track(track).is_some());
+    assert_eq!(pending.active_device_gesture.unwrap().key, fourth);
+    let removed = h.next_with_audio();
+    assert!(removed.request_complete);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    let receipt = removed.device_insert_complete.as_ref().unwrap();
+    assert_eq!(
+        receipt.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
     assert!(removed.state.project.track(track).is_none());
     assert!(removed.active_device_gesture.is_none());
+    let retired = removed.gesture_ack.as_ref().unwrap();
+    assert_eq!(retired.key, fourth);
+    assert_eq!(
+        retired.phase,
+        hex_session::device_gesture::GesturePhase::Cancel
+    );
     let empty_current = h.applied(h.context.unwrap());
     stable_gain(&h, empty_current, 0.0);
 

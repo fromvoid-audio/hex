@@ -82,6 +82,56 @@ impl Status {
     }
 }
 impl Callback {
+    pub(super) fn end_native_staging_at_stream_hold(
+        &mut self,
+        offset: usize,
+        frames: usize,
+        outcome: &crate::candidate_custody::StreamOutcome,
+    ) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if outcome.fault.is_none()
+            && let crate::candidate_custody::StreamProgress::Buffering { committed_frames } =
+                outcome.progress
+        {
+            self.native_sources
+                .end_staging_at_stream_hold(offset, frames, committed_frames);
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = (offset, frames, outcome);
+    }
+
+    /// Held only during one render invocation, after candidate validation and
+    /// until either the actual graph swap or completion of the old output.
+    pub(super) fn reserve_current_stream_window(
+        &mut self,
+        frames: usize,
+    ) -> Result<
+        Option<crate::candidate_custody::QuantumPins>,
+        crate::candidate_custody::QuantumFailure,
+    > {
+        if self.current_quantum_pins.is_some() {
+            return Err(crate::candidate_custody::QuantumFailure::PendingAction);
+        }
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        else {
+            return Ok(None);
+        };
+        active
+            .reserve_current_quantum(
+                &mut self.domain_pages,
+                frames,
+                self.stream_pending_play.is_some(),
+            )
+            .map(Some)
+    }
+    pub(super) fn release_current_quantum_pins(&mut self) {
+        if let Some(pins) = self.current_quantum_pins.take() {
+            pins.release(&mut self.domain_pages);
+        }
+    }
     pub(super) fn resolve_recovery_seek(
         &mut self,
         action_pending: bool,
@@ -120,6 +170,37 @@ impl Callback {
             self.yield_stream_successor_once = true;
         }
         yielded
+    }
+    pub(super) fn retry_pending_eligible_capacity(&mut self) -> bool {
+        self.deferred_eligible
+            .as_mut()
+            .is_some_and(|next| next.retry_stream_capacity_conflict())
+    }
+    pub(super) fn reject_pending_eligible_successor(&mut self, reason: PlaybackHandoffRejection) {
+        if self
+            .deferred_eligible
+            .as_ref()
+            .is_some_and(|next| next.streaming_enabled())
+            && let Some(mut next) = self.deferred_eligible.take()
+        {
+            next.cancel_stream_readiness(&mut self.domain_pages);
+            self.reject_publication(next.revision(), reason);
+            let has_receipt = next.receipt().is_some();
+            self.status.publication_pending.store(false, Release);
+            self.return_verified_receipt(&next, Some(reason));
+            self.return_publication(ReturnedPublication::Eligible(next.reject_before_install()));
+            if !has_receipt && let Some(ticket) = self.stream_pending_play.take() {
+                self.status
+                    .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+                self.stage_stream_outcome(
+                    ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared),
+                );
+                self.status
+                    .stream_applied_command_prefix
+                    .store(self.stream_prefix, Release);
+            }
+        }
     }
     pub(super) fn stream_action_pending(&self) -> bool {
         self.active
@@ -372,11 +453,11 @@ impl Callback {
         }
     }
     pub(super) fn consume_stream_commands(&mut self) {
-        let cut = command_cut(
-            self.status.admitted_ticket.load(Acquire),
-            self.take_stop_marker(),
-        );
+        let entry = self.status.admitted_ticket.load(Acquire);
+        let marker = self.take_stop_marker();
+        let cut = command_cut(entry, marker);
         self.consume_stream_commands_through(cut, false);
+        self.finish_stop_marker(marker);
     }
     pub(super) fn consume_stream_commands_through(&mut self, cut: CommandCut, fault: bool) {
         if cut.stop_through.is_some() {
@@ -657,6 +738,99 @@ mod tests {
             action_rejection: None,
             action_applied: None,
             activated: None,
+        }
+    }
+
+    #[test]
+    #[cfg(all(
+        target_os = "macos",
+        target_arch = "aarch64",
+        feature = "allocation-probe"
+    ))]
+    fn native_stream_hold_commits_only_a_full_callback_prefix() {
+        use super::super::{OutputTransportDelivery, channel};
+        use hex_lattice::{
+            ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, ProcessorChainOwner,
+            ProcessorInstanceIdentity,
+        };
+        use hex_lattice_contract::ForeignProcessorBinding as Binding;
+        use hex_plugin_host::transport::channel as plugin_channel;
+
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+        let state =
+            hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+        let prepared = PreparedForeignProcessor::new(8, 0, 16)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap();
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: state.type_id(),
+            sample_rate: 48_000,
+            configuration: &state,
+            prepared,
+            automation: None,
+            bypassed: false,
+            input_gain: 1.0,
+            output_gain: 1.0,
+        };
+        for (offset, extent, delivery) in [
+            (0, 8, OutputTransportDelivery::Accepted),
+            (0, 4, OutputTransportDelivery::Refused),
+            (1, 8, OutputTransportDelivery::Refused),
+        ] {
+            let (_control, mut callback) = channel(48_000).unwrap();
+            let (_plugin_control, transport, mut worker) = plugin_channel(binding, 8).unwrap();
+            callback.native_sources.install_for_test(
+                crate::plugin_effects::NativeEffectCallback::for_test(
+                    identity,
+                    binding,
+                    state.clone(),
+                    transport,
+                ),
+            );
+            let hold = outcome(StreamProgress::Buffering {
+                committed_frames: 3,
+            });
+            let measured = allocation_counter::measure(|| {
+                callback.begin_native_effect_callback(8).unwrap();
+                callback
+                    .native_sources
+                    .process_segment(node, 0, &mut [[0.25; 2]; 3], None)
+                    .unwrap();
+                callback.end_native_staging_at_stream_hold(offset, extent, &hold);
+                assert_eq!(callback.finish_native_effect_callback(true), delivery);
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            if delivery == OutputTransportDelivery::Accepted {
+                assert!(worker.receive().unwrap().is_none());
+                callback.begin_native_effect_callback(5).unwrap();
+                callback
+                    .native_sources
+                    .process_segment(node, 0, &mut [[0.5; 2]; 5], None)
+                    .unwrap();
+                assert_eq!(callback.finish_native_effect_callback(true), delivery);
+                let request = worker.receive().unwrap().unwrap();
+                assert_eq!(request.pcm[..3], [[0.25; 2]; 3]);
+                assert_eq!(request.pcm[3..8], [[0.5; 2]; 5]);
+            } else {
+                assert!(worker.receive().is_err());
+            }
         }
     }
 

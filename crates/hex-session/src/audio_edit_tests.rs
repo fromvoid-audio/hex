@@ -243,6 +243,248 @@ fn fixture_at_rate(
     (session, clip, revision)
 }
 
+#[test]
+fn extending_first_audio_repeat_boundary_preserves_silence_and_history() {
+    use hex_project::AudioViewResizeOperation;
+
+    let (mut session, clip, original) = fixture();
+    session.max_resident_frames = 100_000;
+    let (_, repeated) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 22_000,
+                },
+            },
+            Some(&original),
+        )
+        .unwrap();
+    let before = session.project().snapshot();
+    let original_clip = session.project().clip(clip).unwrap().clone();
+    let (_, extended) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: 10_000,
+                },
+            },
+            Some(&repeated),
+        )
+        .expect("the first boundary can extend beyond the original source");
+    let saved = session.project().snapshot();
+    let edited_clip = session.project().clip(clip).unwrap();
+    assert_eq!(edited_clip.start(), original_clip.start());
+    assert_eq!(edited_clip.duration(), original_clip.duration());
+    assert_eq!(edited_clip.asset(), original_clip.asset());
+
+    let render = |revision: &Arc<hex_engine::PreparedRevision>, block: usize| {
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 22_000];
+        for chunk in output.chunks_mut(block) {
+            renderer.render(chunk).unwrap();
+        }
+        output
+    };
+    let source = render(&repeated, 257);
+    let actual = render(&extended, 257);
+    assert!(source[..8_000].iter().any(|frame| *frame != [0.0; 2]));
+    for (index, frame) in actual.iter().enumerate() {
+        let position = index % 10_000;
+        let expected = if position < 8_000 {
+            source[position]
+        } else {
+            [0.0; 2]
+        };
+        assert_eq!(*frame, expected, "frame {index}");
+    }
+    assert_eq!(render(&extended, 1), actual);
+    let bytes = hex_storage::encode(session.project()).unwrap();
+    let reopened = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(reopened.snapshot(), saved);
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &reopened,
+            &session.media_bank().resident,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(render(&prepared, 257), actual);
+    for command in [
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::CycleEnd {
+                project_frame: 22_000,
+            },
+        },
+        Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        },
+        Command::TrimClip {
+            clip,
+            start: 0,
+            duration: 8_000,
+            source_offset: 0,
+            source_length: 8_000,
+        },
+        Command::ReverseClips(vec![clip]),
+    ] {
+        assert!(
+            session
+                .command_prepared_revision(command, Some(&extended))
+                .is_err()
+        );
+        assert_eq!(session.project().snapshot(), saved);
+    }
+    let undone = session
+        .undo_prepared_revision(Some(&extended))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot().tracks, before.tracks);
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot().tracks, saved.tracks);
+    assert_eq!(render(&redone, 257), actual);
+    let (Created::Clip(duplicate), duplicated) = session
+        .command_prepared_revision(Command::DuplicateClip(clip), Some(&redone))
+        .unwrap()
+    else {
+        panic!("duplicate")
+    };
+    let before_group = session.project().snapshot();
+    assert!(
+        session
+            .command_prepared_revision(
+                Command::GroupClips(vec![clip, duplicate]),
+                Some(&duplicated)
+            )
+            .is_err()
+    );
+    assert_eq!(session.project().snapshot(), before_group);
+}
+
+#[test]
+fn silent_audio_repeat_can_be_shortened_and_outer_extent_extended() {
+    use hex_project::AudioViewResizeOperation;
+    let (mut session, clip, original) = fixture();
+    session.max_resident_frames = 150_000;
+    let mut revision = original;
+    for operation in [
+        AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 22_000,
+        },
+        AudioViewResizeOperation::CycleEnd {
+            project_frame: 10_000,
+        },
+        AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 24_000,
+        },
+    ] {
+        revision = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView { clip, operation },
+                Some(&revision),
+            )
+            .unwrap()
+            .1;
+    }
+    let clip_before = session.project().clip(clip).unwrap();
+    assert_eq!(clip_before.duration(), 24_000);
+    assert_eq!(
+        clip_before.audio_edit().unwrap().repeat_period,
+        Some(10_000)
+    );
+    let (_, shortened) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: 6_000,
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    let clip_after = session.project().clip(clip).unwrap();
+    assert_eq!(clip_after.duration(), 24_000);
+    assert_eq!(clip_after.audio_edit().unwrap().repeat_period, None);
+    assert_eq!(clip_after.audio_edit().unwrap().view_end, 6_000);
+    session
+        .undo_prepared_revision(Some(&shortened))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        session
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .repeat_period,
+        Some(10_000)
+    );
+}
+
+#[test]
+fn silent_audio_repeat_renders_at_48000_hz() {
+    use hex_project::AudioViewResizeOperation;
+    let (mut session, clip, original) = fixture_at_rate(48_000);
+    session.max_resident_frames = 200_000;
+    let (_, repeated) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 53_000,
+                },
+            },
+            Some(&original),
+        )
+        .unwrap();
+    let (_, extended) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: 26_000,
+                },
+            },
+            Some(&repeated),
+        )
+        .unwrap();
+    let render = |revision: &Arc<hex_engine::PreparedRevision>| {
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.play();
+        let mut frames = vec![[0.0; 2]; 53_000];
+        for chunk in frames.chunks_mut(257) {
+            renderer.render(chunk).unwrap();
+        }
+        frames
+    };
+    let source = render(&repeated);
+    let actual = render(&extended);
+    for (index, frame) in actual.iter().enumerate() {
+        let position = index % 26_000;
+        assert_eq!(
+            *frame,
+            if position < 24_000 {
+                source[position]
+            } else {
+                [0.0; 2]
+            },
+            "frame {index}"
+        );
+    }
+}
+
 // Each rate/mode owns independent Sessions for all three tempos. Separate
 // cases let libtest balance the work without reducing the history/PCM matrix.
 mod subframe_tempo_history {
@@ -1169,6 +1411,44 @@ fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() 
             min: s.min(0.0),
             max: s.max(0.0)
         })
+    );
+    let mut visited = Vec::new();
+    let over = waveform
+        .bounded_overrange(3_999_997..4_000_001, 4, |frame| {
+            visited.push(frame);
+            Some((1.0, 100.0))
+        })
+        .unwrap();
+    assert_eq!(visited, vec![3_999_997, 3_999_998, 3_999_999, 4_000_000]);
+    for (channel, value) in sample.iter().copied().enumerate() {
+        assert_eq!(over.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(over.negative[channel], value * 100.0 < -1.0);
+    }
+    let (offset, loud) = prepared.audio.frames()[7_000..]
+        .iter()
+        .enumerate()
+        .find(|(_, frame)| frame[0].abs() > 0.02 && frame[1].abs() > 0.02)
+        .expect("occupied sparse event has audible samples");
+    let logical = 4_000_000 + offset;
+    let loud_result = waveform
+        .bounded_overrange(logical..logical + 1, 1, |_| Some((1.0, 100.0)))
+        .unwrap();
+    for (channel, value) in loud.iter().copied().enumerate() {
+        assert_eq!(loud_result.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(loud_result.negative[channel], value * 100.0 < -1.0);
+    }
+    assert!(loud_result.positive.into_iter().any(|present| present));
+    assert!(loud_result.negative.into_iter().any(|present| present));
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 3, |_| Some((1.0, 100.0)))
+            .is_none()
+    );
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 4, |frame| (frame != 3_999_998)
+                .then_some((1.0, 1.0)))
+            .is_none()
     );
 }
 
