@@ -434,6 +434,13 @@ fn insert_receipt(
         ))
 }
 
+pub(in crate::service) fn is_tempo_edit(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::SetProjectTempo { .. } | Command::SetTempoPoint { .. }
+    )
+}
+
 pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<GraphEditOperation> {
     match command {
         Command::InitializeDevice(initialization) => graph_edit_operation(initialization.command()),
@@ -480,7 +487,7 @@ impl Session {
                 "verified graph edit authoring revision changed",
             ));
         }
-        let operation = if matches!(&command, Command::SetProjectTempo { .. }) {
+        let operation = if is_tempo_edit(&command) {
             Operation::Tempo
         } else {
             Operation::Device(
