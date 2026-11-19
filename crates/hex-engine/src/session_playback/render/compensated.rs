@@ -500,23 +500,30 @@ impl SessionPlayback {
                 .native_parameter_state
                 .as_deref()
                 .is_some_and(|state| state.processing.is_some());
-        for (index, ((route, scratch), aligned)) in self
-            .route_scratch
-            .iter()
-            .zip(&mut self.resident_source_scratch)
-            .zip(aligned)
-            .enumerate()
-        {
-            if !eligible[index]
-                || !matches!(
-                    route.owner,
-                    RouteOwner::Arrangement | RouteOwner::SessionAudio { .. }
+        let tracks = self.revision.arrangement().tracks();
+        let has_foreign = |index: usize| {
+            tracks[index].device_chain.iter().any(|device| {
+                matches!(
+                    device.definition.as_ref(),
+                    Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
                 )
-                || self.revision.gain_recording_track() == Some(route.id)
+            })
+        };
+        let eligible_tracks = (0..self.route_scratch.len()).filter(|&index| eligible[index]);
+        let native_tracks = eligible_tracks.clone().filter(|&index| !has_foreign(index));
+        let hosted_tracks = eligible_tracks.filter(|&index| batch_foreign && has_foreign(index));
+        // Preserve the native work ahead of hosted reply reads. Reading those
+        // replies at the front of the callback would give the workers less time.
+        for index in native_tracks.chain(hosted_tracks) {
+            let route = &self.route_scratch[index];
+            if !matches!(
+                route.owner,
+                RouteOwner::Arrangement | RouteOwner::SessionAudio { .. }
+            ) || self.revision.gain_recording_track() == Some(route.id)
             {
                 continue;
             }
-            let track = &self.revision.arrangement().tracks()[index];
+            let track = &tracks[index];
             if matches!(route.owner, RouteOwner::SessionAudio { .. })
                 && (track.instrument.is_some()
                     || track.foreign_instrument.is_some()
@@ -540,16 +547,6 @@ impl SessionPlayback {
             if track.instrument_id.is_some() || track.instrument_position() != 0 {
                 continue;
             }
-            if !batch_foreign
-                && track.device_chain.iter().any(|device| {
-                    matches!(
-                        device.definition.as_ref(),
-                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                    )
-                })
-            {
-                continue;
-            }
             let chain = &mut self.device_chains[index];
             let stage_origins = if chain.is_empty() {
                 None
@@ -566,7 +563,7 @@ impl SessionPlayback {
                 })
             };
             let work_start = self.render_work.track(index);
-            let samples = &mut scratch[..frames];
+            let samples = &mut self.resident_source_scratch[index][..frames];
             for frame in samples.iter_mut() {
                 // Match the two zero-valued merges in the scalar route.
                 frame[0] += 0.0;
@@ -635,7 +632,7 @@ impl SessionPlayback {
                 .edge_block(edge, samples)
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
             self.render_work.finish(work_start);
-            *aligned = true;
+            aligned[index] = true;
         }
         Ok(())
     }
