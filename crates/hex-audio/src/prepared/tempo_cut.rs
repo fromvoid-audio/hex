@@ -1,7 +1,9 @@
-//! Exact tempo cuts for the ordinary resident publication slot. Control owns
+//! Exact tempo cuts for the ordinary publication slot. Control owns
 //! the prepared anchor through the graph receipt. The callback borrows it
 //! while inheriting, then returns the original graph through ordinary custody.
 use super::*;
+
+pub(super) const TEMPO_STREAM_WINDOW_FRAMES: usize = 256;
 
 /// A move-only cut tied to its output, revisions and captured commands.
 /// Admission moves it into the graph receipt for control-side reclamation.
@@ -58,7 +60,7 @@ impl PublicationControl {
         .map(|cut| cut.filter(|cut| cut.fence == original.fence))
     }
 
-    /// Admit a resident tempo edit through the ordinary resource book. A
+    /// Admit an ordinary tempo edit through the ordinary resource book. A
     /// submission has a cancellable receipt and may still miss the exact cut.
     #[allow(clippy::result_large_err)] // Refusal returns the actual graph to control.
     pub fn publish_tempo_cut_with_admission_on_control<E>(
@@ -92,6 +94,55 @@ impl Publication {
 }
 
 impl Callback {
+    pub(super) fn prewarm_tempo_cut(&mut self) {
+        use crate::candidate_custody::TempoStreamWindow;
+        let Some(next) = self
+            .deferred
+            .as_mut()
+            .filter(|next| next.playback.contains_streamed_sources())
+        else {
+            return;
+        };
+        let Some(cut) = next
+            .fresh_runtime_cancellation
+            .as_ref()
+            .and_then(|receipt| receipt.0.tempo_cut())
+        else {
+            return;
+        };
+        let Some(old) = self.active.as_mut().and_then(ActivePublication::legacy_mut) else {
+            return;
+        };
+        if old.playback.performance_frame() >= cut.performance_frame {
+            return;
+        }
+        let Some(context) = old.source_context else {
+            return;
+        };
+        let Some(streams) = next.streams.as_mut() else {
+            return;
+        };
+        if streams
+            .prepare_install(
+                &mut next.playback,
+                Some((&mut old.playback, context, old.revision)),
+                &mut self.domain_pages,
+                false,
+                self.stream_prefix,
+                TEMPO_STREAM_WINDOW_FRAMES,
+                false,
+                false,
+                None,
+                Some(TempoStreamWindow::Forecast(&cut.anchor)),
+            )
+            .is_err()
+        {
+            // Speculative readiness must yield. Exact planning at the cut
+            // reads the live donor and may choose a different page window.
+            streams.cancel_install(&mut self.domain_pages);
+        }
+    }
+
     pub(super) fn tempo_publication_due(&mut self, fence: FreshRuntimeFence) -> bool {
         let Some(next) = self.deferred.as_ref() else {
             return true;
@@ -114,7 +165,7 @@ impl Callback {
             PlaybackHandoffRejection::RuntimeFenceChanged
         } else if let Some((old, cut)) = old.zip(next.tempo_cut())
             && old.playback.playing()
-            && !old.playback.contains_streamed_sources()
+            && (!old.playback.contains_streamed_sources() || old.streams.is_some())
             && old.explicit_control_context
             && old.control_context_generation == cut.control_generation
         {

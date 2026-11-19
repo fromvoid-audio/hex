@@ -1356,10 +1356,10 @@ impl PreparedRevision {
             || self.session.contains_streamed_sources()
     }
 
-    /// Whether these immutable resident revisions are suitable for attempting
+    /// Whether these immutable ordinary revisions are suitable for attempting
     /// a compensated Arrangement tempo cut. The callback still proves route,
     /// transport and delay-history continuity against the actual donor.
-    pub fn can_schedule_resident_tempo_edit_from(&self, previous: &Self) -> bool {
+    pub fn can_schedule_ordinary_tempo_edit_from(&self, previous: &Self) -> bool {
         !self
             .session()
             .timing()
@@ -1367,7 +1367,7 @@ impl PreparedRevision {
             && [self, previous].into_iter().all(|revision| {
                 let arrangement = revision.arrangement();
                 arrangement.main_latency_frames() > 0
-                    && !revision.contains_streamed_sources()
+                    && revision.scalar_automation.is_none()
                     && arrangement.source_effects.is_empty()
                     && arrangement.tracks().iter().all(|track| {
                         track.instrument.is_none() || track.foreign_instrument.is_some()

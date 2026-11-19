@@ -3275,6 +3275,20 @@ impl Playback {
         )
         .map_err(PlaybackHandoffError::Session)
     }
+    pub(crate) fn forecast_ordinary_tempo_cut(
+        &self,
+        previous: &Self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_ref().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_ref().ok_or_else(invalid)?;
+        next.forecast_ordinary_tempo_cut(old, maximum_frames, visit, anchor)
+            .map_err(PlaybackHandoffError::Session)
+    }
+
     pub(crate) fn preview_ordinary_tempo_cut(
         &mut self,
         previous: &mut Self,

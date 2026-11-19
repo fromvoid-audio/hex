@@ -98,6 +98,13 @@ fn prepare_resident_tempo_cut(
     let lead = control
         .plugin_callback_quantum_on_control()
         .map_or(256, |quantum| u64::from(quantum) * 2);
+    // File pages need worker pickup before the exact cut. Leave up to four
+    // ordinary demand quanta of lead, inside the existing edit receipt bound.
+    let lead = if playback.contains_streamed_sources() {
+        lead.max(1024)
+    } else {
+        lead
+    };
     let candidate = playback.prepared_revision()?;
     if let Some(missed) = edit.retry_of {
         if missed.output_identity != edit.source.output_identity {

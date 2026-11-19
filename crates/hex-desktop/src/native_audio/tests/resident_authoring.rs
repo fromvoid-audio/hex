@@ -1735,23 +1735,25 @@ fn check_streamed_tempo_edit(looped: bool) {
             std::thread::sleep(Duration::from_millis(1));
         }
         let old_tempo = imported.state.project.tempo_map().clone();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let performance = status.performance_frame.load(Acquire);
+        let position = status.position.load(Acquire);
+        let due = performance + 1024;
         h.service
             .submit(Request::Edit(Command::SetProjectTempo {
                 tempo: hex_project::Tempo::new(90_000_000).unwrap(),
             }))
             .unwrap();
+        let submitted = wait_for_tempo_submission(&mut h, applied);
         let deadline = Instant::now() + Duration::from_secs(2);
-        let mut edited = None;
-        let mut cut = None;
-        while edited.is_none() || cut.is_none() {
-            h.pump();
-            if let Ok(event) = h.service.try_event() {
-                assert!(event.error.is_none(), "{:?}", event.error);
-                edited = Some(event);
-            }
+        let (after, suffix) = loop {
             let status = h.audio.as_ref().unwrap().status().unwrap();
-            let before_revision = status.applied_revision.load(Acquire);
-            let before_position = status.position.load(Acquire);
+            let before = status.performance_frame.load(Acquire);
+            assert_eq!(status.applied_revision.load(Acquire), applied);
+            assert!(
+                h.service.try_event().is_err(),
+                "tempo committed before the cut"
+            );
             let mut frames = [[0.0; 2]; 257];
             let mut callback = h.callback.lock().unwrap();
             let allocations = allocation_counter::measure(|| {
@@ -1772,30 +1774,41 @@ fn check_streamed_tempo_edit(looped: bool) {
             );
             drop(callback);
             let status = h.audio.as_ref().unwrap().status().unwrap();
-            if before_revision == applied && status.applied_revision.load(Acquire) > applied {
-                cut = Some((before_position, status.position.load(Acquire)));
+            let observed = status.performance_frame.load(Acquire);
+            assert_eq!(observed, before + partition as u64, "tempo cut stalled");
+            assert!(status.rejected_revision().is_none());
+            if observed > due {
+                assert_eq!(status.applied_revision.load(Acquire), submitted);
+                break (status.position.load(Acquire), observed - due);
             }
             assert!(
                 Instant::now() < deadline,
                 "streamed tempo edit did not publish"
             );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let (before, after) = cut.unwrap();
-        let beat = old_tempo.frame_to_beat(before).unwrap();
-        let project = &edited.unwrap().state.project;
+            if before == performance {
+                // The first prefix callback has requested the successor's
+                // pages. Give its real worker a turn before headless playback
+                // races through a thousand frames without real-time pacing.
+                std::thread::sleep(Duration::from_millis(12));
+            }
+        };
+        let edited = h.next();
+        assert!(edited.error.is_none(), "{:?}", edited.error);
+        let before_cut = if looped {
+            OLD_START + (position + 1024 - OLD_START) % (OLD_END - OLD_START)
+        } else {
+            position + 1024
+        };
+        let beat = old_tempo.frame_to_beat(before_cut).unwrap();
+        let project = &edited.state.project;
         let relocated = project.tempo_map().beat_to_frame(beat).unwrap();
-        let advanced = relocated + partition as u64;
+        let advanced = relocated + suffix;
         let expected = if looped {
             let region = project.loop_region().unwrap();
             assert!(region.enabled());
             assert_eq!(region.start()..region.end(), 8020..8276);
-            assert!((OLD_START..OLD_END).contains(&before));
             assert!((region.start()..region.end()).contains(&relocated));
             assert_eq!(region.start() / PAGE + 1, (region.end() - 1) / PAGE);
-            if partition == 257 {
-                assert!(advanced >= region.end(), "publication block must wrap");
-            }
             region.start() + (advanced - region.start()) % (region.end() - region.start())
         } else {
             advanced

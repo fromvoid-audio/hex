@@ -27,7 +27,7 @@ pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
-    StreamInstall, StreamOutcome, StreamProgress,
+    StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow,
 };
 pub use eligible::{
     AudioCandidateCancellationResult, AudioCandidateDomainPreparationFailure,

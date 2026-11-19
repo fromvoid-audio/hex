@@ -24,6 +24,14 @@ fn compile_sources(
     metadata: Vec<hex_engine::StreamedSourceMetadata>,
     store: &ResidentDeviceAssets,
 ) -> Playback {
+    compile_with_resources(project, metadata, store).0
+}
+
+fn compile_with_resources(
+    project: &hex_project::Project,
+    metadata: Vec<hex_engine::StreamedSourceMetadata>,
+    store: &ResidentDeviceAssets,
+) -> (Playback, PreparedDeviceResources) {
     let cancel = AtomicBool::new(false);
     let resources =
         PreparedDeviceResources::prepare_on_control(store, project, 1_000_000, &cancel).unwrap();
@@ -50,7 +58,9 @@ fn compile_sources(
             &cancel,
         )
         .unwrap();
-    Playback::try_from_prepared_with_device_resources(Arc::new(revision), &resources).unwrap()
+    let playback =
+        Playback::try_from_prepared_with_device_resources(Arc::new(revision), &resources).unwrap();
+    (playback, resources)
 }
 fn measured_block(
     data: &mut crate::native_callback_owner::Guard<
@@ -1619,6 +1629,242 @@ fn callback_stream_projection_is_allocation_free_for_both_runtime_kinds() {
     ));
     assert_eq!(ordinary_failure, expected);
     assert_eq!(constructor_failure, expected);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn file_tempo_cut_requests_future_page_and_missing_it_keeps_playing() {
+    use hex_project::{Command, Editor, Tempo};
+
+    let _serial = serial();
+    let frames = 16_384;
+    let mut editor = Editor::new(super::readiness::project_with_frames(frames), 8).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().assets().next().unwrap().id();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 6000,
+            end: 6300,
+            enabled: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let wav = stream_fixture::Wav::with_samples(frames.try_into().unwrap(), |_| 8192);
+    let definition = wav.definition(asset, 11);
+    // The old loop reads page 1 and may prefetch page 2. The retimed
+    // cut lands on page 3, outside that ordinary next-page lookahead.
+    let page_key = hex_stream::PageKey {
+        source: definition.metadata.key(),
+        page_index: 3,
+    };
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(page_key);
+    let store = ResidentDeviceAssets::default();
+    let old = compile(editor.project(), definition.metadata.clone(), &store);
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let (successor, resources) =
+        compile_with_resources(editor.project(), vec![definition.metadata.clone()], &store);
+    let previous = Arc::clone(old.prepared_revision().unwrap());
+    let candidate = Arc::clone(successor.prepared_revision().unwrap());
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation_with_gate(
+            hex_stream::StreamConfig::with_pool_pages(8),
+            vec![definition],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+            gate,
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while control
+        .poll_audio_candidate_domain_preparation(domain)
+        .unwrap()
+        != crate::AudioCandidateDomainPreparationProgress::Ready
+    {
+        assert!(std::time::Instant::now() < deadline, "waiting for catalog");
+        std::thread::yield_now();
+    }
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let applied = control
+        .publish_with_admission_and_source_on_control(
+            old,
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("old file graph admission"));
+    let mut out = [[0.0; 2]; 16];
+    while control.status.applied_revision.load(Acquire) != applied {
+        measured_render(&mut data, &mut out);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waiting for original graph"
+        );
+    }
+    control.command(PlaybackCommand::PlayFrom(6180)).unwrap();
+    while control.status.performance_frame.load(Acquire) == 0 {
+        measured_render(&mut data, &mut out);
+        assert!(std::time::Instant::now() < deadline, "waiting for old page");
+        std::thread::yield_now();
+    }
+    let performance = control.status.performance_frame.load(Acquire);
+    let due = performance + 300;
+    let cut = control
+        .prepare_fenced_tempo_anchor(
+            applied,
+            context.project_generation,
+            Arc::clone(&previous),
+            Arc::clone(&candidate),
+            due,
+        )
+        .unwrap()
+        .unwrap();
+    let edit_context = hex_engine::AudioSourceContext {
+        editor_revision: 4,
+        ..context
+    };
+    let submitted = control
+        .publish_tempo_cut_with_admission_on_control(successor, cut, edit_context, |_| {
+            Ok::<_, ()>(())
+        })
+        .unwrap_or_else(|_| panic!("file tempo cut admission"));
+    measured_render(&mut data, &mut out);
+    entered
+        .recv_timeout(std::time::Duration::from_millis(250))
+        .expect("the cold successor page must be requested before the cut");
+    assert_eq!(
+        control.status.performance_frame.load(Acquire),
+        performance + 16
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), applied);
+    let receipt = control.fresh_runtime_receipt(submitted).unwrap();
+    for index in 1..=21 {
+        measured_render(&mut data, &mut out);
+        assert_eq!(
+            control.status.performance_frame.load(Acquire),
+            performance + (index + 1) * 16
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), applied);
+    }
+    assert_eq!(
+        receipt.state(),
+        PublicationReceiptState::Refused(PlaybackHandoffRejection::TempoCutMissed)
+    );
+    assert!(control.status.playing.load(Acquire));
+    assert!(out.iter().flatten().all(|sample| *sample > 0.20));
+    release.send(()).unwrap();
+    drop(receipt);
+    control.reclaim();
+    let retry_due = control.status.performance_frame.load(Acquire) + 300;
+    let retry_cut = control
+        .reprepare_missed_tempo_cut(submitted, edit_context, &previous, &candidate, retry_due)
+        .unwrap()
+        .unwrap();
+    let retry_playback =
+        Playback::try_from_prepared_with_device_resources(candidate, &resources).unwrap();
+    let retry = control
+        .publish_tempo_cut_with_admission_on_control(
+            retry_playback,
+            retry_cut,
+            edit_context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("retry file tempo cut admission"));
+    loop {
+        measured_render(&mut data, &mut out[..1]);
+        let mut protected = false;
+        data.owner_mut().unwrap().run(|callback, _| {
+            protected = callback
+                .deferred
+                .as_ref()
+                .and_then(|next| next.streams.as_ref())
+                .is_some_and(|streams| {
+                    streams
+                        .test_domain_protected(&mut callback.domain_pages, page_key.source.into())
+                })
+        });
+        if protected {
+            break;
+        }
+        assert!(control.status.performance_frame.load(Acquire) < retry_due);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retry never prepared its page"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    loop {
+        measured_render(&mut data, &mut out);
+        if control.status.performance_frame.load(Acquire) > retry_due {
+            assert_eq!(
+                control.status.applied_revision.load(Acquire),
+                retry,
+                "rejected revision: {:?}",
+                control.status.rejected_revision()
+            );
+            assert!(out.iter().flatten().all(|sample| *sample > 0.20));
+            break;
+        }
+        assert_eq!(control.status.applied_revision.load(Acquire), applied);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waiting for the retry cut"
+        );
+    }
+
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    loop {
+        measured_render(&mut data, &mut out);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waiting for page worker retirement"
+        );
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
 }
 
 #[test]
@@ -3347,7 +3593,13 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
                     std::time::Instant::now() < deadline,
                     "candidate never installed"
                 );
-                std::thread::yield_now();
+                assert!(
+                    control.status.playing.load(Acquire),
+                    "fixture passed the clip end"
+                );
+                // This headless callback can otherwise exhaust the short
+                // clip before the real worker has a chance to deliver a page.
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             let (failed, next_width, _) = crate::candidate_window_probe::finish().unwrap();
             assert_eq!((failed, next_width), (256, 128));

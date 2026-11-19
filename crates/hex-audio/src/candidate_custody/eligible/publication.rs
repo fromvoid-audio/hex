@@ -25,7 +25,9 @@ use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 pub(in crate::candidate_custody) use streaming::OrdinaryReservation;
 pub(crate) use streaming::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
-pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
+pub(crate) use streaming::{
+    StageAction, StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow,
+};
 mod preparation;
 use preparation::PreparationExecution;
 pub use preparation::{

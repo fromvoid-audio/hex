@@ -113,7 +113,7 @@ impl ActiveView<'_> {
             fenced_restart: false,
             foreign_continuation: false,
             confirmed_fade: None,
-            tempo_anchor: None,
+            tempo_cut: None,
         };
         if self
             .state

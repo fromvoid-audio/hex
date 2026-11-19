@@ -1,6 +1,6 @@
 use super::*;
 use crate::signal_graph::FreshHistory;
-use crate::{MidiTiming, Track};
+use crate::{Invalid, MidiTiming, Track};
 use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
@@ -497,6 +497,47 @@ impl SessionPlayback {
             false,
         )
     }
+    /// Project the first ordinary Arrangement page window, without assuming
+    /// the donor will arrive or that this forecast includes its future tails.
+    /// The actual cut must plan from the live donor before using these pages.
+    pub(crate) fn forecast_ordinary_tempo_cut(
+        &self,
+        previous: &Self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &PreparedTempoAnchor,
+    ) -> Result<crate::StreamChunkWindow, SessionPlaybackError> {
+        self.require_fresh_candidate()?;
+        if !anchor.matches_revisions(&previous.revision, &self.revision)
+            || !previous.playing
+            || previous.performance_frame >= anchor.performance_frame
+            || previous.transient_loop.is_some()
+            || self.transient_loop.is_some()
+            || self.revision.scalar_automation.is_some()
+            || previous.revision.scalar_automation.is_some()
+            || self
+                .routes
+                .iter()
+                .chain(&previous.routes)
+                .any(|route| route.owner != RouteOwner::Arrangement || route.pending.is_some())
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.visit_stream_chunk_with_history(
+            true,
+            &self.routes,
+            anchor.performance_frame,
+            anchor.mapped_cut.0,
+            previous.route_state_generation.wrapping_add(1),
+            anchor.mapped_cut.1,
+            true,
+            maximum_frames,
+            visit,
+            super::stream_demand::ScalarOriginHistory::Empty,
+        )
+        .map_err(|error| SessionPlaybackError::Arrangement(error.0))
+    }
+
     pub(super) fn validate_tempo_cut(
         &self,
         previous: &Self,

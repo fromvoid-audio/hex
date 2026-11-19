@@ -131,8 +131,8 @@ mod sampler_edit;
 mod sampler_keyboard;
 mod section_launch;
 mod tempo_cut;
-use tempo_cut::FencedAdmission;
 pub use tempo_cut::FencedTempoCut;
+use tempo_cut::{FencedAdmission, TEMPO_STREAM_WINDOW_FRAMES};
 #[cfg(test)]
 mod spectrum_multi_tests;
 #[cfg(test)]
@@ -2307,11 +2307,12 @@ impl PublicationControl {
                     || cut.output_identity != self.candidate_root.root_id()
                     || cut.control_generation != control_context_generation
                     || playback.contains_streamed_sources()
+                        && !self.candidate_root.ordinary_streams_configured()
             })
         {
             return Err(PublishError {
                 kind: PublishErrorKind::Other,
-                reason: "tempo cut requires its original output and resident source",
+                reason: "tempo cut requires its original output and ordinary source",
                 playback,
             });
         }
@@ -3433,9 +3434,11 @@ impl Callback {
     fn return_graph(&mut self, mut publication: Publication) {
         if publication.approved_device_insert().is_some() {
             self.release_device_insert_fade_pins();
-            if let Some(streams) = publication.streams.as_mut() {
-                streams.cancel_install(&mut self.domain_pages);
-            }
+        }
+        if (publication.approved_device_insert().is_some() || publication.tempo_cut().is_some())
+            && let Some(streams) = publication.streams.as_mut()
+        {
+            streams.cancel_install(&mut self.domain_pages);
         }
         self.release_refused_device_insert_cut(&publication);
         if let Some(receipt) = publication.fresh_runtime_cancellation.as_ref() {
@@ -3886,6 +3889,9 @@ impl Callback {
             return;
         }
         if !self.scheduled_publication_due() {
+            if frames.is_some_and(|frames| frames != 0) {
+                self.prewarm_tempo_cut();
+            }
             return;
         }
         if confirmed_insert && self.retired.is_full() {
@@ -4331,6 +4337,14 @@ impl Callback {
                         let fenced_restart =
                             matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
                                 && next.playback.live_restart_requested();
+                        let stream_frames = if tempo_cut
+                            && next.playback.contains_streamed_sources()
+                            && frames.is_some_and(|count| count != 0)
+                        {
+                            TEMPO_STREAM_WINDOW_FRAMES
+                        } else {
+                            frames.unwrap_or(0)
+                        };
                         let prepared = next.streams.as_mut().map(|streams| {
                             streams.prepare_install(
                                 &mut next.playback,
@@ -4338,14 +4352,18 @@ impl Callback {
                                 &mut self.domain_pages,
                                 self.stream_pending_play.is_some(),
                                 self.stream_prefix,
-                                frames.unwrap_or(0),
+                                stream_frames,
                                 fenced_restart,
                                 foreign_continuation,
                                 None,
                                 next.fresh_runtime_cancellation
                                     .as_ref()
                                     .and_then(|receipt| receipt.0.tempo_cut())
-                                    .map(|cut| &cut.anchor),
+                                    .map(|cut| {
+                                        crate::candidate_custody::TempoStreamWindow::Exact(
+                                            &cut.anchor,
+                                        )
+                                    }),
                             )
                         });
                         (prepared, false)
