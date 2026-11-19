@@ -1030,6 +1030,14 @@ impl SessionPlayback {
             .session()
             .timing()
             .same_map(previous.revision.session().timing());
+        let authored_clock_epoch = if same_base_timing {
+            previous.authored_clock_epoch
+        } else {
+            previous
+                .authored_clock_epoch
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?
+        };
         let tempo_cut =
             if !same_base_timing && restart == Restart::None && source_transfer.is_none() {
                 self.compensated_arrangement_tempo_cut(previous)?
@@ -1855,6 +1863,7 @@ impl SessionPlayback {
             }
             self.routes.copy_from_slice(&self.route_scratch);
             self.capture_epoch = recipient_epoch;
+            self.authored_clock_epoch = authored_clock_epoch;
             previous.capture_epoch = donor_epoch;
             self.candidate_admission_open = false;
             self.main_chain
@@ -5813,6 +5822,7 @@ impl SessionPlayback {
         }
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
+        self.authored_clock_epoch = authored_clock_epoch;
         self.anchor = candidate_anchor;
         self.historical_floor = inherited_floor;
         self.route_historical_floors = candidate_route_floors;

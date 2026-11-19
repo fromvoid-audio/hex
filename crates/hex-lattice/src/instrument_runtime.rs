@@ -29,6 +29,12 @@ pub trait NativeInstrumentClock {
     fn arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Identity of the authored Arrangement frame coordinates at this
+    /// origin. Changes only when that clock changes. Delayed content keeps
+    /// the identity it entered with, including around tempo edits.
+    fn authored_clock_epoch_at_offset(&self, _offset: usize) -> Option<NonZeroU64> {
+        None
+    }
     /// Exact Arrangement content origin eligible for authored foreign
     /// automation. Stopped monitoring, audition and uncompensated warmup
     /// return None even if they have a cursor or a musical clock.

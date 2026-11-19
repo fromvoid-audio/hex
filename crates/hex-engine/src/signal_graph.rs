@@ -2505,6 +2505,12 @@ impl hex_lattice::NativeInstrumentClock for OriginClock<'_> {
         }
         self.0.map(|stamp| stamp.arrangement_frame)
     }
+    fn authored_clock_epoch_at_offset(&self, offset: usize) -> Option<std::num::NonZeroU64> {
+        if offset != 0 {
+            return None;
+        }
+        self.0?.authored_clock_epoch
+    }
     fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.performance_frame_at_offset(offset)?;
         self.arrangement_frame_at_offset(offset)

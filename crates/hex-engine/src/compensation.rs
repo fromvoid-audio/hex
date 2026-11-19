@@ -6,7 +6,7 @@
 //! fixed buffers, and commit/rollback copy the circular intervals actually touched.
 
 use crate::Frame;
-use std::{fmt, mem::size_of};
+use std::{fmt, mem::size_of, num::NonZeroU64};
 
 mod block_origins;
 pub(crate) use block_origins::OriginWindow;
@@ -121,6 +121,9 @@ fn requested_ring_bytes<T>(capacity: usize) -> Result<usize, CompensationError> 
 /// Beat preserves exact Q32.32 quarter-note ticks; no project or runtime owner is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportStamp {
+    /// Arrangement frame-coordinate identity when this content entered the
+    /// graph. History copies keep it with the exact original PCM and timing.
+    pub authored_clock_epoch: Option<NonZeroU64>,
     /// Local source tempo; stays aligned with the same delayed content stamp.
     pub tempo_micro_bpm: Option<u32>,
     /// Exact source performance-frame identity, independent of loop position.

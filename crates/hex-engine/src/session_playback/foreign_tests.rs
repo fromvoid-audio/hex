@@ -190,6 +190,161 @@ impl ForeignProcessors for Borrowed {
 }
 
 #[test]
+fn delayed_effect_origins_keep_their_clock_through_successive_tempo_edits() {
+    use hex_lattice::NativeInstrumentClock;
+    type Origin = (u64, u64, u32, Option<std::num::NonZeroU64>);
+
+    struct Endpoint {
+        effect: Borrowed,
+        origins: Vec<Origin>,
+    }
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let clock = clock.unwrap();
+            if let Some(source) = clock.performance_frame_at_offset(0) {
+                self.origins.push((
+                    source,
+                    clock.arrangement_frame_at_offset(0).unwrap(),
+                    clock.tempo_micro_bpm_at_offset(0).unwrap(),
+                    clock.authored_clock_epoch_at_offset(0),
+                ));
+            } else {
+                assert_eq!(clock.authored_clock_epoch_at_offset(0), None);
+            }
+            self.effect
+                .process_segment(node, offset, frames, Some(clock))
+        }
+
+        fn reject_callback(&mut self) {
+            self.effect.reject_callback();
+        }
+    }
+
+    let mut fixture = fixture(&[&[]], 4096);
+    let track = fixture.tracks[0];
+    fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Device(device) = fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("one delayed foreign processor");
+    };
+    let owner = ProcessorChainOwner::Track(track.value());
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::limiter::DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &fixture.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut playing = prepare(fixture.editor.project());
+    let delay = playing.revision.arrangement().main_latency_frames() as usize - 19;
+    assert!(delay > 2);
+    let advance = |playback: &mut SessionPlayback, endpoint: &mut Endpoint, frames: usize| {
+        for chunk in vec![[0.0; 2]; frames].chunks_mut(257) {
+            endpoint.effect.next_offset = 0;
+            playback
+                .render_with_foreign_processors(chunk, None, None, None, endpoint)
+                .unwrap();
+        }
+    };
+    let publish = |playing: &mut SessionPlayback, project: &hex_project::Project| {
+        let mut candidate = prepare(project);
+        let report = candidate.try_inherit_state_live_from(playing).unwrap();
+        assert!(!report.running_audio_restart());
+        *playing = candidate;
+    };
+    let mut endpoint = Endpoint {
+        effect: Borrowed::new(owner, device.value()),
+        origins: Vec::new(),
+    };
+    endpoint.effect.initial_unstamped_frames = delay;
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    advance(&mut playing, &mut endpoint, 512);
+    fixture
+        .editor
+        .execute(Command::Gain { track, gain: 0.5 })
+        .unwrap();
+    publish(&mut playing, fixture.editor.project());
+    advance(&mut playing, &mut endpoint, delay + 8);
+    let first_cut = playing.performance_frame();
+    fixture
+        .editor
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    publish(&mut playing, fixture.editor.project());
+    let first_cursor = playing.arrangement_frame();
+    advance(&mut playing, &mut endpoint, delay / 2);
+    let second_cut = playing.performance_frame();
+    assert!(fixture.editor.undo());
+    publish(&mut playing, fixture.editor.project());
+    let second_cursor = playing.arrangement_frame();
+    advance(&mut playing, &mut endpoint, delay + 16);
+
+    let initial = endpoint.origins[0]
+        .3
+        .expect("initial Arrangement clock identity");
+    let first = endpoint.origins[first_cut as usize]
+        .3
+        .expect("first retimed clock identity");
+    let second = endpoint.origins[second_cut as usize]
+        .3
+        .expect("second retimed clock identity");
+    assert!(initial < first && first < second);
+    assert_eq!(endpoint.origins.len(), second_cut as usize + 16);
+    for (index, &(source, arrangement, tempo, epoch)) in endpoint.origins.iter().enumerate() {
+        assert_eq!(source, index as u64);
+        let expected = if source < first_cut {
+            (source, 120_000_000, initial)
+        } else if source < second_cut {
+            (first_cursor + source - first_cut, 90_000_000, first)
+        } else {
+            (second_cursor + source - second_cut, 120_000_000, second)
+        };
+        assert_eq!(
+            (arrangement, tempo, epoch.unwrap()),
+            expected,
+            "source {source}"
+        );
+    }
+}
+
+#[test]
 fn paused_input_monitor_refuses_foreign_track_return_and_main_effects() {
     for location in 0..3 {
         let (revision, _, _) = prepared(location, false);

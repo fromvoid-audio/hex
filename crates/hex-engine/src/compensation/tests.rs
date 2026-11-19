@@ -285,6 +285,7 @@ fn silence_advances_pending_impulse_and_epoch_reset_removes_old_content() {
 
 fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
+        authored_clock_epoch: NonZeroU64::new((index / 4) as u64 + 1),
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
         transport_is_running: !index.is_multiple_of(3),
@@ -400,6 +401,13 @@ fn authored_origins_use_running_content_after_compensation_and_epoch_reset() {
         expected
     );
 
+    assert_eq!(
+        std::array::from_fn::<_, 8, _>(|offset| window.authored_clock_epoch_at_offset(offset)),
+        std::array::from_fn(|offset| offset
+            .checked_sub(3)
+            .and_then(|source| stamp(source).authored_clock_epoch)),
+    );
+
     runtime.begin_transaction().unwrap();
     for (index, expected) in expected.into_iter().enumerate() {
         runtime.push_transport_stamp(stamp(index)).unwrap();
@@ -407,6 +415,13 @@ fn authored_origins_use_running_content_after_compensation_and_epoch_reset() {
         let clock = OriginClock(stamp.as_ref());
         assert_eq!(clock.authored_arrangement_frame_at_offset(0), expected);
         assert_eq!(clock.authored_arrangement_frame_at_offset(1), None);
+        assert_eq!(
+            clock.authored_clock_epoch_at_offset(0),
+            index
+                .checked_sub(3)
+                .and_then(|source| self::stamp(source).authored_clock_epoch)
+        );
+        assert_eq!(clock.authored_clock_epoch_at_offset(1), None);
     }
     runtime.commit_transaction().unwrap();
     runtime.reset_epoch();
@@ -566,6 +581,7 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
         source.begin();
         for frame in 0..count {
             source.push(Some(TransportStamp {
+                authored_clock_epoch: NonZeroU64::new(frame + 1),
                 tempo_micro_bpm: Some(123_000_000),
                 performance_frame: 900 + frame,
                 transport_is_running: frame % 2 == 0,
@@ -582,6 +598,7 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
         target.begin();
         for _ in 0..7 {
             target.push(Some(TransportStamp {
+                authored_clock_epoch: None,
                 tempo_micro_bpm: Some(123_000_000),
                 performance_frame: 1,
                 transport_is_running: false,

@@ -50,7 +50,6 @@ struct Ledger {
     live: live_keys::Gates,
     hardware: hardware::Gates,
     quantum_offset: u16,
-    clock_epoch: Option<NonZeroU32>,
     authored_quantum: authored_clock::Quantum,
 }
 
@@ -388,13 +387,6 @@ impl ForeignArrangement {
                     (None, None) => {}
                     _ => return Err(INCOMPATIBLE_HANDOFF),
                 }
-                candidate.scratch.clock_epoch = Some(
-                    ledger
-                        .clock_epoch
-                        .unwrap_or(NonZeroU32::MIN)
-                        .checked_add(1)
-                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
-                );
                 let notes = &mut candidate.scratch.notes;
                 notes.clear();
                 notes.extend_from_slice(&ledger.notes);
@@ -445,7 +437,6 @@ impl ForeignArrangement {
                 if keep_clock {
                     std::mem::swap(&mut candidate.committed, &mut donor.committed);
                     if plan.retimed_cursor {
-                        candidate.committed.clock_epoch = candidate.scratch.clock_epoch;
                         std::mem::swap(
                             &mut candidate.committed.notes,
                             &mut candidate.scratch.notes,
@@ -460,7 +451,6 @@ impl ForeignArrangement {
                     // Restart arrangement history while retaining worker note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
                     candidate.committed.quantum_offset = donor.committed.quantum_offset;
-                    candidate.committed.clock_epoch = donor.committed.clock_epoch;
                     candidate.committed.authored_quantum = donor.committed.authored_quantum;
                     // The retained worker still owns monitor notes even when the
                     // arrangement clock restarts. Preserve them to release safely.
@@ -493,7 +483,6 @@ impl ForeignArrangement {
             scratch.live = committed.live;
             scratch.hardware = committed.hardware;
             scratch.quantum_offset = committed.quantum_offset;
-            scratch.clock_epoch = committed.clock_epoch;
             scratch.authored_quantum = committed.authored_quantum;
         }
     }
@@ -726,7 +715,7 @@ impl ForeignArrangement {
         }
         let automation = node.automation.foreign().map(|automation| {
             let mut view = automation.borrow();
-            view.authored_clock_epoch = Some(ledger.clock_epoch.unwrap_or(NonZeroU32::MIN).into());
+            view.authored_clock_epoch = clock.authored_clock_epoch_at_offset(0);
             view
         });
         ledger
