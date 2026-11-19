@@ -599,9 +599,9 @@ impl SessionPlayback {
         donors
     }
 
-    /// Keep an unchanged Return prefix at its input origin during a confirmed
-    /// trailing latency edit. A native append can start a fresh alignment
-    /// epoch when there is no buffered input before that prefix.
+    /// Retain a compatible Return at a confirmed cut. An independent native
+    /// chain can continue at the current origin while its new downstream
+    /// alignment fills. Trailing edits have their own prefix proofs.
     fn retains_return_prefix_at_latency_cut(
         &self,
         previous: &Self,
@@ -631,7 +631,16 @@ impl SessionPlayback {
         if old_bus.id != new_bus.id {
             return false;
         }
-        let prefix = if let Some((removed, prefix)) = old_bus.device_chain.split_last()
+        let prefix = if old_bus.device_chain.len() == new_bus.device_chain.len()
+            && old_bus
+                .device_chain
+                .iter()
+                .all(|stage| stage.foreign_processor().is_none())
+            && old_graph.return_chain_has_unbuffered_input(old_index)
+            && new_graph.return_chain_has_unbuffered_input(new_index)
+        {
+            old_bus.device_chain.as_ref()
+        } else if let Some((removed, prefix)) = old_bus.device_chain.split_last()
             && prefix.len() == new_bus.device_chain.len()
             && is_native_latency_stage(removed)
             && new_bus
