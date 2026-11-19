@@ -97,6 +97,15 @@ impl Plugins {
     }
 
     fn queue_editor(&mut self, binding: Binding, generation: u64, action: EditorAction) {
+        if action == EditorAction::Open {
+            record_insertion_stage(
+                self.diagnostics.as_ref(),
+                binding,
+                generation,
+                "automatic_editor_queued",
+                format_args!(""),
+            );
+        }
         self.editor = Some(EditorOperation::Pending {
             binding,
             generation,
@@ -375,6 +384,15 @@ impl Plugins {
             result,
             Ok(PluginEditorState::Open | PluginEditorState::Detached(_))
         );
+        if action == EditorAction::Open {
+            record_insertion_stage(
+                self.diagnostics.as_ref(),
+                binding,
+                generation,
+                "automatic_editor_terminal",
+                format_args!(" open={open}"),
+            );
+        }
         if let Some(source) = self
             .sources
             .iter_mut()
@@ -554,6 +572,7 @@ mod tests {
                 )
                 .unwrap())),
                 facts_ready_for_session: true,
+                facts_observed: true,
                 #[cfg(feature = "allocation-probe")]
                 facts_attempt_from_session: false,
             });
