@@ -1,27 +1,42 @@
 //! Commit an unlaned effect parameter while preserving the actual source.
 use super::*;
-use hex_project::DeviceAutomationTarget;
+use hex_project::{BeatTime, DeviceAutomationTarget};
 use hex_session::{
     device_gesture::{GestureClient, PluginParameterOrigin, PluginParameterValue},
-    service::PluginParameterQuery,
+    service::{Event, PluginParameterQuery},
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arrangement {
+    Direct,
+    Grouped,
+    GroupedWithInstrument,
+}
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn unlaned_effect_commit_keeps_the_running_source() {
-    verify_unlaned_effect_commit(false);
+    verify_unlaned_effect_commit(Arrangement::Direct);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn grouped_unlaned_effect_commit_keeps_the_running_source() {
-    verify_unlaned_effect_commit(true);
+    verify_unlaned_effect_commit(Arrangement::Grouped);
 }
 
-fn verify_unlaned_effect_commit(grouped: bool) {
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn captured_group_effect_commit_preserves_the_unrelated_instrument_gate() {
+    verify_unlaned_effect_commit(Arrangement::GroupedWithInstrument);
+}
+
+fn verify_unlaned_effect_commit(arrangement: Arrangement) {
+    let with_instrument = arrangement == Arrangement::GroupedWithInstrument;
     const CHILD: &str = "HEX_DESKTOP_TEST_UNLANED_EFFECT_COMMIT";
     if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
             .args([
                 "--exact",
                 std::thread::current().name().unwrap(),
@@ -29,13 +44,18 @@ fn verify_unlaned_effect_commit(grouped: bool) {
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
             .env(
                 "HEX_ORIGINAL_INSTANCE_RELEASE",
                 std::env::temp_dir().join(format!("hex-7700-editor-{}", std::process::id())),
-            )
-            .output()
-            .unwrap();
+            );
+        if with_instrument {
+            child
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+                .env("HEX_ORIGINAL_TAIL_INSTANCE_VARIANT", "147");
+        } else {
+            child.env("HEX_ORIGINAL_INSTANCE_VARIANT", "147");
+        }
+        let output = child.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success() && stdout.contains("1 passed"),
@@ -50,7 +70,13 @@ fn verify_unlaned_effect_commit(grouped: bool) {
     let directory = files.0.canonicalize().unwrap();
     // A small file exceeds this test's resident budget and exercises the
     // verified-file playback handoff without the historical large project.
-    let wave = files.wav(48_000, 32_768);
+    let wave = if with_instrument {
+        // The effect stays in the stereo difference, leaving the center as an
+        // independent witness for the instrument's held note.
+        files.constant_wav("group-effect.wav", 48_000, 32_768, &[4096, -4096])
+    } else {
+        files.wav(48_000, 32_768)
+    };
     let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
         host(),
         Some(EffectPresentation {
@@ -93,7 +119,7 @@ fn verify_unlaned_effect_commit(grouped: bool) {
         looping: true,
     }));
     let (applied, _) = h.applied(applied);
-    let (applied, group) = if grouped {
+    let (applied, group) = if arrangement != Arrangement::Direct {
         let event = h.run(Request::Edit(Command::GroupTracks {
             tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
             name: "compensated source group".into(),
@@ -128,14 +154,16 @@ fn verify_unlaned_effect_commit(grouped: bool) {
         panic!("native EQ was not created");
     };
     let (applied, metadata) = h.applied(applied);
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
-    for _ in 0..4 {
-        h.render_worker_step();
+    if !with_instrument {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        for _ in 0..4 {
+            h.render_worker_step();
+        }
     }
     let mut eq_client = GestureClient::default();
     let key = eq_client
@@ -189,12 +217,60 @@ fn verify_unlaned_effect_commit(grouped: bool) {
         event.gesture_ack
     );
     let (applied, _) = h.applied(applied);
-    let insert = request(&event.state, PluginEffectDestination::Track(track));
+    let (event, applied) = if with_instrument {
+        insert_instrument_phrase(&mut h, applied)
+    } else {
+        (event, applied)
+    };
+    let mut insert = request(&event.state, PluginEffectDestination::Track(track));
+    if with_instrument {
+        insert.selection = signed_effect_selection("tail");
+    }
     let class = insert.selection.cid;
     h.run(Request::InsertPluginEffect(insert));
     let before = terminal(&mut h);
     assert!(before.error.is_none());
     let (applied, metadata) = h.applied(applied);
+    let starting_epoch = if with_instrument {
+        const START: u64 = 4096;
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(START))
+            .unwrap();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            h.render_worker_step();
+            let frame = status.position.load(Acquire);
+            if status.playing.load(Acquire) && frame >= START {
+                assert!(frame < START + 2048, "play start landed at {frame}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "play start did not reach {START}"
+            );
+        }
+        for _ in 0..16 {
+            instruments::render_completed_block(&h);
+        }
+        Some(status.transport_epoch.load(Acquire))
+    } else {
+        None
+    };
+    let check_gate = |frames: &[hex_engine::Frame; 256]| {
+        if with_instrument {
+            for [left, right] in frames {
+                let center = (left + right) * 0.5;
+                assert!(
+                    (center - 88.0 / 127.0).abs() < 1.0e-5,
+                    "the unrelated original note must remain audible: {center}"
+                );
+            }
+        }
+    };
     let prior = before
         .state
         .project
@@ -272,11 +348,20 @@ fn verify_unlaned_effect_commit(grouped: bool) {
         // Once the pipeline is settled, consecutive PCM peaks isolate the
         // processor gain from that intentionally advancing fixture clock.
         let peak = || {
-            instruments::render_completed_block(h)
-                .into_iter()
-                .flatten()
-                .map(f32::abs)
-                .fold(0.0, f32::max)
+            let block = instruments::render_completed_block(h);
+            check_gate(&block);
+            if with_instrument {
+                block
+                    .into_iter()
+                    .map(|[left, right]| ((left - right) * 0.5).abs())
+                    .fold(0.0, f32::max)
+            } else {
+                block
+                    .into_iter()
+                    .flatten()
+                    .map(f32::abs)
+                    .fold(0.0, f32::max)
+            }
         };
         for _ in 0..4 {
             peak();
@@ -311,10 +396,9 @@ fn verify_unlaned_effect_commit(grouped: bool) {
                 Instant::now() < deadline,
                 "timed out waiting for {request:?}"
             );
-            // A gesture waits on the original SDK reply on the Session
-            // Pace each 256-frame block against the actual worker, as in the
-            // recorded device workload, without waiting on the control tick.
-            h.render_plugin_block();
+            // Pace each 256-frame block against the actual SDK workers while
+            // the Session service waits for the gesture reply.
+            check_gate(&h.render_plugin_block());
             while h
                 .callback
                 .lock()
@@ -338,6 +422,9 @@ fn verify_unlaned_effect_commit(grouped: bool) {
             }
         }
         let status = h.audio.as_ref().unwrap().status().unwrap();
+        if let Some(epoch) = starting_epoch {
+            assert_eq!(status.transport_epoch.load(Acquire), epoch);
+        }
         assert!(
             ack.accepted,
             "{request:?} refused: {ack:?}; source={:?}, fault={:?}, position={}, diagnostics={diagnostics:?}",
@@ -428,6 +515,10 @@ fn verify_unlaned_effect_commit(grouped: bool) {
     assert!((slope(&h) - base * (2.0 / 3.0)).abs() < 1.0e-6);
     assert_eq!(source, original_source);
     assert_eq!(commit_binding, Some(binding));
+    if let Some(epoch) = starting_epoch {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.transport_epoch.load(Acquire), epoch);
+    }
     h.service.submit(Request::Undo).unwrap();
     let until = Instant::now() + Duration::from_secs(5);
     let undone = loop {
@@ -453,4 +544,41 @@ fn verify_unlaned_effect_commit(grouped: bool) {
         row.normalized, 0.75,
         "undo must restore the editor value captured before the host gesture"
     );
+}
+
+fn insert_instrument_phrase(h: &mut ResidentHarness, mut applied: u64) -> (Event, u64) {
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "unrelated instrument".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track was not created");
+    };
+    applied = h.applied(applied).0;
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_ratio(8, 1).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip was not created");
+    };
+    applied = h.applied(applied).0;
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_ratio(32, 125).unwrap(),
+        duration: BeatTime::from_ratio(7, 1).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 88,
+    }));
+    assert!(note.error.is_none(), "{:?}", note.error);
+    applied = h.applied(applied).0;
+    let insert = request(&note.state, PluginEffectDestination::Instrument(track));
+    h.service
+        .submit(Request::InsertPluginEffect(insert))
+        .unwrap();
+    let inserted = terminal(h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    assert!(inserted.plugin_effect_complete[0].accepted);
+    (inserted, h.applied(applied).0)
 }
