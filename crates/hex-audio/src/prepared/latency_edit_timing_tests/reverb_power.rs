@@ -8,7 +8,7 @@ fn reverb_power_cycle_installs_the_exact_new_room_without_callback_allocations()
     const RESTART_FRAMES: usize = 4096;
     const RESTART_IMPULSE: usize = 512;
     const SILENCE: Frame = [0.0; 2];
-    let mut source = vec![SILENCE; WARM_FRAMES + OFF_FRAMES + RESTART_FRAMES];
+    let mut source = vec![SILENCE; WARM_FRAMES + OFF_FRAMES + RESTART_FRAMES + BLOCK];
     source[..1024].fill([0.25, -0.125]);
     source[WARM_FRAMES + OFF_FRAMES + RESTART_IMPULSE] = [0.5, -0.5];
 
