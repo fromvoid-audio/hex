@@ -48,9 +48,17 @@ pub enum SessionPlaybackCommand {
     /// Absolute first-pass cursor. At/after the loop end, retain the canonical
     /// linear tempo/source law instead of normalizing backwards into the loop.
     Seek(u64),
+    /// Launch with the default initial-gate admission (NoteChase::On).
     LaunchClip {
         clip: ClipId,
         quantization: LaunchQuantization,
+    },
+    /// Capture an initial-gate choice for this launch, including queued cuts.
+    /// Genuine boundary onsets and later source repeats remain eligible.
+    LaunchClipWithNoteChase {
+        clip: ClipId,
+        quantization: LaunchQuantization,
+        note_chase: crate::NoteChase,
     },
     /// Immediately cue an already active Session MIDI source without seeking
     /// either transport clock or changing the saved source/play-start markers.
@@ -60,9 +68,17 @@ pub enum SessionPlaybackCommand {
         source_beat: BeatTime,
         expected_route_generation: u64,
     },
+    /// Launch every cell with the default initial-gate admission.
     LaunchScene {
         scene: SceneId,
         quantization: LaunchQuantization,
+    },
+    /// One captured choice applies to the scene's MIDI route incarnations;
+    /// audio cells retain their existing transport and fade behavior.
+    LaunchSceneWithNoteChase {
+        scene: SceneId,
+        quantization: LaunchQuantization,
+        note_chase: crate::NoteChase,
     },
     StopTrack {
         track: TrackId,
@@ -2959,6 +2975,11 @@ pub use preroll::{
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]
 mod harmonic_accounting;
+#[cfg(test)]
+pub(crate) fn test_note_chase_window(oracle: bool) -> hex_project::Project {
+    tests::session_note_chase::fixture(oracle)
+}
+
 #[cfg(test)]
 mod tests;
 

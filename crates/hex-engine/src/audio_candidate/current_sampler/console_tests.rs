@@ -865,3 +865,102 @@ mod steal_density;
 
 #[path = "console_tests/volume.rs"]
 mod volume;
+
+#[test]
+fn current_sampler_explicit_launch_reserves_only_admitted_initial_onsets() {
+    let run = |oracle, note_chase| {
+        let (project, asset) = fixture();
+        let track = project.tracks()[0].id();
+        let mut editor = Editor::new(project, 16).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "window".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "notes".into(),
+                source_length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        let window = crate::session_playback::test_note_chase_window(oracle).snapshot();
+        let hex_project::SessionCellContentSnapshot::Midi(window) =
+            &window.session.cells[0].content
+        else {
+            panic!("window");
+        };
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Instrument(Vec::new());
+        let hex_project::SessionCellContentSnapshot::Midi(target) =
+            &mut snapshot.session.cells[0].content
+        else {
+            panic!("clip");
+        };
+        target.source = window.source.clone();
+        target.playback_offset_raw = window.playback_offset_raw;
+        snapshot.next_id = snapshot.next_id.max(1_000_003);
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let source = crate::OwnedAudioSource::try_resident(
+            8000,
+            vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0, 0.0]],
+        )
+        .ok()
+        .unwrap();
+        let mut cell = prepare(&project, vec![(asset, source)]);
+        let owner = cell.owner_on_control().unwrap();
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        owner.test_render(&mut [[0.0; 2]; 1]).unwrap();
+        owner
+            .test_apply_action(crate::PlaybackAction::Session(
+                crate::SessionPlaybackCommand::LaunchClipWithNoteChase {
+                    clip,
+                    quantization: crate::LaunchQuantization::ThirtySecond,
+                    note_chase,
+                },
+            ))
+            .unwrap();
+        let counts = owner
+            .inner
+            .runtime
+            .as_ref()
+            .unwrap()
+            .playback
+            .test_pending_current_sampler_counts(0)
+            .unwrap();
+        assert_eq!(counts.0, 2, "full admitted density remains conservative");
+        assert_eq!(
+            counts.1,
+            if oracle || note_chase == crate::NoteChase::Off {
+                1
+            } else {
+                2
+            },
+            "choice must be stamped before CURRENT reservation"
+        );
+        owner.test_render(&mut [[0.0; 2]; 999]).unwrap();
+        let mut output = [[0.0; 2]; 16];
+        owner.test_render(&mut output).unwrap();
+        cell.cleanup_on_control().unwrap();
+        output
+    };
+    let expected = run(true, crate::NoteChase::On);
+    assert!(expected.iter().flatten().any(|s| *s != 0.0));
+    assert_eq!(run(false, crate::NoteChase::Off), expected);
+    assert_ne!(
+        run(false, crate::NoteChase::On),
+        expected,
+        "positive control retains the clipped intro"
+    );
+}

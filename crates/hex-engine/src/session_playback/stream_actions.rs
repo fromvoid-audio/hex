@@ -131,7 +131,8 @@ impl SessionPlayback {
             _ => return Ok(false),
         };
         Ok(match command {
-            SessionPlaybackCommand::LaunchClip { clip, .. } => {
+            SessionPlaybackCommand::LaunchClip { clip, .. }
+            | SessionPlaybackCommand::LaunchClipWithNoteChase { clip, .. } => {
                 self.revision
                     .session()
                     .audio_clip(clip)
@@ -143,7 +144,8 @@ impl SessionPlayback {
                     .midi_clip(clip)
                     .is_some_and(|clip| clip.track == track)
             }
-            SessionPlaybackCommand::LaunchScene { scene, .. } => self
+            SessionPlaybackCommand::LaunchScene { scene, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { scene, .. } => self
                 .revision
                 .session()
                 .cells()
@@ -185,15 +187,19 @@ impl SessionPlayback {
             },
             PlaybackAction::Session(
                 command @ (SessionPlaybackCommand::LaunchClip { .. }
+                | SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                 | SessionPlaybackCommand::CueMidiClip { .. }
                 | SessionPlaybackCommand::LaunchScene { .. }
+                | SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                 | SessionPlaybackCommand::StopTrack { .. }
                 | SessionPlaybackCommand::StopAllClips { .. }
                 | SessionPlaybackCommand::BackToArrangement { .. }),
             )
             | PlaybackAction::LaunchAndPlay(
                 command @ (SessionPlaybackCommand::LaunchClip { .. }
-                | SessionPlaybackCommand::LaunchScene { .. }),
+                | SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
+                | SessionPlaybackCommand::LaunchScene { .. }
+                | SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }),
             ) => Resolved::Route(self.plan_route_command(command)?),
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
