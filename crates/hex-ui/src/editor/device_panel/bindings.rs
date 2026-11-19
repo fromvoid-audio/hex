@@ -273,11 +273,16 @@ pub(super) fn render_parameter(
         compact_toggle_width,
     } = rendering;
 
-    let style = parameter_style(presentation);
     let key = ParameterKey {
         device,
         parameter: parameter.descriptor.id,
     };
+    let automated = super::automation_tint::authored(
+        super::automation_tint::native_device(view, device, identity.class),
+        automation_target(key.parameter),
+    )
+    .is_some();
+    let style = super::automation_tint::style(parameter_style(presentation), automated);
     let descriptor = parameter.descriptor;
     let value = if identity.type_id == hex_engine::eq::EQ_TYPE_ID
         || identity.type_id.as_str() == Ok("hex.eq8")
@@ -538,26 +543,28 @@ pub(super) fn render_parameter(
         identity,
         descriptor,
     };
-    rendered.capture_any_mouse_down(cx.listener(
-        move |view, event: &gpui::MouseDownEvent, window, cx| {
-            if event.button == gpui::MouseButton::Right
-                && menu_binding.accepts_event(view, false)
-                && view
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == revision)
-                && view.open_parameter_automation_menu(
-                    event.position,
-                    key.device,
-                    automation_target(key.parameter),
-                    window,
-                    cx,
-                )
-            {
-                cx.stop_propagation();
-            }
-        },
-    ))
+    rendered
+        .when(automated, super::automation_tint::mark)
+        .capture_any_mouse_down(cx.listener(
+            move |view, event: &gpui::MouseDownEvent, window, cx| {
+                if event.button == gpui::MouseButton::Right
+                    && menu_binding.accepts_event(view, false)
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == revision)
+                    && view.open_parameter_automation_menu(
+                        event.position,
+                        key.device,
+                        automation_target(key.parameter),
+                        window,
+                        cx,
+                    )
+                {
+                    cx.stop_propagation();
+                }
+            },
+        ))
 }
 
 fn create_parameter_control(

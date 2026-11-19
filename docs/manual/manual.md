@@ -533,14 +533,16 @@ without changing playback. adding the first point creates a solid automation
 curve. right-click a lane for **clear automation** to remove its points and return
 to the base value, or **hide lane** to keep the curve while hiding its display.
 point edits and clearing support undo and redo; authored curves survive saving
-and reopening.
+and reopening. a parameter with authored points shows a red indicator on its
+device control. the corresponding editable graph handle also turns red.
 
 editing a supported parameter manually overrides its curve while retaining the
 points. right-click the parameter or its lane and choose **re-enable automation**
 to resume that curve at the current position. the transport's re-enable control
 restores all overridden device curves. override selections support undo and redo
 and are retained when saving, reopening and rendering the project. clicking a
-control without editing it leaves automation running.
+control without editing it leaves automation running. the red indicator stays
+visible until the lane is cleared.
 
 supported device controls are utility's parameters, saturator's four parameters,
 auto pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
@@ -968,9 +970,10 @@ input's level changes as it increases. **dry/wet** blends the original signal wi
 the processed sound. the effect is available on track, return and main chains.
 
 rattle is a one-knob drive. its compact panel pairs a percent drive dial with
-eleven orange diamonds. the diamonds tighten as drive rises and follow its
-automation while the lane reads. at **drive** 0 it passes audio unchanged; raising
-**drive** blends in a progressively harder, grittier and noisier saturation whose
+eleven diamonds. the diamonds tighten as drive rises, turn red when the drive
+lane has authored points, and follow automation while the lane reads. at
+**drive** 0 it passes audio unchanged. raising **drive** blends in a
+progressively harder, grittier and noisier saturation whose
 level is compensated for typical programme, so it gets dirtier rather than much
 louder. rattle processes at twice the sample rate and reports 11 samples of
 latency, which hex compensates. drive changes glide over about 20 ms and can be

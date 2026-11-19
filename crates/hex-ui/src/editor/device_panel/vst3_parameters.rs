@@ -1808,6 +1808,14 @@ pub(super) fn pending_body(
     Some(render_body(view, device, cx))
 }
 
+fn row_automated(device: Option<&hex_project::Device>, row: &PluginParameterRow) -> bool {
+    let Some(class) = row.automation_class else {
+        return false;
+    };
+    let target = hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter: row.id };
+    automation_tint::authored(device, target).is_some_and(|lane| lane.vst3_class == Some(class))
+}
+
 fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorView>) -> Div {
     let body = crate::device_composition::body()
         .w(px(crate::device_composition::GENERIC_FRAME_WIDTH))
@@ -1846,7 +1854,14 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                 ),
         );
     }
+    let project = view.state.as_ref().map(|state| state.project.clone());
     let (follow, follow_row, _) = follow_display(view, device, cx);
+    let follow_automated = follow_row.as_ref().is_some_and(|row| {
+        row_automated(
+            project.as_ref().and_then(|project| project.device(device)),
+            row,
+        )
+    });
     let follow_mapping = follow_row
         .as_ref()
         .and_then(|row| super::modulators::vst3_target_overlay(view, cx, device, row, "follow"));
@@ -1920,12 +1935,19 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                 .flex_shrink_0()
         },
         |control| {
+            control.update(cx, |control, cx| {
+                let _ = control.set_external_style(
+                    automation_tint::style(theme::control_style(), follow_automated),
+                    cx,
+                );
+            });
             div()
                 .debug_selector(|| "vst3-last-touched-knob".to_string())
                 .w(px(hex_widgets::MICRO_DIAL_WIDTH))
                 .h(px(hex_widgets::MICRO_DIAL_HEIGHT))
                 .flex_shrink_0()
                 .child(control)
+                .when(follow_automated, automation_tint::mark)
         },
     );
     let controls = div()
@@ -2016,10 +2038,12 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                                         cx.notify();
                                     }
                                 });
+                                let canonical = project.as_ref().and_then(|project| project.device(device));
                                 range
                                     .filter_map(|index| {
                                         let row_index = *matched.get(index)?;
                                         let row = rows.get(row_index)?;
+                                        let automated = row_automated(canonical, row);
                                         let (knob, mapping) = editor
                                             .update(app, |view, cx| {
                                                 let knob = if row.editable && !restoring {
@@ -2035,6 +2059,14 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                                                 } else {
                                                     row_placeholder(view, device, row, cx)
                                                 };
+                                                if let Some(knob) = &knob {
+                                                    knob.update(cx, |control, cx| {
+                                                        let _ = control.set_external_style(
+                                                            automation_tint::style(theme::control_style(), automated),
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
                                                 let mapping = super::modulators::vst3_target_overlay(
                                                     view, cx, device, row, "row",
                                                 );
@@ -2080,6 +2112,7 @@ fn render_body(view: &mut EditorView, device: DeviceId, cx: &mut Context<EditorV
                                                     )
                                                     .children(knob)
                                                     .children(mapping)
+                                                    .when(automated, automation_tint::mark)
                                                     .when(row.automation_class.is_some(), |item| {
                                                         item.on_mouse_down(
                                                             gpui::MouseButton::Right,
@@ -4079,6 +4112,44 @@ mod tests {
         });
         editor.update(&mut visual, |view, _| view.audio = None);
         backend.close();
+    }
+
+    #[test]
+    fn hosted_automation_indicator_requires_authored_points_and_the_current_class() {
+        use hex_project::{
+            AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime,
+            DeviceAutomationTarget, Editor,
+        };
+
+        let (project, _, device) = parameter_project();
+        let mut editor = Editor::new(project, 8).unwrap();
+        let row = PluginParameterRow {
+            automation_class: Some([2; 16]),
+            ..layout_row(0.25, true, 1)
+        };
+        assert!(!row_automated(editor.project().device(device), &row));
+
+        editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: DeviceAutomationTarget::Vst3 { parameter: row.id },
+                points: vec![AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.5).unwrap(),
+                    outgoing: AutomationInterpolation::Linear,
+                }],
+            })
+            .unwrap();
+
+        let canonical = editor.project().device(device);
+        assert!(row_automated(canonical, &row));
+        for automation_class in [None, Some([3; 16])] {
+            let stale_row = PluginParameterRow {
+                automation_class,
+                ..row.clone()
+            };
+            assert!(!row_automated(canonical, &stale_row));
+        }
     }
 
     #[cfg(feature = "ui-test-support")]

@@ -93,6 +93,7 @@ fn fixture(cx: &mut TestAppContext, hints: bool) -> Fixture {
                             input_analyzer: None,
                             analyzer_peak: None,
                             nodes: vec![ResponseGraphNode {
+                                accent: None,
                                 id: 3,
                                 position: [0.5, 0.5],
                                 enabled: false,
