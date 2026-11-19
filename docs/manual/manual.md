@@ -248,8 +248,9 @@ pass can keep its original attack. this fade belongs to the loop boundary.
 for multiple sections, the scope spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting a new scope from selected main sections also turns on section focus
-after the edit is accepted. focus shows tracks that intersect the selected
-sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
+after the edit is accepted. focus shows tracks with an unmuted audio or midi clip
+in the selected sections, along with their parent groups. clips in gaps between
+selected sections do not qualify a track. repeated loop toggles leave focus unchanged;
 press **q** or use the section focus toggle to restore all tracks.
 
 **shift-click** a section block to select every section from the last clicked one
