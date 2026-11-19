@@ -421,7 +421,10 @@ enum WaveformMappingKey {
     PreparedFade(PreparedFade),
     PreparedMusicalFade(Arc<PreparedMusicalFade>),
     Frame(Arc<waveform_frame::Key>, waveform_frame::Clock),
-    MusicalEventFade(Arc<super::waveform_musical_event::Projection>, Option<u64>),
+    MusicalEventFade(
+        Arc<super::waveform_musical_event::Projection>,
+        Option<hex_project::AudioEvent>,
+    ),
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
@@ -1046,7 +1049,9 @@ fn waveform_geometry_key(
             Arc::clone(projection),
             match clock {
                 super::waveform_musical_event::Clock::Arrangement => None,
-                super::waveform_musical_event::Clock::Event(event) => Some(event.id),
+                // One event pane samples the held or pending descriptor
+                // directly, including its envelope and gain.
+                super::waveform_musical_event::Clock::Event(event) => Some(*event),
             },
         ),
         WaveformMapping::MusicalEvent(projection) => {
