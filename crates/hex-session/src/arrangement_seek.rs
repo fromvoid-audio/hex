@@ -73,6 +73,8 @@ impl SectionLaunch {
 /// Control-side identity and destination for one prepared seek candidate.
 #[derive(Clone)]
 pub struct ArrangementSeekSpec {
+    /// Captured ordinary-start policy. Linear/history preparation requires On.
+    pub note_chase: hex_engine::NoteChase,
     pub mode: ArrangementSeekMode,
     pub generation: u64,
     pub revision: u64,
@@ -84,6 +86,8 @@ pub struct ArrangementSeekSpec {
 
 /// One bounded result. The candidate retains the same prepared revision Arc.
 pub struct ArrangementSeekResult {
+    /// Exact requested policy, retained for acceptance and retirement.
+    pub note_chase: hex_engine::NoteChase,
     pub request_id: u64,
     pub mode: ArrangementSeekMode,
     pub generation: u64,
@@ -455,21 +459,23 @@ fn prepare(
             Playback::from_interactive_arrangement_preroll(runtime)
         }
         ArrangementSeekMode::Interactive => {
-            let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+            let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision_with_note_chase(
                 Arc::clone(&spec.prepared_revision),
                 spec.destination_frame,
                 spec.work_budget_frames,
                 spec.start_playing,
+                spec.note_chase,
                 cancelled,
             )?;
             Playback::from_interactive_arrangement_preroll(runtime)
         }
         ArrangementSeekMode::SectionLoop(region) => Playback::from_interactive_arrangement_preroll(
-            SessionPlayback::prepare_section_arrangement_preroll(
+            SessionPlayback::prepare_section_arrangement_preroll_with_note_chase(
                 Arc::clone(&spec.prepared_revision),
                 None,
                 region,
                 spec.work_budget_frames,
+                spec.note_chase,
                 cancelled,
             )?,
         ),
@@ -544,7 +550,17 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
 
         let (mut work, cancelled) = work;
         let job = work.resident.as_ref().map(|r| r.job);
-        let result = if let Some(resident) = work.resident.take() {
+        let result = if work.spec.note_chase == hex_engine::NoteChase::Off
+            && !matches!(
+                work.spec.mode,
+                ArrangementSeekMode::Interactive | ArrangementSeekMode::SectionLoop(_)
+            ) {
+            Err(ArrangementPrerollError::Playback(
+                hex_engine::SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "note chase off requires ordinary interactive playback",
+                ),
+            ))
+        } else if let Some(resident) = work.resident.take() {
             let result = if let Some((sources, prepare)) = &resident.files {
                 prepare(crate::service::ResidentFileSeekRequest {
                     spec: &work.spec,
@@ -570,21 +586,23 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                         )
                     }
                     ArrangementSeekMode::SectionLoop(region) => {
-                        SessionPlayback::prepare_section_arrangement_preroll(
+                        SessionPlayback::prepare_section_arrangement_preroll_with_note_chase(
                             Arc::clone(&work.spec.prepared_revision),
                             Some(&resident.resources),
                             region,
                             work.spec.work_budget_frames,
+                            work.spec.note_chase,
                             &cancelled,
                         )
                     }
                     ArrangementSeekMode::Interactive => {
-                        SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                        SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources_and_note_chase(
                             Arc::clone(&work.spec.prepared_revision),
                             &resident.resources,
                             work.spec.destination_frame,
                             work.spec.work_budget_frames,
                             work.spec.start_playing,
+                            work.spec.note_chase,
                             &cancelled,
                         )
                     }
@@ -598,6 +616,7 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
             preparer(work.spec.clone(), &cancelled)
         };
         let result = ArrangementSeekResult {
+            note_chase: work.spec.note_chase,
             request_id: work.request_id,
             mode: work.spec.mode,
             generation: work.spec.generation,
@@ -665,6 +684,7 @@ mod tests {
 
     fn spec(prepared_revision: Arc<PreparedRevision>, generation: u64) -> ArrangementSeekSpec {
         ArrangementSeekSpec {
+            note_chase: hex_engine::NoteChase::On,
             mode: ArrangementSeekMode::LinearArrangement,
             generation,
             revision: generation + 10,
@@ -940,14 +960,30 @@ mod tests {
     fn retired_result_owns_backpressure_until_worker_destruction() {
         let graph = prepared();
         let worker = ArrangementSeekWorker::new().expect("seek worker");
-        worker.submit(spec(Arc::clone(&graph), 1)).expect("first");
+        worker
+            .submit(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::Off,
+                mode: ArrangementSeekMode::Interactive,
+                ..spec(Arc::clone(&graph), 1)
+            })
+            .expect("first");
         wait_for_ready(&worker);
         let result = worker.try_result().expect("completed result");
         {
             let mut mailbox = lock(&worker.shared.mailbox);
             mailbox.test_pause_drain = true;
         }
+        assert_eq!(result.note_chase, hex_engine::NoteChase::Off);
         assert!(worker.retire_result(result).is_ok());
+        assert_eq!(
+            lock(&worker.shared.mailbox)
+                .retired
+                .as_ref()
+                .unwrap()
+                .note_chase,
+            hex_engine::NoteChase::Off,
+            "retirement preserves the captured policy while backpressure holds custody",
+        );
         assert!(matches!(
             worker.submit(spec(Arc::clone(&graph), 2)),
             Err(ArrangementSeekSubmitError::RetirementPending)
@@ -1095,6 +1131,41 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn nonordinary_note_chase_off_refuses_before_preparer_and_retains_identity() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let worker = ArrangementSeekWorker::with_preparer(move |spec, cancelled| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            prepare(spec, cancelled)
+        })
+        .unwrap();
+        let graph = prepared();
+        for mode in [
+            ArrangementSeekMode::LinearArrangement,
+            ArrangementSeekMode::HistoryPreservingInteractive,
+        ] {
+            let request = worker
+                .submit(ArrangementSeekSpec {
+                    note_chase: hex_engine::NoteChase::Off,
+                    mode,
+                    ..spec(Arc::clone(&graph), 7)
+                })
+                .unwrap();
+            wait_for_ready(&worker);
+            let result = worker.try_result().unwrap();
+            assert_eq!(result.request_id, request);
+            assert_eq!(result.mode, mode);
+            assert_eq!(result.note_chase, hex_engine::NoteChase::Off);
+            assert!(Arc::ptr_eq(&result.prepared_revision, &graph));
+            assert!(matches!(
+                result.result,
+                Err(ArrangementPrerollError::Playback(_))
+            ));
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]
