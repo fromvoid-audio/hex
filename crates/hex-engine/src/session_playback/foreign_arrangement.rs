@@ -20,6 +20,7 @@ use hex_lattice::{
 use hex_project::TrackId;
 use std::{mem::size_of, num::NonZeroU32, sync::Arc};
 
+mod authored_clock;
 mod hardware;
 mod live_keys;
 use live_keys::Input;
@@ -49,6 +50,8 @@ struct Ledger {
     live: live_keys::Gates,
     hardware: hardware::Gates,
     quantum_offset: u16,
+    clock_epoch: Option<NonZeroU32>,
+    authored_quantum: authored_clock::Quantum,
 }
 
 impl Ledger {
@@ -293,12 +296,13 @@ impl ForeignArrangement {
     pub(super) fn plan_handoff(
         &mut self,
         old: &Self,
-        tracks: &[Track],
+        tracks: [&[Track]; 2],
         cut: FrameContext,
         fresh: Option<TrackId>,
         loops: [Option<hex_project::LoopRegion>; 2],
         tempo_cut: Option<(u64, u64)>,
     ) -> Result<Handoff, SessionPlaybackError> {
+        let [tracks, old_tracks] = tracks;
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
             retimed_cursor: tempo_cut.is_some(),
@@ -362,11 +366,35 @@ impl ForeignArrangement {
                 return Err(INCOMPATIBLE_HANDOFF);
             }
             if let Some((arrangement, pass)) = tempo_cut {
-                // Authored VST3 automation also needs to prove the worker's
-                // partially filled quantum across the retimed origin.
-                if candidate.has_authored_automation || donor.has_authored_automation {
-                    return Err(INCOMPATIBLE_HANDOFF);
+                let prepared_track = tracks
+                    .get(index)
+                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                let next_program = prepared_track
+                    .foreign_instrument
+                    .as_ref()
+                    .and_then(|node| node.automation.foreign())
+                    .map(hex_lattice::PreparedForeignAutomation::borrow);
+                let old_program = old_tracks
+                    .get(old_index)
+                    .and_then(|track| track.foreign_instrument.as_ref())
+                    .and_then(|node| node.automation.foreign())
+                    .map(hex_lattice::PreparedForeignAutomation::borrow);
+                match (next_program, old_program) {
+                    (Some(next), Some(old)) => {
+                        ledger
+                            .authored_quantum
+                            .preflight(ledger.quantum_offset, next, old)?;
+                    }
+                    (None, None) => {}
+                    _ => return Err(INCOMPATIBLE_HANDOFF),
                 }
+                candidate.scratch.clock_epoch = Some(
+                    ledger
+                        .clock_epoch
+                        .unwrap_or(NonZeroU32::MIN)
+                        .checked_add(1)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                );
                 let notes = &mut candidate.scratch.notes;
                 notes.clear();
                 notes.extend_from_slice(&ledger.notes);
@@ -374,10 +402,7 @@ impl ForeignArrangement {
                     && ledger.route == Some(RouteOwner::Arrangement)
                     && ledger.loop_pass == Some(pass)
                 {
-                    let track = tracks
-                        .get(index)
-                        .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-                    retime_held_gates(track, candidate.track, notes, &cut, arrangement)?;
+                    retime_held_gates(prepared_track, candidate.track, notes, &cut, arrangement)?;
                 }
             } else if !ledger.cut
                 && ledger.route == Some(RouteOwner::Arrangement)
@@ -420,6 +445,7 @@ impl ForeignArrangement {
                 if keep_clock {
                     std::mem::swap(&mut candidate.committed, &mut donor.committed);
                     if plan.retimed_cursor {
+                        candidate.committed.clock_epoch = candidate.scratch.clock_epoch;
                         std::mem::swap(
                             &mut candidate.committed.notes,
                             &mut candidate.scratch.notes,
@@ -434,6 +460,8 @@ impl ForeignArrangement {
                     // Restart arrangement history while retaining worker note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
                     candidate.committed.quantum_offset = donor.committed.quantum_offset;
+                    candidate.committed.clock_epoch = donor.committed.clock_epoch;
+                    candidate.committed.authored_quantum = donor.committed.authored_quantum;
                     // The retained worker still owns monitor notes even when the
                     // arrangement clock restarts. Preserve them to release safely.
                     candidate.committed.live = donor.committed.live;
@@ -465,6 +493,8 @@ impl ForeignArrangement {
             scratch.live = committed.live;
             scratch.hardware = committed.hardware;
             scratch.quantum_offset = committed.quantum_offset;
+            scratch.clock_epoch = committed.clock_epoch;
+            scratch.authored_quantum = committed.authored_quantum;
         }
     }
 
@@ -694,6 +724,14 @@ impl ForeignArrangement {
                 )
                 .map_err(|error| error.render_error())?;
         }
+        let automation = node.automation.foreign().map(|automation| {
+            let mut view = automation.borrow();
+            view.authored_clock_epoch = Some(ledger.clock_epoch.unwrap_or(NonZeroU32::MIN).into());
+            view
+        });
+        ledger
+            .authored_quantum
+            .observe(ledger.quantum_offset, context.playing, automation)?;
         ledger.quantum_offset += 1;
         if ledger.quantum_offset == prepared.quantum_frames() {
             ledger.quantum_offset = 0;
@@ -708,10 +746,7 @@ impl ForeignArrangement {
             sample_rate: node.sample_rate,
             configuration,
             prepared,
-            automation: node
-                .automation
-                .foreign()
-                .map(hex_lattice::PreparedForeignAutomation::borrow),
+            automation,
             bypassed: false,
             // The compensated generator merge owns the instrument output gain.
             input_gain: 1.0,

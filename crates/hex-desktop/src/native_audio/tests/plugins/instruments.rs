@@ -948,6 +948,12 @@ fn arrangement_tempo_edit_keeps_the_original_sdk_instrument_gate() {
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
+fn arrangement_tempo_edit_splits_a_live_instrument_automation_quantum() {
+    instrument_entrypoint(InstrumentWorkflow::ArrangementTempoAutomation);
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
 fn session_play_from_releases_old_sdk_instrument_gate() {
     instrument_entrypoint(InstrumentWorkflow::SessionRestart);
 }
@@ -1217,6 +1223,7 @@ fn recorded_session_gesture_commits_one_take_and_reopens() {
 enum InstrumentWorkflow {
     Playback,
     ArrangementTempo,
+    ArrangementTempoAutomation,
     SessionRestart,
     SessionLoop,
     SessionPause,
@@ -1272,7 +1279,7 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         if installed.is_none() {
             child.env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
-                if takeover {
+                if takeover || matches!(workflow, InstrumentWorkflow::ArrangementTempoAutomation) {
                     "146"
                 } else if shared_authoring {
                     "145"
@@ -1585,6 +1592,11 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
             monitor,
             matches!(workflow, InstrumentWorkflow::PacedFiveHistory),
         );
+        return;
+    }
+    if matches!(workflow, InstrumentWorkflow::ArrangementTempoAutomation) {
+        assert!(controlled_fixture);
+        verify_automated_arrangement_tempo_edit(&mut harness, instrument, applied);
         return;
     }
     if shared_authoring {
@@ -2446,6 +2458,166 @@ fn instrument_entrypoint(workflow: InstrumentWorkflow) {
         assert!(status.rejected_action().is_none());
         assert!(status.render_fault_snapshot().is_none());
     }
+}
+
+fn verify_automated_arrangement_tempo_edit(
+    harness: &mut ResidentHarness,
+    device: hex_project::DeviceId,
+    installed: u64,
+) {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
+    use hex_session::service::PluginParameterQuery;
+
+    fn status(harness: &ResidentHarness) -> &hex_audio::prepared::Status {
+        harness.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let context = harness.submitted.unwrap().1.context;
+    let output = harness
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    harness.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity: output,
+        request_id: 10,
+        page_first: None,
+    }));
+    let rows = harness.next().plugin_parameters.unwrap().rows.unwrap();
+    let gain = rows
+        .iter()
+        .find(|row| row.name.eq_ignore_ascii_case("gain"))
+        .unwrap();
+    let end = BeatTime::from_ratio(1, 2).unwrap();
+    let points = [(BeatTime::ZERO, 0.1), (end, 0.4)]
+        .map(|(beat, value)| AutomationPoint {
+            beat,
+            value: AutomationValue::new(value).unwrap(),
+            outgoing: AutomationInterpolation::Linear,
+        })
+        .to_vec();
+    let authored = super::automation::edit_with_running_callback(
+        harness,
+        Request::DeviceAutomation {
+            project_generation: context.project_generation,
+            revision: context.editor_revision,
+            device,
+            target: hex_project::DeviceAutomationTarget::Vst3 { parameter: gain.id },
+            vst3_class: gain.automation_class,
+            points,
+        },
+    );
+    assert!(authored.error.is_none(), "{:?}", authored.error);
+    let applied = harness.applied(installed).0;
+    harness
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..5 {
+        render_completed_block(harness);
+    }
+    let phase = |harness: &ResidentHarness| {
+        harness
+            .callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .native_worker_phase_for_test()
+    };
+    if phase(harness) == Some(0) {
+        harness.render_worker_step();
+    }
+    let phase_before_cut = phase(harness).unwrap();
+    assert!(phase_before_cut > 0 && phase_before_cut < 256);
+    let captured_from = status(harness).performance_frame.load(Acquire);
+    harness
+        .service
+        .submit(Request::Edit(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        }))
+        .unwrap();
+    let mut cut = None;
+    let mut edited = None;
+    let mut pcm = Vec::new();
+    let until = Instant::now() + Duration::from_secs(2);
+    while edited.is_none() || cut.is_none() {
+        harness.pump();
+        if let Ok(event) = harness.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.state.revision > authored.state.revision {
+                edited = Some(event);
+            }
+        }
+        let before = status(harness).applied_revision.load(Acquire);
+        let performance = status(harness).performance_frame.load(Acquire);
+        let arrangement = status(harness).position.load(Acquire);
+        pcm.extend(render_completed_block(harness));
+        assert_eq!(
+            status(harness).performance_frame.load(Acquire),
+            performance + 256
+        );
+        assert_eq!(phase(harness), Some(phase_before_cut));
+        if before == applied && status(harness).applied_revision.load(Acquire) > before {
+            cut = Some((
+                performance,
+                arrangement,
+                status(harness).position.load(Acquire),
+            ));
+        }
+        assert!(
+            Instant::now() < until,
+            "tempo edit did not reach the callback"
+        );
+    }
+    let (performance, old_cursor, new_after) = cut.unwrap();
+    let old_map = authored.state.project.tempo_map();
+    let edited = edited.unwrap();
+    let new_map = edited.state.project.tempo_map();
+    let new_cursor = new_map
+        .beat_to_frame(old_map.frame_to_beat(old_cursor).unwrap())
+        .unwrap();
+    assert_eq!(new_after, new_cursor + 256);
+    let old_end = old_map.beat_to_frame(end).unwrap();
+    let new_end = new_map.beat_to_frame(end).unwrap();
+    let release = performance + (new_end - new_cursor);
+    while status(harness).performance_frame.load(Acquire) < release + 768 {
+        pcm.extend(render_completed_block(harness));
+    }
+    for (index, frame) in pcm.iter().enumerate() {
+        let source = captured_from + index as u64 - 512;
+        let expected = if source < release {
+            let phase = if source < performance {
+                source as f64 / old_end as f64
+            } else {
+                (new_cursor + source - performance) as f64 / new_end as f64
+            };
+            ((112.0 / 127.0) * 4.0 * (0.1 + 0.3 * phase)) as f32
+        } else {
+            0.0
+        };
+        assert!(
+            frame.iter().all(|sample| (sample - expected).abs() < 2e-5),
+            "source {source}, cut {performance} at phase {phase_before_cut}: {frame:?} expected {expected}"
+        );
+    }
+    assert_eq!(
+        harness.audio.as_ref().unwrap().control.output_identity(),
+        Some(output)
+    );
+    assert!(status(harness).playing.load(Acquire));
+    assert!(status(harness).rejected_revision().is_none());
+    assert!(status(harness).render_fault_snapshot().is_none());
+    println!(
+        "instrument tempo cut performance={performance} phase={phase_before_cut} old={old_cursor} new={new_cursor} release={release}"
+    );
 }
 
 fn verify_arrangement_tempo_edit(

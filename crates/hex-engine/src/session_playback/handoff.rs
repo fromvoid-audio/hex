@@ -1038,7 +1038,10 @@ impl SessionPlayback {
             };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
-            self.revision.arrangement().tracks(),
+            [
+                self.revision.arrangement().tracks(),
+                previous.revision.arrangement().tracks(),
+            ],
             foreign_arrangement::FrameContext {
                 performance: previous.performance_frame,
                 arrangement: previous.arrangement_frame,

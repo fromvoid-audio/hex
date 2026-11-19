@@ -13,6 +13,10 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
         self.0.revision
     }
 
+    fn authored_clock_epoch(&self) -> Option<std::num::NonZeroU64> {
+        self.0.authored_clock_epoch
+    }
+
     fn contains_quantum_program(&self, key: std::num::NonZeroU64) -> bool {
         self.0.contains_revision(key)
     }
