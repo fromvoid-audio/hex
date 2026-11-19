@@ -53,10 +53,17 @@ fn outgoing_device_fade_refuses_its_failed_read_before_touching_current_pcm() {
 }
 
 #[cfg(feature = "stream-test-support")]
+#[test]
+fn outgoing_device_fade_releases_publication_admission_on_priority_stop() {
+    check_outgoing_cold_file(ColdFile::PriorityStop);
+}
+
+#[cfg(feature = "stream-test-support")]
 enum ColdFile {
     Spare,
     Full,
     FailedRead,
+    PriorityStop,
 }
 
 #[cfg(feature = "stream-test-support")]
@@ -130,6 +137,17 @@ fn check_outgoing_cold_file(case: ColdFile) {
         .collect();
     let mut owner =
         stream_fixture::owner_sources(editor.project(), metadata.clone(), Some(context));
+    let independent_context = AudioSourceContext {
+        editor_revision: 9,
+        ..context
+    };
+    let independent = matches!(case, ColdFile::PriorityStop).then(|| {
+        stream_fixture::owner_sources(
+            editor.project(),
+            metadata.clone(),
+            Some(independent_context),
+        )
+    });
     let (mut control, mut data, errors, mut retirement) = anchored();
     let mut limits = reservation(&mut owner);
     if full_cache {
@@ -251,6 +269,7 @@ fn check_outgoing_cold_file(case: ColdFile) {
         assert!(Instant::now() < deadline, "predecessor did not play");
         std::thread::yield_now();
     }
+    let mut independent_ticket = None;
     let installed = if full_cache {
         let source = control.status.applied_audio_source().unwrap();
         let edit_context = AudioSourceContext {
@@ -304,6 +323,52 @@ fn check_outgoing_cold_file(case: ColdFile) {
         assert_eq!(control.status.position.load(Acquire), before + 32);
         assert_eq!(control.status.applied_audio_source(), Some(source));
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        if let Some(independent) = independent {
+            let identity = independent.identity();
+            let refused = control
+                .stage_eligible_audio_candidate(
+                    independent,
+                    vec![domain],
+                    PublicationPolicy::InheritRuntime,
+                    independent_context.project_generation,
+                )
+                .err()
+                .expect("a second publication displaced the waiting fade");
+            assert_eq!(refused.reason, "playback publication already pending");
+            assert_eq!(refused.owner.identity(), identity);
+            assert_eq!(refused.domains, [domain]);
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+
+            control.stop();
+            assert_eq!(run(false, true).1, [[0.0; 2]; 16]);
+            assert_eq!(control.status.position.load(Acquire), 0);
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(control.status.applied_audio_source(), Some(source));
+            assert_eq!(
+                receipt.state(),
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+            );
+            assert!(!control.status.publication_pending.load(Acquire));
+
+            let ticket = control
+                .stage_eligible_audio_candidate(
+                    refused.owner,
+                    refused.domains,
+                    PublicationPolicy::InheritRuntime,
+                    independent_context.project_generation,
+                )
+                .unwrap_or_else(|error| panic!("{}", error.reason));
+            assert_eq!(run(false, true).1, [[0.0; 2]; 16]);
+            assert_eq!(
+                control.status.applied_audio_source(),
+                Some(AppliedAudioSource {
+                    context: independent_context,
+                    audio_revision: control.status.submitted_revision.load(Acquire),
+                    output_identity: source.output_identity,
+                })
+            );
+            independent_ticket = Some(ticket);
+        }
         release.send(()).unwrap();
         if fail_read {
             while !failed.get() {
@@ -324,7 +389,7 @@ fn check_outgoing_cold_file(case: ColdFile) {
                 receipt.state(),
                 PublicationReceiptState::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
             );
-        } else {
+        } else if independent_ticket.is_none() {
             while matches!(
                 receipt.state(),
                 PublicationReceiptState::Pending | PublicationReceiptState::Applying
@@ -382,6 +447,9 @@ fn check_outgoing_cold_file(case: ColdFile) {
     drop(recover(&mut control, &ticket));
     if let Some(staged) = installed {
         drop(recover(&mut control, &staged));
+    }
+    if let Some(independent) = independent_ticket {
+        drop(recover(&mut control, &independent));
     }
     drop(control);
     finish(&mut retirement);
