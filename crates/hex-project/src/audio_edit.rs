@@ -6,6 +6,7 @@ use std::sync::Arc;
 mod content;
 mod outer_fade;
 pub use outer_fade::ProjectedOuterAudioFade;
+pub(crate) use outer_fade::retain_outer_fade_crop_context;
 mod prefix;
 pub(crate) use prefix::extend_frame_left;
 mod timing;
