@@ -751,3 +751,153 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
 }
+
+#[test]
+fn selected_session_note_chase_off_handoff_and_pause_allocate_nothing() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "session".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                hex_devices::SINE_INSTRUMENT_TYPE_ID,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "notes".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let hex_project::SessionCellContentSnapshot::Midi(clip) =
+        &mut snapshot.session.cells[0].content
+    else {
+        panic!("clip");
+    };
+    const Q: u64 = 1 << 32;
+    clip.playback_offset_raw = 3 * Q / 16;
+    clip.source.source_length_raw = Q / 4;
+    clip.source.source_start_raw = 0;
+    clip.source.loop_start_raw = Q / 16;
+    clip.source.loop_end_raw = Q / 4;
+    clip.source.looping = true;
+    clip.source.notes = vec![
+        hex_project::MidiNoteSnapshot {
+            active: true,
+            id: 1_000_001,
+            start_raw: Q / 8,
+            duration_raw: Q / 8,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        },
+        hex_project::MidiNoteSnapshot {
+            active: true,
+            id: 1_000_002,
+            start_raw: 3 * Q / 16,
+            duration_raw: Q / 64,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        },
+    ];
+    snapshot.next_id = 1_000_003;
+    let mut oracle_snapshot = snapshot.clone();
+    let hex_project::SessionCellContentSnapshot::Midi(clip) =
+        &mut oracle_snapshot.session.cells[0].content
+    else {
+        panic!("clip");
+    };
+    clip.playback_offset_raw = 0;
+    clip.source.source_start_raw = 3 * Q / 16;
+    let revisions = [snapshot, oracle_snapshot].map(|snapshot| {
+        Arc::new(
+            PreparedRevision::prepare(
+                &Project::from_snapshot(snapshot).unwrap(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    });
+    let (mut control, mut callback) = prepared::channel(8_000).unwrap();
+    let (mut oracle_control, mut oracle_callback) = prepared::channel(8_000).unwrap();
+    for (control, revision) in [
+        (&mut control, &revisions[0]),
+        (&mut oracle_control, &revisions[1]),
+    ] {
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(revision)).unwrap())
+            .unwrap_or_else(|e| panic!("{}", e.reason));
+        control
+            .session_command_with_ticket(SessionPlaybackCommand::LaunchClipWithNoteChase {
+                clip: revision.session().midi_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+                note_chase: hex_engine::NoteChase::Off,
+            })
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+    }
+    for step in 0..8 {
+        if step == 1 {
+            for (control, revision) in [
+                (&mut control, &revisions[0]),
+                (&mut oracle_control, &revisions[1]),
+            ] {
+                control
+                    .publish(
+                        Playback::try_from_prepared_with_session(Arc::clone(revision)).unwrap(),
+                    )
+                    .unwrap_or_else(|e| panic!("{}", e.reason));
+            }
+        }
+        if step == 2 {
+            control.command(PlaybackCommand::Pause).unwrap();
+            oracle_control.command(PlaybackCommand::Pause).unwrap();
+        }
+        let mut expected = [[0.0; 2]; 32];
+        oracle_callback.begin_block();
+        oracle_callback.render(&mut expected).unwrap();
+        let mut output = [[0.0; 2]; 32];
+        measured(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(output, expected, "step {step}");
+        if step == 0 {
+            assert!(output.iter().flatten().any(|s| *s != 0.0));
+        }
+        control.reclaim();
+        oracle_control.reclaim();
+    }
+    control.stop();
+    oracle_control.stop();
+    let mut output = [[0.0; 2]; 32];
+    measured(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    });
+    oracle_callback.begin_block();
+    oracle_callback.render(&mut output).unwrap();
+    control.reclaim();
+    oracle_control.reclaim();
+}

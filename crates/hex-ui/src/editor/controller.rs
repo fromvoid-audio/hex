@@ -4450,7 +4450,9 @@ impl EditorView {
         if !matches!(
             command,
             hex_engine::SessionPlaybackCommand::LaunchClip { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
         ) {
             self.error = Some("only session clips and scenes can start playback".into());
             return;

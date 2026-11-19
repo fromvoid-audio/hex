@@ -130,7 +130,7 @@ impl SessionPlayback {
                         return Err(error);
                     }
                 }
-                RouteOwner::Session { clip, origin } => {
+                RouteOwner::Session { clip, origin, .. } => {
                     let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                         revision.session(),
                         self.midi_admission.as_ref(),
@@ -141,21 +141,21 @@ impl SessionPlayback {
                         timing_view_for(revision.session(), self.periodic_tempo(), self.anchor);
                     let template = prepared.instrument_template();
                     if let Some(floor) = self.historical_floor_for(index) {
-                        template.query_after_onset_with_origin(
+                        template.query_after_onset_with_origin_and_note_chase(
                             origin,
                             &timing,
-                            performance,
-                            end,
+                            (performance, end),
                             &mut self.spans,
                             floor,
+                            route.owner.note_chase(),
                         )
                     } else {
-                        template.query_with_origin(
+                        template.query_with_origin_and_note_chase(
                             origin,
                             &timing,
-                            performance,
-                            end,
+                            (performance, end),
                             &mut self.spans,
+                            route.owner.note_chase(),
                         )
                     }
                     .map_err(SessionPlaybackError::Midi)?;
