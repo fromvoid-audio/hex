@@ -1175,15 +1175,17 @@ impl NativeAudioSink {
                     domain: pending.domain,
                 });
                 if let Some((edit, receipt)) = edit.as_ref().zip(receipt) {
-                    edit.attempt
-                        .submitted(Box::new(resident::InsertReceipt::new(
-                            hex_session::service::ResidentGraphSubmission {
-                                context,
-                                audio_revision: revision,
-                                output_identity: edit.predecessor.output_identity,
-                            },
-                            receipt,
-                        )));
+                    if edit.attempt.needs_tempo_cut() {
+                        edit.attempt
+                            .submitted(Box::new(resident::InsertReceipt::new(
+                                hex_session::service::ResidentGraphSubmission {
+                                    context,
+                                    audio_revision: revision,
+                                    output_identity: edit.predecessor.output_identity,
+                                },
+                                receipt,
+                            )));
+                    }
                     return;
                 }
                 self.last_context = Some(context);

@@ -321,14 +321,20 @@ impl PublicationControl {
     /// on this verified output. Installation is acknowledged after the real
     /// constructor graph and its stream protection move on callback.
     /// Bind the exact receipt on control before the callback can claim it.
+    /// The apply decision must also fit the originating preparation deadline,
+    /// even if the callback first sees the candidate after that deadline.
     pub fn stage_verified_device_insert(
         &mut self,
         token: crate::AudioCandidatePreparationToken,
         context: hex_engine::AudioSourceContext,
         predecessor: AppliedAudioSource,
         approval: Option<DeviceInsertConsent>,
+        preparation_deadline: Instant,
         bind_receipt: impl FnOnce(&CancellablePublicationReceipt),
     ) -> Result<(crate::AudioCandidateTicket, CancellablePublicationReceipt), &'static str> {
+        if Instant::now() >= preparation_deadline {
+            return Err("verified graph edit preparation timed out");
+        }
         let stale = "device insert requires the exact installed verified source";
         if !self.status.verified_streaming_mode.load(Acquire)
             || self.status.applied_audio_source() != Some(predecessor)
@@ -366,6 +372,7 @@ impl PublicationControl {
                 fence,
                 &self.status,
                 approval,
+                Some(preparation_deadline),
             )),
             fence.route_state_generation,
         );
