@@ -35,6 +35,7 @@ pub(super) fn render_chain(
         .iter()
         .filter(|device| {
             eq_panel::is_spectrum_eq(device.state().type_id())
+                && !view.device_panel.collapsed.contains(&device.id())
                 && chain_window::must_mount(view, device.id(), window, cx)
         })
         .map(|device| {
