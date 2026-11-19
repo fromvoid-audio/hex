@@ -190,14 +190,44 @@ harnesses runs the owning unit targets and keeps the reviewed feature Clippy
 checks. Changes to product source still select its unit and rendered support
 coverage.
 
-The windowed library and the standalone MIDI pressure and recorder layout tests
-use `ui-test-support` in separate invocations:
+The windowed library and the standalone MIDI pressure, recorder layout and
+Operator focus tests use `ui-test-support` in separate invocations:
 
 ```sh
 cargo test -p hex-ui --features ui-test-support --lib --locked
 cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
 cargo test -p hex-ui --features ui-test-support --test sample_recorder_layout --locked
+cargo test -p hex-ui --features ui-test-support --test operator_focus --locked
 ```
+
+For first-process Operator timing, build just the optimized test executable:
+
+```sh
+mkdir -p artifacts
+cargo test -p hex-ui --features ui-test-support --test operator_focus \
+  --release --locked --no-run --message-format=json > artifacts/operator-focus-build.jsonl
+```
+
+Set `operator_test` to the absolute `executable` path in the `operator_focus`
+Cargo artifact record. On macOS, prepare a stripped, ad hoc signed copy on the
+internal APFS volume, then launch a fresh copy of that file:
+
+```sh
+measurement_dir=$(mktemp -d "$PWD/artifacts/operator-focus.XXXXXX")
+prepared="$measurement_dir/operator-focus"
+cp -c "$operator_test" "$prepared"
+xcrun strip -S -x "$prepared"
+codesign --force --sign - "$prepared"
+codesign --verify --strict "$prepared"
+cp -c "$prepared" "$measurement_dir/operator-focus-run"
+/usr/bin/time -p "$measurement_dir/operator-focus-run" \
+  operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits \
+  --exact --test-threads=1
+```
+
+Use a new copy for each first-process measurement and confirm one test passed.
+Record preparation and compilation separately from the test-process wall time.
+The default debug and optimized executions should be reported separately.
 
 Run `cargo test -p hex-ui --tests --locked` for the default library and
 default standalone unit targets. The six `ui-unit-tier` targets above complete

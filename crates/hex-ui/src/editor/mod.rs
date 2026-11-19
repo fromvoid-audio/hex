@@ -217,6 +217,8 @@ mod return_tracks;
 mod routing_controls;
 mod sample_recorder;
 #[cfg(feature = "ui-test-support")]
+pub(crate) use device_panel::operator_focus_fixture::exercise as operator_focus_fixture;
+#[cfg(feature = "ui-test-support")]
 pub(crate) use sample_recorder::layout_fixture::exercise as sample_recorder_layout_fixture;
 mod sampler_load;
 mod sampler_parameter;
@@ -1297,7 +1299,7 @@ impl EditorView {
     }
 
     /// Bound all filesystem discovery before any worker starts.
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     fn new_for_test_with_browser_directory(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1313,7 +1315,7 @@ impl EditorView {
         )
     }
 
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(feature = "ui-test-support")]
     fn new_for_test_with_project_preferences(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1332,8 +1334,14 @@ impl EditorView {
                 directory.join("theme.json"),
                 project_preferences,
             ),
-            #[cfg(feature = "ui-test-support")]
+            #[cfg(test)]
             None,
+            #[cfg(not(test))]
+            Some(sampler_load::FixturePaths {
+                home: directory.to_path_buf(),
+                directory: directory.join("samples"),
+            }),
+            #[cfg(test)]
             test_environment::Inputs {
                 directory: Some(directory.join("samples")),
                 ..Default::default()
