@@ -27,6 +27,12 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn supports_smoothed_bypass(&self) -> bool {
         false
     }
+    /// Opt into authored power-off for a zero-latency, smoothed effect. Once
+    /// the off ramp commits, the host resets the runtime and skips its block
+    /// transactions until it turns on. Reset must be bounded and allocation-free.
+    fn supports_power_off(&self) -> bool {
+        false
+    }
     fn parameter_automation_descriptor(
         &self,
         _parameter: hex_lattice_contract::ParameterId,
