@@ -2,7 +2,7 @@
 //! Control may cancel Pending. Only the callback can admit or install.
 //! Graph retirement on the callback or final destruction on control seals
 //! an unfinished receipt. Neither path can overwrite a terminal.
-use super::DeviceInsertBasis;
+use super::{DeviceInsertBasis, FencedTempoCut};
 use hex_engine::{AudioSourceContext, PlaybackHandoffRejection};
 use std::sync::{
     Arc,
@@ -60,11 +60,18 @@ struct Decision {
     output_identity: u64,
     context: Option<AudioSourceContext>,
     revision: u64,
-    device_insert: Option<DeviceInsertBasis>,
+    basis: ReceiptBasis,
     // The callback may advance the original route witness through already
     // admitted render actions; no command is accepted under the new stamp.
     retained_route_generation: AtomicU64,
     phase: AtomicU32,
+}
+
+#[derive(Debug)]
+pub(super) enum ReceiptBasis {
+    None,
+    DeviceInsert(DeviceInsertBasis),
+    TempoCut(FencedTempoCut),
 }
 
 impl CancellablePublicationReceipt {
@@ -76,14 +83,14 @@ impl CancellablePublicationReceipt {
         output_identity: u64,
         context: Option<AudioSourceContext>,
         revision: u64,
-        device_insert: Option<DeviceInsertBasis>,
+        basis: ReceiptBasis,
         route_generation: u64,
     ) -> Self {
         Self(Arc::new(Decision {
             output_identity,
             context,
             revision,
-            device_insert,
+            basis,
             retained_route_generation: AtomicU64::new(route_generation),
             phase: AtomicU32::new(PENDING),
         }))
@@ -94,7 +101,17 @@ impl CancellablePublicationReceipt {
     }
 
     pub(super) fn device_insert_basis(&self) -> Option<&DeviceInsertBasis> {
-        self.0.device_insert.as_ref()
+        match &self.0.basis {
+            ReceiptBasis::DeviceInsert(basis) => Some(basis),
+            _ => None,
+        }
+    }
+
+    pub(super) fn tempo_cut(&self) -> Option<&FencedTempoCut> {
+        match &self.0.basis {
+            ReceiptBasis::TempoCut(cut) => Some(cut),
+            _ => None,
+        }
     }
 
     pub fn output_identity(&self) -> u64 {
@@ -148,7 +165,7 @@ impl CancellablePublicationReceipt {
     /// Seal an unapplied device insert after a witnessed fault of its output.
     /// An admitted callback still owns its exact terminal.
     pub(super) fn close_device_insert_on_fault(&self) {
-        if self.0.device_insert.is_some() {
+        if self.device_insert_basis().is_some() {
             self.fence_unapplied_insert(OUTPUT_CLOSED);
         }
     }
@@ -157,9 +174,7 @@ impl CancellablePublicationReceipt {
         // The control owner initializes the monotonic clock when creating the
         // deadline. Only a device insert consults it on the callback.
         if self
-            .0
-            .device_insert
-            .as_ref()
+            .device_insert_basis()
             .is_some_and(|basis| Instant::now() >= basis.install_deadline)
         {
             self.fence_unapplied_insert(EXPIRED);

@@ -359,7 +359,7 @@ impl PublicationControl {
             predecessor.output_identity,
             Some(context),
             revision,
-            Some(DeviceInsertBasis::new(
+            publication_receipt::ReceiptBasis::DeviceInsert(DeviceInsertBasis::new(
                 predecessor,
                 fence,
                 &self.status,

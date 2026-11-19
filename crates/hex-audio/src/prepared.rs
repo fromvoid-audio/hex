@@ -130,6 +130,9 @@ mod runtime_view;
 mod sampler_edit;
 mod sampler_keyboard;
 mod section_launch;
+mod tempo_cut;
+use tempo_cut::FencedAdmission;
+pub use tempo_cut::FencedTempoCut;
 #[cfg(test)]
 mod spectrum_multi_tests;
 #[cfg(test)]
@@ -468,6 +471,8 @@ pub enum PublicationPolicy {
         fence: FreshRuntimeFence,
         quantization: hex_engine::LaunchQuantization,
     },
+    /// Inherit only through the source-bound cut admitted by the tempo publisher.
+    InheritAtTempoCut(FreshRuntimeFence),
     /// Authored structural edit: the shared stopped gate remains held until exact
     /// installation. Stop keeps priority; Play cannot run on the old graph.
     InstallUnderStoppedArrangement(StoppedEditFence),
@@ -499,6 +504,7 @@ impl PublicationPolicy {
         match self {
             Self::InheritRuntime
             | Self::DeviceInsert { .. }
+            | Self::InheritAtTempoCut(_)
             | Self::InheritUnderArrangement(_)
             | Self::InheritUnderStoppedNative { .. } => true,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -511,6 +517,7 @@ impl PublicationPolicy {
         match self {
             Self::InstallFreshRuntimeIfUnchanged(fence)
             | Self::InstallQuantizedSeekWhenReady { fence, .. }
+            | Self::InheritAtTempoCut(fence)
             | Self::DeviceInsert { fence, .. } => Some(fence),
             _ => None,
         }
@@ -1786,9 +1793,8 @@ impl PublicationControl {
     /// Prepare a conditional future anchor from this output's observed running
     /// Session transport. `None` means the observation is unavailable or does
     /// not match the requested source revision and control generation. The
-    /// caller must retain the real revisions independently and account for and
-    /// reclaim the returned token on control. This is not installation authority:
-    /// the callback must recheck the exact runtime graphs, clocks and host fence.
+    /// caller retains the revisions independently. The callback rechecks the
+    /// exact runtime graphs, clocks, host fence and cancellable admission.
     pub fn prepare_fenced_tempo_anchor(
         &self,
         expected_audio_revision: u64,
@@ -1796,13 +1802,7 @@ impl PublicationControl {
         previous: Arc<hex_engine::PreparedRevision>,
         candidate: Arc<hex_engine::PreparedRevision>,
         cut_performance_frame: u64,
-    ) -> Result<
-        Option<(
-            hex_engine::session_playback::PreparedTempoAnchor,
-            FreshRuntimeFence,
-        )>,
-        hex_engine::session_playback::SessionPlaybackError,
-    > {
+    ) -> Result<Option<FencedTempoCut>, hex_engine::session_playback::SessionPlaybackError> {
         let Some((observation, fence)) = self.capture_running_transport_fence() else {
             return Ok(None);
         };
@@ -1833,7 +1833,13 @@ impl PublicationControl {
         {
             return Ok(None);
         }
-        Ok(Some((anchor, fence)))
+        Ok(Some(FencedTempoCut {
+            anchor,
+            fence,
+            output_identity: self.candidate_root.root_id(),
+            control_generation: expected_control_generation,
+            performance_frame: cut_performance_frame,
+        }))
     }
 
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
@@ -2087,10 +2093,10 @@ impl PublicationControl {
             policy,
             source_context.project_generation,
             Some(source_context),
-            Some(DeviceInsertAdmission {
+            Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                 bind: &mut bind_receipt,
                 approved: None,
-            }),
+            })),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
             admit,
@@ -2104,7 +2110,7 @@ impl PublicationControl {
         policy: PublicationPolicy,
         control_context_generation: u64,
         source_context: Option<hex_engine::AudioSourceContext>,
-        insert: Option<DeviceInsertAdmission<'_>>,
+        admission: Option<FencedAdmission<'_>>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
             hex_plugin_host::transport::ParameterInputSource,
         >,
@@ -2134,7 +2140,7 @@ impl PublicationControl {
                     true,
                     false,
                     source_context,
-                    insert,
+                    admission,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_continuation,
                 )
@@ -2279,11 +2285,30 @@ impl PublicationControl {
         explicit_control_context: bool,
         forwarded_pcm: bool,
         source_context: Option<hex_engine::AudioSourceContext>,
-        insert: Option<DeviceInsertAdmission<'_>>,
+        admission: Option<FencedAdmission<'_>>,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] native_continuation: Option<
             hex_plugin_host::transport::ParameterInputSource,
         >,
     ) -> Result<u64, PublishError> {
+        let (insert, tempo_cut) = match admission {
+            Some(FencedAdmission::DeviceInsert(insert)) => (Some(insert), None),
+            Some(FencedAdmission::TempoCut(cut)) => (None, Some(cut)),
+            None => (None, None),
+        };
+        if let PublicationPolicy::InheritAtTempoCut(fence) = policy
+            && tempo_cut.as_ref().is_none_or(|cut| {
+                cut.fence != fence
+                    || cut.output_identity != self.candidate_root.root_id()
+                    || cut.control_generation != control_context_generation
+                    || playback.contains_streamed_sources()
+            })
+        {
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason: "tempo cut requires its original output and resident source",
+                playback,
+            });
+        }
         let approved = insert.as_ref().and_then(|insert| insert.approved);
         if approved
             .as_ref()
@@ -2475,17 +2500,25 @@ impl PublicationControl {
             None
         };
         let cancellation = policy.fresh_fence().map(|fence| {
-            let device_insert = match policy {
-                PublicationPolicy::DeviceInsert { predecessor, fence } => Some(
-                    DeviceInsertBasis::new(predecessor, fence, &self.status, approved),
+            let basis = match policy {
+                PublicationPolicy::DeviceInsert { predecessor, fence } => {
+                    publication_receipt::ReceiptBasis::DeviceInsert(DeviceInsertBasis::new(
+                        predecessor,
+                        fence,
+                        &self.status,
+                        approved,
+                    ))
+                }
+                _ => tempo_cut.map_or(
+                    publication_receipt::ReceiptBasis::None,
+                    publication_receipt::ReceiptBasis::TempoCut,
                 ),
-                _ => None,
             };
             CancellablePublicationReceipt::new(
                 self.candidate_root.root_id(),
                 source_context,
                 revision,
-                device_insert,
+                basis,
                 fence.route_state_generation,
             )
         });
@@ -3846,7 +3879,7 @@ impl Callback {
             }
             return;
         }
-        if !self.quantized_seek_publication_due() {
+        if !self.scheduled_publication_due() {
             return;
         }
         if confirmed_insert && self.retired.is_full() {
@@ -3932,6 +3965,7 @@ impl Callback {
             let stale_fence = match next.policy {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
                 | PublicationPolicy::InstallQuantizedSeekWhenReady { fence, .. }
+                | PublicationPolicy::InheritAtTempoCut(fence)
                 | PublicationPolicy::DeviceInsert { fence, .. } => {
                     let active = self.active.as_ref().and_then(ActivePublication::legacy);
                     let fence = if matches!(next.policy, PublicationPolicy::DeviceInsert { .. }) {
@@ -4063,6 +4097,7 @@ impl Callback {
                 barrier.wait();
             }
             let inserting = matches!(next.policy, PublicationPolicy::DeviceInsert { .. });
+            let tempo_cut = matches!(next.policy, PublicationPolicy::InheritAtTempoCut(_));
             if inserting && !confirmed_insert {
                 // The candidate owns this law so stream preflight and final
                 // inheritance both reject the same unproven interruption.
@@ -4469,7 +4504,7 @@ impl Callback {
             }
             next.playback
                 .bind_browser_audition_transport(self.status.transport_epoch.load(Acquire));
-            let insert_refusal = if confirmed_insert && stale_fence.is_none() {
+            let fenced_refusal = if confirmed_insert && stale_fence.is_none() {
                 let active = self.active.as_ref().and_then(ActivePublication::legacy);
                 let cut_is_current = || {
                     next.approved_device_insert()
@@ -4487,7 +4522,8 @@ impl Callback {
                     (!cut_is_current())
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
-            } else if let PublicationPolicy::DeviceInsert { fence, .. } = next.policy
+            } else if let PublicationPolicy::DeviceInsert { fence, .. }
+            | PublicationPolicy::InheritAtTempoCut(fence) = next.policy
                 && !confirmed_insert
                 && stale_fence.is_none()
                 && !forced_refusal
@@ -4510,7 +4546,11 @@ impl Callback {
                         barrier.wait();
                     }
                     let active = self.active.as_ref().and_then(ActivePublication::legacy);
-                    let fence = next.retained_insert_fence(fence);
+                    let fence = if inserting {
+                        next.retained_insert_fence(fence)
+                    } else {
+                        fence
+                    };
                     (Self::runtime_fence_changed(&self.status, active, fence)
                         || self.status.consumed_command.load(Acquire)
                             != fence.admitted_command_ticket
@@ -4522,7 +4562,7 @@ impl Callback {
             } else {
                 None
             };
-            let handoff = if let Some(error) = insert_refusal {
+            let handoff = if let Some(error) = fenced_refusal {
                 Some(Err(error))
             } else if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
@@ -4599,8 +4639,21 @@ impl Callback {
                             let previous_generation = previous
                                 .explicit_control_context
                                 .then_some(previous.control_context_generation);
-                            if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
-                                && next.playback.live_restart_requested()
+                            if let Some(cut) = next
+                                .fresh_runtime_cancellation
+                                .as_ref()
+                                .and_then(|receipt| receipt.0.tempo_cut())
+                            {
+                                next.playback.try_inherit_runtime_with_tempo_anchor(
+                                    &mut previous.playback,
+                                    generation,
+                                    previous_generation,
+                                    &cut.anchor,
+                                )
+                            } else if matches!(
+                                next.policy,
+                                PublicationPolicy::InheritUnderArrangement(_)
+                            ) && next.playback.live_restart_requested()
                             {
                                 next.playback.try_restart_runtime_under_arrangement_fence(
                                     &mut previous.playback,
@@ -4625,7 +4678,7 @@ impl Callback {
                 }
             };
             match handoff {
-                Some(Err(error)) if error.is_transient() && !inserting => {
+                Some(Err(error)) if error.is_transient() && !inserting && !tempo_cut => {
                     let _promotions = promotions;
                     self.trace_audio(
                         AudioDiagnosticKind::PublicationWaiting {
@@ -4645,10 +4698,10 @@ impl Callback {
                     if let Some(streams) = next.streams.as_mut() {
                         streams.cancel_install(&mut self.domain_pages);
                     }
-                    if let Some(reason) = error
-                        .rejection()
-                        .or_else(|| inserting.then(|| PlaybackHandoffRejection::from_error(error)))
-                    {
+                    if let Some(reason) = error.rejection().or_else(|| {
+                        (inserting || tempo_cut)
+                            .then(|| PlaybackHandoffRejection::from_error(error))
+                    }) {
                         self.reject_publication(next.revision, reason);
                     }
                     self.return_graph(next);
@@ -4665,9 +4718,10 @@ impl Callback {
                         barrier.wait();
                         barrier.wait();
                     }
-                    // A device insert already owns the decision, before
-                    // borrowing either graph mutably for inheritance.
+                    // Device inserts and tempo cuts decide before borrowing
+                    // either graph mutably for inheritance.
                     let applying = inserting
+                        || tempo_cut
                         || next
                             .fresh_runtime_cancellation
                             .as_ref()
@@ -5471,7 +5525,13 @@ impl Callback {
                 _ => frames,
             };
             if frames > 0 {
-                self.audible_clock.push(position, performance, frames);
+                let region = self
+                    .active
+                    .as_ref()
+                    .and_then(ActivePublication::current)
+                    .and_then(|active| active.playback.audible_timing().1);
+                self.audible_clock
+                    .push(position, performance, frames, region);
             }
         }
     }
@@ -5493,13 +5553,12 @@ impl Callback {
     fn publish_audible_position(&self) {
         if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
             let playback = &active.playback;
-            let (latency, region) = playback.audible_timing();
+            let (latency, _) = playback.audible_timing();
             self.status.audible_position.store(
                 self.audible_clock.audible(
                     playback.position(),
                     playback.performance_frame(),
                     latency,
-                    region,
                 ),
                 Relaxed,
             );
@@ -5523,10 +5582,11 @@ impl Callback {
             });
         }
         let yield_successor = self.yield_stream_successor_once;
-        let quantized_revision = self.deferred.as_ref().and_then(|next| {
+        let scheduled_revision = self.deferred.as_ref().and_then(|next| {
             matches!(
                 next.policy,
                 PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+                    | PublicationPolicy::InheritAtTempoCut(_)
             )
             .then_some(next.revision)
         });
@@ -5582,7 +5642,7 @@ impl Callback {
         }
         // A ready streamed section can install above, before any frames
         // render. Only that transition replaces the original block start.
-        let render_start = if quantized_revision.is_some_and(|revision| {
+        let render_start = if scheduled_revision.is_some_and(|revision| {
             self.active
                 .as_ref()
                 .and_then(ActivePublication::legacy)
@@ -5592,12 +5652,12 @@ impl Callback {
         } else {
             initial
         };
-        let quantized = if self.status.closing.load(Acquire) {
-            section_launch::QuantizedSeekRender::NotHandled
+        let scheduled = if self.status.closing.load(Acquire) {
+            section_launch::ScheduledCutRender::NotHandled
         } else {
-            self.render_quantized_seek(output)?
+            self.render_scheduled_cut(output)?
         };
-        if matches!(quantized, section_launch::QuantizedSeekRender::NotHandled) {
+        if matches!(scheduled, section_launch::ScheduledCutRender::NotHandled) {
             self.render_project(output, 0)?;
         }
         self.report_sampler_keyboard_rejection();
@@ -5605,7 +5665,7 @@ impl Callback {
             self.sample_preview.mix(output);
         }
         Ok(RenderOutcome {
-            audible_recorded: matches!(quantized, section_launch::QuantizedSeekRender::Switched),
+            audible_recorded: matches!(scheduled, section_launch::ScheduledCutRender::Switched),
             start: render_start,
         })
     }
