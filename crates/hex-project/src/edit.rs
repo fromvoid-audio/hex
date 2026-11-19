@@ -204,7 +204,8 @@ pub enum Command {
     },
     /// Remove the section's entire half-open time interval and close the gap.
     DeleteArrangementSection(crate::SectionId),
-    /// Insert a song-wide copy immediately after the source, allocating new IDs.
+    /// Insert a song-wide copy, including device envelopes and touch spans,
+    /// immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
     /// Copy a section's complete song interval before/after a stable target.
     /// The source remains; one private candidate owns both copy and insertion,

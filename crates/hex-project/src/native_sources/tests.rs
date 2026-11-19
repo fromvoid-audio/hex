@@ -17,6 +17,83 @@ fn add(editor: &mut Editor, name: &str) -> SourceId {
 }
 
 #[test]
+fn section_copy_updates_touch_only_automation_on_a_shared_source_once() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let source = add(&mut editor, "shared");
+    let tracks = ["first", "second"].map(|name| {
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack { name: name.into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+        track
+    });
+    let device = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let target = hex_lattice_contract::DeviceAutomationTarget::Parameter(
+        hex_lattice_contract::ParameterId::from_static(1),
+    );
+    let beat = |n| crate::BeatTime::from_quarters(n).unwrap();
+    let touched = crate::AutomationValue::new(0.75).unwrap();
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            vst3_class: None,
+            spans: vec![crate::DeviceAutomationTouchSpan {
+                start: beat(1),
+                end: beat(3),
+                steps: vec![crate::DeviceAutomationTouchStep {
+                    beat: beat(1),
+                    value: touched,
+                }],
+            }],
+        })
+        .unwrap();
+    let Created::ArrangementSection(section) = editor
+        .execute(Command::AddArrangementSection {
+            name: "shared section".into(),
+            color: crate::ElementColor::Cyan,
+            start: beat(0),
+            end: beat(4),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
+    editor
+        .execute(Command::DuplicateArrangementSection(section))
+        .unwrap();
+    let project = editor.project();
+    let stored = project
+        .device(device)
+        .unwrap()
+        .automation_target(target)
+        .unwrap();
+    assert!(stored.points.is_empty());
+    assert_eq!(stored.touch.len(), 2);
+    for track in tracks {
+        let instrument = project.track(track).unwrap().instrument().unwrap();
+        assert_eq!(instrument.id(), device);
+        let lane = instrument.automation_target(target).unwrap();
+        assert_eq!(lane, stored);
+        assert_eq!(lane.value_at(beat(5)), Some(touched));
+        assert_eq!(lane.value_at(beat(7)), None);
+    }
+}
+
+#[test]
 fn independent_copy_keeps_the_complete_source_unit_with_fresh_internal_identities() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Asset(asset) = editor
