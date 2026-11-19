@@ -5003,6 +5003,10 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
         std::thread::yield_now();
     }
     h.enable_confirmed_device_inserts();
+    // The harness consumed the import event before opening the view. A real
+    // read-only request delivers the current canonical snapshot to it.
+    let clip = imported.state.project.track(track).unwrap().clips()[0].id();
+    h.service.submit(Request::CopyClips(vec![clip])).unwrap();
     let callback = Arc::clone(&h.callback);
     let backend = h.into_plugin_ui_backend();
     let window =
