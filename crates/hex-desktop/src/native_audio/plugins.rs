@@ -521,7 +521,7 @@ impl Plugins {
             {
                 return Err("another vst3 source operation is pending".into());
             }
-            pending.canonical_context = input.canonical_context;
+            pending.canonical_context = input.canonical_context();
         } else {
             if self.restore.is_some() || self.reopen.is_some() {
                 return Err("vst3 restoration is pending".into());
@@ -631,7 +631,7 @@ impl Plugins {
                 operation: Arc::clone(&input.insertion.control),
                 binding,
                 context: input.insertion.context,
-                canonical_context: input.canonical_context,
+                canonical_context: input.canonical_context(),
                 result: None,
                 facts_ready_for_session: false,
                 facts_observed: false,
@@ -639,7 +639,7 @@ impl Plugins {
                 facts_attempt_from_session: false,
             });
         }
-        self.poll_for_context(output, Some(input.canonical_context), None, Some(&input));
+        self.poll_for_context(output, Some(input.canonical_context()), None, Some(&input));
         match self.pending.as_ref().and_then(|p| p.result.as_ref()) {
             Some(Ok(state)) => Ok(PluginEffectPreparationState::Ready(state.clone())),
             Some(Err(error)) => Err(error.clone()),

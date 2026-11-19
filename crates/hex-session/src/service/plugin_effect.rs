@@ -360,10 +360,15 @@ impl PluginEffectInsertion {
 /// allocates the planned ID.
 pub struct PluginEffectPreparation<'a> {
     pub insertion: &'a PluginEffectInsertion,
-    pub canonical_context: hex_engine::AudioSourceContext,
+    canonical_context: hex_engine::AudioSourceContext,
     pub project: &'a Project,
     pub prepared: Option<&'a PreparedRevision>,
     pub device_id: u64,
+}
+impl PluginEffectPreparation<'_> {
+    pub fn canonical_context(&self) -> hex_engine::AudioSourceContext {
+        self.canonical_context
+    }
 }
 pub enum PluginEffectPreparationState {
     Preparing,
