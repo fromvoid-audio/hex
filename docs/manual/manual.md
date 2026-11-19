@@ -570,6 +570,22 @@ new material uses the current version, which reduces aliasing when you raise
 pitch substantially. opening an older project preserves the version used by
 its existing pitched or warped material.
 
+## transforms on long audio files
+
+for a full-length, unlooped arrangement clip that plays from a file, start with
+the plain import to reverse it or change its pitch. to apply the other
+transform to the same clip, first undo the earlier edit.
+
+for warped playback, use **re-pitch**, **tones**, or **texture**. hold **shift**
+while dragging the clip's header edge to stretch it. a freshly imported long
+clip selects **tones** when stretched. with warp enabled, eligible re-pitch
+and texture clips keep their mode when stretched.
+
+combining reverse and pitch, or adding a loop to a long re-pitch clip, can
+exceed the supported edit size. if an edit is refused, undo earlier transforms
+or work with a shorter source. keep the original file available for playback,
+bounce, export and project reopen.
+
 ## clip loop resizing
 
 hold **option** over a clip's right header edge to show the circle cursor, then
