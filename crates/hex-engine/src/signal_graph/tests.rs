@@ -27,6 +27,19 @@ mod shared_legacy;
 mod shared_sources;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
+
+#[test]
+fn track_cut_proof_requires_every_retained_stage_at_the_current_origin() {
+    let f = fixture(&[&[0, 0], &[0, 3], &[3, 0], &[]], 32);
+    let revision = prepare(&f).unwrap();
+    let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+    assert!(graph.track_prefix_has_unbuffered_input(0, 2));
+    assert!(graph.track_prefix_has_unbuffered_input(1, 1));
+    assert!(!graph.track_prefix_has_unbuffered_input(1, 2));
+    assert!(!graph.track_prefix_has_unbuffered_input(2, 1));
+    assert!(!graph.track_prefix_has_unbuffered_input(3, 0));
+}
+
 pub(crate) struct Definition;
 impl NativeDeviceMetadata for Definition {
     fn type_id(&self) -> DeviceTypeId {

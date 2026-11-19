@@ -811,6 +811,28 @@ impl SignalGraph {
     pub(crate) fn main_input_arrival(&self) -> u32 {
         self.plan.nodes()[self.main].input_arrival_frames
     }
+
+    /// A serial audio prefix can continue after a delay epoch reset if its
+    /// retained stages use the current origin throughout. Delayed, key and
+    /// printed paths may need samples or origin stamps from the old epoch.
+    pub(crate) fn track_prefix_has_unbuffered_input(&self, index: usize, length: usize) -> bool {
+        let Some(track) = self.tracks.get(index) else {
+            return false;
+        };
+        let Some(stages) = track.devices.get(..length) else {
+            return false;
+        };
+        track.generator.is_none()
+            && track.printed_merge.is_none()
+            && !stages.is_empty()
+            && stages.iter().all(|&index| {
+                self.key_stages.get(index).is_none_or(Option::is_none)
+                    && self.plan.nodes().get(index).is_some_and(|stage| {
+                        stage.input_arrival_frames == 0 && stage.output_arrival_frames == 0
+                    })
+            })
+    }
+
     /// A detached copy of `track`'s instrument suffix, rendered from the
     /// source origin and summed straight into Main's input, lands on Main's
     /// clock (Pulse #4188). That holds when the instrument output arrives at

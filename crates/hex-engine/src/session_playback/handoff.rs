@@ -520,7 +520,85 @@ enum Restart {
     ConfirmedInsert { force: bool },
 }
 
+fn is_native_latency_stage(device: &hex_lattice::PreparedRuntimeInstance) -> bool {
+    device.definition.is_some()
+        && device.foreign_processor().is_none()
+        && device
+            .algorithmic_latency_frames()
+            .is_some_and(|frames| frames > 0)
+}
+
+fn same_latency_cut_prefix(
+    old_graph: &crate::signal_graph::SignalGraph,
+    new_graph: &crate::signal_graph::SignalGraph,
+    old_chain: &hex_lattice::NativeRuntimeChain,
+    new_chain: &hex_lattice::NativeRuntimeChain,
+    prefix: &[hex_lattice::PreparedRuntimeInstance],
+) -> bool {
+    old_chain.configuration_matches_range(new_chain, 0..prefix.len())
+        && new_chain.can_inherit_from(old_chain)
+        && prefix.iter().all(|node| {
+            old_graph
+                .processor_latency(node.device_id, None)
+                .zip(new_graph.processor_latency(node.device_id, None))
+                .is_some_and(|(before, after)| {
+                    before.upstream_frames == after.upstream_frames
+                        && before.stage_frames == after.stage_frames
+                })
+        })
+}
+
 impl SessionPlayback {
+    /// Retain direct native audio histories through a confirmed reset when
+    /// individual chains keep their processing clock. The new graph's
+    /// output alignment can change independently of those histories.
+    fn plan_track_history_at_latency_cut(&self, previous: &Self) -> [Option<usize>; MAX_TRACKS] {
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        let mut donors = [None; MAX_TRACKS];
+        let Some((old_graph, new_graph)) = old.signal_graph.as_ref().zip(new.signal_graph.as_ref())
+        else {
+            return donors;
+        };
+        for (new_index, (next_track, donor)) in new.tracks().iter().zip(&mut donors).enumerate() {
+            let Some(old_index) = next_track
+                .canonical_track_id()
+                .and_then(|id| old_graph.track_index(id))
+            else {
+                continue;
+            };
+            let Some(old_track) = old.tracks().get(old_index) else {
+                continue;
+            };
+            let prefix = &old_track.device_chain;
+            let appended = next_track
+                .device_chain
+                .split_last()
+                .is_some_and(|(stage, rest)| {
+                    rest.len() == prefix.len() && is_native_latency_stage(stage)
+                });
+            if old_track.source_id().is_none()
+                && next_track.source_id().is_none()
+                && (next_track.device_chain.len() == prefix.len() || appended)
+                && prefix
+                    .iter()
+                    .all(|stage| stage.foreign_processor().is_none())
+                && old_graph.track_prefix_has_unbuffered_input(old_index, prefix.len())
+                && new_graph.track_prefix_has_unbuffered_input(new_index, prefix.len())
+                && previous
+                    .device_chains
+                    .get(old_index)
+                    .zip(self.device_chains.get(new_index))
+                    .is_some_and(|(old_chain, new_chain)| {
+                        same_latency_cut_prefix(old_graph, new_graph, old_chain, new_chain, prefix)
+                    })
+            {
+                *donor = Some(old_index);
+            }
+        }
+        donors
+    }
+
     /// Keep an unchanged Return prefix at its input origin during a confirmed
     /// trailing latency edit. A native append can start a fresh alignment
     /// epoch when there is no buffered input before that prefix.
@@ -553,13 +631,6 @@ impl SessionPlayback {
         if old_bus.id != new_bus.id {
             return false;
         }
-        let is_native_latency_stage = |device: &hex_lattice::PreparedRuntimeInstance| {
-            device.definition.is_some()
-                && device.foreign_processor().is_none()
-                && device
-                    .algorithmic_latency_frames()
-                    .is_some_and(|frames| frames > 0)
-        };
         let prefix = if let Some((removed, prefix)) = old_bus.device_chain.split_last()
             && prefix.len() == new_bus.device_chain.len()
             && is_native_latency_stage(removed)
@@ -581,17 +652,7 @@ impl SessionPlayback {
         } else {
             return false;
         };
-        old_chain.configuration_matches_range(new_chain, 0..prefix.len())
-            && new_chain.can_inherit_from(old_chain)
-            && prefix.iter().all(|node| {
-                old_graph
-                    .processor_latency(node.device_id, None)
-                    .zip(new_graph.processor_latency(node.device_id, None))
-                    .is_some_and(|(before, after)| {
-                        before.upstream_frames == after.upstream_frames
-                            && before.stage_frames == after.stage_frames
-                    })
-            })
+        same_latency_cut_prefix(old_graph, new_graph, old_chain, new_chain, prefix)
     }
 
     /// Borrow a control-prepared anchor for an exact running cut that carries
@@ -2149,6 +2210,17 @@ impl SessionPlayback {
                     running_audio_restart: running_restart || running_relocate,
                 });
             }
+            let restart_track_prefixes = if confirmed_insert
+                && cursor.is_none()
+                && groups.is_none()
+                && donor_epoch_matches
+                && !self.revision.contains_streamed_sources()
+                && !previous.revision.contains_streamed_sources()
+            {
+                self.plan_track_history_at_latency_cut(previous)
+            } else {
+                [None; MAX_TRACKS]
+            };
             self.routes.copy_from_slice(&self.route_scratch);
             self.capture_epoch = recipient_epoch;
             self.authored_clock_epoch = authored_clock_epoch;
@@ -2177,6 +2249,11 @@ impl SessionPlayback {
                 self.interactive_start_frame = Some(self.performance_frame);
                 self.playing = previous.playing;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
+            }
+            for (new, old) in self.device_chains.iter_mut().zip(restart_track_prefixes) {
+                if let Some(old) = old.and_then(|index| previous.device_chains.get_mut(index)) {
+                    new.transfer_history_from(old);
+                }
             }
             for (new, old) in self.return_chains.iter_mut().zip(restart_return_prefixes) {
                 if let Some(old) = old.and_then(|index| previous.return_chains.get_mut(index)) {

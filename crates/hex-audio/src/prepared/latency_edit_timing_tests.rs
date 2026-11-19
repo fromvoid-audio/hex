@@ -716,15 +716,26 @@ fn removing_settled_off_main_effect_preserves_the_downstream_delay_history() {
 
 #[test]
 fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
-    assert_approved_limiter_append_preserves_repeat(false);
+    assert_approved_limiter_append_preserves_repeat(LimiterAppendTarget::Main);
 }
 
 #[test]
 fn approved_return_limiter_append_preserves_a_buffered_delay_repeat() {
-    assert_approved_limiter_append_preserves_repeat(true);
+    assert_approved_limiter_append_preserves_repeat(LimiterAppendTarget::Return);
 }
 
-fn assert_approved_limiter_append_preserves_repeat(on_return: bool) {
+#[test]
+fn approved_track_limiter_append_preserves_buffered_repeats_on_both_tracks() {
+    assert_approved_limiter_append_preserves_repeat(LimiterAppendTarget::Track);
+}
+
+enum LimiterAppendTarget {
+    Main,
+    Return,
+    Track,
+}
+
+fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -746,7 +757,7 @@ fn assert_approved_limiter_append_preserves_repeat(on_return: bool) {
     let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
     let mut source = vec![[0.0; 2]; 2048];
     source[0] = [0.125, -0.0625];
-    let ([before, after], old_latency) = if on_return {
+    let ([before, after], old_latency) = if matches!(target, LimiterAppendTarget::Return) {
         let (mut editor, track, prepare) = resident_input(source);
         editor
             .execute(Command::InsertMainDevice {
@@ -785,6 +796,53 @@ fn assert_approved_limiter_append_preserves_repeat(on_return: bool) {
             })
             .unwrap();
         ([before, prepare(editor.project())], DELAY)
+    } else if matches!(target, LimiterAppendTarget::Track) {
+        let (mut editor, track, prepare) = resident_input(source);
+        let asset = editor.project().tracks()[0].clips()[0].asset();
+        let Created::Track(other) = editor
+            .execute(Command::AddTrack {
+                name: "independent delay".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        for command in [
+            Command::PlaceClip {
+                track: other,
+                asset,
+                start: 31,
+                duration: 1024,
+                source_offset: 0,
+                source_length: 1024,
+                looping: false,
+            },
+            Command::InsertMainDevice {
+                before: None,
+                state: limiter.clone(),
+            },
+            Command::InsertDevice {
+                track,
+                before: None,
+                state: delay.clone(),
+            },
+            Command::InsertDevice {
+                track: other,
+                before: None,
+                state: delay,
+            },
+        ] {
+            editor.execute(command).unwrap();
+        }
+        let before = prepare(editor.project());
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+        ([before, prepare(editor.project())], DELAY)
     } else {
         (main_append_revisions(Some(delay), limiter, source).0, 0)
     };
@@ -804,7 +862,7 @@ fn assert_approved_limiter_append_preserves_repeat(on_return: bool) {
     uninterrupted.apply(PlaybackCommand::Play);
     let mut oracle = [[0.0; 2]; TOTAL];
     uninterrupted.render(&mut oracle).unwrap();
-    if !on_return {
+    if !matches!(target, LimiterAppendTarget::Return) {
         assert!(oracle[..CUT].iter().all(|pcm| *pcm == [0.0; 2]));
     }
     let onset = CUT
@@ -814,6 +872,9 @@ fn assert_approved_limiter_append_preserves_repeat(on_return: bool) {
             .unwrap();
     assert!(onset >= CUT + QUANTUM);
     assert_eq!(onset, 480 + old_latency + DELAY);
+    if matches!(target, LimiterAppendTarget::Track) {
+        assert_ne!(oracle[onset + 31], [0.0; 2], "independent track repeat");
+    }
 
     for partition in [1, BLOCK] {
         let (mut control, mut callback) = channel(RATE).unwrap();
