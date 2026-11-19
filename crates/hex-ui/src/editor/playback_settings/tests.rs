@@ -479,7 +479,7 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
     let editor = fixture.editor.clone();
     let (generation, request, predecessor) = editor.update(cx, |view, cx| {
         reload_off(view, cx);
-        let predecessor = view.audio_status().unwrap().applied_audio_source().unwrap();
+        let predecessor = view.audio_status().unwrap().recording_source().unwrap();
         assert_eq!(view.current_seek_requires_preroll(), Some(true));
         let generation = view.recovery.begin(129).unwrap();
         assert!(view.recovery.opened(generation));
@@ -525,7 +525,7 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
             matches!(pending.source, StartSource::Recovery(expected) if expected == generation)
         );
         let status = view.audio_status().unwrap();
-        assert_eq!(status.applied_audio_source(), Some(predecessor));
+        assert_eq!(status.recording_source(), Some(predecessor));
         assert!(
             !status.playing.load(Acquire),
             "loading alone cannot acknowledge recovery"
@@ -549,7 +549,7 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
                 "the transferred command awaits its own callback"
             );
             assert_eq!(status.position.load(Acquire), 129);
-            let source = status.applied_audio_source().unwrap();
+            let source = status.recording_source().unwrap();
             assert_ne!(
                 source, predecessor,
                 "recovery must install its actual fresh runtime"
@@ -578,7 +578,7 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
     }
     editor.read_with(cx, |view, _| {
         let status = view.audio_status().unwrap();
-        assert_eq!(status.applied_audio_source(), Some(recovered));
+        assert_eq!(status.recording_source(), Some(recovered));
         assert!(status.playing.load(Acquire));
         assert_eq!(status.position.load(Acquire), 512 + off.len() as u64);
     });
@@ -688,7 +688,7 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
             assert!(!status.playing.load(Acquire));
             !status.stopped_edit_pending()
                 && status
-                    .applied_audio_source()
+                    .recording_source()
                     .is_some_and(|source| source != predecessor)
         });
         if settled {

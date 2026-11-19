@@ -149,7 +149,9 @@ impl EditorView {
         {
             return None;
         }
-        let source = status.applied_audio_source()?;
+        // The fenced client uses this coherent ACK for ordinary and eligible
+        // installs; applied_audio_source is only the constructor-specific ACK.
+        let source = status.recording_source()?;
         (audio.control.output_identity() == Some(source.output_identity)
             && source.context.project_generation == self.project_generation
             && self.state.as_ref().is_some_and(|state| {
