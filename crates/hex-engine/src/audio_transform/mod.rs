@@ -34,7 +34,10 @@ pub(crate) use instance_fade::materializes_musical_outer_fade;
 use instance_fade::{MusicalPeakCapture, OuterPlaybackFade};
 mod mapping;
 mod preview_peaks;
-pub use preview_peaks::{PreparedEventSourcePeaks, PreparedMusicalEventSourceClock};
+pub use preview_peaks::{
+    PreparedEventOccurrence, PreparedEventOccurrences, PreparedEventSourcePeaks,
+    PreparedMusicalEventSourceClock,
+};
 mod processing_root;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
@@ -416,6 +419,7 @@ struct Entry {
     source_rate: u32,
     prepared: Audio,
     event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
+    event_source_occurrences: Option<Arc<PreparedEventOccurrences>>,
     bytes: usize,
 }
 
@@ -791,12 +795,23 @@ impl AudioTransformPreparation {
         &self,
         audio: &Audio,
     ) -> Option<Arc<PreparedEventSourcePeaks>> {
+        self.prepared_sidecar(audio, |entry| entry.event_source_peaks.clone())
+    }
+
+    pub(crate) fn event_source_occurrences(
+        &self,
+        audio: &Audio,
+    ) -> Option<Arc<PreparedEventOccurrences>> {
+        self.prepared_sidecar(audio, |entry| entry.event_source_occurrences.clone())
+    }
+
+    fn prepared_sidecar<T>(&self, audio: &Audio, read: impl Fn(&Entry) -> Option<T>) -> Option<T> {
         let matches = |entry: &Entry| {
-            entry
-                .event_source_peaks
-                .as_ref()
-                .filter(|_| entry.prepared.shares_pcm_with(audio))
-                .cloned()
+            if entry.prepared.shares_pcm_with(audio) {
+                read(entry)
+            } else {
+                None
+            }
         };
         if let Ok(pending) = self.pending.try_borrow()
             && let Some(peaks) = pending.iter().flatten().find_map(matches)
@@ -1091,6 +1106,7 @@ impl AudioTransformPreparation {
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
             event_source_peaks,
+            event_source_occurrences: None,
             bytes,
         })?;
         Ok(audio)

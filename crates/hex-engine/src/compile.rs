@@ -812,7 +812,7 @@ fn compile_project_inner<'a>(
                     return Ok(None);
                 }
                 let bakes_musical_fade = clip.audio_edit().is_some_and(materializes_musical_outer_fade);
-                let (mut compiled, mut neutral_musical_peaks, materialized_event_peaks, materialized_event_repeat) = if let Some(events) = clip.audio_edit()
+                let (mut compiled, materialized) = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
                 {
@@ -829,18 +829,20 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    (Some(transforms.compile_arrangement_group(clip, &sources)?), Vec::new(), None, None)
+                    (Some(transforms.compile_arrangement_group(clip, &sources)?), None)
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
                     if bakes_musical_fade {
                         let (compiled, peaks) = transforms.capture_musical_peaks(musical_peak_limit, || {
                             transforms.compile_clip(snapshot, clip, asset, source)
                         })?;
-                        (compiled, peaks.destination, peaks.event_source, peaks.event_source_repeat)
+                        (compiled, Some(peaks))
                     } else {
-                        (transforms.compile_clip(snapshot, clip, asset, source)?, Vec::new(), None, None)
+                        (transforms.compile_clip(snapshot, clip, asset, source)?, None)
                     }
                 };
+                let mut materialized = materialized.unwrap_or_default();
+                let mut neutral_musical_peaks = std::mem::take(&mut materialized.destination);
                 if let Some(compiled) = compiled.as_mut() {
                     if !bakes_musical_fade && musical_peak_candidate(clip) {
                         neutral_musical_peaks = transforms.capture_unbaked_musical_peaks(
@@ -853,7 +855,7 @@ fn compile_project_inner<'a>(
                     && let Some(audio) = &compiled.audio
                     && (audio.frames._derived.is_some() || !neutral_musical_peaks.is_empty())
                 {
-                    let event_source_peaks = materialized_event_peaks.or_else(|| {
+                    let event_source_peaks = materialized.event_source.or_else(|| {
                         clip.audio_edit()
                             .filter(|edit| previews_event_source_peaks(edit))
                             .and_then(|_| transforms.event_source_peaks(audio))
@@ -861,7 +863,12 @@ fn compile_project_inner<'a>(
                     let repeat = crate::PreparedAudioRepeat::from_clip(compiled);
                     let event_source_repeat = event_source_peaks.as_ref()
                         .filter(|source| source.musical_clock().is_some())
-                        .and(materialized_event_repeat.or(repeat));
+                        .and(materialized.event_source_repeat.or(repeat));
+                    let event_source_occurrences = materialized.event_source_occurrences.or_else(|| {
+                        clip.audio_edit()
+                            .filter(|edit| edit.placement.is_some() && matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_)))
+                            .and_then(|_| transforms.event_source_occurrences(audio))
+                    });
                     audio_clip_views
                         .try_reserve(1)
                         .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
@@ -874,6 +881,7 @@ fn compile_project_inner<'a>(
                         neutral_musical_peaks,
                         event_source_peaks,
                         event_source_repeat,
+                        event_source_occurrences,
                         repeat,
                     });
                 }

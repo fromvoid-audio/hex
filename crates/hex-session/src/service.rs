@@ -209,6 +209,24 @@ pub struct AudioEventSourceWaveform {
     pub musical_clock: Option<hex_engine::audio_transform::PreparedMusicalEventSourceClock>,
     /// Verified shared-root loop read before any outer clip fade.
     pub repeat: Option<hex_engine::PreparedAudioRepeat>,
+    /// Accepted forward occurrence reads when playback materializes distinct roots.
+    pub occurrences: Option<Arc<AudioEventOccurrenceWaveforms>>,
+}
+
+/// Source peaks bound to the placement table from the same prepared revision.
+pub struct AudioEventOccurrenceWaveforms {
+    pub(crate) prepared: Arc<hex_engine::audio_transform::PreparedEventOccurrences>,
+    pub(crate) waveforms: Vec<Arc<Waveform>>,
+}
+
+impl AudioEventOccurrenceWaveforms {
+    pub fn reads(&self) -> &[hex_engine::audio_transform::PreparedEventOccurrence] {
+        self.prepared.reads()
+    }
+
+    pub fn waveform(&self, index: usize) -> Option<&Arc<Waveform>> {
+        self.waveforms.get(index)
+    }
 }
 
 impl AudioEventSourceWaveform {

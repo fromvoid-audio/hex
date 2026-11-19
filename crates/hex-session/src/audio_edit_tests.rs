@@ -886,7 +886,7 @@ fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat
         &original.waveform,
         &accepted_source(&session).waveform
     ));
-    session
+    let (_, revision) = session
         .command_prepared_revision(
             Command::ResizeAudioClipView {
                 clip,
@@ -905,6 +905,48 @@ fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat
     let repeated = accepted_source(&session);
     assert!(Arc::ptr_eq(&original.waveform, &repeated.waveform));
     assert_eq!(original.musical_clock, repeated.musical_clock);
+    assert!(repeated.repeat.is_none());
+    let sources = repeated.occurrences.as_ref().unwrap();
+    assert_eq!(sources.reads().len(), 3);
+    assert!(Arc::ptr_eq(
+        &repeated.waveform,
+        sources.waveform(0).unwrap()
+    ));
+    for (index, (start, end, root_frames)) in [
+        (0, 6_000, 6_000),
+        (6_000, 10_000, 4_000),
+        (10_000, 12_000, 4_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let read = &sources.reads()[index];
+        assert_eq!(
+            (
+                read.placement.destination_start,
+                read.placement.destination_end
+            ),
+            (start, end)
+        );
+        let waveform = sources.waveform(index).unwrap();
+        assert_eq!(waveform.source_frames(), root_frames);
+        assert!(waveform.bounded_samples(0..1, 1).is_none());
+        assert_eq!(waveform.bins()[0][0].max, read.source.bins()[0].max[0]);
+    }
+    assert!(sources.waveform(3).is_none());
+    session
+        .command_prepared_revision(
+            Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        sources,
+        accepted_source(&session).occurrences.as_ref().unwrap()
+    ));
 }
 
 #[test]

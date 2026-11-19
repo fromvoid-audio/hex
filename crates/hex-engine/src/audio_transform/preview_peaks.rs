@@ -1,7 +1,7 @@
 //! Bounded, control-owned display summaries of prepared audio.
 use super::budget::{Budget, Reservation};
 use crate::{Frame, Invalid, PreparedAudioPeak};
-use hex_project::{AudioClipEdit, BeatTime, TempoMap, audio_projection_frame};
+use hex_project::{AudioClipEdit, AudioViewOccurrence, BeatTime, TempoMap, audio_projection_frame};
 use std::sync::{Arc, OnceLock};
 
 const EVENT_SOURCE_BINS: usize = 1_024;
@@ -10,6 +10,52 @@ const EVENT_SOURCE_PEAK_BYTES: usize = 8 * 1024 * 1024;
 pub(super) fn event_source_budget() -> &'static Arc<Budget> {
     static BUDGET: OnceLock<Arc<Budget>> = OnceLock::new();
     BUDGET.get_or_init(|| Arc::new(Budget::new(EVENT_SOURCE_PEAK_BYTES)))
+}
+
+/// The neutral source of one materialized forward musical occurrence.
+#[derive(Debug)]
+pub struct PreparedEventOccurrence {
+    pub placement: AudioViewOccurrence,
+    pub source: Arc<PreparedEventSourcePeaks>,
+}
+
+/// Complete, budgeted source reads for a finite musical placement. The
+/// entries are in destination order. They own summaries and clocks, without
+/// retaining the source or composed PCM for each occurrence.
+#[derive(Debug)]
+pub struct PreparedEventOccurrences {
+    reads: Vec<PreparedEventOccurrence>,
+    _reservation: Reservation,
+}
+
+impl PreparedEventOccurrences {
+    pub(super) fn admit(count: u64, budget: &Arc<Budget>) -> Option<Self> {
+        let count = usize::try_from(count).ok()?;
+        let storage = count
+            .checked_mul(std::mem::size_of::<PreparedEventOccurrence>())?
+            .checked_add(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())?;
+        let reservation = budget.reserve(storage).ok()?;
+        let mut reads = Vec::new();
+        reads.try_reserve_exact(count).ok()?;
+        Some(Self {
+            reads,
+            _reservation: reservation,
+        })
+    }
+
+    pub(super) fn push(
+        &mut self,
+        placement: AudioViewOccurrence,
+        source: Arc<PreparedEventSourcePeaks>,
+    ) {
+        // Playback's admitted occurrence count bounds the copy loop.
+        self.reads
+            .push(PreparedEventOccurrence { placement, source });
+    }
+
+    pub fn reads(&self) -> &[PreparedEventOccurrence] {
+        &self.reads
+    }
 }
 
 /// Stereo extrema of the transformed source before event composition, event
@@ -189,6 +235,143 @@ impl PeakBins {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinct_musical_occurrences_keep_neutral_source_clocks_and_cache_identity() {
+        use crate::audio_transform::{
+            AudioTransformPreparation,
+            tests::{fixture, isolated, prepare},
+        };
+        use hex_project::{
+            AudioEventEdit, AudioEventFade, AudioViewProjection, AudioViewResizeOperation,
+            ClipFade, Command, Tempo, WarpMode, default_audio_warp,
+        };
+
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let project = editor.project();
+        let settings = default_audio_warp(
+            project.clip(clip).unwrap(),
+            project.tempo_map(),
+            WarpMode::RePitch,
+        )
+        .unwrap();
+        for command in [
+            Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            },
+            Command::SetTempoPoint {
+                beat: BeatTime::ONE,
+                tempo: Tempo::new(240_000_000).unwrap(),
+            },
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 20_000,
+                },
+            },
+            Command::SetClipFadeEnvelope {
+                clip,
+                fade: ClipFade::neutral(20_000).unwrap(),
+            },
+        ] {
+            editor.execute(command).unwrap();
+        }
+        let context = AudioTransformPreparation::default();
+        let original = prepare(&editor, &media, &context);
+        let view = &original.arrangement().audio_clip_views()[0];
+        assert!(view.repeat.is_none());
+        let table = view
+            .event_source_occurrences
+            .clone()
+            .expect("neutral sources for the distinct prepared roots");
+        let project = editor.project();
+        let projection =
+            AudioViewProjection::new(project.clip(clip).unwrap(), project.tempo_map()).unwrap();
+        let reads = table.reads();
+        assert_eq!(reads.len() as u64, projection.occurrence_count());
+        for (index, read) in reads.iter().enumerate() {
+            let occurrence = projection.occurrence(index as u64).unwrap();
+            assert_eq!(read.placement, occurrence);
+            assert_eq!(
+                read.source.source_frames() as u64,
+                occurrence.root_frame_length
+            );
+            let clock = read.source.musical_clock().unwrap();
+            assert_eq!(
+                clock.frame_at(BeatTime::ONE).unwrap(),
+                occurrence.root_frame_length
+            );
+        }
+        assert_eq!(reads[0].source.source_frames(), 8_000);
+        assert_eq!(reads[1].source.source_frames(), 4_000);
+        let reused = prepare(&editor, &media, &context);
+        assert!(Arc::ptr_eq(
+            &table,
+            reused.arrangement().audio_clip_views()[0]
+                .event_source_occurrences
+                .as_ref()
+                .unwrap()
+        ));
+
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetFade {
+                    event: 1,
+                    fade: Some(
+                        AudioEventFade::new(
+                            0,
+                            ClipFade::new(BeatTime::ONE.raw(), 0, BeatTime::ONE.raw() / 4, 0)
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                },
+            })
+            .unwrap();
+        let faded = prepare(&editor, &media, &context);
+        let faded_view = &faded.arrangement().audio_clip_views()[0];
+        let event_table = faded_view.event_source_occurrences.clone().unwrap();
+        for (before, after) in table.reads().iter().zip(event_table.reads()) {
+            assert_eq!(before.placement, after.placement);
+            assert_eq!(before.source.bins(), after.source.bins());
+            assert_eq!(before.source.musical_clock(), after.source.musical_clock());
+        }
+        assert_ne!(faded_view.audio.frames(), view.audio.frames());
+
+        editor
+            .execute(Command::SetClipFadeEnvelope {
+                clip,
+                fade: ClipFade::new(20_000, 0, 1_241, 2_681).unwrap(),
+            })
+            .unwrap();
+        let baked = prepare(&editor, &media, &context);
+        let baked_view = &baked.arrangement().audio_clip_views()[0];
+        assert!(Arc::ptr_eq(
+            &event_table,
+            baked_view.event_source_occurrences.as_ref().unwrap()
+        ));
+        assert_ne!(baked_view.audio.frames(), faded_view.audio.frames());
+
+        let uncached_context = isolated(1_000_000, 0, 0);
+        let uncached = prepare(&editor, &media, &uncached_context);
+        let uncached_view = &uncached.arrangement().audio_clip_views()[0];
+        assert!(uncached_view.event_source_occurrences.is_none());
+        assert_eq!(uncached_view.audio.frames(), baked_view.audio.frames());
+
+        let pcm_budget = Arc::clone(&context.budget);
+        drop((original, reused, faded, baked, context));
+        assert_eq!(pcm_budget.used(), 0);
+        assert_eq!(event_table.reads()[0].source.source_frames(), 8_000);
+    }
 
     #[test]
     fn event_source_summary_releases_its_independent_budget_on_cancel_and_drop() {
