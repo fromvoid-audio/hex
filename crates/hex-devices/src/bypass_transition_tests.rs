@@ -64,21 +64,11 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<[f3
     frames
 }
 
-#[derive(Clone, Copy)]
-enum RestartHistory {
-    Warm,
-    Fresh,
-}
-
-fn check(definition: &'static dyn NativeDeviceDefinition) {
-    check_rate(definition, 48_000, RestartHistory::Warm);
-}
-
-fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32, restart: RestartHistory) {
+fn check_power_transition(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
     let ramp_frames = rate.div_ceil(200) as usize;
     for old_bypassed in [false, true] {
         let mut wet_reference = chain(definition, false, rate);
-        if !old_bypassed || matches!(restart, RestartHistory::Warm) {
+        if !old_bypassed {
             render(&mut wet_reference, 1024, 64);
         }
         let wet = render(&mut wet_reference, ramp_frames + 60, 1);
@@ -112,15 +102,11 @@ fn check_rate(definition: &'static dyn NativeDeviceDefinition, rate: u32, restar
 
 #[test]
 fn auto_pan_power_transition_uses_its_history_until_off_and_restarts_fresh() {
-    check_rate(
-        &crate::auto_pan::AUTO_PAN_DEFINITION,
-        48_000,
-        RestartHistory::Fresh,
-    );
+    check_power_transition(&crate::auto_pan::AUTO_PAN_DEFINITION, 48_000);
 }
 #[test]
 fn gate_power_transition_uses_its_detector_until_off_and_reopens_fresh() {
-    check_rate(&crate::gate::GATE_DEFINITION, 48_000, RestartHistory::Fresh);
+    check_power_transition(&crate::gate::GATE_DEFINITION, 48_000);
 }
 
 #[test]
@@ -147,11 +133,7 @@ fn gate_power_reversal_preserves_the_open_detector() {
 
 #[test]
 fn compressor_power_transition_uses_its_detector_until_off_and_restarts_fresh() {
-    check_rate(
-        &crate::compressor::COMPRESSOR_DEFINITION,
-        48_000,
-        RestartHistory::Fresh,
-    );
+    check_power_transition(&crate::compressor::COMPRESSOR_DEFINITION, 48_000);
 }
 
 #[test]
@@ -232,11 +214,7 @@ fn compressor_power_reversals_and_settled_off_follow_the_external_key() {
 #[test]
 fn reverb_power_transition_restarts_a_fresh_room_at_supported_rates() {
     for rate in [8_000, 44_100, 48_000, 192_000] {
-        check_rate(
-            &crate::reverb::REVERB_DEFINITION,
-            rate,
-            RestartHistory::Fresh,
-        );
+        check_power_transition(&crate::reverb::REVERB_DEFINITION, rate);
     }
 }
 
