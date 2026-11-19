@@ -471,7 +471,8 @@ int main(int argc,char** argv) {
             uint64_t next_graph=0,next_epoch=0;
             uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0;
             hex_instance::ParameterFeedback flushed_values;
-            bool flush_applied=false,flush_while_idle=false;
+            uint8_t flush_disposition=0;
+            bool flush_while_idle=false;
             wire::PresentationPlan next_presentation;
             // Single live capture slot. Main exclusively writes its result
             // after Requested/acquire, then Complete/release transfers it back
@@ -742,6 +743,15 @@ int main(int argc,char** argv) {
                     // exchange in both epochs. Only the non-PCM request waits
                     // for the main lane to mirror values before acknowledging.
                     const auto flush_parameters=[&](const wire::Packet& packet,bool idle)->uint32_t {
+                        const auto acknowledge=[&](uint8_t disposition) {
+                            std::unique_lock<std::mutex> lock(startup_mutex);
+                            flush_operation=packet.capture_operation;flush_disposition=disposition;
+                            flush_while_idle=idle;epoch_stage=FlushRequested;
+                            startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
+                            if(idle) epoch_stage=Idle;
+                            return worker_failure.load();
+                        };
+                        const auto expected=packet.expected_editor_admission;
                         instance.refresh_processing_parameters(processing_parameters);
                         if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true)) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         bool valid=true;
@@ -750,12 +760,21 @@ int main(int argc,char** argv) {
                             if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
                                 !parameter_input.input(point.id,0,point.normalized)) valid=false;
                         }
-                        if(!valid || !stage_edits()) return ProtocolFailure;
+                        // A guarded batch has one admission point. A callback
+                        // admitted afterward remains queued for a later SDK
+                        // turn and wins over feedback stamped at this point.
+                        if(expected && (!valid || instance.pending_parameter_edits() ||
+                                        instance.editor_admission_sequence_on_worker()!=*expected)) {
+                            flushed_values={};
+                            return acknowledge(2);
+                        }
+                        if(!valid || (!expected && !stage_edits())) return ProtocolFailure;
+                        if(expected) applying_edit_count=0;
                         if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                         flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
                         phase.store(2,std::memory_order_release);
-                        const auto host_frontier=instance.editor_frontier_on_worker();
+                        const auto host_frontier=expected.value_or(instance.editor_frontier_on_worker());
                         const auto result=idle?instance.flush_idle(flush):instance.flush_stopped(flush);
                         const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                         if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
@@ -763,14 +782,7 @@ int main(int argc,char** argv) {
                         flushed_values={};
                         if(!mirror_flushed_parameters(flushed_values,host_frontier)) return ProtocolFailure;
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
-                        {
-                            std::unique_lock<std::mutex> lock(startup_mutex);
-                            flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;
-                            flush_while_idle=idle;epoch_stage=FlushRequested;
-                            startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
-                            if(idle) epoch_stage=Idle;
-                        }
-                        return worker_failure.load();
+                        return acknowledge(result==hex_instance::FlushResult::Applied?1:0);
                     };
                     uint64_t idle_flushes=0;
                     uint64_t page_operation=0;
@@ -1318,7 +1330,7 @@ int main(int argc,char** argv) {
                             // if it arrived after this main iteration's sync.
                             if(!instance.synchronize_parameter_feedback_on_control()) page_failure=HostControl;
                             else if(page_query.kind==hex_instance::READ_EDITOR_FRONTIER)
-                                editor_frontier=instance.editor_frontier_on_worker();
+                                editor_frontier=instance.editor_admission_sequence_on_worker();
                             else if(hex_instance::editor_request(page_query.kind)) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
@@ -1453,7 +1465,7 @@ int main(int argc,char** argv) {
                         }
                         const auto* snapshot=instance.parameter_snapshot();
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
-                        wire::number(body,flush_operation,8);wire::number(body,flush_applied?1:0,1);wire::number(body,flushed_values.count,2);
+                        wire::number(body,flush_operation,8);wire::number(body,flush_disposition,1);wire::number(body,flushed_values.count,2);
                         for(uint32 n=0;n<flushed_values.count;++n) {
                             const auto id=flushed_values.at(n).id;
                             const hex_instance::ParameterSnapshot::Parameter* value=nullptr;
