@@ -66,11 +66,14 @@ struct PreparedMutableTrackRevision {
 }
 
 impl PreparedMutableTrackRevision {
-    fn topology_matches(&self, other: &Self) -> bool {
+    fn generator_matches(&self, other: &Self) -> bool {
         self.id == other.id
             && self.instrument == other.instrument
             && self.instrument_position == other.instrument_position
-            && self.effects == other.effects
+    }
+
+    fn topology_matches(&self, other: &Self) -> bool {
+        self.generator_matches(other) && self.effects == other.effects
     }
 
     /// Retargeting may change authored instrument state, but it may not alter
@@ -1636,6 +1639,34 @@ impl PreparedRevision {
         self.arrangement.shared_contexts().tuning_identity()
             == other.arrangement.shared_contexts().tuning_identity()
             && old.topology_matches(new)
+    }
+
+    /// The callback proves that an appended stage is native and downstream
+    /// of this generator. Match the retained authored prefix and, for an
+    /// Arrangement route, the exact authored notes.
+    pub(crate) fn mutable_track_matches_at_latency_cut(
+        &self,
+        other: &Self,
+        track: TrackId,
+        arrangement: bool,
+        native_append: bool,
+    ) -> bool {
+        let Some((old, new)) = self
+            .mutable_track_revision(track)
+            .zip(other.mutable_track_revision(track))
+        else {
+            return false;
+        };
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.generator_matches(new)
+            && (old.effects == new.effects
+                || native_append
+                    && new
+                        .effects
+                        .split_last()
+                        .is_some_and(|(_, prefix)| prefix == old.effects))
+            && (!arrangement || old.arrangement_sources_match(new))
     }
 
     pub(crate) fn mutable_track_retarget_topology_matches(

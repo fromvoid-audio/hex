@@ -529,6 +529,15 @@ fn is_native_latency_stage(device: &hex_lattice::PreparedRuntimeInstance) -> boo
             .is_some_and(|frames| frames > 0)
 }
 
+fn appends_native_latency_stage(
+    previous: &[hex_lattice::PreparedRuntimeInstance],
+    candidate: &[hex_lattice::PreparedRuntimeInstance],
+) -> bool {
+    candidate.split_last().is_some_and(|(stage, prefix)| {
+        prefix.len() == previous.len() && is_native_latency_stage(stage)
+    })
+}
+
 fn same_latency_cut_prefix(
     old_graph: &crate::signal_graph::SignalGraph,
     new_graph: &crate::signal_graph::SignalGraph,
@@ -572,7 +581,11 @@ impl SessionPlayback {
     /// Retain direct native audio histories through a confirmed reset when
     /// individual chains keep their processing clock. The new graph's
     /// output alignment can change independently of those histories.
-    fn plan_track_history_at_latency_cut(&self, previous: &Self) -> [Option<usize>; MAX_TRACKS] {
+    fn plan_track_history_at_latency_cut(
+        &self,
+        previous: &Self,
+        retained_instruments: &[bool; MAX_TRACKS],
+    ) -> [Option<usize>; MAX_TRACKS] {
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
         let mut donors = [None; MAX_TRACKS];
@@ -591,20 +604,15 @@ impl SessionPlayback {
                 continue;
             };
             let prefix = &old_track.device_chain;
-            let appended = next_track
-                .device_chain
-                .split_last()
-                .is_some_and(|(stage, rest)| {
-                    rest.len() == prefix.len() && is_native_latency_stage(stage)
-                });
-            if old_track.source_id().is_none()
-                && next_track.source_id().is_none()
-                && (next_track.device_chain.len() == prefix.len() || appended)
+            let generator = retained_instruments[new_index];
+            if (generator || (old_track.source_id().is_none() && next_track.source_id().is_none()))
+                && (next_track.device_chain.len() == prefix.len()
+                    || appends_native_latency_stage(prefix, &next_track.device_chain))
                 && prefix
                     .iter()
                     .all(|stage| stage.foreign_processor().is_none())
-                && old_graph.track_prefix_has_unbuffered_input(old_index, prefix.len())
-                && new_graph.track_prefix_has_unbuffered_input(new_index, prefix.len())
+                && old_graph.track_prefix_has_unbuffered_input(old_index, prefix.len(), generator)
+                && new_graph.track_prefix_has_unbuffered_input(new_index, prefix.len(), generator)
                 && previous
                     .device_chains
                     .get(old_index)
@@ -683,27 +691,28 @@ impl SessionPlayback {
             {
                 continue;
             }
+            if !previous.revision.mutable_track_matches_at_latency_cut(
+                &self.revision,
+                track,
+                route.owner == RouteOwner::Arrangement,
+                appends_native_latency_stage(&old_track.device_chain, &next.device_chain),
+            ) {
+                continue;
+            }
             let same_source = match route.owner {
-                RouteOwner::Arrangement => previous
-                    .revision
-                    .mutable_arrangement_track_matches(&self.revision, track),
-                RouteOwner::Session { clip, .. } => {
-                    previous
-                        .revision
-                        .mutable_track_topology_matches(&self.revision, track)
-                        && mutable_session_clip_matches(
-                            EffectiveSessionMidi::new(
-                                previous.revision.session(),
-                                previous.midi_admission.as_ref(),
-                            ),
-                            EffectiveSessionMidi::new(
-                                self.revision.session(),
-                                self.midi_admission.as_ref(),
-                            ),
-                            track,
-                            clip,
-                        )
-                }
+                RouteOwner::Arrangement => true,
+                RouteOwner::Session { clip, .. } => mutable_session_clip_matches(
+                    EffectiveSessionMidi::new(
+                        previous.revision.session(),
+                        previous.midi_admission.as_ref(),
+                    ),
+                    EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    ),
+                    track,
+                    clip,
+                ),
                 RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
             };
             if same_source && runtime.can_inherit_from(old_runtime) {
@@ -2345,9 +2354,10 @@ impl SessionPlayback {
                 && !self.revision.contains_streamed_sources()
                 && !previous.revision.contains_streamed_sources()
             {
+                let retained = self.stage_instrument_history_at_latency_cut(previous)?;
                 (
-                    self.plan_track_history_at_latency_cut(previous),
-                    self.stage_instrument_history_at_latency_cut(previous)?,
+                    self.plan_track_history_at_latency_cut(previous, &retained),
+                    retained,
                 )
             } else {
                 ([None; MAX_TRACKS], [false; MAX_TRACKS])

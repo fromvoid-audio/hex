@@ -815,14 +815,20 @@ impl SignalGraph {
     /// A serial audio prefix can continue after a delay epoch reset if its
     /// retained stages use the current origin throughout. Delayed, key and
     /// printed paths may need samples or origin stamps from the old epoch.
-    pub(crate) fn track_prefix_has_unbuffered_input(&self, index: usize, length: usize) -> bool {
+    /// A generator contribution requires the caller to retain that generator.
+    pub(crate) fn track_prefix_has_unbuffered_input(
+        &self,
+        index: usize,
+        length: usize,
+        retained_generator: bool,
+    ) -> bool {
         let Some(track) = self.tracks.get(index) else {
             return false;
         };
         let Some(stages) = track.devices.get(..length) else {
             return false;
         };
-        track.generator.is_none()
+        track.generator.is_some() == retained_generator
             && track.printed_merge.is_none()
             && self.stages_use_current_origin(stages)
     }

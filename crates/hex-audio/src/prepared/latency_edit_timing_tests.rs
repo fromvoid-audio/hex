@@ -735,7 +735,7 @@ enum LimiterAppendTarget {
     Track,
 }
 
-fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) {
+fn feedback_delay(time_ms: f32) -> hex_lattice_contract::NativeDeviceState {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -746,11 +746,16 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
             .patch_parameter(&delay, parameter, ParameterValue::Bool(false))
             .unwrap();
     }
-    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+    for (parameter, value) in [(TIME, time_ms), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
         delay = DEFINITION
             .patch_parameter(&delay, parameter, ParameterValue::Float(value))
             .unwrap();
     }
+    delay
+}
+
+fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) {
+    let delay = feedback_delay(10.0);
     let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
     let mut source = vec![[0.0; 2]; 2048];
     source[0] = [0.125, -0.0625];
@@ -875,15 +880,30 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
 
 #[test]
 fn approved_latency_cut_preserves_an_independent_native_instrument_voice() {
-    assert_approved_cut_preserves_held_native_note(false);
+    assert_approved_cut_preserves_held_native_note(false, InstrumentLatencyEdit::OtherTrack);
 }
 
 #[test]
 fn approved_latency_cut_preserves_a_held_native_session_note() {
-    assert_approved_cut_preserves_held_native_note(true);
+    assert_approved_cut_preserves_held_native_note(true, InstrumentLatencyEdit::OtherTrack);
 }
 
-fn assert_approved_cut_preserves_held_native_note(session: bool) {
+#[test]
+fn approved_latency_append_preserves_the_native_arrangement_voice_and_its_running_delay() {
+    assert_approved_cut_preserves_held_native_note(false, InstrumentLatencyEdit::InstrumentTrack);
+}
+
+#[test]
+fn approved_latency_append_preserves_the_native_session_voice_and_its_running_delay() {
+    assert_approved_cut_preserves_held_native_note(true, InstrumentLatencyEdit::InstrumentTrack);
+}
+
+enum InstrumentLatencyEdit {
+    OtherTrack,
+    InstrumentTrack,
+}
+
+fn assert_approved_cut_preserves_held_native_note(session: bool, edit: InstrumentLatencyEdit) {
     use hex_project::BeatTime;
 
     let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
@@ -971,10 +991,23 @@ fn assert_approved_cut_preserves_held_native_note(session: bool) {
             state: limiter.clone(),
         })
         .unwrap();
+    let (target, effect_delay) = match edit {
+        InstrumentLatencyEdit::OtherTrack => (audio_track, 0),
+        InstrumentLatencyEdit::InstrumentTrack => {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: feedback_delay(5.0),
+                })
+                .unwrap();
+            (track, 240)
+        }
+    };
     let before = prepare(editor.project());
     editor
         .execute(Command::InsertDevice {
-            track: audio_track,
+            track: target,
             before: None,
             state: limiter,
         })
@@ -991,10 +1024,14 @@ fn assert_approved_cut_preserves_held_native_note(session: bool) {
         // Compare PCM through the held note and its subsequent release.
         let settled = CUT + 2 * DELAY + QUANTUM;
         // A 1/32-beat gate at 120 bpm and 48 kHz lasts 750 frames.
-        let note_off = 750 + 2 * DELAY;
+        let note_off = 750 + 2 * DELAY + effect_delay;
         // The Session clip repeats after 800 frames. Check the release
         // before that wrap as well as the next iteration at its original phase.
-        let loop_onset = if session { 800 + 2 * DELAY } else { TOTAL };
+        let loop_onset = if session {
+            800 + 2 * DELAY + effect_delay
+        } else {
+            TOTAL
+        };
         for range in [settled..note_off, note_off..loop_onset, loop_onset..TOTAL] {
             if range.is_empty() {
                 continue;
@@ -1011,7 +1048,7 @@ fn assert_approved_cut_preserves_held_native_note(session: bool) {
 
 const QUANTUM: usize = 128;
 const CUT: usize = 3 * QUANTUM;
-const TOTAL: usize = 1152;
+const TOTAL: usize = 1408;
 
 fn assert_approved_latency_cut(
     before: Arc<hex_engine::PreparedRevision>,
