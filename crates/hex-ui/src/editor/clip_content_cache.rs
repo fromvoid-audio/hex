@@ -216,7 +216,10 @@ impl EditorView {
             drag_available: self.drag_available(),
         };
         let parent = cx.weak_entity();
-        let fresh = !self.clip_content_cache_allowed();
+        let fresh = !self.clip_content_cache_allowed()
+            || self
+                .held_arrangement_event_clip()
+                .is_some_and(|clip| track.clips().iter().any(|candidate| candidate.id() == clip));
         let entity = if let Some(entity) = self.clip_content_cache.entries.get(&track.id()).cloned()
         {
             entity.update(cx, |content, _| {

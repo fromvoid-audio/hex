@@ -2760,7 +2760,7 @@ impl EditorView {
                     )
                 })
         };
-        let source = waveform.filter(|_| trim.is_none()).and_then(|waveform| {
+        let source = waveform.and_then(|waveform| {
             let projection = super::waveform_frame::Projection::new(
                 &state.project,
                 clip,

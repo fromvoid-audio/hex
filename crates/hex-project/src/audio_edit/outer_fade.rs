@@ -123,6 +123,9 @@ impl Clip {
             domain.fade_clock = AudioClipFadeClock::Outer;
             domain.fade_start = 0;
             domain.fade_projection = author;
+            // Clips that first retained their root through an event edit may
+            // still carry the legacy plain envelope in their top-level cache.
+            clip.fade = ClipFade::neutral(clip.duration)?;
         } else {
             clip.fade = fade;
         }

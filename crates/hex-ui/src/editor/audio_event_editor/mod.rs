@@ -31,6 +31,13 @@ pub(super) use placement::MusicalEventWaveform;
 pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
+fn is_arrangement_amplitude(operation: &AudioEventEdit) -> bool {
+    matches!(
+        operation,
+        AudioEventEdit::SetFade { .. } | AudioEventEdit::SetGain { .. }
+    )
+}
+
 /// Placed cycles expose the complete retained root while loop markers move.
 /// Frame containers also expose material after the Arrangement window ends;
 /// their camera origin stays at the Arrangement window start. These
@@ -264,38 +271,38 @@ impl EditorView {
                 && self.audio_event_editor.revision == revision
         })
     }
-    /// The Arrangement thumbnail consumes only amplitude edits to the same
-    /// root. An admitted preview belongs to its receipt across inspector changes.
-    pub(super) fn arrangement_event_amplitude(
-        &self,
-        clip: &hex_project::Clip,
-    ) -> Option<hex_project::AudioEvents> {
-        let owner = Some((clip.id(), self.project_generation));
+    pub(super) fn held_arrangement_event_clip(&self) -> Option<ClipId> {
+        self.held_arrangement_event_amplitude()
+            .map(|(clip, _)| clip)
+    }
+
+    fn held_arrangement_event_amplitude(&self) -> Option<(ClipId, &AudioEventEdit)> {
         let editor = &self.audio_event_editor;
-        let amplitude = |operation: &AudioEventEdit| {
-            matches!(
-                operation,
-                AudioEventEdit::SetFade { .. } | AudioEventEdit::SetGain { .. }
-            )
-        };
-        if let Some(pending) = &editor.pending
-            && Some(pending.owner) == owner
-            && amplitude(&pending.operation)
-        {
-            return Some(pending.preview.clone());
-        }
-        if editor.owner != owner
+        let operation = editor.gesture.as_ref()?.operation.as_ref()?;
+        if !is_arrangement_amplitude(operation)
             || !editor.retained_ancestors.is_empty()
             || !self.event_context_current()
         {
             return None;
         }
-        let operation = editor
-            .gesture
-            .as_ref()?
-            .operation
-            .as_ref()
-            .filter(|op| amplitude(op))?;
+        Some((editor.owner?.0, operation))
+    }
+
+    /// An admitted amplitude preview belongs to its receipt across inspector changes.
+    pub(super) fn arrangement_event_amplitude(
+        &self,
+        clip: &hex_project::Clip,
+    ) -> Option<hex_project::AudioEvents> {
+        if let Some(pending) = &self.audio_event_editor.pending
+            && pending.owner == (clip.id(), self.project_generation)
+            && is_arrangement_amplitude(&pending.operation)
+        {
+            return Some(pending.preview.clone());
+        }
+        let (held_clip, operation) = self.held_arrangement_event_amplitude()?;
+        if held_clip != clip.id() {
+            return None;
+        }
         let clock = clip
             .audio_edit()
             .map_or(clip.duration(), |edit| edit.domain.clock.length());

@@ -1335,14 +1335,13 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     use crate::editor::waveform_geometry::painted_clip_waveform_outline;
 
     let (files, mut visual, editor, clip) = open(cx);
-    let thumbnail = |visual: &mut VisualTestContext| {
-        editor.update(&mut *visual, |v, cx| {
-            v.waveform_geometry_cache.borrow_mut().clear_paint_samples();
-            cx.notify();
-        });
-        visual.run_until_parked();
-        painted_clip_waveform_outline(&editor, visual, clip)
-    };
+    editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(Viewport::fit(96_000));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let thumbnail =
+        |visual: &mut VisualTestContext| painted_clip_waveform_outline(&editor, visual, clip);
     let original_thumbnail = thumbnail(&mut visual);
     focus_events(&mut visual);
     fade_key(&mut visual, true);
@@ -1404,6 +1403,10 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     for _ in 0..3 {
+        editor.update(&mut visual, |v, _| {
+            v.waveform_geometry_cache.borrow_mut().clear_paint_samples();
+        });
+        repaint(&mut visual, &editor);
         assert_eq!(thumbnail(&mut visual), held_thumbnail);
         paint_probe::assert_style(
             &mut visual,
