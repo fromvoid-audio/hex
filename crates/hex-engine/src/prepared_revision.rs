@@ -20,7 +20,7 @@ use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, num::NonZeroU64, sync::Arc};
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedDeviceIdentity {
@@ -145,6 +145,7 @@ pub struct PreparedRevision {
     pub(crate) resource_scope: Option<u64>,
     pub(crate) device_resource_scope: Option<u64>,
     tuning_family: TuningContinuationFamily,
+    pub(crate) authored_clock_epoch: NonZeroU64,
     arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
     midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
@@ -853,6 +854,7 @@ impl PreparedRevision {
                 resource_scope: samplers.and_then(|sources| sources.private_scope()),
                 device_resource_scope: samplers.and_then(|sources| sources.device_scope()),
                 tuning_family: TuningContinuationFamily::fresh()?,
+                authored_clock_epoch: NonZeroU64::MIN,
                 arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
                 session: crate::owned_shared::OwnedShared::new_owned(session),
                 midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
@@ -1263,6 +1265,7 @@ impl PreparedRevision {
             resource_scope: None,
             device_resource_scope: None,
             tuning_family: TuningContinuationFamily::fresh()?,
+            authored_clock_epoch: NonZeroU64::MIN,
             arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
             session: crate::owned_shared::OwnedShared::new_owned(session),
             midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
@@ -1351,6 +1354,25 @@ impl PreparedRevision {
         self.scalar_automation.is_some()
             || self.arrangement.contains_streamed_sources()
             || self.session.contains_streamed_sources()
+    }
+
+    /// Whether these immutable ordinary revisions are suitable for attempting
+    /// a compensated Arrangement tempo cut. The callback still proves route,
+    /// transport and delay-history continuity against the actual donor.
+    pub fn can_schedule_ordinary_tempo_edit_from(&self, previous: &Self) -> bool {
+        !self
+            .session()
+            .timing()
+            .same_map(previous.session().timing())
+            && [self, previous].into_iter().all(|revision| {
+                let arrangement = revision.arrangement();
+                arrangement.main_latency_frames() > 0
+                    && revision.scalar_automation.is_none()
+                    && arrangement.source_effects.is_empty()
+                    && arrangement.tracks().iter().all(|track| {
+                        track.instrument.is_none() || track.foreign_instrument.is_some()
+                    })
+            })
     }
 
     /// Whether the compiled Arrangement owns any enabled mutable instrument.

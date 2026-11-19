@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import tempfile
 from urllib.parse import unquote
 
 _PYTHON_SPEC = importlib.util.spec_from_file_location(
@@ -83,10 +84,71 @@ def runtime_inputs(root: Path, env=None) -> dict:
             "metadata_exclusions": [p for p in paths if metadata_path(p)]}
 
 
-def changed_paths(root: Path, base: str, source: str, *, env=None) -> list[str]:
-    """Both sides of renames, deletions, and untracked inputs participate."""
+def committed_runtime_inputs(root: Path, source: str, *, env=None) -> dict:
+    """Hash actual committed bytes/modes without checkout, filters or exports.
+
+    Reuse reconstruction may read current selection sources only after this
+    identity equals the current executable-input identity. Gitlinks and other
+    unknown tree entries cannot establish that proof and require fresh checks.
+    """
+    return _committed_runtime_inputs(root, source, env=env)
+
+
+def _committed_runtime_inputs(root: Path, source: str, *, env=None, selection_view: Path | None = None) -> dict:
+    """Optionally populate an empty private view with non-executable regular files."""
+    if selection_view is not None and (selection_view.is_symlink() or not selection_view.is_dir()
+                                       or any(selection_view.iterdir())):
+        raise ValueError("historical selection view must be an empty private directory")
+    entries = []
+    for raw in git(root, "ls-tree", "-rz", "--full-tree", source, env=env).split(b"\0"):
+        if not raw:
+            continue
+        header, name = raw.split(b"\t", 1)
+        mode, kind, oid = header.split()
+        if kind != b"blob" or mode not in {b"100644", b"100755", b"120000"}:
+            raise ValueError("historical runtime inputs contain an unsupported Git tree entry")
+        entries.append((name.decode(), mode, oid))
+    entries.sort()
+    executable = [(name, mode, oid) for name, mode, oid in entries if not metadata_path(name)]
+    if selection_view is not None and any(mode == b"120000" for _, mode, _ in executable):
+        raise ValueError("historical selection cannot follow executable-source symlinks")
+    blobs = subprocess.run(["git", "cat-file", "--batch"], cwd=root, env=env,
+                           input=b"".join(oid + b"\n" for _, _, oid in executable),
+                           capture_output=True, check=True).stdout
+    digest = hashlib.sha256()
+    offset = 0
+    for name, mode, oid in executable:
+        end = blobs.find(b"\n", offset)
+        fields = blobs[offset:end].split() if end >= 0 else []
+        if len(fields) != 3 or fields[:2] != [oid, b"blob"]:
+            raise ValueError("historical runtime blob is unavailable")
+        size = int(fields[2])
+        start = end + 1
+        if size < 0 or blobs[start + size:start + size + 1] != b"\n":
+            raise ValueError("historical runtime blob is incomplete")
+        for value in (name.encode(), str(int(mode, 8)).encode(), blobs[start:start + size]):
+            digest.update(len(value).to_bytes(8, "big"))
+            digest.update(value)
+        if selection_view is not None:
+            relative = Path(name)
+            if relative.is_absolute() or relative.drive or ".." in relative.parts:
+                raise ValueError("historical source path escapes its private view")
+            destination = selection_view / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(blobs[start:start + size])
+        offset = start + size + 1
+    if offset != len(blobs):
+        raise ValueError("historical runtime blob response has unexpected data")
+    return {"version": POLICY_VERSION, "sha256": digest.hexdigest(),
+            "symlinks": [name for name, mode, _ in entries if mode == b"120000"],
+            "metadata_exclusions": [name for name, _, _ in entries if metadata_path(name)]}
+
+
+def changed_paths(root: Path, base: str, source: str, *, env=None, include_worktree: bool = True) -> list[str]:
+    """Both rename sides participate; historical reconstruction excludes current edits."""
     paths = set()
-    for arguments in ((base, source), (source,)):
+    comparisons = ((base, source), (source,)) if include_worktree else ((base, source),)
+    for arguments in comparisons:
         fields = git(root, "diff", "--name-status", "-z", "--find-renames", *arguments, env=env).decode().split("\0")
         index = 0
         while index < len(fields) and fields[index]:
@@ -94,7 +156,8 @@ def changed_paths(root: Path, base: str, source: str, *, env=None) -> list[str]:
             count = 2 if status[0] in "RC" else 1
             paths.update(fields[index + 1:index + 1 + count])
             index += count + 1
-    paths.update(git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env).decode().split("\0"))
+    if include_worktree:
+        paths.update(git(root, "ls-files", "--others", "--exclude-standard", "-z", env=env).decode().split("\0"))
     return sorted(paths - {""})
 
 
@@ -324,6 +387,7 @@ UI_FEATURE_EQUIVALENT_TEST_CFGS = {
 UI_UNIT_TIER_TEST_CFGS = frozenset({
     '#[cfg(all(test, feature = "ui-unit-tier"))]',
     '#[cfg(all(test, any(feature = "ui-test-support", feature = "ui-unit-tier")))]',
+    '#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]',
 })
 
 
@@ -516,8 +580,12 @@ UI_DEFAULT_STANDALONE_TESTS = (
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
                          "editor::track_reorder::subtree::": "track_group_focus",
-                         "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
-UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
+                         "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary",
+                         "editor::sample_recorder::": "sample_recorder_layout"}
+UI_EXTRA_TEST_FEATURES = {
+    "midi_pressure_boundary": "ui-test-support",
+    "sample_recorder_layout": "ui-test-support",
+}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
     "editor_backend::": (
@@ -900,7 +968,7 @@ MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
 PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
 
-def module_paths(source_root: Path) -> dict[Path, str] | None:
+def module_paths(source_root: Path, *, workspace_root: Path | None = None) -> dict[Path, str] | None:
     """Rust module path of every file reachable from the crate root.
 
     Walks top-level `mod NAME;` declarations from lib.rs (or main.rs), resolving
@@ -932,7 +1000,10 @@ def module_paths(source_root: Path) -> dict[Path, str] | None:
                              if PATH_ATTRIBUTE.fullmatch(a)), None)
             base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
             targets = [parent.parent / explicit] if explicit else [base / f"{name}.rs", base / name / "mod.rs"]
-            target = next((t.resolve() for t in targets if t.is_file()), None)
+            targets = [t.resolve() for t in targets]
+            if workspace_root is not None and any(not t.is_relative_to(workspace_root.resolve()) for t in targets):
+                raise ValueError("source module path escapes the verified workspace")
+            target = next((t for t in targets if t.is_file()), None)
             if target is None or target in paths:
                 continue
             prefix = paths[parent]
@@ -1023,6 +1094,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             if file == directory / "tests" / "midi_pressure_boundary.rs" and file.is_file():
                 filters.setdefault(owner, set()).add("editor::midi_recording::")
                 continue
+            if file == directory / "tests" / "sample_recorder_layout.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::sample_recorder::")
+                continue
             relative_path = file.relative_to(directory).as_posix()
             harness_target = UI_UNIT_HARNESS_FILES.get(relative_path)
             unit_modules = {module for module, target in UI_UNIT_TARGETS.items()
@@ -1036,7 +1110,7 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
             whole.add(owner)
             continue
         if owner not in resolved:
-            resolved[owner] = module_paths(directory / "src")
+            resolved[owner] = module_paths(directory / "src", workspace_root=root)
         modules = resolved[owner]
         module = None if modules is None else modules.get(file)
         if not module:
@@ -1551,10 +1625,16 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                          "merge the current base into the candidate first, then rerun "
                          "(--carry-report <last passed summary.json> reuses unaffected steps)")
     paths = changed_paths(root, base_sha, source_sha, env=env)
+    return _resolve_selection(root, profile, base_sha, source_sha, paths,
+                              cargo_inventory(metadata, root), runtime_inputs(root, env=env), env=env)
+
+
+def _resolve_selection(root: Path, profile: str, base_sha: str, source_sha: str, paths: list[str],
+                       inventory: list[dict], inputs: dict, *, env=None, selection_root: Path | None = None) -> dict:
+    """Select from admitted inputs; Git stays at root, source parsing may use a private view."""
     if not paths:
         raise ValueError("empty scope is not qualifying test evidence; use --profile full for an audit")
-    inventory = cargo_inventory(metadata, root)
-    inputs = runtime_inputs(root, env=env)
+    selection_root = root if selection_root is None else selection_root
     if profile in {"merge", "full", "release"}:
         require_qualifying_inputs(inputs)
     if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1", env=env).decode().strip() != base_sha:
@@ -1563,7 +1643,7 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     # their crate roots changed: their whole suites test, consumers lint.
     selection_paths = paths
     profile_packages = profile_only_packages(root, base_sha, source_sha, inventory, env=env) if "Cargo.toml" in paths else None
-    profile_roots = [crate_root_path(p, inventory, root) for p in profile_packages or []]
+    profile_roots = [crate_root_path(p, inventory, selection_root) for p in profile_packages or []]
     if profile_packages and all(profile_roots):
         selection_paths = [p for p in paths if p != "Cargo.toml"] + profile_roots
     scope, affected, reasons = classify(selection_paths, inventory)
@@ -1572,7 +1652,7 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                        + " (codegen keys only; semantics unchanged)")
     executable = [p for p in selection_paths if not metadata_path(p)]
     if profile == "merge" and scope in {"rust", "ui"} and executable:
-        owners = [test_only_owner(root, p, inventory) for p in executable]
+        owners = [test_only_owner(selection_root, p, inventory) for p in executable]
         if all(owners):
             excluded = sorted(set(affected) - set(owners))
             scope, affected = "rust", sorted(set(owners))
@@ -1589,10 +1669,10 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "runtime_inputs": inputs,
               "python_tests": python_tests.select(
                   profile, [path for path in selection_paths if not metadata_path(path)],
-                  inventory, UI_PACKAGES, python_tests.available_modules(root), env=env),
+                  inventory, UI_PACKAGES, python_tests.available_modules(selection_root), env=env),
               "qualifies_merge": profile in {"merge", "full", "release"}}
     if scope in {"rust", "ui"}:
-        result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
+        result["boundary"] = boundary_selection(selection_root, selection_paths, inventory, affected)
     if profile == "health":
         result["health"] = health_selection(selection_paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
@@ -1615,20 +1695,53 @@ def reuse_checks_from_snapshot(root: Path, plan: dict, report: Path, raw: bytes,
     if evidence.get("native_acceptance_opt_in") is not False:
         raise ValueError("native/external acceptance opt-in is present or unknown; runtime reuse refused")
     old_plan = evidence.get("plan")
+    if old_plan is not None and not isinstance(old_plan, dict):
+        raise ValueError("historical report plan must be an object")
+    steps = evidence.get("steps")
+    reported_inputs = evidence.get("runtime_inputs")
     if (evidence.get("schema_version") != 2 or evidence.get("mode") not in {"full", "merge", "release"}
             or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
             or evidence.get("stale") is not False or evidence.get("dirty") is not False
+            or not isinstance(evidence.get("start_tree"), dict)
             or evidence.get("start_tree") != evidence.get("end_tree")
-            or not evidence.get("steps") or any(s.get("status") != "passed" for s in evidence["steps"])
-            or old_plan and not old_plan.get("qualifies_merge")
-            or evidence.get("runtime_inputs", {}).get("sha256") != plan["runtime_inputs"]["sha256"]):
+            or not isinstance(steps, list) or not steps
+            or any(not isinstance(s, dict) or s.get("status") != "passed" for s in steps)
+            or old_plan is not None and old_plan.get("qualifies_merge") is not True
+            or not isinstance(reported_inputs, dict)
+            or reported_inputs.get("sha256") != plan["runtime_inputs"]["sha256"]):
         raise ValueError("runtime report is incomplete/failed/stale/partial or executable inputs changed")
     previous = evidence["commit"]
+    if (not isinstance(previous, str) or re.fullmatch(r"[0-9a-f]{40}", previous) is None
+            or git(root, "rev-parse", "--verify", previous + "^{commit}", env=env).decode().strip() != previous):
+        raise ValueError("historical report requires a canonical source commit")
     subprocess.run(["git", "merge-base", "--is-ancestor", previous, plan["source"]], cwd=root, env=env, check=True)
     delta = changed_paths(root, previous, plan["source"], env=env)
     if not delta or any(not metadata_path(p) for p in delta):
         raise ValueError("reused runtime evidence requires a nonempty prose-only continuation")
-    dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+    # The current canonical plan's inventory remains applicable because every
+    # manifest, policy and executable input must be identical to the old commit.
+    # Reconstruct from Git, never from the old plan's declared selection/hash.
+    historical_inputs = committed_runtime_inputs(root, previous, env=env)
+    if (historical_inputs["sha256"] != runtime_inputs(root, env=env)["sha256"]
+            or evidence.get("runtime_inputs") != historical_inputs):
+        raise ValueError("historical runtime inputs differ from committed/current executable source")
+    if old_plan is not None:
+        if (old_plan.get("profile") != evidence["mode"]
+                or old_plan.get("source") != previous):
+            raise ValueError("historical plan mode/source differs from its report")
+        base = old_plan.get("base")
+        if (not isinstance(base, str) or re.fullmatch(r"[0-9a-f]{40}", base) is None
+                or git(root, "rev-parse", "--verify", base + "^{commit}", env=env).decode().strip() != base
+                or subprocess.run(["git", "merge-base", "--is-ancestor", base, previous],
+                                  cwd=root, env=env, capture_output=True).returncode != 0):
+            raise ValueError("historical plan requires a canonical ancestor base")
+        expected = _resolve_selection(root, evidence["mode"], base, previous,
+            changed_paths(root, base, previous, env=env, include_worktree=False),
+            plan["cargo_inventory"], historical_inputs, env=env)
+        if old_plan != expected:
+            raise ValueError("historical plan differs from source-bound selection")
+    cache = evidence.get("target_cache")
+    dependency = cache.get("dependency_inputs") if isinstance(cache, dict) else None
     if not isinstance(dependency, dict):
         raise ValueError("runtime report lacks guarded toolchain/dependency identity")
     result = dict(plan)
@@ -1684,41 +1797,54 @@ def carry_basis(root: Path, plan: dict, evidence: dict, env=None) -> dict:
     source (no manifest, lockfile, toolchain, build script, tooling or unknown
     input). Returns the directly changed owner packages and the Python selection
     that those paths require; callers decide per step and rerun on any doubt.
+
+    The caller first admits its current canonical plan and complete report steps.
+    This owner reconstructs the old selection from raw committed source in a
+    disposable, non-executable view. Ordinary source-only delta rules keep the
+    loaded policy and Cargo inventory applicable; no historical code is run.
     """
     if plan["profile"] != "merge":
         raise ValueError("base-advance carry requires an explicit merge profile")
     if python_tests.native_acceptance_inputs(os.environ if env is None else env):
         raise ValueError("native/external acceptance inputs require fresh checks")
-    old = evidence.get("plan") or {}
+    if not isinstance(evidence, dict) or not isinstance(evidence.get("plan"), dict):
+        raise ValueError("carried report requires an object and historical plan")
+    old = evidence["plan"]
     steps = evidence.get("steps") or []
     tree = evidence.get("start_tree")
     if (evidence.get("schema_version") != 2 or evidence.get("mode") != "merge"
             or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
             or evidence.get("stale") is not False or evidence.get("dirty") is not False
             or evidence.get("native_acceptance_opt_in") is not False
-            or not tree or tree != evidence.get("end_tree")
+            or not isinstance(tree, dict) or not tree or tree != evidence.get("end_tree")
             or evidence.get("resume") or old.get("reuse")
-            or not old.get("qualifies_merge") or old.get("profile") != "merge"
-            or not steps or any(s.get("status") not in {"passed", "carried"} for s in steps)):
+            or old.get("qualifies_merge") is not True or old.get("profile") != "merge"
+            or not isinstance(steps, list) or not steps
+            or any(not isinstance(s, dict) or s.get("status") not in {"passed", "carried"} for s in steps)):
         raise ValueError("carried report is not a complete passed merge-profile run")
     if old.get("cargo_inventory") != plan["cargo_inventory"]:
         raise ValueError("Cargo workspace inventory changed since the carried report")
     previous, previous_base = old["source"], old["base"]
+    for sha in (previous, previous_base):
+        if (not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+                or git(root, "rev-parse", "--verify", sha + "^{commit}", env=env).decode().strip() != sha):
+            raise ValueError("historical carry requires canonical source/base commits")
     if evidence.get("commit") != previous or tree.get("commit") != previous:
         raise ValueError("carried report does not identify its own candidate")
     for ancestor, descendant, what in ((previous_base, plan["base"], "base"),
-                                       (previous, plan["source"], "candidate")):
+                                       (previous, plan["source"], "candidate"),
+                                       (previous_base, previous, "historical base")):
         if subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant],
-                          cwd=root, capture_output=True).returncode != 0:
+                          cwd=root, env=env, capture_output=True).returncode != 0:
             raise ValueError(f"carried report's {what} is not an ancestor of the current {what}")
-    delta = changed_paths(root, previous, plan["source"])
+    delta = changed_paths(root, previous, plan["source"], env=env)
     executable = [p for p in delta if not metadata_path(p)]
-    upstream = set(changed_paths(root, previous_base, plan["base"]))
-    own = set(old.get("paths", []))
+    upstream = set(changed_paths(root, previous_base, plan["base"], env=env))
+    own = set(changed_paths(root, previous_base, previous, env=env, include_worktree=False))
 
     def blob(revision: str, path: str) -> str | None:
         result = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{revision}:{path}"],
-                                cwd=root, capture_output=True, text=True)
+                                cwd=root, env=env, capture_output=True, text=True)
         return result.stdout.strip() if result.returncode == 0 else None
 
     inventory = plan["cargo_inventory"]
@@ -1734,6 +1860,15 @@ def carry_basis(root: Path, plan: dict, evidence: dict, env=None) -> dict:
         if owner is None:
             raise ValueError("changed input has no workspace owner: " + path)
         owners.add(owner)
+    with tempfile.TemporaryDirectory(prefix="hex-ci-selection-") as directory:
+        view = Path(directory)
+        historical = _committed_runtime_inputs(root, previous, env=env, selection_view=view)
+        if evidence.get("runtime_inputs") != historical:
+            raise ValueError("historical carry inputs differ from committed source")
+        expected = _resolve_selection(root, "merge", previous_base, previous, sorted(own),
+                                       inventory, historical, env=env, selection_root=view)
+        if old != expected:
+            raise ValueError("historical carry plan differs from source-bound selection")
     return {"report_commit": previous, "report_base": previous_base,
             "delta_paths": delta, "delta_owners": sorted(owners),
             "python_tests": python_tests.select(

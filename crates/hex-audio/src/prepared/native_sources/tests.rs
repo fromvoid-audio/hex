@@ -290,11 +290,12 @@ fn source_for_profile_with_authored_mode(
         .complete_on_control(
             control,
             binding,
-            Some(crate::plugin_effects::EffectPresentation {
+            crate::plugin_effects::EffectPresentation {
                 // Explicit headless fixture inputs, not production/device measurements.
                 input_frames: 77,
                 output_frames: 91,
-            }),
+            }
+            .plan(),
         )
         .unwrap();
     let authored = crate::plugin_effects::AuthoredSelection::from_targets(
@@ -530,7 +531,7 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    quantized_seek_frame: None,
+                    scheduled_cut_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     native_continuation: None,

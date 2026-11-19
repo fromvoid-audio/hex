@@ -273,6 +273,23 @@ impl Endpoint {
         self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_next_failure(&self) -> Option<StreamFailure> {
+        self.failure_rx.peek().ok().copied()
+    }
+
+    /// Reserve one extra pool buffer for a dedicated granular loan. Cache
+    /// geometry/backing stays fixed; one ordinary turnover buffer remains free
+    /// even with a held granular job and a full unpinned cache.
+    pub(crate) fn reserve_granular_loan_on_control(&mut self) -> Result<(), ()> {
+        let limit = self
+            .max_cached_pages
+            .checked_sub(1)
+            .filter(|n| *n > 0)
+            .ok_or(())?;
+        self.max_cached_pages = limit;
+        Ok(())
+    }
     pub fn pump_ready(&mut self, limit: usize) -> usize {
         self.pump_ready_for_pending(limit, &[])
     }

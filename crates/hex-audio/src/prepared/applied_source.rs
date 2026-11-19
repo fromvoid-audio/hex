@@ -90,6 +90,39 @@ impl Status {
         let source = self.recording_source.read()?;
         (self.applied_revision.load(Acquire) == source.audio_revision).then_some(source)
     }
+    /// Control-side request witness for a stopped ordinary input monitor.
+    /// The callback still revalidates the exact source, epoch, and runtime.
+    pub fn paused_input_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        let interval = self.paused_input_interval()?;
+        (!self.publication_in_flight()).then_some(interval)
+    }
+    /// The installed stopped interval even while its successor is preparing.
+    /// It can keep existing input custody alive but cannot admit a new monitor.
+    pub fn paused_input_interval(&self) -> Option<(AppliedAudioSource, u64)> {
+        let epoch = self.transport_epoch.load(Acquire);
+        let command = self.admitted_ticket.load(Acquire);
+        let source = self.recording_source()?;
+        (!self.playing.load(Acquire)
+            && !self.closing.load(Acquire)
+            && !self.device_fault.load(Acquire)
+            && !self.render_fault.load(Acquire)
+            && self.pending_stop_marker.load(Acquire) == 0
+            && self.consumed_command.load(Acquire) == command
+            && self.transport_epoch.load(Acquire) == epoch
+            && self.admitted_ticket.load(Acquire) == command
+            && self.recording_source() == Some(source))
+        .then_some((source, epoch))
+    }
+    /// A settled paused cursor with retained history eligible for note-monitor
+    /// preparation. The publication worker still validates the exact revision,
+    /// installed endpoints and runtime scope before rendering.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn paused_note_source(&self) -> Option<(AppliedAudioSource, u64)> {
+        let scope = self.paused_input_source()?;
+        ((self.position.load(Relaxed) != 0 || self.performance_frame.load(Relaxed) != 0)
+            && self.paused_input_source() == Some(scope))
+        .then_some(scope)
+    }
     /// Actual active constructor source, independent of delivery of Submitted
     /// events. None includes bounded-reader contention or a legacy install.
     /// This correlation observation grants neither custody nor readiness.

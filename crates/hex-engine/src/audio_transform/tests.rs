@@ -19,6 +19,8 @@ mod content_resampler;
 mod content_reverse;
 #[path = "tests/musical_sharing.rs"]
 mod musical_sharing;
+#[path = "tests/streamed_granular.rs"]
+mod streamed_granular;
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 
@@ -97,6 +99,124 @@ pub(super) fn render(
         renderer.render(chunk).unwrap();
     }
     result
+}
+
+#[test]
+fn pitched_stream_fade_matches_resident_render_at_start_and_seek() {
+    struct Pages {
+        key: crate::StreamSourceKey,
+        frames: Vec<crate::Frame>,
+    }
+    impl crate::MediaPages for Pages {
+        fn page(
+            &mut self,
+            key: crate::StreamSourceKey,
+            index: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            let start = usize::try_from(index)
+                .ok()?
+                .checked_mul(crate::STREAM_PAGE_FRAMES)?;
+            if key != self.key || start >= self.frames.len() {
+                return None;
+            }
+            Some(crate::BorrowedMediaPage {
+                page_index: index,
+                frames: &self.frames
+                    [start..(start + crate::STREAM_PAGE_FRAMES).min(self.frames.len())],
+            })
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {}
+        fn prefetch_page(&mut self, _: crate::StreamSourceKey, _: u64) {}
+    }
+    let (mut editor, id, media) = fixture(false);
+    editor
+        .execute(Command::SetAudioClipPitch {
+            clip: id,
+            cents: 700,
+        })
+        .unwrap();
+    let expected = render(
+        &prepare(&editor, &media, &AudioTransformPreparation::default()),
+        0,
+        8000,
+        37,
+    );
+    let (mut neutral, neutral_id, neutral_media) = fixture(false);
+    neutral
+        .execute(Command::SetClipFades {
+            clip: neutral_id,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    neutral
+        .execute(Command::SetAudioClipPitch {
+            clip: neutral_id,
+            cents: 700,
+        })
+        .unwrap();
+    let frames = render(
+        &prepare(
+            &neutral,
+            &neutral_media,
+            &AudioTransformPreparation::default(),
+        ),
+        0,
+        8000,
+        53,
+    );
+    let project = editor.project();
+    let clip = project.clip(id).unwrap();
+    let asset = project.asset(clip.asset()).unwrap();
+    let raw = Arc::new(
+        crate::StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(1, asset.id()),
+            16_000,
+            16_000,
+            8_000,
+            8_000,
+            hex_project::IDENTITY_CONVERSION,
+            [3; 32],
+        )
+        .unwrap(),
+    );
+    let pitched = Arc::new(
+        raw.with_plain_pitch(700, hex_project::WarpResampler::V2)
+            .unwrap(),
+    );
+    let derived = BTreeMap::from([(pitched.key(), Arc::clone(&pitched))]);
+    let compiled = AudioTransformPreparation::default()
+        .compile_clip(
+            project,
+            clip,
+            asset,
+            PreparedAudioSourceRef::StreamedWithPitch(&raw, &derived),
+        )
+        .unwrap()
+        .unwrap();
+    let track = crate::Track::new(vec![compiled], 1.0, false).unwrap();
+    let mut pages = Pages {
+        key: pitched.key(),
+        frames,
+    };
+    for start in [0, 400, 7000] {
+        let mut actual = [[0.0; 2]; 128];
+        track
+            .render_additive_with_pages(start, &mut actual, &mut pages, None)
+            .unwrap();
+        for (a, b) in actual
+            .iter()
+            .zip(&expected[start as usize..start as usize + 128])
+        {
+            for channel in 0..2 {
+                assert!(
+                    (a[channel] - b[channel]).abs() < 1.0e-6,
+                    "{start}: {a:?} != {b:?}"
+                );
+            }
+        }
+    }
+    assert!(expected[400..528].iter().any(|frame| frame[0].abs() > 0.01));
 }
 fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
     AudioTransformPreparation {

@@ -104,6 +104,13 @@ struct ReaderMetadata {
 }
 
 impl ResamplePlan {
+    /// Read-only DATA layout of this plan's captured conversion kernel. Shared
+    /// plans may report the same allocation; this does not transfer a handle
+    /// or account for Arc/allocator metadata or external aliases.
+    pub fn control_kernel_data_layout(&self) -> crate::ResampleKernelDataLayout {
+        self.kernel.control_data_layout()
+    }
+
     /// Control-only identity check for the actual captured kernel owner. No
     /// owner/Arc is returned and no source value or content infers identity.
     pub fn uses_kernel_allocation(&self, other: &ResampleKernel) -> bool {
@@ -174,6 +181,11 @@ impl ResamplePlan {
 
     pub fn target_rate(&self) -> u32 {
         self.kernel.target_rate()
+    }
+
+    /// The immutable kernel version; identity conversion does not use weights.
+    pub fn version(&self) -> ResampleVersion {
+        self.kernel.version()
     }
 
     pub const fn source_frames(&self) -> u64 {
@@ -713,6 +725,11 @@ mod tests {
         assert_eq!(kernel.table_payload_bytes(), kernel_bytes);
         assert!(plans.iter().all(|plan| plan.source_rate() == 44_100));
         assert!(plans.iter().all(|plan| plan.target_rate() == 48_000));
+        assert!(
+            plans
+                .iter()
+                .all(|plan| { plan.control_kernel_data_layout() == kernel.control_data_layout() })
+        );
     }
 
     #[test]

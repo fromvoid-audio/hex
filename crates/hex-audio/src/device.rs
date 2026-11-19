@@ -24,6 +24,11 @@ use std::{
     time::Instant,
 };
 
+#[cfg(target_os = "macos")]
+mod output_presentation;
+#[cfg(target_os = "macos")]
+pub use output_presentation::PluginOutputObservation;
+
 pub struct PreparedOutput {
     _stream: lifecycle::StreamOwner,
     pub control: prepared::Control,

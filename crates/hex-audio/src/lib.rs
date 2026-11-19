@@ -30,6 +30,8 @@ pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
 pub mod sample_recording;
+#[cfg(target_os = "macos")]
+pub use device::PluginOutputObservation;
 pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,

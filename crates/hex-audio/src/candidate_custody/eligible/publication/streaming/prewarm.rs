@@ -112,6 +112,8 @@ impl ActiveView<'_> {
             frames,
             fenced_restart: false,
             foreign_continuation: false,
+            confirmed_fade: None,
+            tempo_cut: None,
         };
         if self
             .state

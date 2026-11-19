@@ -253,6 +253,36 @@ pub(super) fn trim_retained_view(
     Ok(result)
 }
 
+pub(crate) const DEFAULT_WARP_MODE: WarpMode = WarpMode::Beats {
+    preserve: BeatsPreserve::Transients,
+    tail: BeatsTail::Forward,
+    decay: 100,
+};
+
+/// Initial Warp settings for the clip panel and edge stretch. Eligible long
+/// clips start in a pitch-preserving mode that can read verified file pages.
+pub(crate) fn initial_audio_warp(
+    clip: &Clip,
+    tempo: &TempoMap,
+    asset_frames: u64,
+) -> Result<WarpSettings, Invalid> {
+    let long_neutral_source = clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
+        && clip.source_offset() == 0
+        && clip.source_length() == clip.duration()
+        && clip.source_length() == asset_frames
+        && !clip.looping()
+        && clip.retained_fade().is_neutral()
+        && clip
+            .audio_edit()
+            .is_none_or(|edit| edit.is_plain_pitch_capture(clip));
+    let mode = if long_neutral_source {
+        WarpMode::Tones { grain_ms: 40 }
+    } else {
+        DEFAULT_WARP_MODE
+    };
+    default_audio_warp(clip, tempo, mode)
+}
+
 pub fn default_audio_warp(
     clip: &Clip,
     tempo: &TempoMap,
@@ -421,12 +451,15 @@ pub(crate) fn apply(
     }
     let reset_long_pitch = if reset_pitch && clip.duration > MAX_AUDIO_DOMAIN_FRAMES {
         let mut expected = AudioClipEdit::capture(&clip);
-        Arc::make_mut(&mut expected.domain).warp_resampler = WarpResampler::V2;
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.warp_resampler = WarpResampler::V2;
+        domain.fade = owned_edit.domain.fade;
         *owned_edit == expected
     } else {
         false
     };
     if reset_long_pitch {
+        clip.fade = owned_edit.domain.fade;
         clip.edit = None;
     } else {
         clip.edit = Some(owned_edit);
@@ -467,6 +500,11 @@ pub(crate) fn reset_region(
         .edit
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
+    if old.repeat_period.is_some() {
+        return Err(Invalid(
+            "source replacement cannot yet preserve a silent repeat gap",
+        ));
+    }
     let changed_source =
         source_offset != old.domain.source_offset || source_length != old.domain.source_length;
     if changed_source && old.domain.warp.is_some() {
@@ -626,7 +664,9 @@ fn preview_source_policy(
     let edit = Arc::make_mut(&mut owned_edit);
     if let (Some(placement), Some(looping)) = (&mut edit.placement, looping) {
         if looping {
-            placement.cycle_phase %= edit.view_end - edit.view_start;
+            placement.cycle_phase %= edit
+                .repeat_period
+                .unwrap_or(edit.view_end - edit.view_start);
         }
         placement.mode = if looping {
             AudioViewMode::Repeat

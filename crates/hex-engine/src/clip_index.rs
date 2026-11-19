@@ -88,6 +88,12 @@ pub(crate) fn all_start_after(index: &[ClipIndexEntry], count: usize, frame: u64
             .is_none_or(|entry| entry.cluster_start > frame)
 }
 
+/// A complete index proves all half-open clip ranges have ended by `frame`.
+/// The final overlap cluster contains the greatest end in the ordered index.
+pub(crate) fn all_end_by(index: &[ClipIndexEntry], count: usize, frame: u64) -> bool {
+    index.len() == count && index.last().is_none_or(|entry| entry.cluster_end <= frame)
+}
+
 /// Visit every item whose cluster reaches `[start, end)`: a superset of the
 /// items intersecting it, never missing one. An index that does not cover
 /// `items` falls back to the full stored-order scan.
@@ -137,6 +143,16 @@ mod tests {
         assert!(!all_start_after(&index, clips.len(), 10));
         assert!(!all_start_after(&index[..2], clips.len(), 9));
         assert!(all_start_after(&[], 0, 10));
+    }
+
+    #[test]
+    fn ended_proof_requires_complete_index_and_includes_half_open_end() {
+        let clips = [(50, 80), (10, 20), (15, 60)];
+        let index = build(&clips, |clip| *clip);
+        assert!(!all_end_by(&index, clips.len(), 79));
+        assert!(all_end_by(&index, clips.len(), 80));
+        assert!(!all_end_by(&index[..2], clips.len(), 80));
+        assert!(all_end_by(&[], 0, 0));
     }
 
     #[test]

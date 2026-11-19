@@ -20,7 +20,9 @@
 mod budget;
 mod content;
 mod events;
+mod granular_requirements;
 mod group;
+pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
 pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
@@ -91,9 +93,9 @@ fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
 }
 
 /// Check the existing renderer's projected stretch capability without PCM or
-/// preparation/cache ownership. Allocates the same bounded metadata map (at most
-/// 8192 segments and 1024 explicit attacks); this is control-side work, not a
-/// callback API and not a proof of available render memory or work budget.
+/// preparation/cache ownership. Supported streamed roots use their bounded map
+/// extent. Map allocation (at most 8192 segments and 1024 explicit attacks) and
+/// ratio checks run on control, before any file, page or render admission.
 pub fn validate_clip_warp_preview(
     clip: &hex_project::Clip,
     tempo: &hex_project::TempoMap,
@@ -101,7 +103,12 @@ pub fn validate_clip_warp_preview(
     let Some(edit) = clip.audio_edit() else {
         return Ok(());
     };
-    let (map, _) = mapping::prepare_map(edit, tempo, &AtomicBool::new(false))?;
+    let cancel = AtomicBool::new(false);
+    let (map, _) = if edit.is_streamed_repitch_root() || edit.is_streamed_granular_root() {
+        mapping::prepare_streamed_map(edit, tempo, &cancel)?
+    } else {
+        mapping::prepare_map(edit, tempo, &cancel)?
+    };
     map.validate_stretch(render_mode(&edit.domain)?, edit.domain.pitch_cents)
         .map_err(warp_error)
 }
@@ -129,6 +136,116 @@ pub fn streamed_repitch_map(
     map.validate_stretch(hex_warp::Mode::RePitch, 0)
         .map_err(warp_error)?;
     Ok((map, render_resampler(domain)))
+}
+
+/// Canonical granular root inputs, not a file owner, worker or page lease.
+/// The worker must bind the raw asset/generation to the verified reader
+/// and retain the existing aggregate memory and source invalidation contracts.
+pub struct StreamedGranularRoot {
+    metadata: crate::StreamedSourceMetadata,
+    region: hex_warp::SourceRegion,
+    map: hex_warp::TimeMap,
+    mode: hex_warp::Mode,
+    pitch_cents: i16,
+    law: hex_warp::Resampler,
+}
+impl StreamedGranularRoot {
+    pub fn metadata(&self) -> &crate::StreamedSourceMetadata {
+        &self.metadata
+    }
+    /// Actual retained map and envelope payload, excluding this inline value.
+    pub fn backing_bytes(&self) -> Option<usize> {
+        self.region
+            .backing_bytes()?
+            .checked_add(self.map.backing_bytes()?)
+    }
+    /// Move the exact projected inputs to their eventual control-side owner.
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::StreamedSourceMetadata,
+        hex_warp::SourceRegion,
+        hex_warp::TimeMap,
+        hex_warp::Mode,
+        i16,
+        hex_warp::Resampler,
+    ) {
+        (
+            self.metadata,
+            self.region,
+            self.map,
+            self.mode,
+            self.pitch_cents,
+            self.law,
+        )
+    }
+}
+
+/// Project a validated canonical Tones/Texture root for a streamed worker.
+/// The caller validates the edit and binds its asset to `raw`; this operation
+/// only derives bounded metadata and grants no source or playback admission.
+/// The map covers the full processing root; consumers apply view cropping.
+/// Output fades and composed/directed placements are refused until their
+/// consumers implement them. Warped phase belongs in the map, so the source
+/// region has zero phase just like resident root preparation.
+pub fn streamed_granular_root(
+    raw: &crate::StreamedSourceMetadata,
+    edit: &AudioClipEdit,
+    tempo: &hex_project::TempoMap,
+    cancel: &AtomicBool,
+) -> Result<StreamedGranularRoot, Invalid> {
+    let domain = &edit.domain;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Invalid("audio preparation cancelled"));
+    }
+    if !raw.key().is_raw()
+        || raw.project_rate() != tempo.sample_rate()
+        || !edit.is_streamed_granular_root()
+        || domain.source_gain.len() > hex_warp::MAX_POINTS
+    {
+        return Err(Invalid("unsupported streamed granular root"));
+    }
+    let mode = render_mode(domain)?;
+    if !matches!(
+        mode,
+        hex_warp::Mode::Tones { .. } | hex_warp::Mode::Texture { .. }
+    ) {
+        return Err(Invalid("unsupported streamed granular mode"));
+    }
+    let (map, attacks) = mapping::prepare_streamed_map(edit, tempo, cancel)?;
+    if !attacks.is_empty() {
+        return Err(Invalid("streamed granular root has beat attacks"));
+    }
+    let mut envelope = Vec::new();
+    envelope
+        .try_reserve_exact(domain.source_gain.len())
+        .map_err(|_| Invalid("source envelope allocation failed"))?;
+    envelope.extend(domain.source_gain.iter().map(|point| hex_warp::GainPoint {
+        source_frame: point.frame,
+        gain_q16: point.gain_q16,
+    }));
+    let region = hex_warp::SourceRegion::new(
+        raw.playback_frames(),
+        domain.source_offset,
+        domain.source_length,
+        0,
+        domain.looping,
+        envelope,
+    )
+    .map_err(warp_error)?;
+    let law = render_resampler(domain);
+    let metadata = raw.with_granular(&region, &map, mode, domain.pitch_cents, law)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(Invalid("audio preparation cancelled"));
+    }
+    Ok(StreamedGranularRoot {
+        metadata,
+        region,
+        map,
+        mode,
+        pitch_cents: domain.pitch_cents,
+        law,
+    })
 }
 
 /// Immutable control-side file facts and canonical map for one streamed
@@ -948,6 +1065,9 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if edit.is_long_inactive_warp_root(clip.duration()) {
+            return direct_clip(clip, source).map(Some);
+        }
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
             && let Ok((map, law)) =
                 streamed_repitch_map(edit, tempo_map, raw.playback_frames(), &self.shutdown)
@@ -957,6 +1077,25 @@ impl AudioTransformPreparation {
                 .get(&expected.key())
                 .filter(|candidate| candidate.as_ref() == &expected)
                 .ok_or(Invalid("matching repitch stream is unavailable"))?;
+            let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
+            return Clip::streamed_region(
+                Arc::clone(derived),
+                clip.start(),
+                clip.duration(),
+                view_start,
+                view_end - view_start,
+                false,
+            )
+            .map(|prepared| Some(prepared.with_gain(clip.gain())));
+        }
+        if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
+            && let Ok(root) = streamed_granular_root(raw, edit, tempo_map, &self.shutdown)
+        {
+            let expected = root.metadata();
+            let derived = derived_sources
+                .get(&expected.key())
+                .filter(|candidate| candidate.as_ref() == expected)
+                .ok_or(Invalid("matching granular stream is unavailable"))?;
             let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
             return Clip::streamed_region(
                 Arc::clone(derived),
@@ -978,13 +1117,14 @@ impl AudioTransformPreparation {
                 .get(&expected.key())
                 .filter(|candidate| candidate.as_ref() == &expected)
                 .ok_or(Invalid("matching pitched stream is unavailable"))?;
-            return Clip::streamed_region(
+            return Clip::streamed_region_with_fade(
                 Arc::clone(derived),
                 clip.start(),
                 clip.duration(),
                 0,
                 clip.duration(),
                 false,
+                edit.domain.fade,
             )
             .map(|prepared| Some(prepared.with_gain(clip.gain())));
         }

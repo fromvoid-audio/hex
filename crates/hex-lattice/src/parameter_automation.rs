@@ -351,6 +351,17 @@ impl PreparedParameterAutomation {
         self.foreign.as_ref()
     }
 
+    /// Label the current unpublished effect program with its frame clock.
+    pub fn bind_foreign_effect_clock_on_control(
+        &mut self,
+        clock_epoch: std::num::NonZeroU64,
+        clock_splices: bool,
+    ) {
+        if let Some(program) = self.foreign.as_mut() {
+            program.bind_effect_clock_on_control(clock_epoch, clock_splices);
+        }
+    }
+
     pub(crate) fn shares_foreign_program_history_with(
         &self,
         other: &Self,

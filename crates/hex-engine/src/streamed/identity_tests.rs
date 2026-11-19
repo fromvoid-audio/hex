@@ -276,3 +276,177 @@ fn pitch_identity_distinguishes_source_generation_asset_and_law() {
         "raw worker must never publish source PCM under a pitch key"
     );
 }
+
+#[test]
+fn granular_identity_covers_region_and_synthesis_inputs() {
+    use hex_warp::{GainPoint, MapSegment, Mode, Resampler, SourceRegion, TimeMap};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "granular.wav".into(),
+            sample_rate: 48_000,
+            frames: 4096,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(1, asset),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        IDENTITY_CONVERSION,
+        [7; 32],
+    )
+    .unwrap();
+    let region = |start, length, phase, looping, gain| {
+        SourceRegion::new(
+            4096,
+            start,
+            length,
+            phase,
+            looping,
+            vec![GainPoint {
+                source_frame: 0,
+                gain_q16: gain,
+            }],
+        )
+        .unwrap()
+    };
+    let map = |end| {
+        TimeMap::new(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: end,
+                source_start_q32: 0,
+                source_end_q32: 4096_i128 << 32,
+            }],
+            end as usize,
+        )
+        .unwrap()
+    };
+    let r = region(0, 4096, 0, false, 65_536);
+    let m = map(4096);
+    let tones = Mode::Tones { grain_ms: 30 };
+    let make = |raw: &StreamedSourceMetadata, r: &SourceRegion, m: &TimeMap, mode, pitch, law| {
+        GranularStreamIdentity::new(raw, r, m, mode, pitch, law).unwrap()
+    };
+    let base = make(&raw, &r, &m, tones, 0, Resampler::V2);
+    assert_eq!(base, make(&raw, &r, &m, tones, 0, Resampler::V2));
+    let texture = Mode::Texture {
+        grain_ms: 30,
+        fluctuation: 20,
+        seed: 3,
+    };
+    let different_raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(2, asset),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        IDENTITY_CONVERSION,
+        [7; 32],
+    )
+    .unwrap();
+    let different_fingerprint = StreamedSourceMetadata::new(
+        raw.key(),
+        48_000,
+        48_000,
+        4096,
+        4096,
+        IDENTITY_CONVERSION,
+        [8; 32],
+    )
+    .unwrap();
+    let variants = [
+        make(&different_raw, &r, &m, tones, 0, Resampler::V2),
+        make(&different_fingerprint, &r, &m, tones, 0, Resampler::V2),
+        make(
+            &raw,
+            &region(1, 4095, 0, false, 65_536),
+            &m,
+            tones,
+            0,
+            Resampler::V2,
+        ),
+        make(
+            &raw,
+            &region(0, 4096, 1, true, 65_536),
+            &m,
+            tones,
+            0,
+            Resampler::V2,
+        ),
+        make(
+            &raw,
+            &region(0, 4096, 0, true, 65_536),
+            &m,
+            tones,
+            0,
+            Resampler::V2,
+        ),
+        make(
+            &raw,
+            &region(0, 4096, 0, false, 65_535),
+            &m,
+            tones,
+            0,
+            Resampler::V2,
+        ),
+        make(&raw, &r, &map(4095), tones, 0, Resampler::V2),
+        make(&raw, &r, &m, Mode::Tones { grain_ms: 31 }, 0, Resampler::V2),
+        make(&raw, &r, &m, texture, 0, Resampler::V2),
+        make(
+            &raw,
+            &r,
+            &m,
+            Mode::Texture {
+                grain_ms: 30,
+                fluctuation: 20,
+                seed: 4,
+            },
+            0,
+            Resampler::V2,
+        ),
+        make(
+            &raw,
+            &r,
+            &m,
+            Mode::Texture {
+                grain_ms: 30,
+                fluctuation: 21,
+                seed: 3,
+            },
+            0,
+            Resampler::V2,
+        ),
+        make(&raw, &r, &m, tones, 1, Resampler::V2),
+        make(&raw, &r, &m, tones, 0, Resampler::V1),
+    ];
+    let mut distinct = variants.into_iter().collect::<BTreeSet<_>>();
+    distinct.insert(base);
+    assert_eq!(distinct.len(), 14);
+    let derived = raw.with_granular(&r, &m, tones, 0, Resampler::V2).unwrap();
+    assert_eq!(derived.key().granular_identity(), Some(base));
+    assert_eq!(derived.playback_frames(), 4096);
+    assert_eq!(
+        raw.with_granular(&r, &map(4095), tones, 0, Resampler::V2)
+            .unwrap()
+            .playback_frames(),
+        4095
+    );
+    assert_ne!(derived.key(), raw.key());
+    assert!(raw.key().granular_identity().is_none());
+    assert!(
+        derived
+            .with_granular(&r, &m, tones, 0, Resampler::V2)
+            .is_err()
+    );
+    assert!(crate::OwnedAudioSource::try_streamed(derived.clone()).is_err());
+    assert!(GranularStreamIdentity::new(&raw, &r, &m, Mode::RePitch, 0, Resampler::V2).is_err());
+    assert!(GranularStreamIdentity::new(&raw, &r, &m, tones, 4801, Resampler::V2).is_err());
+    let other_region = SourceRegion::new(4095, 0, 4095, 0, false, vec![]).unwrap();
+    assert!(GranularStreamIdentity::new(&raw, &other_region, &m, tones, 0, Resampler::V2).is_err());
+}

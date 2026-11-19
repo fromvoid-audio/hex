@@ -13,6 +13,8 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created};
 
+mod paused_monitor;
+
 struct BorrowedDefinition {
     binding_epoch: Option<u64>,
     instances: Vec<(ProcessorInstanceIdentity, u32)>,
@@ -184,6 +186,179 @@ impl ForeignProcessors for Borrowed {
     fn reject_callback(&mut self) {
         self.revoked = true;
         self.rejections += 1;
+    }
+}
+
+#[test]
+fn delayed_effect_origins_keep_their_clock_through_successive_tempo_edits() {
+    use hex_lattice::NativeInstrumentClock;
+    type Origin = (u64, u64, u32, Option<std::num::NonZeroU64>);
+
+    struct Endpoint {
+        effect: Borrowed,
+        origins: Vec<Origin>,
+    }
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let clock = clock.unwrap();
+            if let Some(source) = clock.performance_frame_at_offset(0) {
+                self.origins.push((
+                    source,
+                    clock.arrangement_frame_at_offset(0).unwrap(),
+                    clock.tempo_micro_bpm_at_offset(0).unwrap(),
+                    clock.authored_clock_epoch_at_offset(0),
+                ));
+            } else {
+                assert_eq!(clock.authored_clock_epoch_at_offset(0), None);
+            }
+            self.effect
+                .process_segment(node, offset, frames, Some(clock))
+        }
+
+        fn reject_callback(&mut self) {
+            self.effect.reject_callback();
+        }
+    }
+
+    let mut fixture = fixture(&[&[]], 4096);
+    let track = fixture.tracks[0];
+    fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Device(device) = fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("one delayed foreign processor");
+    };
+    let owner = ProcessorChainOwner::Track(track.value());
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::limiter::DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &fixture.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut playing = prepare(fixture.editor.project());
+    let delay = playing.revision.arrangement().main_latency_frames() as usize - 19;
+    assert!(delay > 2);
+    let advance = |playback: &mut SessionPlayback, endpoint: &mut Endpoint, frames: usize| {
+        for chunk in vec![[0.0; 2]; frames].chunks_mut(257) {
+            endpoint.effect.next_offset = 0;
+            playback
+                .render_with_foreign_processors(chunk, None, None, None, endpoint)
+                .unwrap();
+        }
+    };
+    let publish = |playing: &mut SessionPlayback, project: &hex_project::Project| {
+        let mut candidate = prepare(project);
+        let report = candidate.try_inherit_state_live_from(playing).unwrap();
+        assert!(!report.running_audio_restart());
+        *playing = candidate;
+    };
+    let mut endpoint = Endpoint {
+        effect: Borrowed::new(owner, device.value()),
+        origins: Vec::new(),
+    };
+    endpoint.effect.initial_unstamped_frames = delay;
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    advance(&mut playing, &mut endpoint, 512);
+    fixture
+        .editor
+        .execute(Command::Gain { track, gain: 0.5 })
+        .unwrap();
+    publish(&mut playing, fixture.editor.project());
+    advance(&mut playing, &mut endpoint, delay + 8);
+    let first_cut = playing.performance_frame();
+    fixture
+        .editor
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    publish(&mut playing, fixture.editor.project());
+    let first_cursor = playing.arrangement_frame();
+    advance(&mut playing, &mut endpoint, delay / 2);
+    let second_cut = playing.performance_frame();
+    assert!(fixture.editor.undo());
+    publish(&mut playing, fixture.editor.project());
+    let second_cursor = playing.arrangement_frame();
+    advance(&mut playing, &mut endpoint, delay + 16);
+
+    let initial = endpoint.origins[0]
+        .3
+        .expect("initial Arrangement clock identity");
+    let first = endpoint.origins[first_cut as usize]
+        .3
+        .expect("first retimed clock identity");
+    let second = endpoint.origins[second_cut as usize]
+        .3
+        .expect("second retimed clock identity");
+    assert!(initial < first && first < second);
+    assert_eq!(endpoint.origins.len(), second_cut as usize + 16);
+    for (index, &(source, arrangement, tempo, epoch)) in endpoint.origins.iter().enumerate() {
+        assert_eq!(source, index as u64);
+        let expected = if source < first_cut {
+            (source, 120_000_000, initial)
+        } else if source < second_cut {
+            (first_cursor + source - first_cut, 90_000_000, first)
+        } else {
+            (second_cursor + source - second_cut, 120_000_000, second)
+        };
+        assert_eq!(
+            (arrangement, tempo, epoch.unwrap()),
+            expected,
+            "source {source}"
+        );
+    }
+}
+
+#[test]
+fn paused_input_monitor_refuses_foreign_track_return_and_main_effects() {
+    for location in 0..3 {
+        let (revision, _, _) = prepared(location, false);
+        let track = revision.arrangement().tracks()[0]
+            .canonical_track_id()
+            .unwrap();
+        assert!(matches!(
+            PausedTrackMonitor::prepare_on_control(
+                revision,
+                track,
+                MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            ),
+            Err(SessionPlaybackError::InvalidCommand)
+        ));
     }
 }
 
@@ -422,6 +597,15 @@ fn prepared_with_tail(
 
 #[test]
 fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
+    foreign_export_applies_authored_parameter_values_to_audio(false);
+}
+
+#[test]
+fn linear_foreign_export_applies_authored_parameter_values_to_audio() {
+    foreign_export_applies_authored_parameter_values_to_audio(true);
+}
+
+fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
         BeatTime, DeviceAutomation, DeviceAutomationTarget,
@@ -511,9 +695,11 @@ fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
         SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, frames)
             .is_err()
     );
-    let mut bounce =
-        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames)
-            .unwrap();
+    let mut bounce = if linear {
+        SessionPlayback::new_linear_arrangement_export_with_foreign(revision, None).unwrap()
+    } else {
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames).unwrap()
+    };
     bounce.apply(SessionPlaybackCommand::Play).unwrap();
     let mut effect = AutomatedEffect(effect);
     for block in output.chunks_mut(5) {
@@ -570,6 +756,86 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
             }
         }
     }
+}
+
+#[test]
+fn closed_stream_demand_refuses_foreign_return_to_track_feed() {
+    closed_stream_demand_refuses_foreign_return(true);
+}
+
+#[test]
+fn closed_stream_demand_refuses_foreign_return_send() {
+    closed_stream_demand_refuses_foreign_return(false);
+}
+
+fn closed_stream_demand_refuses_foreign_return(feed: bool) {
+    let mut f = fixture(&[&[], &[]], 64);
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    if feed {
+        f.editor
+            .execute(Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Return(bus),
+                destination: f.tracks[1],
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: None,
+        unbounded_tail: false,
+        instances: vec![(
+            ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Return(bus.value()),
+                device.value(),
+            )
+            .unwrap(),
+            3,
+        )],
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = PreparedRevision::prepare_with_registries(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+        &hex_devices::native_instrument_registry().unwrap(),
+    )
+    .unwrap();
+    let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        runtime
+            .visit_next_stream_chunk(16, None, &mut |_| Ok(()))
+            .is_err()
+    );
 }
 
 #[test]
@@ -1447,6 +1713,36 @@ fn completed_foreign_track_does_not_discard_native_suffix_history() {
 mod shared_source_release;
 
 mod instruments;
+mod streamed_scope;
+
+fn foreign_chain_with_configuration(
+    owner: ProcessorChainOwner,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    state: Arc<NativeDeviceState>,
+) -> hex_lattice::NativeRuntimeChain {
+    hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+        meter: Default::default(),
+        owner,
+        device_id: binding.instance,
+        device_type: Definition.type_id(),
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(state),
+        modulation: None,
+        automation: Default::default(),
+        definition: Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 0, 16)
+                .unwrap()
+                .with_output_tail(hex_lattice::OutputTail::Finite {
+                    max_tail_frames: 16,
+                })
+                .with_binding(binding)
+                .unwrap(),
+        )),
+    }])
+    .unwrap()
+}
 
 #[test]
 fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_chain() {
@@ -1478,32 +1774,7 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
         };
         let previous = Arc::new(state(19).unwrap());
         let candidate = Arc::new(state(20).unwrap());
-        let chain = |state: Arc<NativeDeviceState>| {
-            hex_lattice::NativeRuntimeChain::new_prepared(vec![
-                hex_lattice::PreparedRuntimeInstance {
-                    meter: Default::default(),
-                    owner: endpoint.owner,
-                    device_id: endpoint.device,
-                    device_type: Definition.type_id(),
-                    matrix: StereoMatrix::identity(),
-                    bypassed: false,
-                    sample_rate: 48_000,
-                    configuration: Some(state),
-                    modulation: None,
-                    automation: Default::default(),
-                    definition: Some(PreparedProcessorFactory::Foreign(
-                        PreparedForeignProcessor::new(8, 0, 16)
-                            .unwrap()
-                            .with_output_tail(hex_lattice::OutputTail::Finite {
-                                max_tail_frames: 16,
-                            })
-                            .with_binding(binding)
-                            .unwrap(),
-                    )),
-                },
-            ])
-            .unwrap()
-        };
+        let chain = |state| foreign_chain_with_configuration(endpoint.owner, binding, state);
         let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut refused = SessionPlayback::new(Arc::clone(&revision)).unwrap();
@@ -1534,6 +1805,40 @@ fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_ch
         ));
         assert_eq!(old.performance_frame, old_frame);
         let wrong = Arc::new(state(21).unwrap());
+        old.apply(SessionPlaybackCommand::Pause).unwrap();
+        assert!(old.renders_no_device_chains());
+        let mut silence = [[1.0; 2]; 8];
+        old.render_with_foreign_processors(&mut silence, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(silence, [[0.0; 2]; 8]);
+        assert_eq!(old.performance_frame, old_frame);
+        let paused_refusal = refused
+            .preview_stream_handoff_with_continuation_and_report(
+                &mut old,
+                8,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            paused_refusal,
+            SessionPlaybackError::ForeignTailSourcePaused
+        );
+        let refusal = crate::PlaybackHandoffError::Session(paused_refusal)
+            .rejection()
+            .unwrap();
+        assert_eq!(
+            refusal,
+            crate::PlaybackHandoffRejection::ForeignTailSourcePaused
+        );
+        assert_eq!(
+            crate::PlaybackHandoffRejection::from_code(refusal as u32),
+            Some(refusal)
+        );
+        old.apply(SessionPlaybackCommand::Play).unwrap();
         let wrong_proof = hex_lattice::ForeignConfigurationContinuation::new(
             identity, binding, &previous, &wrong,
         )

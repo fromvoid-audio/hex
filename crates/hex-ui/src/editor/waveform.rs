@@ -37,7 +37,7 @@ pub(super) struct WaveformPreview<'a> {
 
 /// Keep inactive clip peaks readable but subordinate to active material.
 pub(super) fn clip_waveform_activity(body: Div, active: bool) -> Div {
-    body.opacity(if active { 1.0 } else { 0.4 })
+    body.opacity(theme::clip_detail_opacity(active))
 }
 
 pub(super) fn preview_waveform_view_cached(
@@ -157,6 +157,7 @@ fn prefix_waveform_view(
                 fade: Some(rewound.retained_fade()),
                 clip: rewound,
                 timeline_origin: origin,
+                gain: None,
             },
         )
     };
@@ -327,6 +328,7 @@ fn preview_waveform_view_cached_inner(
             WaveformMapping::Clip {
                 clip: preview.clone(),
                 timeline_origin: preview.start(),
+                gain: None,
                 fade: Some(preview.retained_fade()),
             },
             visible_start,
@@ -341,8 +343,7 @@ fn preview_waveform_view_cached_inner(
 pub(super) fn prepared_waveform_view_cached(
     prepared: &hex_session::service::AudioClipWaveform,
     clip: &Clip,
-    visible_start: u64,
-    visible_end: u64,
+    gain: hex_project::ClipGain,
     cache: Rc<WaveformViewCache>,
     ink: u32,
 ) -> Div {
@@ -352,10 +353,10 @@ pub(super) fn prepared_waveform_view_cached(
             WaveformMapping::Prepared {
                 timeline_origin: clip.start(),
                 root_offset: prepared.offset,
-                gain: clip.gain(),
+                gain,
             },
-            visible_start,
-            visible_end,
+            clip.start(),
+            clip.start() + clip.duration(),
             Some(cache),
             None,
             ink,
@@ -389,8 +390,8 @@ pub(super) fn timeline_waveform_view_cached(
 pub(super) fn waveform_view_cached(
     waveform: &Arc<CachedWaveform>,
     clip: &Clip,
-    visible_start: u64,
-    visible_end: u64,
+    visible: Range<u64>,
+    gain: Option<f32>,
     cache: Rc<WaveformViewCache>,
     ink: u32,
 ) -> Div {
@@ -400,10 +401,11 @@ pub(super) fn waveform_view_cached(
             WaveformMapping::Clip {
                 clip: clip.clone(),
                 timeline_origin: clip.start(),
+                gain,
                 fade: None,
             },
-            visible_start,
-            visible_end,
+            visible.start,
+            visible.end,
             Some(cache),
             None,
             ink,
@@ -453,7 +455,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
     waveform: Arc<CachedWaveform>,
     timeline_origin: u64,
     visible: Range<u64>,
-    gain: hex_project::ClipGain,
+    gain: f32,
     detail: bool,
     cache: Rc<WaveformViewCache>,
     ink: u32,

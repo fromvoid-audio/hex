@@ -510,6 +510,7 @@ fn three_loan_backpressure_and_independent_terminal_preserve_fifo_and_exact_file
 }
 #[test]
 fn repeated_write_read_turnovers_reuse_the_same_three_capture_buffers() {
+    const ROUNDS: usize = 3;
     let files = Files::new();
     let path = files.path("long.hex-automation-draft");
     let (project, target, stamp) = fixture();
@@ -517,33 +518,53 @@ fn repeated_write_read_turnovers_reuse_the_same_three_capture_buffers() {
     let (mut input, worker) = spawn_writer_on_control(writer).unwrap();
     let addresses = input
         .free
-        .iter()
-        .flatten()
-        .map(|batch| batch.as_ref() as *const Batch as usize)
-        .collect::<std::collections::BTreeSet<_>>();
+        .each_ref()
+        .map(|batch| std::ptr::from_ref(batch.as_deref().unwrap()));
     let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
-    for batch_index in 0..80 {
-        while input.free.iter().all(Option::is_none) {
-            while input.poll().is_some() {}
-            assert!(Instant::now() < deadline);
-            crate::test_wait::pause();
+    for round in 0..ROUNDS {
+        let first_batch = round * BATCH_SLOTS;
+        // Use every loan before reading ACKs so each round exercises all slots.
+        for (slot, address) in addresses.iter().enumerate() {
+            let batch_index = first_batch + slot;
+            let mut batch = input.reserve_batch().unwrap().unwrap();
+            assert_eq!(
+                std::ptr::from_ref(batch.batch.as_deref().unwrap()),
+                *address
+            );
+            for offset in 1..=EVENTS_PER_BATCH {
+                batch
+                    .push(event((batch_index * EVENTS_PER_BATCH + offset) as u64))
+                    .unwrap();
+            }
+            assert_eq!(batch.remaining(), 0);
+            assert_eq!(batch.submit().unwrap(), batch_index as u64 + 1);
         }
-        let mut batch = input.reserve_batch().unwrap().unwrap();
-        assert!(
-            addresses.contains(&(batch.batch.as_ref().unwrap().as_ref() as *const Batch as usize))
-        );
-        for offset in 1..=EVENTS_PER_BATCH {
-            batch
-                .push(event((batch_index * EVENTS_PER_BATCH + offset) as u64))
-                .unwrap();
+        assert!(input.reserve_batch().unwrap().is_none());
+        for expected_ticket in first_batch + 1..=first_batch + BATCH_SLOTS {
+            let ack = loop {
+                if let Some(ack) = input.poll() {
+                    break ack;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "draft writer did not return a loan"
+                );
+                crate::test_wait::pause();
+            };
+            let DraftWriteAck::Durable { ticket, progress } = ack else {
+                panic!("expected durable batch {expected_ticket}, got {ack:?}");
+            };
+            assert_eq!(ticket, expected_ticket as u64);
+            assert_eq!(
+                progress.durable_events,
+                (expected_ticket * EVENTS_PER_BATCH) as u64
+            );
         }
-        assert_eq!(batch.remaining(), 0);
-        batch.submit().unwrap();
     }
     input.finish(DraftTerminal::Interrupted).unwrap();
     let outcome = worker.join_on_control().unwrap();
     assert!(outcome.failure.is_none());
-    let total = 80 * EVENTS_PER_BATCH;
+    let total = ROUNDS * BATCH_SLOTS * EVENTS_PER_BATCH;
     assert_eq!(outcome.progress.durable_events, total as u64);
     let mut observed = reader(&path);
     let mut page = [None; 13];

@@ -108,11 +108,18 @@ impl Plugins {
             })
         {
             let previous = desired.effect_preparation();
-            changed_state = !input.same_authored_plugin_program(
-                &previous,
-                device,
-                control.plugin_callback_quantum_on_control(),
-            );
+            let retimed_effect = !destination.is_instrument()
+                && control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+                && input.retimes_existing_authored_effect(&previous, device);
+            changed_state = !retimed_effect
+                && !input.same_authored_plugin_program(
+                    &previous,
+                    device,
+                    control.plugin_callback_quantum_on_control(),
+                );
             previous.visit_plugin_devices(|old_owner, old_device, old| {
                 if old_device == device {
                     let same_processor = old_owner.owner() == owner && old.processing_eq(state);
@@ -307,6 +314,7 @@ impl Plugins {
             observes_latency: false,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,
