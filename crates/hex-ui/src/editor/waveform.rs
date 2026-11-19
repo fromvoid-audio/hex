@@ -498,7 +498,6 @@ pub(super) fn waveform_canvas(
     grid: Option<WaveformGrid>,
     ink: u32,
 ) -> Div {
-    let mapping = mapping.clone();
     let colors = WaveformColors {
         waveform: ink,
         inactive: ink,
@@ -538,12 +537,29 @@ pub(super) fn waveform_canvas(
                 columns,
                 grid,
             };
-            let geometry = cache
-                .as_ref()
-                .and_then(|cache| cached_waveform_geometry(cache, &waveform, &request));
-            let geometry = geometry.or_else(|| {
-                prepare_waveform_geometry_with_scale(&waveform, &request)
+            let geometry_for = |source, request: &WaveformGeometryRequest<'_>| {
+                if let Some(cache) = &cache {
+                    if matches!(request.mapping, WaveformMapping::Frame { .. }) {
+                        // A bounded frame query can refuse. Do not run it twice.
+                        return cached_waveform_geometry(cache, source, request);
+                    }
+                    if let Some(geometry) = cached_waveform_geometry(cache, source, request) {
+                        return Some(geometry);
+                    }
+                }
+                prepare_waveform_geometry_with_scale(source, request)
                     .map(|geometry| (Arc::new(geometry), gpui::Point::default()))
+            };
+            let geometry = geometry_for(&waveform, &request).or_else(|| {
+                let WaveformMapping::Frame {
+                    fallback: Some(fallback),
+                    ..
+                } = &mapping
+                else {
+                    return None;
+                };
+                let (source, mapping) = fallback.as_ref();
+                geometry_for(source, &WaveformGeometryRequest { mapping, ..request })
             });
             #[cfg(all(test, feature = "ui-test-support"))]
             if let Some((geometry, offset)) = &geometry

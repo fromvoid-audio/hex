@@ -1,5 +1,6 @@
 //! Rendered input tests use the production Arrangement and its cached clip layer.
 use super::*;
+use crate::editor::waveform_geometry::painted_clip_waveform_outline;
 use gpui::{
     KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext, VisualTestContext,
     point, px,
@@ -819,25 +820,6 @@ fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     }
 }
 
-fn painted_clip_waveform_outline(
-    editor: &gpui::Entity<EditorView>,
-    visual: &mut VisualTestContext,
-    clip: ClipId,
-) -> [u64; 2] {
-    let selector: &'static str =
-        Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
-    let clip_bounds = visual.debug_bounds(selector).expect("painted clip");
-    editor.read_with(visual, |view, _| {
-        view.waveform_geometry_cache
-            .borrow()
-            .painted_waveforms()
-            .iter()
-            .rev()
-            .find(|paint| clip_bounds.contains(&paint.bounds.origin))
-            .expect("completed clip waveform repaint")
-            .outline_fingerprint
-    })
-}
 fn clear_waveform_paints(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     editor.update(visual, |view, _| {
         view.waveform_geometry_cache
@@ -1778,6 +1760,7 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
             .collect::<Vec<_>>()
     };
     let original = mesh(&mut visual);
+    let original_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
     assert!(
         !original.is_empty(),
         "committed repeated shade is actually painted"
@@ -1787,9 +1770,15 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
     let from = visual.debug_bounds(handle).unwrap().center();
     let to = point(from.x + px(9.0), from.y + px(8.0));
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    clear_waveform_paints(&editor, &mut visual);
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let held = mesh(&mut visual);
+    let held_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
+    assert_ne!(
+        held_waveform, original_waveform,
+        "held fade reshapes the repeated waveform"
+    );
     assert!(!held.is_empty());
     assert_ne!(held, original, "held shade responds to the real curve drag");
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
@@ -1807,6 +1796,7 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
     assert!(event.error.is_none(), "{:?}", event.error);
     key(&mut visual, false, "f");
     for _ in 0..3 {
+        clear_waveform_paints(&editor, &mut visual);
         editor.update(&mut visual, |v, cx| {
             v.cancel_fade_gesture(cx);
             cx.notify();
@@ -1817,8 +1807,13 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
             held,
             "released preview remains painted before ACK"
         );
+        assert_eq!(
+            painted_clip_waveform_outline(&editor, &mut visual, clip),
+            held_waveform
+        );
         editor.read_with(&visual, |v, _| assert!(v.pending_fade.is_some()));
     }
+    clear_waveform_paints(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
         v.receive(event);
         cx.notify();
@@ -1841,10 +1836,24 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
         held,
         "canonical installation retires the same shade"
     );
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        held_waveform
+    );
+    clear_waveform_paints(&editor, &mut visual);
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     pump(&editor, &mut visual);
     assert_eq!(mesh(&mut visual), original);
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        original_waveform
+    );
+    clear_waveform_paints(&editor, &mut visual);
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
     assert_eq!(mesh(&mut visual), held);
+    assert_eq!(
+        painted_clip_waveform_outline(&editor, &mut visual, clip),
+        held_waveform
+    );
 }

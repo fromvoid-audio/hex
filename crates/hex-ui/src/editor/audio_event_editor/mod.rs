@@ -264,6 +264,47 @@ impl EditorView {
                 && self.audio_event_editor.revision == revision
         })
     }
+    /// The Arrangement thumbnail consumes only amplitude edits to the same
+    /// root. An admitted preview belongs to its receipt across inspector changes.
+    pub(super) fn arrangement_event_amplitude(
+        &self,
+        clip: &hex_project::Clip,
+    ) -> Option<hex_project::AudioEvents> {
+        let owner = Some((clip.id(), self.project_generation));
+        let editor = &self.audio_event_editor;
+        let amplitude = |operation: &AudioEventEdit| {
+            matches!(
+                operation,
+                AudioEventEdit::SetFade { .. } | AudioEventEdit::SetGain { .. }
+            )
+        };
+        if let Some(pending) = &editor.pending
+            && Some(pending.owner) == owner
+            && amplitude(&pending.operation)
+        {
+            return Some(pending.preview.clone());
+        }
+        if editor.owner != owner
+            || !editor.retained_ancestors.is_empty()
+            || !self.event_context_current()
+        {
+            return None;
+        }
+        let operation = editor
+            .gesture
+            .as_ref()?
+            .operation
+            .as_ref()
+            .filter(|op| amplitude(op))?;
+        let clock = clip
+            .audio_edit()
+            .map_or(clip.duration(), |edit| edit.domain.clock.length());
+        clip.editable_audio_events()
+            .ok()?
+            .edited(operation.clone(), clock)
+            .ok()
+    }
+
     pub(in crate::editor) fn audio_loop_current(&self) -> bool {
         self.event_context_current()
     }
