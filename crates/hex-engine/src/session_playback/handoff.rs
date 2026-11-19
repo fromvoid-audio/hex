@@ -1,6 +1,6 @@
 use super::return_effect_tails::DeviceEditTailPolicy;
 use super::*;
-use crate::signal_graph::FreshHistory;
+use crate::signal_graph::{FreshHistory, TrackOutput};
 use crate::{Invalid, MidiTiming, Track};
 use std::sync::Weak;
 mod shared_sources;
@@ -1114,9 +1114,22 @@ impl SessionPlayback {
             Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
         );
         let continuous_insert = self.require_continuous_insert && previous.playing;
-        let tail_policy = if continuous_insert {
+        let tail_policy = if let Some(removal) = self.native_removal {
+            if !continuous_insert || !removal.matches(previous) {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
+            if demand.is_none() && !previous.native_removal_ready(removal.transition) {
+                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            }
+            DeviceEditTailPolicy::FadedNative(removal.transition.identity())
+        } else if continuous_insert {
             DeviceEditTailPolicy::RequireConfirmation
-        } else if confirmed_insert {
+        } else if confirmed_insert
+            || (self.require_continuous_insert && previous.renders_no_device_chains())
+        {
+            // A fenced device edit on a silent predecessor can cut the
+            // obsolete chain immediately. A frozen chain cannot drain and
+            // must not claim an endpoint needed by a surviving device.
             DeviceEditTailPolicy::Cut
         } else {
             DeviceEditTailPolicy::Preserve
@@ -1519,12 +1532,16 @@ impl SessionPlayback {
                     .map(FreshHistory::RemovedTrack)
                 })
                 .or_else(|| {
-                    candidate
-                        .graph
-                        .has_one_more_node_than(&old.graph)
-                        .then(|| muted_isolated_latency_addition(self, previous))
-                        .flatten()
-                        .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
+                    let approved_cut = confirmed_insert && !force_restart;
+                    (candidate.graph.has_one_more_node_than(&old.graph)
+                        || old.graph.has_one_more_node_than(&candidate.graph))
+                    .then(|| single_track_latency_edit(self, previous, approved_cut))
+                    .flatten()
+                    .map(|(track, device)| FreshHistory::ChangedTrack {
+                        track,
+                        device,
+                        cut_predecessor_pcm: approved_cut,
+                    })
                 })
                 .or_else(|| {
                     candidate
@@ -4469,6 +4486,7 @@ impl SessionPlayback {
         }
 
         let mut old_track_tail_slots = [None; MAX_TRACKS];
+        let mut track_insert_transitions = [None; MAX_TRACKS];
         let mut completed_foreign_suffixes = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
@@ -4762,12 +4780,24 @@ impl SessionPlayback {
                         old_chain,
                         candidate_suffix_start..old_chain.len(),
                     );
-                old_track.instrument_position() != candidate_suffix_start
-                    || old_track.instrument_suffix_matrix()
-                        != candidate_track.instrument_suffix_matrix()
+                let same_instrument_placement = old_track.instrument_position()
+                    == candidate_suffix_start
+                    && old_track.instrument_suffix_matrix()
+                        == candidate_track.instrument_suffix_matrix();
+                let transition = (continuous_insert
+                    && !relocate
+                    && same_instrument_placement
+                    && candidate_track.device_chain.len() == candidate_chain.len())
+                .then(|| candidate_chain.native_insert_transition_from(old_chain, continuation))
+                .flatten();
+                if let Some(slot) = track_insert_transitions.get_mut(old_index) {
+                    *slot = transition;
+                }
+                !same_instrument_placement
                     || !(exact_chain_configuration
                         || retargetable_effect_configuration
-                        || retained_prefix_extension)
+                        || retained_prefix_extension
+                        || transition.is_some())
             });
             if !detached {
                 continue;
@@ -5670,13 +5700,11 @@ impl SessionPlayback {
             else {
                 continue;
             };
-            if return_tail_plan.inherit_bus(new_index)
-                && let (Some(candidate), Some(old)) = (
-                    self.return_chains.get_mut(new_index),
-                    previous.return_chains.get_mut(old_index),
-                )
-            {
-                candidate.transfer_history_from(old);
+            if let (Some(candidate), Some(old)) = (
+                self.return_chains.get_mut(new_index),
+                previous.return_chains.get_mut(old_index),
+            ) {
+                return_tail_plan.transfer_bus_history(new_index, candidate, old);
             }
         }
         for (old_index, _) in previous.routes.iter().enumerate() {
@@ -5719,6 +5747,10 @@ impl SessionPlayback {
                     candidate
                         .transfer_history_excluding_old_range(old, range)
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                } else if let Some(transition) =
+                    track_insert_transitions.get(old_index).copied().flatten()
+                {
+                    candidate.transfer_history_with_native_insert_from(old, transition);
                 } else {
                     candidate.transfer_history_from(old);
                 }
@@ -6106,13 +6138,13 @@ impl SessionPlayback {
         if let Some(groups) = groups {
             groups.commit();
         }
-        self.main_chain
-            .transfer_history_from(&mut previous.main_chain);
+        return_tail_plan.transfer_main_history(&mut self.main_chain, &mut previous.main_chain);
         self.foreign_arrangement.inherit_handoff(
             &mut previous.foreign_arrangement,
             foreign_handoff,
             true,
         );
+        self.native_removal = None;
         Ok(report)
     }
 
@@ -6900,15 +6932,17 @@ fn fresh_added_audio_track(
     if next_retained.is_some() { None } else { added }
 }
 
-/// Exactly one already-muted resident audio track gains a native latency processor.
+/// Exactly one resident audio track gains or loses its only native latency processor.
 /// Unchanged native Arrangement instruments use the ordinary voice handoff.
-/// Graph preflight independently proves isolation, equal maximum latency and
-/// silent discarded rings before any runtime state is moved.
-fn muted_isolated_latency_addition(
+/// Graph preflight proves equal maximum latency and retained route timing.
+/// A continuous edit needs silent rings and, on a shared route, a quiet old
+/// device. An approved cut may retire the old device before it feeds the buses.
+fn single_track_latency_edit(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
+    approved_cut: bool,
 ) -> Option<(TrackId, u64)> {
-    if !previous.playing
+    if !(previous.playing || approved_cut)
         || candidate.revision.contains_streamed_sources()
         || previous.revision.contains_streamed_sources()
         || candidate.loop_region().is_some()
@@ -6952,6 +6986,7 @@ fn muted_isolated_latency_addition(
     if old.len() != new.len() {
         return None;
     }
+    let old_graph = &previous.compensation.as_ref()?.graph;
     // Bound state comparisons on the callback even for many native devices.
     const MAX_STATE_COMPARE_BYTES: usize = 4096;
     let mut compared_bytes = 0_usize;
@@ -6974,7 +7009,7 @@ fn muted_isolated_latency_addition(
             }
         };
     let mut changed = None;
-    for (before, after) in old.iter().zip(new) {
+    for (index, (before, after)) in old.iter().zip(new).enumerate() {
         let id = before.canonical_track_id()?;
         if after.canonical_track_id() != Some(id)
             || before.mix != after.mix
@@ -7025,16 +7060,26 @@ fn muted_isolated_latency_addition(
         {
             continue;
         }
-        let [device] = after.device_chain.as_ref() else {
-            return None;
+        let device = match (before.device_chain.as_ref(), after.device_chain.as_ref()) {
+            ([], [device]) | ([device], []) => device,
+            _ => return None,
         };
+        let shared_route = !before.sends().is_empty()
+            || matches!(
+                old_graph.tracks.get(index)?.output,
+                TrackOutput::Group { .. }
+            );
         if changed.is_some()
-            || !before.device_chain.is_empty()
+            || before.sends() != after.sends()
+            || (!approved_cut
+                && shared_route
+                && !previous
+                    .device_chains
+                    .get(index)
+                    .is_some_and(|chain| chain.committed_range_is_quiescent(0..chain.len())))
             || before.instrument_id.is_some()
             || before.source_id.is_some()
             || before.midi_source_index.is_some()
-            || !before.mix.muted()
-            || !after.mix.muted()
             || device.bypassed
             || !device.automation.is_empty()
             || device.modulation.is_some()

@@ -43,8 +43,13 @@ pub(crate) enum FreshHistory {
     ColdTrack(TrackId),
     /// A removed isolated source; its pre-Main PCM is cut at handoff.
     RemovedTrack(TrackId),
-    /// A muted, isolated existing track whose old and new local rings are silent.
-    ChangedTrack(TrackId, u64),
+    /// An existing leaf track with a stable output and unchanged Return sends.
+    /// Only a confirmed fade at the cut may retire its buffered PCM.
+    ChangedTrack {
+        track: TrackId,
+        device: u64,
+        cut_predecessor_pcm: bool,
+    },
     Return(ReturnId),
 }
 
@@ -54,8 +59,8 @@ impl FreshHistory {
             Self::Track(id) | Self::ColdTrack(id) | Self::RemovedTrack(id) => {
                 node.belongs_to_track(id)
             }
-            Self::ChangedTrack(id, device) => {
-                node.belongs_to_track(id) || node == NodeId::Device(device)
+            Self::ChangedTrack { track, device, .. } => {
+                node.belongs_to_track(track) || node == NodeId::Device(device)
             }
             Self::Return(id) => {
                 matches!(node, NodeId::ReturnInput(value) | NodeId::ReturnOutput(value) if value == id.value())
@@ -162,7 +167,7 @@ impl Builder {
     }
 }
 impl SignalGraph {
-    /// Cheap prefilter for the single locally inserted processor case.
+    /// Cheap prefilter for one local processor added to or removed from a chain.
     pub(crate) fn has_one_more_node_than(&self, old: &Self) -> bool {
         old.typed.len().checked_add(1) == Some(self.typed.len())
     }
@@ -1375,23 +1380,28 @@ impl SignalGraph {
             })
     }
 
-    /// A changed track may own local device nodes, but no edge may feed
-    /// another owner except its fader's direct Main contribution.
-    fn is_isolated_changed_track(&self, id: TrackId, device: u64) -> bool {
-        let owner = FreshHistory::ChangedTrack(id, device);
-        self.tracks
-            .iter()
-            .any(|track| track.id == Some(id) && matches!(track.output, TrackOutput::Main { .. }))
-            && self.pre_main_edges.iter().enumerate().all(|(index, _)| {
-                let Some((from, to)) = self.pre_main_endpoints(index) else {
-                    return false;
-                };
-                match (owner.contains(from), owner.contains(to)) {
-                    (true, false) => from == NodeId::Fader(id.value()) && to == NodeId::Main,
-                    (false, true) => false,
-                    _ => true,
+    /// Boundary edges belong to the leaf's outgoing Main/Group and Return paths.
+    /// The shared destination nodes and their edges remain in the history proof.
+    fn changed_track_owns_local_history(&self, id: TrackId, owner: FreshHistory) -> bool {
+        let Some(track) = self.tracks.iter().find(|track| track.id == Some(id)) else {
+            return false;
+        };
+        let output_edge = match track.output {
+            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+        };
+        self.pre_main_edges.iter().enumerate().all(|(index, _)| {
+            let Some((from, to)) = self.pre_main_endpoints(index) else {
+                return false;
+            };
+            match (owner.contains(from), owner.contains(to)) {
+                (true, false) => {
+                    from == NodeId::Fader(id.value())
+                        && (index == output_edge || matches!(to, NodeId::ReturnInput(_)))
                 }
-            })
+                (false, true) => false,
+                _ => true,
+            }
+        })
     }
     /// One new empty Return may begin with silent history only when retained
     /// Returns keep their order and no edge feeds it or routes it beyond Main.
@@ -1450,8 +1460,8 @@ impl SignalGraph {
         self.retained_pre_main_history_maps_from(other, None)
     }
     /// A changed owner is excluded only after the handoff proves its source
-    /// contract. Removed track history is cut; other excluded edges must be
-    /// silent in both runtimes before retained histories are copied.
+    /// contract. Removed tracks and approved cuts may retire outgoing PCM;
+    /// all other excluded edges must be silent in both runtimes.
     fn retained_pre_main_history_maps_from(
         &self,
         other: &Self,
@@ -1469,7 +1479,7 @@ impl SignalGraph {
                         FreshHistory::Track(id)
                         | FreshHistory::ColdTrack(id)
                         | FreshHistory::RemovedTrack(id)
-                        | FreshHistory::ChangedTrack(id, _) => (false, id.value()),
+                        | FreshHistory::ChangedTrack { track: id, .. } => (false, id.value()),
                         FreshHistory::Return(id) => (true, id.value()),
                     })
                 })
@@ -1487,7 +1497,7 @@ impl SignalGraph {
                     FreshHistory::Track(_)
                     | FreshHistory::ColdTrack(_)
                     | FreshHistory::RemovedTrack(_)
-                    | FreshHistory::ChangedTrack(_, _),
+                    | FreshHistory::ChangedTrack { .. },
                 )
                 | None => self.returns.len() != other.returns.len(),
                 Some(FreshHistory::Return(id)) => {
@@ -1509,11 +1519,9 @@ impl SignalGraph {
                                 || !self.is_independent_track(track, false)
                                 || !other.is_independent_track(track, false)
                         }
-                        FreshHistory::ChangedTrack(track, device) => {
-                            // Only the changed owner needs a private route to
-                            // Main. The retained order, typed arrivals and
-                            // edge delay histories below also prove unchanged
-                            // Groups and Returns with shared inputs.
+                        FreshHistory::ChangedTrack { track, .. } => {
+                            // Shared Group and Return inputs and their downstream nodes
+                            // stay in the retained arrival and delay proof.
                             self.tracks.len() != other.tracks.len()
                                 || self
                                     .tracks
@@ -1523,8 +1531,8 @@ impl SignalGraph {
                                     .tracks
                                     .iter()
                                     .any(|track| track.printed_merge.is_some())
-                                || !self.is_isolated_changed_track(track, device)
-                                || !other.is_isolated_changed_track(track, device)
+                                || !self.changed_track_owns_local_history(track, owner)
+                                || !other.changed_track_owns_local_history(track, owner)
                         }
                         FreshHistory::Return(_) => self.tracks.len() != other.tracks.len(),
                     }
@@ -1576,7 +1584,9 @@ impl SignalGraph {
             }
             _ => false,
         };
-        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));
+        // The existing edited track keeps its typed output and sends even though
+        // its local history is excluded.
+        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack(id)) if track.id == Some(id));
         let retained_return =
             |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
         if !self
@@ -1589,6 +1599,8 @@ impl SignalGraph {
                     && same_output(a.output, b.output)
                     && same_sends(&a.sends, &b.sends, return_indices_can_shift)
                     && same_audio_feeds(&a.audio_feeds, &b.audio_feeds)
+                    && (!matches!(fresh, Some(FreshHistory::ChangedTrack { track, .. }) if a.id == Some(track))
+                        || a.group_output_mutes == b.group_output_mutes)
             })
             || !self
                 .returns
@@ -2023,7 +2035,14 @@ impl SignalRuntime {
                 && self.delay_graph.history_compatible(&self.graph)
                 && other.delay_graph.history_compatible(&other.graph)
                 && silent_owner(self)
-                && (matches!(owner, FreshHistory::RemovedTrack(_)) || silent_owner(other))
+                && (matches!(
+                    owner,
+                    FreshHistory::RemovedTrack(_)
+                        | FreshHistory::ChangedTrack {
+                            cut_predecessor_pcm: true,
+                            ..
+                        }
+                ) || silent_owner(other))
         } else {
             self.can_continue_pre_main(other)
         };

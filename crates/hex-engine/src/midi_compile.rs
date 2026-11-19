@@ -75,6 +75,9 @@ pub struct CompiledMidiEvent {
     pub pitch: u8,
     pub channel: u8,
     pub velocity: u8,
+    /// The projected occurrence begins inside its authored gate. Both paired
+    /// edges carry the same transient provenance; scheduling is unchanged.
+    pub starts_inside_gate: bool,
 }
 
 /// Resolve all note boundaries through the project's tempo map. This allocates
@@ -157,7 +160,7 @@ fn append_clip(
     for_each_clip_occurrence(
         project,
         clip,
-        |note, iteration, onset, off, _, _, playable| {
+        |note, iteration, onset, off, _, _, playable, starts_inside_gate| {
             if !note.active() || !playable {
                 return Ok(());
             }
@@ -177,6 +180,7 @@ fn append_clip(
                         pitch: note.pitch(),
                         channel: note.channel(),
                         velocity: note.velocity(),
+                        starts_inside_gate,
                     },
                 ));
             }
@@ -188,7 +192,16 @@ fn append_clip(
 fn for_each_clip_occurrence(
     project: &Project,
     clip: &MidiClip,
-    mut visit: impl FnMut(&MidiNote, u64, u64, u64, BeatTime, BeatTime, bool) -> Result<(), Invalid>,
+    mut visit: impl FnMut(
+        &MidiNote,
+        u64,
+        u64,
+        u64,
+        BeatTime,
+        BeatTime,
+        bool,
+        bool,
+    ) -> Result<(), Invalid>,
 ) -> Result<(), Invalid> {
     let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
     for note in clip.notes() {
@@ -230,6 +243,7 @@ fn for_each_clip_occurrence(
                 BeatTime::from_raw(onset_raw),
                 BeatTime::from_raw(off_raw),
                 playable,
+                occurrence.starts_inside_gate(),
             )?;
         }
     }
@@ -513,7 +527,14 @@ fn compile_instrument_track_with_empty_bank(
         for_each_clip_occurrence(
             project,
             clip,
-            |note, iteration, start, gate_end, onset_beat, off_beat, playable| {
+            |note,
+             iteration,
+             start,
+             gate_end,
+             onset_beat,
+             off_beat,
+             playable,
+             _starts_inside_gate| {
                 if let Some((ordinals, samples)) = preview.as_mut()
                     && ordinals.get(samples.len()).copied() == Some(emitted)
                 {
@@ -943,5 +964,101 @@ mod declared_capacity_tests {
             ))
         );
         assert_eq!(validate_density(&releases[..64], Some(stealing(1))), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod onset_provenance_tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, TrackContentSnapshot};
+
+    fn beat(n: u64) -> BeatTime {
+        BeatTime::from_quarters(n).unwrap()
+    }
+
+    #[test]
+    fn arrangement_event_pairs_keep_directed_window_origin_at_any_placement() {
+        for (placement, reversed) in [(0, false), (7, false), (0, true), (7, true)] {
+            let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: "origin".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: beat(placement),
+                    length: beat(4),
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            editor
+                .execute(Command::SetMidiClipSource {
+                    clip,
+                    source_length: beat(10),
+                    source_start: beat(0),
+                    loop_start: beat(0),
+                    loop_end: beat(10),
+                    looping: false,
+                    length: beat(4),
+                })
+                .unwrap();
+            for (start, duration, pitch) in [(1, 3, 60), (2, 2, 67), (4, 4, 72), (4, 2, 74)] {
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: beat(start),
+                        duration: beat(duration),
+                        pitch,
+                        channel: 0,
+                        velocity: 90,
+                    })
+                    .unwrap();
+            }
+            let mut snapshot = editor.project().snapshot();
+            let clips = match &mut snapshot.tracks[0].content {
+                TrackContentSnapshot::Instrument(clips)
+                | TrackContentSnapshot::Hybrid {
+                    midi_clips: clips, ..
+                } => clips,
+                TrackContentSnapshot::Audio(_) => panic!("midi clips"),
+            };
+            clips[0].playback_offset_raw = beat(2).raw();
+            clips[0].content_view = Some(
+                hex_project::ContentWindow::new(beat(2).raw(), beat(6).raw(), reversed).unwrap(),
+            );
+            let project = Project::from_snapshot(snapshot).unwrap();
+            let events = midi_events(&project).unwrap();
+            assert_eq!(events.len(), 8);
+            for pitch in [60, 67, 72, 74] {
+                let expected = if reversed { pitch == 72 } else { pitch == 60 };
+                let paired = events
+                    .iter()
+                    .filter(|event| event.pitch == pitch)
+                    .collect::<Vec<_>>();
+                assert_eq!(paired.len(), 2);
+                assert!(
+                    paired
+                        .iter()
+                        .all(|event| event.starts_inside_gate == expected)
+                );
+                let onset = paired
+                    .iter()
+                    .find(|event| event.kind == MidiEventKind::NoteOn)
+                    .unwrap();
+                let off = paired
+                    .iter()
+                    .find(|event| event.kind == MidiEventKind::NoteOff)
+                    .unwrap();
+                assert!(onset.frame >= placement * 4_000);
+                assert!(off.frame > onset.frame);
+            }
+        }
     }
 }

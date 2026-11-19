@@ -337,7 +337,8 @@ fn profile_max_density_eq() {
     let mut state = EqState::default();
     for id in 1..=64 {
         let mut n = node(id);
-        n.frequency_hz = 20.0 * (1000.0_f32.ln() * id as f32 / 64.0).exp();
+        // Keep the highest logarithmic point exactly within the 20 kHz limit.
+        n.frequency_hz = (20.0 * (1000.0_f64.ln() * id as f64 / 64.0).exp()) as f32;
         n.gain_db = if id % 2 == 0 { 3.0 } else { -3.0 };
         state.add(n).unwrap();
         state
@@ -366,6 +367,9 @@ fn profile_max_density_eq() {
             self.beat_at_offset(o)
         }
         fn arrangement_frame_at_offset(&self, o: usize) -> Option<u64> {
+            Some(self.0 + o as u64)
+        }
+        fn performance_frame_at_offset(&self, o: usize) -> Option<u64> {
             Some(self.0 + o as u64)
         }
         fn transport_is_running(&self) -> Option<bool> {
