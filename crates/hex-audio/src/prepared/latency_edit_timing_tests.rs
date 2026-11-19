@@ -1010,3 +1010,153 @@ fn device_insert_expires_at_callback_without_control_polling() {
     assert!(pcm[..10].iter().all(|frame| *frame == SIGNAL));
     assert!(pcm[10..].iter().all(|frame| *frame == [0.0; 2]));
 }
+
+#[test]
+fn resident_auto_pan_power_installs_and_restarts_at_the_callback_boundary() {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    let (mut editor, media) = {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "resident input".into(),
+                path: "memory/resident.wav".into(),
+                source_sample_rate: RATE,
+                source_frames: 8192,
+                playback_frames: 8192,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("audio import");
+        };
+        let media = BTreeMap::from([(
+            asset,
+            hex_engine::Audio::new(RATE, vec![SIGNAL; 8192]).unwrap(),
+        )]);
+        (editor, media)
+    };
+    let auto_pan = &hex_devices::auto_pan::AUTO_PAN_DEFINITION;
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: auto_pan
+                .patch_parameter(
+                    &auto_pan.default_state().unwrap(),
+                    hex_devices::auto_pan::parameter::RATE,
+                    ParameterValue::Float(20.0),
+                )
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("Auto Pan insertion");
+    };
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: hex_devices::auto_pan::parameter::AMOUNT,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(1.0).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+        .unwrap();
+
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    let on = prepare(editor.project());
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off = prepare(editor.project());
+
+    let publish = |control: &mut Control, prepared, editor_revision, policy| {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 5,
+            editor_revision,
+        };
+        let revision = control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(prepared).unwrap(),
+                policy,
+                context.project_generation,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        (context, revision)
+    };
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    publish(
+        &mut control,
+        Arc::clone(&on),
+        1,
+        PublicationPolicy::InstallFreshRuntime,
+    );
+    control.command(PlaybackCommand::Play).unwrap();
+
+    const FADE: usize = 240; // 5 ms at 48 kHz.
+    let mut initial = [[0.0; 2]; 2 * BLOCK];
+    callback.begin_block();
+    callback.render(&mut initial).unwrap();
+    assert_ne!(initial[BLOCK], SIGNAL);
+
+    for (prepared, revision) in [(off, 2), (on, 3)] {
+        let (context, audio_revision) = publish(
+            &mut control,
+            prepared,
+            revision,
+            PublicationPolicy::InheritRuntime,
+        );
+        let start = control.status.position.load(Acquire);
+        let mut actual = [[0.0; 2]; 2 * BLOCK];
+        let mut render = || {
+            for block in actual.chunks_mut(BLOCK) {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            }
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+
+        let applied = control.status.recording_source().unwrap();
+        assert_eq!(
+            (applied.context, applied.audio_revision),
+            (context, audio_revision)
+        );
+        assert_eq!(
+            control.status.position.load(Acquire),
+            start + actual.len() as u64
+        );
+        if revision == 2 {
+            assert_eq!(actual[FADE..], [SIGNAL; 2 * BLOCK - FADE]);
+        } else {
+            assert_eq!(actual[FADE..], initial[FADE..]);
+        }
+        assert_eq!(control.reclaim(), 1);
+    }
+}
