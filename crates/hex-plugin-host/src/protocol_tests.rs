@@ -111,6 +111,50 @@ fn editor_seal_receipt_is_bound_to_its_operation_and_discriminant() {
     assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
 }
 #[test]
+fn editor_frontier_requires_exact_source_clock_operation_and_payload() {
+    let config = config();
+    let request = ControllerRequest::ReadEditorFrontier;
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, request, poll).unwrap();
+        assert_eq!(wire[82], 16);
+        assert!(
+            wire[72..82]
+                .iter()
+                .chain(&wire[83..])
+                .all(|byte| *byte == 0)
+        );
+    }
+
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    let binding = reply.len();
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.push(6);
+    let payload = reply.len();
+    for frontier in [0_u64, 42] {
+        reply.truncate(payload);
+        reply.extend(frontier.to_le_bytes());
+        assert_eq!(
+            parameter_page(&reply, &config, 1, 7, request).unwrap(),
+            ParameterPageProgress::EditorFrontier(frontier)
+        );
+    }
+    for offset in [0, binding, binding + 8, binding + 16, payload - 1] {
+        reply[offset] ^= 1;
+        assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+        reply[offset] ^= 1;
+    }
+    assert!(parameter_page(&reply, &config, 1, 7, ControllerRequest::EditorVisibility).is_err());
+    assert!(parameter_page(&reply, &config, 1, 7, ParameterPageQuery::default()).is_err());
+    reply.push(0);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    reply.truncate(payload + 7);
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
+
+#[test]
 fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() {
     let config = config();
     let x = -342.25_f64;

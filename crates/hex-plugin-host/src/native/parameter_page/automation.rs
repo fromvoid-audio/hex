@@ -113,7 +113,8 @@ impl Prepared {
                     }
                     ParameterPageProgress::Conversion(_)
                     | ParameterPageProgress::Editor(_)
-                    | ParameterPageProgress::EditorSeal(_) => {
+                    | ParameterPageProgress::EditorSeal(_)
+                    | ParameterPageProgress::EditorFrontier(_) => {
                         return Err(Error::Protocol("expected authored parameter metadata page"));
                     }
                 }

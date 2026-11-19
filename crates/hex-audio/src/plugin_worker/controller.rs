@@ -25,6 +25,7 @@ struct Reply {
     conversion: Option<ParameterConversionResult>,
     editor: Option<PluginEditorState>,
     editor_seal: Option<EditorSealState>,
+    editor_frontier: Option<u64>,
     extension: Option<NativeWorkerAuthoredParameterProgress>,
 }
 
@@ -84,9 +85,14 @@ pub enum NativeWorkerControllerProgress {
     Pending,
     Editor(PluginEditorState),
     EditorSeal(EditorSealState),
+    /// The last editor callback admitted on this query’s original binding.
+    EditorFrontier(u64),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
-    Changed { revision: u64, total: u16 },
+    Changed {
+        revision: u64,
+        total: u16,
+    },
     Failed,
 }
 
@@ -206,6 +212,8 @@ impl NativeWorker {
                 self.editor_edits_sealed = true;
             }
             NativeWorkerControllerProgress::EditorSeal(seal)
+        } else if let Some(frontier) = reply.editor_frontier {
+            NativeWorkerControllerProgress::EditorFrontier(frontier)
         } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))
         } else if reply.changed {
@@ -387,13 +395,13 @@ impl State {
                         editor_seal: Some(seal),
                         ..Reply::default()
                     }),
+                    ParameterPageProgress::EditorFrontier(frontier) => Some(Reply {
+                        editor_frontier: Some(frontier),
+                        ..Reply::default()
+                    }),
                     ParameterPageProgress::Page(page) => Some(Reply {
                         page: *page,
-                        changed: false,
-                        conversion: None,
-                        editor: None,
-                        editor_seal: None,
-                        extension: None,
+                        ..Reply::default()
                     }),
                     ParameterPageProgress::Conversion(conversion) => Some(Reply {
                         conversion: Some(*conversion),
@@ -406,10 +414,7 @@ impl State {
                         Some(Reply {
                             page,
                             changed: true,
-                            conversion: None,
-                            editor: None,
-                            editor_seal: None,
-                            extension: None,
+                            ..Reply::default()
                         })
                     }
                 }

@@ -232,6 +232,38 @@ fn editor_seal_requires_stopped_original_worker_and_exact_completion() {
         owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits),
         Err("native editor seal requires a stopped source")
     ));
+    let until = Instant::now() + Duration::from_millis(750);
+    let observation = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::ReadEditorFrontier) {
+            Ok(observation) => break observation,
+            Err("native controller mailbox is busy") => {}
+            Err(reason) => panic!("editor admission observation: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    assert!(
+        other
+            .poll_controller_query_on_control(&observation)
+            .is_err()
+    );
+    loop {
+        match owner
+            .poll_controller_query_on_control(&observation)
+            .unwrap()
+        {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorFrontier(0) => break,
+            other => panic!("live editor admission observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .poll_controller_query_on_control(&observation)
+            .is_err()
+    );
     owner.revoke_on_control();
     let until = Instant::now() + Duration::from_millis(750);
     let request = loop {
