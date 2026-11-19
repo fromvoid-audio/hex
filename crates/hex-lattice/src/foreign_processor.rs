@@ -543,6 +543,14 @@ pub struct ForeignNote {
 /// still advances the same endpoint and returns aligned dry samples under its
 /// unchanged declared latency. The view cannot transfer resource custody.
 pub trait ForeignProcessors {
+    /// Allow entire contiguous windows for independent tracks to be staged in
+    /// track order. Endpoints retain their exact per-instance offsets, clocks
+    /// and physical callback acceptance frontier. Hosts that depend on
+    /// frame-by-frame interleaving leave this disabled.
+    fn supports_independent_track_batching(&self) -> bool {
+        false
+    }
+
     /// True only when this endpoint applies the supplied host output trim to
     /// active wet output itself and returns post-trim PCM. The host must not
     /// apply it a second time. Steady bypass output is untrimmed aligned dry;

@@ -309,6 +309,10 @@ impl<'a> NativeEffectWindow<'a> {
     }
 }
 impl hex_lattice::ForeignProcessors for NativeEffectWindow<'_> {
+    fn supports_independent_track_batching(&self) -> bool {
+        self.inner.supports_independent_track_batching()
+    }
+
     fn returns_post_trim(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.returns_post_trim(node)
     }

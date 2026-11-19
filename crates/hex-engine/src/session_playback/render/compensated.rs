@@ -6,6 +6,10 @@
 use super::*;
 use crate::compensation::{OriginWindow, TransportStamp};
 
+// Limit the clock scan to two maximum render windows for ordinary 2Q hosted
+// chains. Longer-arrival tracks still take the scalar compensation path.
+const HOSTED_ORIGIN_LOOKBACK: u32 = 512;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResidentRoute {
     Scalar,
@@ -468,7 +472,7 @@ impl SessionPlayback {
     }
     /// Advance independent resident audio owners and their Main alignment
     /// rings. The frame loop still pushes stamps and sums in its original order.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // The same projected clock and physical window govern the track.
     pub(super) fn align_resident_tracks(
         &mut self,
         arrangement_frame: u64,
@@ -489,6 +493,7 @@ impl SessionPlayback {
         arrangement_frame
             .checked_add(frames as u64)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let batch_foreign = foreign.supports_independent_track_batching();
         let session_alignment_blocked = !self.release_scratch.is_empty()
             || self.tail_output_scratch.iter().any(|active| *active)
             || self
@@ -535,8 +540,18 @@ impl SessionPlayback {
             if track.instrument_id.is_some() || track.instrument_position() != 0 {
                 continue;
             }
+            if !batch_foreign
+                && track.device_chain.iter().any(|device| {
+                    matches!(
+                        device.definition.as_ref(),
+                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                    )
+                })
+            {
+                continue;
+            }
             let chain = &mut self.device_chains[index];
-            let native_origins = if chain.is_empty() {
+            let stage_origins = if chain.is_empty() {
                 None
             } else {
                 let Some((incoming, _)) =
@@ -563,7 +578,7 @@ impl SessionPlayback {
                 frame[1] += 0.0;
             }
             track.apply_instrument_output_gain(samples);
-            if let Some(origins) = native_origins.as_ref() {
+            if let Some(origins) = stage_origins.as_ref() {
                 for (stage, &node) in compensation.graph.tracks[index].devices.iter().enumerate() {
                     let planned = &compensation.graph.plan.nodes()[node];
                     let input = OriginWindow {
@@ -596,7 +611,7 @@ impl SessionPlayback {
             let automated = track.has_gain_automation();
             for (offset, frame) in samples.iter_mut().enumerate() {
                 let mix = if automated {
-                    let content = if let Some(origins) = native_origins.as_ref() {
+                    let content = if let Some(origins) = stage_origins.as_ref() {
                         origins
                             .stamp(offset)
                             .ok_or(SessionPlaybackError::DeviceRuntime)?
@@ -633,6 +648,7 @@ impl SessionPlayback {
         arrangement_frame: u64,
         loop_pass: u64,
         stamps: &mut [Option<TransportStamp>],
+        batch_foreign: bool,
     ) -> Result<Option<u32>, SessionPlaybackError> {
         let Some(compensation) = self.compensation.as_ref() else {
             return Ok(None);
@@ -652,7 +668,11 @@ impl SessionPlayback {
         {
             return Ok(None);
         }
-        let lookback = compensation.graph.main_latency().min(512);
+        let lookback = compensation.graph.main_latency().min(if batch_foreign {
+            HOSTED_ORIGIN_LOOKBACK
+        } else {
+            256
+        });
         let history_frames = (0..lookback)
             .take_while(|&delay| {
                 compensation
@@ -2033,7 +2053,7 @@ mod tests {
         assert_eq!(warmup, expected_warmup);
         assert_eq!(
             batched
-                .prepare_native_origin_window(32, 32, 0, &mut [None; 4])
+                .prepare_native_origin_window(32, 32, 0, &mut [None; 4], false)
                 .unwrap(),
             Some(32)
         );

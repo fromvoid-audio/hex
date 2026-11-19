@@ -1258,6 +1258,7 @@ impl SessionPlayback {
                         arrangement_frame,
                         arrangement_loop_pass,
                         &mut stamps[..count],
+                        foreign.supports_independent_track_batching(),
                     )?
                 } else {
                     None

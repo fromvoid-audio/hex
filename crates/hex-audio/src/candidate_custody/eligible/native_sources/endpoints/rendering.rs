@@ -154,6 +154,10 @@ impl NativeEndpointBank {
     }
 }
 impl ForeignProcessors for NativeEndpointBank {
+    fn supports_independent_track_batching(&self) -> bool {
+        self.has_endpoints()
+    }
+
     fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
         true
     }
