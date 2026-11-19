@@ -1,6 +1,8 @@
 //! Receiver-only, zero-latency effects on isolated shared generator audio.
 use crate::{Frame, Invalid, Project, effect_clock::ArrangementEffectClock};
-use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
+use hex_lattice::{
+    NativeInstrumentClock, NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner,
+};
 use std::{ops::Range, sync::Arc};
 
 pub(crate) mod metadata;
@@ -123,6 +125,14 @@ struct SourceEffectStage {
 /// Bounded receiver-to-donor indices, prepared before any history is moved.
 pub(crate) struct SourceEffectTransfer {
     donors: [Option<usize>; hex_project::MAX_TRACKS],
+    // The last processor is retiring; its generator and receiver continue.
+    retired_stage: Option<hex_project::SourceId>,
+}
+
+pub(crate) enum SourceEffectRetirement {
+    Keep,
+    Quiet,
+    Staged(NativeRemovalTransition),
 }
 
 #[derive(Default)]
@@ -208,20 +218,47 @@ impl SourceEffectStages {
         self.chains.is_empty()
     }
 
+    /// Prove a single nested removal at the same receiver slot. An absent
+    /// successor chain represents removal of the final processor only.
+    pub(crate) fn native_removal_transition_from(
+        &self,
+        previous: &Self,
+    ) -> Option<NativeRemovalTransition> {
+        let empty = NativeRuntimeChain::empty();
+        let mut removal = None;
+        for (index, old) in previous.chains.iter().enumerate() {
+            let Some(old) = old else { continue };
+            let next = match self.chains.get(index).and_then(Option::as_ref) {
+                Some(next) if next.source == old.source => &next.chain,
+                Some(_) => return None,
+                None => &empty,
+            };
+            if next.len() != old.chain.len()
+                && removal
+                    .replace(next.native_removal_transition_from(&old.chain)?)
+                    .is_some()
+            {
+                return None;
+            }
+        }
+        removal
+    }
+
     /// Match by source identity, independently of the current receiver index.
     /// Live publication may change a compatible recipe's control programs
     /// or attach a fresh stage. An exact power edit also needs the same
-    /// receiving track. An unmatched old stage may retire only when its
-    /// host is stopped and the processor proves its committed state quiet.
+    /// receiving track. Retiring a stage requires a proved removal or a
+    /// stopped host with committed, quiescent processor history.
     pub(crate) fn plan_continuation(
         &self,
         previous: &Self,
         live: bool,
-        allow_quiet_retirement: bool,
+        retirement: SourceEffectRetirement,
         generator_matches: impl Fn(hex_project::SourceId) -> bool,
         receiver_matches: impl Fn(usize, usize) -> bool,
     ) -> Option<SourceEffectTransfer> {
         let mut donors = [None; hex_project::MAX_TRACKS];
+        let mut retired_stage = None;
         for (index, old) in previous.chains.iter().enumerate() {
             let Some(old) = old else { continue };
             let matching = self
@@ -229,7 +266,22 @@ impl SourceEffectStages {
                 .iter()
                 .enumerate()
                 .find(|(_, next)| next.as_ref().is_some_and(|next| next.source == old.source));
-            if let Some((receiver, Some(next))) = matching
+            if matches!(retirement, SourceEffectRetirement::Staged(transition)
+                if transition.identity().owner() == ProcessorChainOwner::Source(old.source.value()))
+            {
+                if !live || !receiver_matches(index, index) || !generator_matches(old.source) {
+                    return None;
+                }
+                match matching {
+                    Some((receiver, Some(next)))
+                        if receiver == index && next.chain.can_inherit_from(&old.chain) =>
+                    {
+                        *donors.get_mut(receiver)? = Some(index);
+                    }
+                    None => retired_stage = Some(old.source),
+                    _ => return None,
+                }
+            } else if let Some((receiver, Some(next))) = matching
                 && (next
                     .chain
                     .can_transfer_source_recipe_history_from(&old.chain, live)
@@ -239,7 +291,7 @@ impl SourceEffectStages {
                 && generator_matches(old.source)
             {
                 *donors.get_mut(receiver)? = Some(index);
-            } else if !allow_quiet_retirement
+            } else if !matches!(retirement, SourceEffectRetirement::Quiet)
                 || !old.chain.committed_range_is_quiescent(0..old.chain.len())
             {
                 return None;
@@ -254,7 +306,10 @@ impl SourceEffectStages {
         {
             return None;
         }
-        Some(SourceEffectTransfer { donors })
+        Some(SourceEffectTransfer {
+            donors,
+            retired_stage,
+        })
     }
 
     pub(crate) fn has_continued_source(
@@ -262,12 +317,14 @@ impl SourceEffectStages {
         transfer: &SourceEffectTransfer,
         source: hex_project::SourceId,
     ) -> bool {
-        self.chains
-            .iter()
-            .zip(&transfer.donors)
-            .any(|(stage, donor)| {
-                donor.is_some() && stage.as_ref().is_some_and(|stage| stage.source == source)
-            })
+        transfer.retired_stage == Some(source)
+            || self
+                .chains
+                .iter()
+                .zip(&transfer.donors)
+                .any(|(stage, donor)| {
+                    donor.is_some() && stage.as_ref().is_some_and(|stage| stage.source == source)
+                })
     }
 
     /// Processors exchange or copy existing backing; the caller still retires
