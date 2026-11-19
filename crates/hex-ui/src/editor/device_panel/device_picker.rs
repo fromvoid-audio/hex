@@ -206,7 +206,7 @@ fn activate(
         }
         DevicePanelOwner::Source(_) => return,
     };
-    if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
+    if finalize_controls(view, cx) && view.enqueue_catalog_device(request) {
         view.device_panel.message = None;
         close(view, window, cx);
     }

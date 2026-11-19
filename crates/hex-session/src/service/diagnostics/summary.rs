@@ -1787,6 +1787,7 @@ pub(super) fn request(value: &Request) -> Description {
             track,
             before,
             replace,
+            ..
         } => {
             let mut description = describe!("drop_native_device"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "before" => before.map(|id| id.value()), "replace" => replace.map(|id| id.value())]; omitted="");
             description.nested("source", self::device_drop_source(source));

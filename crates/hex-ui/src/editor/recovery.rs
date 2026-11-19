@@ -45,11 +45,10 @@ pub(super) fn clear_recovery(
     if recovery.holds_clip_play_start() {
         clip_loop.retire_deferred_play_start();
     }
-    if let Some(edit) = recovery.deferred_edit.as_ref()
-        && let Request::DropBrowserDeviceOnArrangement {
-            control: Some(control),
-            ..
-        } = edit.request.as_ref()
+    if let Some(control) = recovery
+        .deferred_edit
+        .as_ref()
+        .and_then(|edit| edit.request.builtin_device_insert_control())
     {
         EditorView::settle_device_proposal(
             pending_device,
@@ -259,10 +258,7 @@ impl EditorView {
         let time_duplicate = pending.kind == DeferredEditKind::TimeDuplicate;
         let loop_region = pending.kind == DeferredEditKind::LoopRegion;
         let clip_play_start = pending.kind == DeferredEditKind::ClipPlayStart;
-        let control = match pending.request.as_ref() {
-            Request::DropBrowserDeviceOnArrangement { control, .. } => control.clone(),
-            _ => None,
-        };
+        let control = pending.request.builtin_device_insert_control().cloned();
         if (sample_drop && !self.pending_sample_drop_matches(&pending.request))
             || (time_duplicate && !self.pending_time_duplicate_matches(&pending.request))
             || (loop_region && !self.pending_loop_matches(&pending.request))

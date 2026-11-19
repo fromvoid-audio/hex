@@ -3941,6 +3941,7 @@ impl EditorView {
             track,
             before,
             replace,
+            ..
         } = &request
         {
             self.last_enqueued_native_device_drop = Some(EnqueuedNativeDeviceDrop {

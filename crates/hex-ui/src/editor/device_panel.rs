@@ -2913,7 +2913,7 @@ impl EditorView {
         self.clear_native_device_drag(drag);
         match request {
             Ok(request) => {
-                if self.enqueue_device_barrier(request) {
+                if self.enqueue_catalog_device(request) {
                     self.error = None;
                     self.device_panel.message = None;
                     self.status = "updating effects".into();
@@ -3137,9 +3137,10 @@ impl EditorView {
             track,
             before,
             replace: drop_target.replace,
+            control: None,
         };
         self.clear_native_device_drag(drag);
-        if self.enqueue_device_barrier(request) {
+        if self.enqueue_catalog_device(request) {
             self.error = None;
             self.device_panel.message = None;
             self.status = match source {

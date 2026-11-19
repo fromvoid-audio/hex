@@ -100,11 +100,21 @@ impl EditorView {
     pub(in crate::editor) fn refuse_effect_bus_barriers(&mut self, reason: &'static str) {
         self.effect_bus_barrier.custody = None;
         let before = self.device_gesture_barriers.len();
+        let control = self
+            .device_gesture_barriers
+            .iter()
+            .find_map(|request| match request {
+                Request::InsertEffectBusDevice { control, .. } => control.clone(),
+                _ => None,
+            });
         self.device_gesture_barriers
             .retain(|request| !matches!(request, Request::InsertEffectBusDevice { .. }));
         if self.device_gesture_barriers.len() != before {
             self.effect_bus_barrier.refusal = Some(reason);
             self.error = Some(reason.into());
+        }
+        if let Some(control) = control {
+            self.retire_plugin_effect(&control, false, Some(reason));
         }
     }
 

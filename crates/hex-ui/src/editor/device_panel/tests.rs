@@ -1020,6 +1020,10 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     });
 
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let loading = visual.debug_bounds("device-chain-loading-slot").unwrap();
+    let anchor = visual.debug_bounds(card_selector).unwrap();
+    assert!(loading.right() <= anchor.left());
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("space").unwrap(),
         is_held: false,

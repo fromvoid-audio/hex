@@ -118,6 +118,11 @@ fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_und
         visual.simulate_mouse_down(point, gpui::MouseButton::Left, gpui::Modifiers::default());
         visual.simulate_mouse_up(point, gpui::MouseButton::Left, gpui::Modifiers::default());
         visual.simulate_keystrokes("enter");
+        assert!(
+            visual
+                .debug_bounds("arrangement-pending-device-track")
+                .is_some()
+        );
         let expected = hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Instrument,
             hex_lattice_contract::DeviceTypeId::new(kind).unwrap(),
@@ -132,8 +137,17 @@ fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_und
                 view.worker_requests_pending, 1,
                 "actual key queued one typed worker request"
             );
+            assert_eq!(
+                view.state.as_ref().unwrap().project.tracks(),
+                original.tracks()
+            );
         });
         pump_instrument_enter(&editor, &mut visual, 2);
+        assert!(
+            visual
+                .debug_bounds("arrangement-pending-device-track")
+                .is_none()
+        );
         let after = editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
             let project = &view.state.as_ref().unwrap().project;

@@ -136,6 +136,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                 class,
                 type_id,
                 before: None,
+                control: None,
             },
             3 => Request::InsertEffectBusDevice {
                 project_generation: 0,
@@ -144,6 +145,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                 class,
                 type_id,
                 before: None,
+                control: None,
             },
             4 => Request::DropNativeDevice {
                 project_generation: 0,
@@ -152,6 +154,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                 track,
                 before: None,
                 replace: None,
+                control: None,
             },
             5 | 6 => Request::DropBrowserDeviceOnArrangement {
                 project_generation: 0,
@@ -170,6 +173,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                 class,
                 type_id,
                 new_track_gain: Some(0.5),
+                control: None,
             },
             8 | 11 => Request::ReplaceNativeDevice {
                 device: if route == 8 {
@@ -207,6 +211,7 @@ fn all_fresh_catalog_routes_use_saved_banks_with_one_undo_and_redo() {
                     .unwrap()
                     .instrument()
                     .map(hex_project::Device::id),
+                control: None,
             },
             _ => unreachable!(),
         };
@@ -299,6 +304,7 @@ fn missing_defaults_use_factory_errors_preserve_project_and_supplied_state_ignor
             class,
             type_id,
             before: None,
+            control: None,
         })
         .unwrap();
     let initial = next_event(&service);
@@ -326,6 +332,7 @@ fn missing_defaults_use_factory_errors_preserve_project_and_supplied_state_ignor
                 class,
                 type_id,
                 before: None,
+                control: None,
             })
             .unwrap();
         let refused = next_event(&service);

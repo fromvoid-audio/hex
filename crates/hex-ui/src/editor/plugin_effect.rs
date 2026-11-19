@@ -473,39 +473,110 @@ impl EditorView {
         target: ArrangementDeviceDestination,
         new_track_gain: Option<f32>,
     ) {
+        self.enqueue_catalog_device(Request::DropBrowserDeviceOnArrangement {
+            project_generation: context.project_generation,
+            revision: context.editor_revision,
+            class,
+            type_id,
+            destination: target,
+            new_track_gain,
+            control: None,
+        });
+    }
+
+    /// Capture only catalog insertions. Moves, copies and preset replacement
+    /// retain their original request and independently owned terminal.
+    pub(super) fn enqueue_catalog_device(&mut self, mut request: Request) -> bool {
+        use PluginEffectDestination as Destination;
         use hex_engine::NativeDeviceClass;
         use hex_project::TrackDeviceSlot;
+        use hex_session::service::{EffectBusDestination, NativeDeviceDropSource};
+
+        let Some(state) = &self.state else {
+            return self.enqueue_device_barrier(request);
+        };
+        let new_track = |before_track, class, gain: Option<f32>| Destination::NewTrack {
+            before_track,
+            slot: match class {
+                NativeDeviceClass::Effect => TrackDeviceSlot::Effect,
+                NativeDeviceClass::Instrument => TrackDeviceSlot::Instrument,
+            },
+            gain: gain.unwrap_or(1.0),
+            track_identity: state.project.next_identity(),
+        };
+        let track_slot = |track, class, replace: Option<hex_project::DeviceId>| match class {
+            NativeDeviceClass::Effect => Destination::Track(track),
+            NativeDeviceClass::Instrument => replace
+                .map_or(Destination::Instrument(track), |instrument| {
+                    Destination::ReplaceInstrument { track, instrument }
+                }),
+        };
+        let (class, type_id, destination, before, slot_control) = match &mut request {
+            Request::DropBrowserDeviceOnArrangement {
+                class,
+                type_id,
+                destination,
+                new_track_gain,
+                control,
+                ..
+            } => {
+                let position = match *destination {
+                    ArrangementDeviceDestination::NewTrack { before_track } => {
+                        new_track(before_track, *class, *new_track_gain)
+                    }
+                    ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
+                        track_slot(track, *class, instrument)
+                    }
+                };
+                (*class, *type_id, position, None, control)
+            }
+            Request::InsertBrowserInstrumentTrack {
+                class,
+                type_id,
+                new_track_gain,
+                control,
+                ..
+            } => (
+                *class,
+                *type_id,
+                new_track(None, *class, *new_track_gain),
+                None,
+                control,
+            ),
+            Request::InsertEffectBusDevice {
+                class,
+                type_id,
+                destination,
+                before,
+                control,
+                ..
+            } => {
+                let position = match *destination {
+                    EffectBusDestination::Main => Destination::Main,
+                    EffectBusDestination::Return(id) => Destination::Return(id),
+                };
+                (*class, *type_id, position, *before, control)
+            }
+            Request::DropNativeDevice {
+                source: NativeDeviceDropSource::Browser { class, type_id },
+                track,
+                replace,
+                before,
+                control,
+                ..
+            } => (
+                *class,
+                *type_id,
+                track_slot(*track, *class, *replace),
+                *before,
+                control,
+            ),
+            _ => return self.enqueue_device_barrier(request),
+        };
         if self.pending_plugin_effect.is_some() {
             self.error = Some("wait for the pending device insertion".into());
-            return;
+            return false;
         }
-        let Some(state) = &self.state else {
-            return;
-        };
-        let slot = match class {
-            NativeDeviceClass::Effect => TrackDeviceSlot::Effect,
-            NativeDeviceClass::Instrument => TrackDeviceSlot::Instrument,
-        };
-        let destination = match (target, class) {
-            (ArrangementDeviceDestination::NewTrack { before_track }, _) => {
-                PluginEffectDestination::NewTrack {
-                    before_track,
-                    slot,
-                    gain: new_track_gain.unwrap_or(1.0),
-                    track_identity: state.project.next_identity(),
-                }
-            }
-            (
-                ArrangementDeviceDestination::ExistingTrack { track, instrument },
-                NativeDeviceClass::Instrument,
-            ) => instrument.map_or(PluginEffectDestination::Instrument(track), |instrument| {
-                PluginEffectDestination::ReplaceInstrument { track, instrument }
-            }),
-            (
-                ArrangementDeviceDestination::ExistingTrack { track, .. },
-                NativeDeviceClass::Effect,
-            ) => PluginEffectDestination::Track(track),
-        };
         let name = hex_engine::native_device_catalog_for_class(class)
             .ok()
             .and_then(|entries| entries.into_iter().find(|entry| entry.type_id == type_id))
@@ -514,30 +585,25 @@ impl EditorView {
                 |entry| entry.name,
             );
         let control = Arc::new(PluginEffectControl::default());
-        if self.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
-            project_generation: context.project_generation,
-            revision: context.editor_revision,
-            class,
-            type_id,
-            destination: target,
-            new_track_gain,
-            control: Some(Arc::clone(&control)),
-        }) {
-            let status = format!("loading device · {name}");
-            self.pending_plugin_effect = Some(PendingPluginEffect {
-                control,
-                trace: None,
-                status,
-                proposal: PluginProposal {
-                    destination,
-                    before: None,
-                    name,
-                    loading: "loading device",
-                },
-            });
-            self.failed_plugin_proposal = None;
-            self.error = None;
+        *slot_control = Some(Arc::clone(&control));
+        if !self.enqueue_device_barrier(request) {
+            return false;
         }
+        let status = format!("loading device · {name}");
+        self.pending_plugin_effect = Some(PendingPluginEffect {
+            control,
+            trace: None,
+            status,
+            proposal: PluginProposal {
+                destination,
+                before,
+                name,
+                loading: "loading device",
+            },
+        });
+        self.failed_plugin_proposal = None;
+        self.error = None;
+        true
     }
 
     pub(super) fn insert_browser_plugin_effect(

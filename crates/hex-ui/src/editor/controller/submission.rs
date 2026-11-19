@@ -388,11 +388,7 @@ impl EditorView {
         if let Request::InsertPluginEffect(insertion) = request {
             visible |= self.retire_plugin_effect(&insertion.control, false, Some(message));
         }
-        if let Request::DropBrowserDeviceOnArrangement {
-            control: Some(control),
-            ..
-        } = request
-        {
+        if let Some(control) = request.builtin_device_insert_control() {
             visible |= self.retire_plugin_effect(control, false, Some(message));
         }
         if kinds.project_rate {

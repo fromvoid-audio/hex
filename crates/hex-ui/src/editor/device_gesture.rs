@@ -181,6 +181,18 @@ impl EditorView {
         self.device_gesture.snapshot().is_some() || !self.device_gesture_barriers.is_empty()
     }
 
+    fn refuse_device_gesture_barriers(&mut self, reason: &'static str) {
+        let insertion = self
+            .device_gesture_barriers
+            .iter()
+            .find_map(|request| request.builtin_device_insert_control().cloned());
+        self.device_gesture_barriers.clear();
+        self.effect_bus_barrier.custody = None;
+        if let Some(control) = insertion {
+            self.retire_plugin_effect(&control, false, Some(reason));
+        }
+    }
+
     pub(super) fn pump_device_gesture(&mut self) -> bool {
         let Some(gesture) = self.device_gesture.next_request() else {
             return false;
@@ -194,8 +206,7 @@ impl EditorView {
             Err(SubmitError::Full(_)) => false,
             Err(SubmitError::Busy(_, reason)) => {
                 self.device_gesture.reset();
-                self.device_gesture_barriers.clear();
-                self.effect_bus_barrier.custody = None;
+                self.refuse_device_gesture_barriers(super::user_errors::busy(reason));
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
                 self.error = Some(super::user_errors::busy(reason).into());
@@ -203,8 +214,7 @@ impl EditorView {
             }
             Err(SubmitError::Closed(_)) => {
                 self.device_gesture.reset();
-                self.device_gesture_barriers.clear();
-                self.effect_bus_barrier.custody = None;
+                self.refuse_device_gesture_barriers("project worker stopped");
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
                 self.error = Some("project worker stopped".into());

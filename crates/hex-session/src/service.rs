@@ -886,6 +886,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         new_track_gain: Option<f32>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
     InsertPluginEffect(PluginEffectInsertion),
@@ -914,6 +915,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         before: Option<hex_project::DeviceId>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
@@ -1045,6 +1047,7 @@ pub enum Request {
         track: hex_project::TrackId,
         before: Option<hex_project::DeviceId>,
         replace: Option<hex_project::DeviceId>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     AddNativeDevice {
         track: hex_project::TrackId,
@@ -1275,6 +1278,21 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Exact cancellation carried by a browser or catalog insertion through
+    /// gesture barriers, preparation, and callback installation.
+    pub fn builtin_device_insert_control(&self) -> Option<&Arc<PluginEffectControl>> {
+        match self {
+            Self::InsertBrowserInstrumentTrack { control, .. }
+            | Self::InsertEffectBusDevice { control, .. }
+            | Self::DropBrowserDeviceOnArrangement { control, .. }
+            | Self::DropNativeDevice {
+                source: NativeDeviceDropSource::Browser { .. },
+                control,
+                ..
+            } => control.as_ref(),
+            _ => None,
+        }
+    }
     /// Read responses do not acknowledge ordered editor mutations.
     pub fn is_read_only_observation(&self) -> bool {
         matches!(
@@ -3587,11 +3605,7 @@ fn run_worker(
         let mut device_insert_proposal = None;
         let mut repeated_device_insert = false;
         let mut device_insert_proposal_accepted = false;
-        if let Request::DropBrowserDeviceOnArrangement {
-            control: Some(control),
-            ..
-        } = &request
-        {
+        if let Some(control) = request.builtin_device_insert_control() {
             if control.claim() {
                 device_insert_proposal = Some(Arc::clone(control));
             } else {
@@ -4791,6 +4805,7 @@ fn run_worker(
                 class,
                 type_id,
                 new_track_gain,
+                ..
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("instrument insertion canceled · project changed".to_owned())
@@ -4829,6 +4844,7 @@ fn run_worker(
                 class,
                 type_id,
                 before,
+                ..
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("effect insertion canceled · project changed".to_owned())
@@ -6604,6 +6620,7 @@ fn run_worker(
                     track,
                     before,
                     replace,
+                    ..
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -6720,10 +6737,11 @@ fn run_worker(
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 request_document_intent,
-                                None,
+                                device_insert_proposal.as_ref(),
                             ) {
                                 Ok(BrowserEdit::Pending(mut staged)) => {
                                     staged.publish_created = false;
+                                    staged.proposal_control = device_insert_proposal.take();
                                     pending_device_insert = Some(*staged);
                                     request_complete = false;
                                     status = Some("device edit pending · waiting for audio".into());
@@ -6731,6 +6749,7 @@ fn run_worker(
                                 Ok(BrowserEdit::Applied(_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                    device_insert_proposal_accepted = true;
                                     status = Some(match source {
                                         NativeDeviceDropSource::Browser { .. }
                                             if replace.is_some() =>
@@ -7200,6 +7219,49 @@ fn run_worker(
                             || session.audio_mode() != DocumentAudioMode::Resident) =>
                 {
                     error = Some("vst3 recovery lost its resident publication path".into());
+                }
+                Request::Edit(command) if device_insert_proposal.is_some() => {
+                    // Browser Enter and effect-bus additions are resolved through
+                    // their existing default/owner validation and gesture barrier.
+                    // Keep their Created result after the exact install.
+                    let result = resident_audio::device_insert::submit_browser_edit(
+                        &mut session,
+                        command,
+                        &state,
+                        project_generation,
+                        compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                        &mut events,
+                        &mut resident_snapshot,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
+                        request_document_intent,
+                        device_insert_proposal.as_ref(),
+                    );
+                    match result {
+                        Ok(BrowserEdit::Pending(mut staged)) => {
+                            staged.proposal_control = device_insert_proposal.take();
+                            pending_device_insert = Some(*staged);
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(BrowserEdit::Applied(new, prepared)) => {
+                            created = Some(new);
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            device_insert_proposal_accepted = true;
+                            status = Some("device inserted".into());
+                        }
+                        Ok(BrowserEdit::Unchanged) => status = Some("no change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
                 }
                 Request::Edit(command)
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
@@ -14392,6 +14454,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("drop utility from browser");
         let added_effect = next_event(&service);
@@ -14411,6 +14474,7 @@ mod service_tests {
                 track: first_track,
                 before: Some(utility_id),
                 replace: None,
+                control: None,
             })
             .expect("drop sine into empty instrument slot");
         let added_instrument = next_event(&service);
@@ -14453,6 +14517,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("occupied instrument drop");
         let occupied = next_event(&service);
@@ -14476,6 +14541,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(utility_id),
+                control: None,
             })
             .expect("invalid replacement target");
         let invalid_replace = next_event(&service);
@@ -14499,6 +14565,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(instrument_id),
+                control: None,
             })
             .expect("existing-device drag cannot claim replacement intent");
         let invalid_source = next_event(&service);
@@ -14522,6 +14589,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(instrument_id),
+                control: None,
             })
             .expect("replace sine in its instrument card");
         let replaced = next_event(&service);
@@ -14598,6 +14666,7 @@ mod service_tests {
                 track: destination_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("move instrument to destination");
         let moved_instrument = next_event(&service);
@@ -14630,6 +14699,7 @@ mod service_tests {
                 track: destination_track,
                 before: Some(utility_id),
                 replace: None,
+                control: None,
             })
             .expect("anchor from another track");
         let rejected_anchor = next_event(&service);
@@ -14655,6 +14725,7 @@ mod service_tests {
                     track: destination_track,
                     before: None,
                     replace: None,
+                    control: None,
                 })
                 .expect("stale device drop");
             let rejected = next_event(&service);
@@ -14740,6 +14811,7 @@ mod service_tests {
                 track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("drop during parameter gesture");
         let refused = next_event(&service);

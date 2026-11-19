@@ -2027,12 +2027,13 @@ impl EditorView {
                     return;
                 }
             };
-            self.enqueue(Request::InsertBrowserInstrumentTrack {
+            self.enqueue_catalog_device(Request::InsertBrowserInstrumentTrack {
                 project_generation: self.project_generation,
                 revision: state.revision,
                 class: hex_engine::NativeDeviceClass::Instrument,
                 type_id,
                 new_track_gain: Some(gain),
+                control: None,
             });
             cx.notify();
             return;
@@ -3248,7 +3249,7 @@ impl EditorView {
                             });
                         match request {
                             Ok(request) => {
-                                if view.enqueue_device_barrier(request) {
+                                if view.enqueue_catalog_device(request) {
                                     view.error = None;
                                     view.status = "adding device to track".into();
                                 }
