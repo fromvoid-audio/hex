@@ -1114,6 +1114,13 @@ impl SessionPlayback {
             Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
         );
         let continuous_insert = self.require_continuous_insert && previous.playing;
+        let tail_policy = if continuous_insert {
+            DeviceEditTailPolicy::RequireConfirmation
+        } else if confirmed_insert {
+            DeviceEditTailPolicy::Cut
+        } else {
+            DeviceEditTailPolicy::Preserve
+        };
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -1643,8 +1650,9 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
-        // A reset cannot capture a newly removed or changed audible Return
-        // chain. Refuse before modifying either runtime while its tail is live.
+        // A reset cannot carry residual output from a changed Return. An
+        // approved cut may retire it when no old endpoint also has to run on
+        // the relocated graph. Otherwise retain the predecessor at its clock.
         if relocate && restart != Restart::Baked {
             let old_buses = previous.revision.arrangement().return_buses();
             let new_buses = self.revision.arrangement().return_buses();
@@ -1656,16 +1664,19 @@ impl SessionPlayback {
                 if bus.muted || bus.gain == 0.0 || old.committed_range_is_quiescent(0..old.len()) {
                     continue;
                 }
-                let unchanged = new_buses
+                let can_relocate = new_buses
                     .iter()
-                    .position(|new| new.id == bus.id)
-                    .and_then(|index| self.return_chains.get(index))
-                    .is_some_and(|new| {
-                        old.len() == new.len()
+                    .zip(&self.return_chains)
+                    .find(|(new_bus, _)| new_bus.id == bus.id)
+                    .is_some_and(|(new_bus, new)| {
+                        (old.len() == new.len()
                             && old.configuration_matches_range(new, 0..old.len())
-                            && new.can_inherit_from(old)
+                            && new.can_inherit_from(old))
+                            || (tail_policy.for_chain(&bus.device_chain, &new_bus.device_chain)
+                                == DeviceEditTailPolicy::Cut
+                                && validate_foreign_tail_sources(self, old, 0).is_ok())
                     });
-                if !unchanged {
+                if !can_relocate {
                     return Err(SessionPlaybackError::LatencyLayoutChanged);
                 }
             }
@@ -4472,25 +4483,8 @@ impl SessionPlayback {
         // complete current+retained owners are separately charged below.
         let mut suffix_entry_count = 0_usize;
         let sample_rate = self.revision.arrangement().sample_rate();
-        let tail_policy = if continuous_insert {
-            DeviceEditTailPolicy::RequireConfirmation
-        } else if confirmed_insert {
-            DeviceEditTailPolicy::Cut
-        } else {
-            DeviceEditTailPolicy::Preserve
-        };
         let old_main = &previous.revision.arrangement().main_device_chain;
         let new_main = &self.revision.arrangement().main_device_chain;
-        let main_tail_policy = if tail_policy != DeviceEditTailPolicy::Preserve
-            && old_main
-                .iter()
-                .map(|device| device.device_id)
-                .ne(new_main.iter().map(|device| device.device_id))
-        {
-            tail_policy
-        } else {
-            DeviceEditTailPolicy::Preserve
-        };
         let mut return_tail_plan = ReturnEffectTailPlan::preflight(
             previous.revision.arrangement().return_buses(),
             &previous.return_chains,
@@ -4502,6 +4496,7 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
             continuation,
+            tail_policy,
         )?;
         return_tail_plan.preflight_main(
             &previous.main_chain,
@@ -4517,7 +4512,7 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
             continuation,
-            main_tail_policy,
+            tail_policy.for_chain(old_main, new_main),
         )?;
         if clock_transfer == 2
             && self.compensation.is_none()
@@ -4794,17 +4789,11 @@ impl SessionPlayback {
                 }
                 continue;
             }
-            if tail_policy != DeviceEditTailPolicy::Preserve
-                && candidate_index
-                    .and_then(|index| self.revision.arrangement().tracks().get(index))
-                    .is_some_and(|candidate| {
-                        old_track
-                            .device_chain
-                            .iter()
-                            .map(|device| device.device_id)
-                            .ne(candidate.device_chain.iter().map(|device| device.device_id))
-                    })
-                && tail_policy.cut_obsolete_tail()?
+            if let Some(candidate) =
+                candidate_index.and_then(|index| self.revision.arrangement().tracks().get(index))
+                && tail_policy
+                    .for_chain(&old_track.device_chain, &candidate.device_chain)
+                    .cut_obsolete_tail()?
             {
                 // The confirmed cut may discard residual output from a changed
                 // track chain. The normal history preflight still governs the

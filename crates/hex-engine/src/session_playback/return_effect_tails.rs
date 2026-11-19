@@ -1,7 +1,7 @@
 //! Bounded ownership and rendering for residual output from Return and Main chains.
 use super::{Frame, MAX_FINITE_EFFECT_TAIL_SECONDS, SessionPlaybackError};
 use crate::ReturnBus;
-use hex_lattice::{NativeRuntimeChain, OutputTail, StereoMatrix};
+use hex_lattice::{NativeRuntimeChain, OutputTail, PreparedRuntimeInstance, StereoMatrix};
 use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 use std::fmt;
 
@@ -327,6 +327,25 @@ pub(super) enum DeviceEditTailPolicy {
 }
 
 impl DeviceEditTailPolicy {
+    /// A changed topology has a different ordered set of stable device IDs.
+    /// State-only edits still use the ordinary tail and continuation proofs.
+    pub(super) fn for_chain(
+        self,
+        old: &[PreparedRuntimeInstance],
+        new: &[PreparedRuntimeInstance],
+    ) -> Self {
+        if self != Self::Preserve
+            && old
+                .iter()
+                .map(|device| device.device_id)
+                .ne(new.iter().map(|device| device.device_id))
+        {
+            self
+        } else {
+            Self::Preserve
+        }
+    }
+
     pub(super) fn cut_obsolete_tail(self) -> Result<bool, SessionPlaybackError> {
         match self {
             Self::Preserve => Ok(false),
@@ -441,6 +460,7 @@ impl ReturnEffectTailPlan {
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        tail_policy: DeviceEditTailPolicy,
     ) -> Result<Self, SessionPlaybackError> {
         if old_buses.len() > MAX_RETURN_TRACKS
             || new_buses.len() > MAX_RETURN_TRACKS
@@ -522,6 +542,22 @@ impl ReturnEffectTailPlan {
                 || old_bus.gain == 0.0
                 || old_chain.committed_range_is_quiescent(0..old_chain.len())
             {
+                continue;
+            }
+            if let Some(index) = new_index
+                && tail_policy
+                    .for_chain(&old_bus.device_chain, &new_buses[index].device_chain)
+                    .cut_obsolete_tail()?
+            {
+                // The cut retires the obsolete chain with its donor. Transfer
+                // only compatible stable device histories to the active Return.
+                let new_chain = new_chains
+                    .get(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if !new_chain.can_inherit_from(old_chain) {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                plan.inherit_bus[index] = true;
                 continue;
             }
 

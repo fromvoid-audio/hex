@@ -368,45 +368,50 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_track_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(false);
+    verify_approved_effect_removal(0);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_main_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(true);
+    verify_approved_effect_removal(2);
 }
 
-fn verify_approved_effect_removal(main: bool) {
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_return_effect_removal_keeps_one_native_endpoint_through_the_cut() {
+    verify_approved_effect_removal(1);
+}
+
+fn verify_approved_effect_removal(location: usize) {
     use hex_lattice_contract::NativeDeviceMetadata;
 
     const QUANTUM: usize = 128;
     let _serial = serial();
-    let mut f = fixture_with_quantum("processing", if main { 2 } else { 0 }, QUANTUM as u16);
+    let mut f = fixture_with_quantum("processing", location, QUANTUM as u16);
     let track = &f.editor.project().tracks()[0];
-    let hosted = if main {
-        f.editor.project().main_devices()[0].id()
-    } else {
-        track.devices()[0].id()
-    };
     let track = track.id();
     let state = hex_devices::eq::EQ_DEFINITION.default_state().unwrap();
-    let Created::Device(eq) = f
-        .editor
-        .execute(if main {
-            Command::InsertMainDevice {
-                before: Some(hosted),
+    let insert = match location {
+        0 => Command::InsertDevice {
+            track,
+            before: Some(f.editor.project().tracks()[0].devices()[0].id()),
+            state,
+        },
+        1 => {
+            let bus = &f.editor.project().return_tracks()[0];
+            Command::InsertReturnDevice {
+                return_track: bus.id(),
+                before: Some(bus.devices()[0].id()),
                 state,
             }
-        } else {
-            Command::InsertDevice {
-                track,
-                before: Some(hosted),
-                state,
-            }
-        })
-        .unwrap()
-    else {
+        }
+        _ => Command::InsertMainDevice {
+            before: Some(f.editor.project().main_devices()[0].id()),
+            state,
+        },
+    };
+    let Created::Device(eq) = f.editor.execute(insert).unwrap() else {
         panic!("eq");
     };
     f.editor
@@ -439,8 +444,10 @@ fn verify_approved_effect_removal(main: bool) {
         pcm
     };
     // The signed processing fixture's gain advances once per SDK quantum.
-    let expected =
-        |sdk_block: u8| [0.25, -0.5].map(|sample| sample * (0.5 + f32::from(sdk_block) * 0.125));
+    let expected = |sdk_block: u8| {
+        let dry = if location == 1 { 1.0 } else { 0.0 };
+        [0.25, -0.5].map(|sample| sample * (dry + 0.5 + f32::from(sdk_block) * 0.125))
+    };
     let check_block = |pcm: [Frame; QUANTUM], sdk_block| {
         let signal = expected(sdk_block);
         assert_eq!(pcm[0], signal);

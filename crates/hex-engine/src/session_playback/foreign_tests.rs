@@ -1093,37 +1093,68 @@ struct QuietTrackEffect;
 
 #[test]
 fn confirmed_track_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
-    verify_confirmed_effect_removal(false);
+    verify_confirmed_effect_removal(0, false);
 }
 
 #[test]
 fn confirmed_main_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
-    verify_confirmed_effect_removal(true);
+    verify_confirmed_effect_removal(2, false);
 }
 
-fn verify_confirmed_effect_removal(main: bool) {
+#[test]
+fn confirmed_return_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    verify_confirmed_effect_removal(1, false);
+}
+
+#[test]
+fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() {
+    verify_confirmed_effect_removal(1, true);
+}
+
+fn verify_confirmed_effect_removal(location: usize, remove_hosted: bool) {
     use hex_devices::eq::EQ_DEFINITION;
 
     let mut f = fixture(&[&[], &[]], 64);
     let track = f.tracks[0];
-    let owner = if main {
-        ProcessorChainOwner::Main
-    } else {
-        ProcessorChainOwner::Track(track.value())
-    };
-    let insert = |state| {
-        if main {
-            Command::InsertMainDevice {
-                before: None,
-                state,
-            }
-        } else {
-            Command::InsertDevice {
+    let bus = (location == 1).then(|| {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "effect return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
                 track,
-                before: None,
-                state,
-            }
-        }
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        bus
+    });
+    let owner = match location {
+        0 => ProcessorChainOwner::Track(track.value()),
+        1 => ProcessorChainOwner::Return(bus.unwrap().value()),
+        _ => ProcessorChainOwner::Main,
+    };
+    let insert = |state| match location {
+        0 => Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        },
+        1 => Command::InsertReturnDevice {
+            return_track: bus.unwrap(),
+            before: None,
+            state,
+        },
+        _ => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
     };
     let Created::Device(eq) = f
         .editor
@@ -1158,7 +1189,13 @@ fn verify_confirmed_effect_removal(main: bool) {
     };
     let mut predecessor = prepare(f.editor.project());
     let mut reference = prepare(f.editor.project());
-    f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+    f.editor
+        .execute(Command::RemoveDevice(if remove_hosted {
+            hosted
+        } else {
+            eq
+        }))
+        .unwrap();
     let mut refused = prepare(f.editor.project());
     refused.require_continuous_insert = true;
     let mut approved = prepare(f.editor.project());
@@ -1174,10 +1211,10 @@ fn verify_confirmed_effect_removal(main: bool) {
     predecessor
         .render_with_foreign_processors(&mut [[0.0; 2]; 7], None, None, None, &mut endpoint)
         .unwrap();
-    let chain = if main {
-        &predecessor.main_chain
-    } else {
-        &predecessor.device_chains[0]
+    let chain = match location {
+        0 => &predecessor.device_chains[0],
+        1 => &predecessor.return_chains[0],
+        _ => &predecessor.main_chain,
     };
     assert!(!chain.committed_range_is_quiescent(0..chain.len()));
     assert_eq!(
@@ -1198,6 +1235,20 @@ fn verify_confirmed_effect_removal(main: bool) {
         .unwrap();
     assert_eq!(approved.performance_frame, 8);
     approved.set_playing_at_device_insert_cut(true);
+    if remove_hosted {
+        let mut reference = prepare(f.editor.project());
+        reference.apply(SessionPlaybackCommand::Seek(8)).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut expected = [[0.0; 2]; 64];
+        reference.render(&mut expected).unwrap();
+        let mut actual = [[0.0; 2]; 64];
+        // Rendering without a foreign runner proves the retiring worker has
+        // no obligations, including zero-input tail work, on the successor.
+        approved.render(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+        return;
+    }
     endpoint.next_offset = 0;
     let mut after_cut = [[0.0; 2]; 24];
     approved
