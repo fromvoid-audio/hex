@@ -348,15 +348,11 @@ impl SourceEffectStages {
         })
     }
 
-    pub(crate) fn has_tail(&self, index: usize) -> bool {
+    pub(crate) fn needs_zero_input_render(&self, index: usize) -> bool {
         self.chains
             .get(index)
             .and_then(Option::as_ref)
-            .is_some_and(|stage| {
-                !stage
-                    .chain
-                    .committed_range_is_quiescent(0..stage.chain.len())
-            })
+            .is_some_and(|stage| stage.chain.needs_zero_input_render())
     }
 
     pub(crate) fn has_chain(&self, index: usize) -> bool {

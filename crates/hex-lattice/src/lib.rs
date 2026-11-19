@@ -916,6 +916,14 @@ impl RuntimeEntry {
         self.supports_power_off && self.bypassed && !self.removal_bypassing && !ramp.is_active()
     }
 
+    fn committed_is_quiescent(&self) -> bool {
+        (self.powered_off(self.committed_bypass_ramp) || self.runtime.committed_is_quiescent())
+            && self
+                .committed_aligned_dry
+                .as_ref()
+                .is_none_or(bypass_ramp::AlignedDry::is_quiet)
+    }
+
     fn modulates_host_input(&self) -> bool {
         !self.bypassed
             && !self.automation_frozen
@@ -1261,18 +1269,22 @@ pub struct NativeInsertTransition {
     position: usize,
 }
 
-/// The exact stage on a retiring predecessor. A committed powered-off stage
-/// already passes dry and needs no provisional bypass.
+/// The exact stage on a retiring predecessor. An authored bypass retains its
+/// existing path to dry and needs no provisional mix.
 #[derive(Clone, Copy)]
 pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
-    already_powered_off: bool,
+    authored_bypass: bool,
 }
 
 impl NativeRemovalTransition {
     pub fn identity(self) -> ProcessorInstanceIdentity {
         self.identity
+    }
+
+    fn matches(self, entry: &RuntimeEntry) -> bool {
+        entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
     }
 }
 
@@ -2369,16 +2381,17 @@ impl NativeRuntimeChain {
     /// future output under zero input. Invalid ranges conservatively return
     /// false. Stateless matrix entries are immediately quiescent.
     pub fn committed_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
-        self.entries.get(range).is_some_and(|entries| {
-            entries.iter().all(|entry| {
-                (entry.powered_off(entry.committed_bypass_ramp)
-                    || entry.runtime.committed_is_quiescent())
-                    && entry
-                        .committed_aligned_dry
-                        .as_ref()
-                        .is_none_or(bypass_ramp::AlignedDry::is_quiet)
-            })
-        })
+        self.entries
+            .get(range)
+            .is_some_and(|entries| entries.iter().all(RuntimeEntry::committed_is_quiescent))
+    }
+
+    /// Render silent input while a bypass mix still needs to reach its target,
+    /// even when there is no remaining processor signal history.
+    pub fn needs_zero_input_render(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.scratch_bypass_ramp.is_active() || !entry.committed_is_quiescent())
     }
 
     /// Speculative counterpart used only after processing scratch state in the
@@ -2624,22 +2637,27 @@ impl NativeRuntimeChain {
     ) -> Option<NativeInsertTransition> {
         let position = self.extra_native_stage_from(
             previous,
-            |added| !added.bypassed,
+            |added| !added.bypassed && !matches!(added.runtime, RuntimeOwnership::Memoryless),
             |old, current| Self::entry_configuration_matches(old, current, continuation),
         )?;
         self.can_inherit_from(previous)
             .then_some(NativeInsertTransition { position })
     }
 
-    /// Prove one native removal with all surviving stages in their original
-    /// order and history-compatible. This does not change either runtime.
+    /// Prove one smoothed zero-latency removal, including a memoryless matrix,
+    /// with all surviving stages in order and history-compatible.
     pub fn native_removal_transition_from(
         &self,
         previous: &Self,
     ) -> Option<NativeRemovalTransition> {
         let position = previous.extra_native_stage_from(
             self,
-            |removed| !removed.bypassed || removed.powered_off(removed.committed_bypass_ramp),
+            |removed| {
+                !removed.removal_bypassing
+                    && (!removed.bypassed
+                        || removed.powered_off(removed.committed_bypass_ramp)
+                        || matches!(removed.runtime, RuntimeOwnership::Memoryless))
+            },
             |current, old| Self::entry_configuration_matches(old, current, None),
         )?;
         let removed = previous.entries.get(position)?;
@@ -2648,7 +2666,7 @@ impl NativeRuntimeChain {
             .then_some(NativeRemovalTransition {
                 position,
                 identity,
-                already_powered_off: removed.powered_off(removed.committed_bypass_ramp),
+                authored_bypass: removed.bypassed,
             })
     }
 
@@ -2676,10 +2694,7 @@ impl NativeRuntimeChain {
         (accepts_extra(extra)
             && extra.algorithmic_latency_frames == Some(0)
             && extra.supports_smoothed_bypass
-            && matches!(
-                extra.runtime,
-                RuntimeOwnership::Legacy { .. } | RuntimeOwnership::Owned(_)
-            )
+            && !matches!(extra.runtime, RuntimeOwnership::Foreign(_))
             && shorter.entries.iter().zip(retained).all(|(short, long)| {
                 short.device_id != extra.device_id
                     && short.algorithmic_latency_frames == long.algorithmic_latency_frames
@@ -2691,8 +2706,10 @@ impl NativeRuntimeChain {
     /// Start a proved removal on its predecessor. Only the affected stage's
     /// wet/dry mix changes. Its DSP stays owned by the predecessor.
     pub fn begin_native_removal(&mut self, transition: NativeRemovalTransition) -> bool {
-        if transition.already_powered_off {
-            self.native_removal_ready(transition)
+        if transition.authored_bypass {
+            self.entries.get(transition.position).is_some_and(|entry| {
+                transition.matches(entry) && entry.bypassed && !entry.removal_bypassing
+            })
         } else {
             self.set_native_removal_bypass(transition, true)
         }
@@ -2700,23 +2717,18 @@ impl NativeRuntimeChain {
 
     /// Restore the same stage if the pending edit is cancelled or refused.
     pub fn cancel_native_removal(&mut self, transition: NativeRemovalTransition) {
-        if !transition.already_powered_off {
+        if !transition.authored_bypass {
             self.set_native_removal_bypass(transition, false);
         }
     }
 
-    /// A committed power-off or a completed removal ramp is the terminal.
+    /// Either the authored bypass or the provisional removal must reach dry.
     pub fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
         self.entries.get(transition.position).is_some_and(|entry| {
-            entry.owner == transition.identity.owner()
-                && entry.device_id == transition.identity.device_id()
-                && if transition.already_powered_off {
-                    entry.powered_off(entry.committed_bypass_ramp)
-                } else {
-                    entry.removal_bypassing
-                        && entry.bypassed
-                        && !entry.committed_bypass_ramp.is_active()
-                }
+            transition.matches(entry)
+                && entry.bypassed
+                && entry.removal_bypassing != transition.authored_bypass
+                && !entry.committed_bypass_ramp.is_active()
         })
     }
 
@@ -2728,8 +2740,7 @@ impl NativeRuntimeChain {
         let Some(entry) = self.entries.get_mut(transition.position) else {
             return false;
         };
-        if entry.owner != transition.identity.owner()
-            || entry.device_id != transition.identity.device_id()
+        if !transition.matches(entry)
             || entry.bypassed == bypassed
             || entry.removal_bypassing == bypassed
         {

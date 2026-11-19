@@ -460,6 +460,159 @@ fn resident_native_removal_installs_with_an_ordinary_stream_workspace() {
 }
 
 #[test]
+fn removing_matrix_utility_fades_track_return_and_main_at_the_receipt_boundary() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
+
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            INVERT_LEFT,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    const FADE: usize = RATE.div_ceil(200) as usize;
+    for location in 0..3 {
+        let (mut editor, track, prepare) = resident_input(vec![SIGNAL; 2048]);
+        let add = match location {
+            0 => Command::InsertDevice {
+                track,
+                before: None,
+                state: state.clone(),
+            },
+            1 => {
+                let Created::ReturnTrack(bus) = editor
+                    .execute(Command::AddReturnTrack {
+                        name: "return".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return");
+                };
+                editor
+                    .execute(Command::SetReturnSend {
+                        track,
+                        return_track: bus,
+                        gain: 1.0,
+                    })
+                    .unwrap();
+                Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state: state.clone(),
+                }
+            }
+            _ => Command::InsertMainDevice {
+                before: None,
+                state: state.clone(),
+            },
+        };
+        let Created::Device(device) = editor.execute(add).unwrap() else {
+            panic!("utility");
+        };
+        let wet = prepare(editor.project());
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let bypassed = prepare(editor.project());
+        editor.execute(Command::RemoveDevice(device)).unwrap();
+        let dry = prepare(editor.project());
+        let (initial, neutral) = if location == 1 {
+            ([0.0, 0.5], [0.5; 2])
+        } else {
+            ([-0.25, 0.25], [0.25; 2])
+        };
+        for (old, needs_fade) in [(wet, true), (bypassed, false)] {
+            let (control, mut callback, predecessor, receipt) =
+                begin_insert_with_pending_track(old, Arc::clone(&dry), None, 64);
+            if needs_fade {
+                let mut offset = 0;
+                for count in [1, 31, FADE - 32] {
+                    let mut output = [[0.0; 2]; FADE];
+                    callback.begin_block();
+                    callback.render(&mut output[..count]).unwrap();
+                    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+                    assert_eq!(control.status.recording_source(), Some(predecessor));
+                    for (index, frame) in output[..count].iter().enumerate() {
+                        let mix = 1.0 - (offset + index + 1) as f32 / FADE as f32;
+                        for channel in 0..2 {
+                            let expected =
+                                neutral[channel] + (initial[channel] - neutral[channel]) * mix;
+                            assert!(
+                                (frame[channel] - expected).abs() < 1e-6,
+                                "location {location}"
+                            );
+                        }
+                    }
+                    offset += count;
+                }
+            }
+            let mut after = [[0.0; 2]; 32];
+            callback.begin_block();
+            callback.render(&mut after).unwrap();
+            assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+            assert_eq!(
+                control.status.recording_source(),
+                Some(AppliedAudioSource {
+                    context: hex_engine::AudioSourceContext {
+                        editor_revision: 8,
+                        ..predecessor.context
+                    },
+                    audio_revision: receipt.revision(),
+                    ..predecessor
+                })
+            );
+            assert_eq!(after, [neutral; 32]);
+        }
+    }
+}
+
+#[test]
+fn removing_matrix_utility_finishes_when_the_session_route_is_silent() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
+
+    let (mut editor, _, prepare) = resident_input(vec![SIGNAL; 1024]);
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "silent".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: UTILITY_DEFINITION
+                .patch_parameter(
+                    &UTILITY_DEFINITION.default_state().unwrap(),
+                    INVERT_LEFT,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("utility");
+    };
+    let old = prepare(editor.project());
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let next = prepare(editor.project());
+    let (control, mut callback, predecessor, receipt) =
+        begin_quantized_insert(old, next, Some(track), 64, LaunchQuantization::Immediate);
+    let mut output = [[0.0; 2]; RATE.div_ceil(200) as usize];
+    callback.begin_block();
+    callback.render(&mut output).unwrap();
+    assert_eq!(output, [SIGNAL; RATE.div_ceil(200) as usize]);
+    callback.begin_block();
+    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+    assert_ne!(control.status.recording_source(), Some(predecessor));
+}
+
+#[test]
 fn removing_settled_off_main_effect_preserves_the_downstream_delay_history() {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,

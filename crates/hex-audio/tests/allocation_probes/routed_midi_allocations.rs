@@ -754,6 +754,22 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
 
 #[test]
 fn fenced_nested_effect_removal_and_cancel_allocate_and_free_nothing() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    fenced_nested_effect_removal(hex_devices::delay::DEFINITION.default_state().unwrap());
+    fenced_nested_effect_removal(
+        UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                INVERT_LEFT,
+                ParameterValue::Bool(true),
+            )
+            .unwrap(),
+    );
+}
+
+fn fenced_nested_effect_removal(effect: hex_lattice_contract::NativeDeviceState) {
     use hex_audio::prepared::{
         FreshRuntimeCancellationResult, PublicationPolicy, PublicationReceiptState,
     };
@@ -771,7 +787,7 @@ fn fenced_nested_effect_removal_and_cancel_allocate_and_free_nothing() {
                 hex_devices::fm4::device::FM4_DEFINITION
                     .default_state()
                     .unwrap(),
-                hex_devices::delay::DEFINITION.default_state().unwrap(),
+                effect,
             ],
             instrument_index: 0,
         })
@@ -930,8 +946,9 @@ fn fenced_nested_effect_removal_and_cancel_allocate_and_free_nothing() {
         });
         (actual, wet, dry)
     };
-    let (actual, wet, _) = render(129);
+    let (actual, wet, dry) = render(129);
     assert_eq!(actual, wet);
+    assert_ne!(wet, dry);
     let predecessor = control.status.recording_source().unwrap();
     let next_context = hex_engine::AudioSourceContext {
         editor_revision: 3,
