@@ -241,6 +241,7 @@ struct Packet {
     uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false,release_gates=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
+    std::optional<uint64_t> expected_editor_admission;
     hex_instance::ControllerQuery parameter_query{};
     PresentationPlan resumed_presentation;
     // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
@@ -260,6 +261,8 @@ struct Packet {
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
         const auto wire_version=number(p+4,2);
+        const bool guarded_flush=flush && wire_version==3;
+        expected_editor_admission.reset();
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
         observe_sdk_timing=pcm && (wire_version&sdk_timing_bit);sdk_process_ns=0;
@@ -287,13 +290,13 @@ struct Packet {
         const bool timed=pcm && (version==4 || extended_timing);
         const bool identified_notes=pcm && (version==3 || timed);
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
-            ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes):
+            ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes && !guarded_flush):
                 (version!=1 && !release_gates))) return -1;
         note_count=static_cast<size_t>(number(p+8,2));
         const bool dense_notes=note_count>hex_instance::LEGACY_INPUT_NOTE_COUNT;
         if (note_count>notes.size() || (dense_notes && !identified_notes) ||
             (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
-        const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes;
+        const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes || guarded_flush;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
         if(parameter_count>parameters.size() || (dense_parameter && !has_parameter_field) ||
             (authored_parameters && !parameter_count && !dense_parameter)) return -1;
@@ -329,9 +332,12 @@ struct Packet {
             return page_start?10:11;
         }
         if(flush) {
-            if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16,true)!=1) return -1;
+            const size_t prefix=guarded_flush?16:8;
+            if((version!=2 && !guarded_flush) || frames || (guarded_flush && !parameter_count) ||
+               read_exact(fd,p+header_size,prefix+parameter_count*16,true)!=1) return -1;
             capture_operation=number(p+header_size,8);
-            return capture_operation && parse_parameters(p+header_size+8,1)?8:-1;
+            if(guarded_flush) expected_editor_admission=number(p+header_size+8,8);
+            return capture_operation && parse_parameters(p+header_size+prefix,1)?8:-1;
         }
         if(capture || live_start || live_poll || edit_query || reactivate) {
             if(frames || read_exact(fd,p+header_size,8,true)!=1) return -1;

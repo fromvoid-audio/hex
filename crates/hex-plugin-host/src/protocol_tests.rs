@@ -1000,6 +1000,52 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
 }
 
 #[test]
+fn guarded_flush_conflict_is_empty_bound_and_distinct_from_success() {
+    use crate::transport::{ParameterPoint, Parameters};
+    let config = config();
+    let mut points = Parameters::default();
+    assert!(guarded_flush_request(&config, 3, 2, &points, 4).is_err());
+    points
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.75,
+        })
+        .unwrap();
+    let ordinary = flush_request(&config, 3, 2, &points).unwrap();
+    let guarded = guarded_flush_request(&config, 3, 2, &points, 4).unwrap();
+    assert_eq!(&guarded[4..6], &3_u16.to_le_bytes());
+    assert_eq!(&guarded[6..72], &ordinary[6..72]);
+    assert_eq!(&guarded[72..80], &4_u64.to_le_bytes());
+    assert_eq!(&guarded[80..], &ordinary[72..]);
+
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for word in [3_u64, 24, 2] {
+        reply.extend(word.to_le_bytes());
+    }
+    reply.extend([2, 0, 0]);
+    let conflict = guarded_flushed_parameters(&reply, &config, 3, 2, &points).unwrap();
+    assert_eq!(conflict.disposition, FlushDisposition::EditorConflict);
+    assert!(conflict.as_slice().is_empty());
+    assert!(flushed_parameters(&reply, &config, 3, 2, &points).is_err());
+    assert!(guarded_flushed_parameters(&reply, &config, 3, 3, &points).is_err());
+    assert!(guarded_flushed_parameters(&reply, &config, 2, 2, &points).is_err());
+    let mut other_source = config.clone();
+    other_source.binding.instance += 1;
+    assert!(guarded_flushed_parameters(&reply, &other_source, 3, 2, &points).is_err());
+    let extent = reply.len() - 2;
+    reply[extent] = 1;
+    reply.extend(7_u32.to_le_bytes());
+    reply.extend(0.75_f64.to_le_bytes());
+    assert!(guarded_flushed_parameters(&reply, &config, 3, 2, &points).is_err());
+    reply[extent - 1] = 1;
+    let success = guarded_flushed_parameters(&reply, &config, 3, 2, &points).unwrap();
+    assert_eq!(success.disposition, FlushDisposition::Applied);
+    assert_eq!(success.as_slice()[0].normalized, 0.75);
+}
+
+#[test]
 fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
     let config = config();
     let request = recovery_edit_request(&config, 2, 3).unwrap();
