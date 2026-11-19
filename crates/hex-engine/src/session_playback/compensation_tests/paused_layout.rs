@@ -236,12 +236,19 @@ fn silent_isolated_latency_addition_preserves_other_track_reverb() {
 
 #[test]
 fn isolated_latency_insert_keeps_unchanged_operator_note_and_release() {
-    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Insert);
+    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Insert, false);
 }
 
 #[test]
 fn isolated_latency_removal_keeps_unchanged_operator_note_and_release() {
-    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Remove);
+    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Remove, false);
+}
+
+#[test]
+fn approved_isolated_latency_cut_keeps_operator_gate_and_release() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        isolated_latency_edit_keeps_operator(edit, true);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -250,14 +257,20 @@ enum IsolatedLatencyEdit {
     Remove,
 }
 
-fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit) {
+fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit, approved: bool) {
+    use crate::{OutputCapture, OutputCaptureId};
     use hex_project::{BeatTime, Created};
 
     let mut f = fixture(&[&[], &[]], 8_192);
     let edited = f.tracks[0];
     let instrument = f.tracks[1];
-    for audio in f.media.values_mut() {
-        *audio = crate::Audio::new(48_000, vec![[0.0; 2]; 8_192]).unwrap();
+    for (index, audio) in f.media.values_mut().enumerate() {
+        let sample = if approved && index == 0 {
+            [0.25, -0.125]
+        } else {
+            [0.0; 2]
+        };
+        *audio = crate::Audio::new(48_000, vec![sample; 8_192]).unwrap();
     }
     f.editor
         .execute(Command::InsertInstrument {
@@ -341,14 +354,19 @@ fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit) {
         ));
         assert_eq!(old.performance_frame(), CUT);
         let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
-        candidate.require_continuous_insert = true;
-        candidate.try_inherit_state_live_from(&mut old).unwrap();
+        inherit_isolated_latency_edit(&mut candidate, &mut old, approved);
         let render = |runtime: &mut SessionPlayback| {
-            let mut frames = [[0.0; 2]; FRAMES];
-            for chunk in frames.chunks_mut(partition) {
-                runtime.render(chunk).unwrap();
+            let plan = runtime
+                .output_capture_plan(&[OutputCaptureId::Track(instrument)], partition)
+                .unwrap();
+            let mut main = [[0.0; 2]; FRAMES];
+            let mut notes = [[0.0; 2]; FRAMES];
+            for (main, notes) in main.chunks_mut(partition).zip(notes.chunks_mut(partition)) {
+                runtime
+                    .render_with_capture(main, &mut OutputCapture::new(&plan, &mut [notes]))
+                    .unwrap();
             }
-            frames
+            notes
         };
         let expected = render(&mut uninterrupted);
         let actual = render(&mut candidate);
@@ -365,23 +383,35 @@ fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit) {
 
 #[test]
 fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
-    isolated_latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Insert);
+    isolated_latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Insert, false);
 }
 
 #[test]
 fn isolated_latency_removal_keeps_unchanged_group_and_return_tails() {
-    isolated_latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Remove);
+    isolated_latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Remove, false);
 }
 
-fn isolated_latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit) {
+#[test]
+fn approved_isolated_latency_cut_keeps_group_and_return_tails() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        isolated_latency_edit_keeps_group_and_return(edit, true);
+    }
+}
+
+fn isolated_latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit, approved: bool) {
     use crate::{OutputCapture, OutputCaptureId};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Created, TrackSelectionIds};
 
     let mut f = fixture(&[&[], &[], &[]], 12_000);
-    for audio in f.media.values_mut() {
+    for (index, audio) in f.media.values_mut().enumerate() {
         let mut samples = vec![[0.0; 2]; 12_000];
-        samples[..512].fill([0.25, -0.125]);
+        let end = if approved && index == 0 {
+            samples.len()
+        } else {
+            512
+        };
+        samples[..end].fill([0.25, -0.125]);
         *audio = crate::Audio::new(48_000, samples).unwrap();
     }
     let changed = f.tracks[0];
@@ -475,8 +505,7 @@ fn isolated_latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit) {
         let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
         let mut fresh = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
         fresh.play_from(cut as u64).unwrap();
-        candidate.require_continuous_insert = true;
-        candidate.try_inherit_state_live_from(&mut old).unwrap();
+        inherit_isolated_latency_edit(&mut candidate, &mut old, approved);
         let render = |runtime: &mut SessionPlayback| {
             let ids = [
                 OutputCaptureId::Track(group),
@@ -507,13 +536,40 @@ fn isolated_latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit) {
         let (old_main, old_group, old_bus, _) = render(&mut uninterrupted);
         let (_, _, _, fresh_affected) = render(&mut fresh);
         let bits = |pcm: [[f32; 2]; 512]| pcm.map(|frame| frame.map(f32::to_bits));
-        assert_eq!(bits(main), bits(old_main));
+        if !approved {
+            assert_eq!(bits(main), bits(old_main));
+        }
         assert_eq!(bits(group), bits(old_group));
         assert_eq!(bits(bus), bits(old_bus));
         assert_eq!(bits(affected), bits(fresh_affected));
         for tail in [group, bus] {
             assert!(tail.iter().flatten().any(|sample| sample.abs() > 1e-7));
         }
+    }
+}
+
+fn inherit_isolated_latency_edit(
+    candidate: &mut SessionPlayback,
+    predecessor: &mut SessionPlayback,
+    approved: bool,
+) {
+    candidate.require_continuous_insert = true;
+    if approved {
+        let cut = predecessor.performance_frame();
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(predecessor),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+        assert!(predecessor.playing());
+        assert_eq!(predecessor.performance_frame(), cut);
+        predecessor.set_playing_at_device_insert_cut(false);
+        candidate
+            .try_inherit_state_at_device_insert_cut(predecessor)
+            .unwrap();
+        assert_eq!(candidate.performance_frame(), cut);
+        candidate.set_playing_at_device_insert_cut(true);
+    } else {
+        candidate.try_inherit_state_live_from(predecessor).unwrap();
     }
 }
 
