@@ -4,7 +4,7 @@
 //! processing-root waveform, then applies the ordered gains.
 use crate::{Frame, Invalid};
 use hex_project::{
-    Asset, AssetId, AudioClipTiming, AudioDomainClock, AudioEvent, AudioEvents,
+    Asset, AssetId, AudioClipFadeClock, AudioClipTiming, AudioDomainClock, AudioEvent, AudioEvents,
     AudioViewProjection, Clip, ClipFade, ClipGain, MAX_AUDIO_EVENTS, ProjectedOuterAudioFade,
     TempoMap,
 };
@@ -80,8 +80,9 @@ pub struct FrameFadeCoverage {
 ///
 /// Unprocessed reads use the converted asset. Transformed frame events use
 /// the accepted, pre-event processing root after warp, pitch and source gain.
-/// Musical/frozen clocks, retained children and directed views use their
-/// existing display paths. The caller binds the immutable waveform to the
+/// Directed frame reads use the same root coordinates as prepared playback.
+/// Musical/frozen clocks, retained children and nonneutral directed LegacyRoot
+/// fades use their existing display paths. The caller binds the waveform to the
 /// chosen source and its `source_frames()`. Held/pending edits use that same
 /// basis without dividing baked peaks by an old fade.
 /// Construction validates on control and may allocate validation metadata;
@@ -164,11 +165,21 @@ impl<'a> FrameFadePreview<'a> {
                 || !matches!(edit.timing, AudioClipTiming::Frames)
                 || !supported_source
                 || edit.domain.musical_event_source.is_some()
-                || edit.content_view.is_some()
                 || edit.domain.events.as_ref().is_some_and(|events| {
                     !events.sources.is_empty()
                         || events.events.iter().any(|event| event.source != 0)
                 })
+            {
+                return Ok(None);
+            }
+            // Directed playback applies a legacy container envelope on the
+            // forward destination after the reflected root has been copied.
+            // The ordinary root envelope cannot describe that separate law.
+            if edit.content_view.is_some()
+                && edit.domain.fade_clock == AudioClipFadeClock::LegacyRoot
+                && (!edit.domain.fade.is_neutral()
+                    || (overrides.legacy_root_fade
+                        && overrides.fade.is_some_and(|fade| !fade.is_neutral())))
             {
                 return Ok(None);
             }

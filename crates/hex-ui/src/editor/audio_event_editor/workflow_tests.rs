@@ -1332,20 +1332,35 @@ fn split_fade_handles_fit_each_event_and_remain_editable_through_history(cx: &mu
 
 #[gpui::test]
 fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppContext) {
-    event_fade_drag_across_waveform_views(cx, false);
+    event_fade_drag_across_waveform_views(cx, EventFadeFixture::Original);
 }
 
 #[gpui::test]
 fn pitched_frame_event_fade_keeps_both_waveforms_through_commit_and_history(
     cx: &mut TestAppContext,
 ) {
-    event_fade_drag_across_waveform_views(cx, true);
+    event_fade_drag_across_waveform_views(cx, EventFadeFixture::Pitched);
 }
 
-fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, pitched: bool) {
+#[gpui::test]
+fn reversed_pitched_event_fade_keeps_both_waveforms_through_commit_and_history(
+    cx: &mut TestAppContext,
+) {
+    event_fade_drag_across_waveform_views(cx, EventFadeFixture::ReversedPitched);
+}
+
+enum EventFadeFixture {
+    Original,
+    Pitched,
+    ReversedPitched,
+}
+
+fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: EventFadeFixture) {
     use crate::editor::waveform_geometry::painted_clip_waveform_outline;
 
     let (files, mut visual, editor, clip) = open(cx);
+    let pitched = !matches!(fixture, EventFadeFixture::Original);
+    let reversed = matches!(fixture, EventFadeFixture::ReversedPitched);
     if pitched {
         editor.update(&mut visual, |view, _| {
             assert!(view.enqueue(Request::Edit(Command::SetAudioClipPitch {
@@ -1354,6 +1369,29 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, pitched: bool)
             })));
         });
         pump(&editor, &mut visual);
+    }
+    if reversed {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::ReverseClips(vec![clip]))));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .clip(clip)
+                    .unwrap()
+                    .audio_edit()
+                    .unwrap()
+                    .content_view
+                    .unwrap()
+                    .window
+                    .reversed
+            );
+        });
     }
     let unfaded_pcm = editor.read_with(&visual, |view, _| render_accepted_event(view, clip));
     let source = pitched.then(|| {
@@ -1518,10 +1556,20 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, pitched: bool)
             .unwrap()
             .shape()
             .fade_in() as usize;
-        assert_eq!(pcm[0], [0.0; 2]);
+        let position = |source| {
+            if reversed {
+                pcm.len() - 1 - source
+            } else {
+                source
+            }
+        };
+        assert_eq!(pcm[position(0)], [0.0; 2]);
         let t = 1.0 / (count - 1) as f32;
-        assert!((pcm[1][0] - unfaded_pcm[1][0] * t * t * (3.0 - 2.0 * t)).abs() < 1e-7);
-        assert_eq!(pcm[count - 1], unfaded_pcm[count - 1]);
+        assert!(
+            (pcm[position(1)][0] - unfaded_pcm[position(1)][0] * t * t * (3.0 - 2.0 * t)).abs()
+                < 1e-7
+        );
+        assert_eq!(pcm[position(count - 1)], unfaded_pcm[position(count - 1)]);
     });
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
     visual.simulate_keystrokes("cmd-z");
@@ -1632,7 +1680,8 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, pitched: bool)
             "open installs the saved document"
         );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
-        assert_eq!(render_accepted_event(v, clip)[0], [0.0; 2]);
+        let pcm = render_accepted_event(v, clip);
+        assert_eq!(pcm[if reversed { pcm.len() - 1 } else { 0 }], [0.0; 2]);
         v.selected_track = Some(v.state.as_ref().unwrap().project.tracks()[0].id());
         v.selected_clip = Some(clip);
         v.clip_view_open = true;
