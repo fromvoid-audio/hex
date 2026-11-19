@@ -1387,6 +1387,10 @@ impl PublicationControl {
         {
             return Err("native preparation output profile differs or is closing");
         }
+        let source = source.with_live_audio_deadline(
+            self.plugin_output_fence_on_control().is_some()
+                && std::env::var_os("HEX_VST3_DISABLE_WORKER_DEADLINE").is_none(),
+        );
         self.candidate_root.begin_native_source_preparation(
             identity,
             graph,

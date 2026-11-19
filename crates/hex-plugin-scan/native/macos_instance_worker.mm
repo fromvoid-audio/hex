@@ -364,9 +364,10 @@ int main(int argc,char** argv) {
     const auto* transport_space=std::getenv("HEX_VST3_TRANSPORT_SPACE");
     const bool reserve_space=supervised && !offline && transport_space && !std::strcmp(transport_space,"1");
     const auto process_mode=offline?kOffline:kRealtime;
-    // Opt-in during source qualification while the joining host policy and
-    // output-route admission are still under test.
-    const bool try_worker_deadline=supervised && !offline && std::getenv("HEX_VST3_TEST_WORKER_DEADLINE");
+    // The joining host reserves one paired slot for this native child.
+    const auto* deadline_admitted=std::getenv("HEX_VST3_WORKER_DEADLINE_ADMITTED");
+    const bool try_worker_deadline=supervised && !offline && deadline_admitted
+        && !std::strcmp(deadline_admitted,"1");
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
     static CancellationGuardian guardian;

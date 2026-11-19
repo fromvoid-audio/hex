@@ -6,6 +6,73 @@ const HELD_OPERATION_TIMEOUT: Duration = Duration::from_millis(20);
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn excess_live_children_keep_processing_and_reaped_child_returns_scheduling_slot() {
+    let build = build();
+    let case = Case::new();
+    let mut options = options();
+    options.preparation.sample_rate = 44_100.0;
+    options.preparation.quantum = 256;
+    let launch = |ordinal| {
+        let mut preparation = options.preparation;
+        preparation.binding.instance = ordinal;
+        Pending::prepare_with_restore(
+            &build,
+            source().with_live_audio_deadline(true),
+            preparation,
+            None,
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(0),
+        )
+        .unwrap()
+        .complete_on_control(Some(options.presentation))
+        .unwrap()
+    };
+
+    let mut admitted = (1..=12).map(launch).collect::<Vec<_>>();
+    assert!(
+        admitted
+            .iter()
+            .all(|prepared| prepared.deadline_period_on_worker().is_some())
+    );
+    let mut ordinary = launch(13);
+    assert_eq!(ordinary.deadline_period_on_worker(), None);
+    let block = request(ordinary.configuration(), 0);
+    let reply = ordinary.exchange_on_worker(block).unwrap();
+    assert_eq!(reply.pcm[0], block.pcm[0].map(|sample| sample * 0.5));
+
+    // Observe retirement while the original owner is still retained.
+    let retired = admitted[0].stop_and_reap_on_control().unwrap();
+    assert!(retired.status.success());
+    assert_eq!(admitted[0].deadline_period_on_worker(), None);
+    let mut replacement = launch(14);
+    assert!(replacement.deadline_period_on_worker().is_some());
+    assert!(
+        replacement
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        ordinary
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    for prepared in &mut admitted[1..] {
+        assert!(
+            prepared
+                .stop_and_reap_on_control()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn live_deadline_preserves_pcm_across_idle_and_same_child_quiescence() {
     let case = Case::new();
     let mut options = options();
@@ -14,19 +81,17 @@ fn live_deadline_preserves_pcm_across_idle_and_same_child_quiescence() {
     let setup = case.setup(0);
     let mut instance = Pending::prepare_with_restore(
         &build(),
-        source(),
+        source().with_live_audio_deadline(true),
         options.preparation,
         None,
         PreparationCancellation::new_on_control().unwrap(),
-        move |command| {
-            setup(command);
-            command.env("HEX_VST3_TEST_WORKER_DEADLINE", "1");
-        },
+        setup,
     )
     .unwrap()
     .complete_on_control(Some(options.presentation))
     .unwrap();
     let child = instance.child_id_on_control();
+    let period = instance.deadline_period_on_worker().unwrap();
 
     for sequence in 0..2 {
         let input = request(instance.configuration(), sequence);
@@ -55,6 +120,7 @@ fn live_deadline_preserves_pcm_across_idle_and_same_child_quiescence() {
         )
         .unwrap();
     assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.deadline_period_on_worker(), Some(period));
     let input = request(instance.configuration(), 2);
     let output = instance.exchange_on_worker(input).unwrap();
     for (input, output) in input.pcm.iter().zip(output.pcm) {
