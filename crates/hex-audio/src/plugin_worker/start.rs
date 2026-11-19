@@ -328,6 +328,7 @@ impl NativeWorker {
                     binding,
                     quantum,
                     retirement_requested: false,
+                    editor_edits_sealed: false,
                     grouped_editor_callbacks,
                     source_storage: Some(source_storage),
                 },

@@ -50,35 +50,13 @@ pub(super) fn name() -> Div {
         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
 }
 
-/// The square leading edge meets the group rail, which owns the outer corners.
-/// The chamfer reveals the neutral header underneath.
+/// The name column fills its cell with the track color.
 pub(super) fn name_plate(selector: String, color: u32) -> Div {
     div()
         .absolute()
         .inset_0()
         .debug_selector(move || selector.clone())
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    let cut = 7.0_f32.min(width / 2.0).min(height / 2.0);
-                    let at = |x, y| bounds.origin + point(px(x), px(y));
-                    let mut path = PathBuilder::fill();
-                    path.move_to(at(0.0, 0.0));
-                    path.line_to(at(width, 0.0));
-                    path.line_to(at(width, height - cut));
-                    path.line_to(at(width - cut, height));
-                    path.line_to(at(0.0, height));
-                    path.close();
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, rgb(color));
-                    }
-                },
-            )
-            .size_full(),
-        )
+        .bg(rgb(color))
 }
 
 /// Compact selection inset: its left edge is taller than its right edge.

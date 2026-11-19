@@ -20,6 +20,7 @@ pub(crate) struct ClientEndpoints {
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     sample_recording: crate::sample_recording::Control,
+    input_monitor: input_monitor::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     commands: Producer<QueuedCommand>,
@@ -50,6 +51,7 @@ impl Control {
             action_admission,
             sample_preview,
             sample_recording,
+            input_monitor,
             commands,
             spectrum_target,
             processor_audition,
@@ -78,6 +80,7 @@ impl Control {
             output_identity,
             sample_preview,
             sample_recording,
+            input_monitor,
             resident_forwarding,
             spectrum_reader,
             commands,
@@ -163,12 +166,18 @@ impl Client {
         }
     }
 
-    pub(crate) fn activate(&mut self) {
+    pub(crate) fn activate(&mut self) -> bool {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            self.worker_owned_publication = endpoints
+            let Some(worker_owned) = endpoints
                 .resident_forwarding
-                .expose_client_on_control(&endpoints.status);
+                .expose_client_on_control(&endpoints.status)
+            else {
+                return false;
+            };
+            self.worker_owned_publication = worker_owned;
+            return true;
         }
+        false
     }
     /// Immutable publication policy captured under the existing exposure lock. Every graph on
     /// this output belongs to its control worker; transport and shared input clients remain
@@ -239,6 +248,7 @@ impl Client {
         if let Some(endpoints) = self.endpoints.owner_ref() {
             endpoints.midi_recording.cancel();
             endpoints.sample_recording.stop();
+            endpoints.input_monitor.stop();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
         }
@@ -302,7 +312,22 @@ impl Client {
         frame: u64,
         expected: AppliedAudioSource,
     ) -> Result<u64, PlaybackCommand> {
-        let command = PlaybackCommand::PlayFrom(frame);
+        self.command_from_source_with_ticket(PlaybackCommand::PlayFrom(frame), expected)
+    }
+    /// Enqueue a strict seek only for the exact callback-applied source.
+    /// A later replacement is reported through the ordinary action receipt.
+    pub fn seek_from_source_with_ticket(
+        &mut self,
+        frame: u64,
+        expected: AppliedAudioSource,
+    ) -> Result<u64, PlaybackCommand> {
+        self.command_from_source_with_ticket(PlaybackCommand::Seek(frame), expected)
+    }
+    fn command_from_source_with_ticket(
+        &mut self,
+        command: PlaybackCommand,
+        expected: AppliedAudioSource,
+    ) -> Result<u64, PlaybackCommand> {
         let Some(endpoints) = self.endpoints.owner_mut() else {
             return Err(command);
         };
@@ -366,6 +391,40 @@ impl Client {
             .sample_preview
             .request()
     }
+    /// Start one ordered, output-rate window sequence for a current request.
+    /// The existing preview owner bounds its input and retirement queues.
+    pub fn preview_begin_windows(
+        &mut self,
+        generation: u64,
+        start: usize,
+        total: usize,
+    ) -> Result<(), Invalid> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?
+            .sample_preview
+            .begin_windows(generation, start, total)
+    }
+
+    /// Submit the next contiguous window; refusal returns its PCM to control.
+    /// Call [`Self::reclaim_preview`] on control as playback advances so retired
+    /// windows can release their bounded callback return slots.
+    pub fn preview_publish_window(
+        &mut self,
+        generation: u64,
+        start: usize,
+        audio: hex_engine::Audio,
+    ) -> Result<(), crate::sample_preview::WindowRefusal> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Err(crate::sample_preview::WindowRefusal {
+                reason: crate::sample_preview::WindowRefusalReason::Invalid,
+                audio,
+            });
+        };
+        endpoints
+            .sample_preview
+            .publish_window(generation, start, audio)
+    }
     pub fn preview_publish(
         &mut self,
         generation: u64,
@@ -420,6 +479,14 @@ impl Client {
             e.sample_preview.reclaim();
         }
     }
+    /// Access monitor state and reclamation, including after an output fault.
+    /// A queued publication is stopped by the callback when the output faults.
+    pub fn input_monitor(&mut self) -> Option<&mut input_monitor::Control> {
+        self.endpoints
+            .owner_mut()
+            .map(|owner| &mut owner.input_monitor)
+    }
+
     pub fn start_sample_recording(
         &mut self,
         project_generation: u64,
@@ -436,6 +503,28 @@ impl Client {
         endpoints
             .sample_recording
             .start(project_generation, outputs, main)
+    }
+
+    /// Reserve output timing for exactly the currently applied source. The
+    /// returned reader contains timing and clock evidence, not PCM sources.
+    /// Callback validation remains authoritative if the source changes after admission.
+    pub fn start_bound_output_recording(
+        &mut self,
+        source: AppliedAudioSource,
+    ) -> Result<crate::sample_recording::Reader, Invalid> {
+        let generation = self.project_generation;
+        let endpoints = self
+            .endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?;
+        if endpoints.status.closing.load(Acquire)
+            || endpoints.status.device_fault.load(Acquire)
+            || generation != Some(source.context.project_generation)
+            || endpoints.status.recording_source() != Some(source)
+        {
+            return Err(Invalid("audio recording source is unavailable or changed"));
+        }
+        endpoints.sample_recording.start_bound(source)
     }
 
     pub fn sample_recording_phase(&self) -> Option<crate::sample_recording::Phase> {

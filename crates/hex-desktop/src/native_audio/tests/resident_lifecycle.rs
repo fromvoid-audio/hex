@@ -1393,3 +1393,169 @@ fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
         "undo returns the clip to silence"
     );
 }
+
+#[test]
+fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
+    use std::io::{Seek, SeekFrom, Write};
+    // Mono PCM8 has one byte per source frame. Keep the second audible window
+    // entirely beyond the resident limit, with room for the 2x Re-Pitch read.
+    const SOURCE_FRAMES: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 8_192;
+    const FAR_SOURCE_FRAME: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 512;
+    const FAR_ARRANGEMENT_FRAME: u64 = FAR_SOURCE_FRAME / 2;
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.0.join("long-repitch.wav");
+    let mut file = fs::File::create(&path).unwrap();
+    let data_bytes = u32::try_from(SOURCE_FRAMES).unwrap();
+    file.write_all(b"RIFF").unwrap();
+    file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
+    file.write_all(b"WAVEfmt ").unwrap();
+    file.write_all(&16u32.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&48_000u32.to_le_bytes()).unwrap();
+    file.write_all(&48_000u32.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&8u16.to_le_bytes()).unwrap();
+    file.write_all(b"data").unwrap();
+    file.write_all(&data_bytes.to_le_bytes()).unwrap();
+    file.write_all(&[160u8; 8192]).unwrap();
+    file.set_len(44 + u64::from(data_bytes)).unwrap();
+    file.seek(SeekFrom::Start(44 + FAR_SOURCE_FRAME)).unwrap();
+    file.write_all(&[160u8; 512]).unwrap();
+    drop(file);
+
+    let mut h = ResidentHarness::with_frame_limit(16_000);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::ImportToNewTrack {
+        path,
+        before_track: None,
+        start: 0,
+    });
+    assert_eq!(
+        imported
+            .state
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .source_frames(),
+        SOURCE_FRAMES
+    );
+    let original_waveform = imported.state.waveforms.values().next().unwrap().clone();
+    (applied, _) = h.applied(applied);
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = h.run(Request::Edit(Command::SetClipFades {
+        clip,
+        fade_in: 0,
+        fade_out: 0,
+    }));
+    (applied, _) = h.applied(applied);
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let warped = h.run(Request::Edit(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(warp),
+    }));
+    (applied, _) = h.applied(applied);
+    let stretched = h.run(Request::Edit(Command::SetProjectTempo {
+        tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        stretched.state.project.clip(clip).unwrap().duration(),
+        SOURCE_FRAMES / 2
+    );
+    let undo_tempo = h.run(Request::Undo);
+    assert_eq!(
+        undo_tempo.state.project.snapshot(),
+        warped.state.project.snapshot()
+    );
+    (applied, _) = h.applied(applied);
+    let undo_warp = h.run(Request::Undo);
+    assert_eq!(
+        undo_warp.state.project.snapshot(),
+        neutral.state.project.snapshot()
+    );
+    (applied, _) = h.applied(applied);
+    let redo_warp = h.run(Request::Redo);
+    assert_eq!(
+        redo_warp.state.project.snapshot(),
+        warped.state.project.snapshot()
+    );
+    (applied, _) = h.applied(applied);
+    let redo_tempo = h.run(Request::Redo);
+    assert_eq!(
+        redo_tempo.state.project.snapshot(),
+        stretched.state.project.snapshot()
+    );
+    h.applied(applied);
+    fn audible(h: &mut ResidentHarness, frame: u64) {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(frame))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            h.pump();
+            let block = h.render();
+            if block.iter().all(|frame| (frame[0] - 0.25).abs() < 0.0001) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "repitch audio never reached the callback"
+            );
+            std::thread::yield_now();
+        }
+    }
+    audible(&mut h, 0);
+    let before_seek = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire);
+    let mut intent = h.seek_intent(91, redo_tempo.state.revision, None, None);
+    intent.destination_frame = FAR_ARRANGEMENT_FRAME;
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    let admitted = h.next();
+    assert!(admitted.error.is_none(), "{:?}", admitted.error);
+    let result = h.seek_result();
+    let hex_session::service::ResidentPublicationAcceptance::Submitted { audio_revision, .. } =
+        result.result.unwrap()
+    else {
+        panic!("actual seek publication required")
+    };
+    let (applied_seek, _) = h.applied(before_seek);
+    assert_eq!(applied_seek, audio_revision);
+    assert!(
+        h.render()
+            .iter()
+            .all(|frame| (frame[0] - 0.25).abs() < 0.0001)
+    );
+    let saved_path = files.0.join("repitch.hex");
+    assert!(h.run(Request::SaveNew(saved_path.clone())).save_complete);
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(saved_path));
+    assert!(reopened.open_complete);
+    assert!(std::sync::Arc::ptr_eq(
+        &original_waveform,
+        reopened.state.waveforms.values().next().unwrap()
+    ));
+    assert_eq!(
+        reopened.state.project.snapshot(),
+        stretched.state.project.snapshot()
+    );
+    finish_replacement(&mut h, &reopened, output);
+    audible(&mut h, FAR_ARRANGEMENT_FRAME);
+}

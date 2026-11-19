@@ -42,6 +42,14 @@ pub(super) struct CapturedBinding {
 }
 
 impl CapturedBinding {
+    fn accepts_event(self, view: &EditorView, require_enabled: bool) -> bool {
+        self.current(view, require_enabled)
+            && (!matches!(self.owner, Some(DevicePanelOwner::Source(_)))
+                || view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| super::selected_owner(view, state) == self.owner))
+    }
     pub(super) fn current(self, view: &EditorView, require_enabled: bool) -> bool {
         if self.generation != view.project_generation || self.owner != view.device_panel.owner {
             return false;
@@ -533,7 +541,7 @@ pub(super) fn render_parameter(
     rendered.capture_any_mouse_down(cx.listener(
         move |view, event: &gpui::MouseDownEvent, window, cx| {
             if event.button == gpui::MouseButton::Right
-                && menu_binding.current(view, false)
+                && menu_binding.accepts_event(view, false)
                 && view
                     .state
                     .as_ref()
@@ -665,7 +673,11 @@ fn create_parameter_control(
                 move |view, emitter, event: &NumericControlEvent, cx| {
                     let is_current = |view: &EditorView| {
                         event_fence.get() == 0
-                            && binding.current(view, event.phase != NumericEventPhase::Cancel)
+                            && (if event.phase == NumericEventPhase::Cancel {
+                                binding.current(view, false)
+                            } else {
+                                binding.accepts_event(view, true)
+                            })
                             && matches!(view.device_panel.controls.get(&key),
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
@@ -733,7 +745,7 @@ fn create_parameter_control(
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
             let subscription = cx.subscribe(&entity, move |view, emitter, event: &ToggleChanged, cx| {
-                if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                if !binding.accepts_event(view, true) || !matches!(view.device_panel.controls.get(&key),
                     Some(ParameterControl::Bool { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                 // A discrete control may hide a numeric field (for example,
                 // switching Operator tuning to fixed frequency). Do not let
@@ -768,7 +780,41 @@ fn create_parameter_control(
                     return;
                 }
                 view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                apply_discrete_parameter(view, target, ParameterValue::Bool(event.checked));
+                let source_matrix_switch = matches!(key.parameter, super::utility_panel::MID_SIDE_ENABLED | super::utility_panel::MONO | super::utility_panel::MUTE | super::utility_panel::INVERT_LEFT | super::utility_panel::INVERT_RIGHT)
+                    && view.state.as_ref().is_some_and(|state| {
+                        state.project.device_location(key.device).is_some_and(|location|
+                            matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                                && location.device.state().type_id().as_str() == Ok("hex.utility"))
+                    });
+                if source_matrix_switch {
+                    let eligible = view.state.as_ref().is_some_and(|state| {
+                        if key.parameter == super::utility_panel::MUTE {
+                            hex_engine::project_source_utility_mute_edit_supported(&state.project, key.device)
+                        } else {
+                            hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter)
+                        }
+                    });
+                    let value = ParameterValue::Bool(event.checked);
+                    let target = GestureTarget::DeviceParameter { device: key.device, parameter: key.parameter };
+                    let result = if eligible {
+                        match view.begin_device_gesture(target, value) {
+                            Ok(()) => {
+                                let result = view.change_device_gesture(value)
+                                    .and_then(|_| view.finish_device_gesture(value));
+                                if result.is_err() { let _ = view.cancel_device_gesture(); }
+                                result
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        Err("source control is no longer available")
+                    };
+                    if let Err(error) = result {
+                        view.error = Some(error.into());
+                    }
+                } else {
+                    apply_discrete_parameter(view, target, ParameterValue::Bool(event.checked));
+                }
                 cx.notify();
             });
             view.device_panel.controls.insert(
@@ -822,7 +868,7 @@ fn create_parameter_control(
             let event_values = values.clone();
             let subscription =
                 cx.subscribe(&entity, move |view, emitter, event: &SelectorChanged, cx| {
-                    if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                    if !binding.accepts_event(view, true) || !matches!(view.device_panel.controls.get(&key),
                         Some(ParameterControl::Choice { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                     let Some(&value) = event_values.get(event.index) else {
                         return;
@@ -831,7 +877,31 @@ fn create_parameter_control(
                         return;
                     }
                     view.remember_automation_parameter(key.device, automation_target(key.parameter));
-                    apply_discrete_parameter(view, target, ParameterValue::Choice(value));
+                    let source_channel = key.parameter == super::utility_panel::CHANNEL
+                        && view.state.as_ref().is_some_and(|state| state.project.device_location(key.device).is_some_and(|location|
+                            matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                                && location.device.state().type_id().as_str() == Ok("hex.utility")));
+                    if source_channel {
+                        let eligible = view.state.as_ref().is_some_and(|state|
+                            hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter));
+                        let value = ParameterValue::Choice(value);
+                        let target = GestureTarget::DeviceParameter { device: key.device, parameter: key.parameter };
+                        let result = if eligible {
+                            match view.begin_device_gesture(target, value) {
+                                Ok(()) => {
+                                    let result = view.change_device_gesture(value).and_then(|_| view.finish_device_gesture(value));
+                                    if result.is_err() { let _ = view.cancel_device_gesture(); }
+                                    result
+                                }
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            Err("source control is no longer available")
+                        };
+                        if let Err(error) = result { view.error = Some(error.into()); }
+                    } else {
+                        apply_discrete_parameter(view, target, ParameterValue::Choice(value));
+                    }
                     cx.notify();
                 });
             view.device_panel.controls.insert(

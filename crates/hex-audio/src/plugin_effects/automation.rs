@@ -13,6 +13,10 @@ impl AuthoredParameterProgram for TransportProgram<'_> {
         self.0.revision
     }
 
+    fn authored_clock_epoch(&self) -> Option<std::num::NonZeroU64> {
+        self.0.authored_clock_epoch
+    }
+
     fn contains_quantum_program(&self, key: std::num::NonZeroU64) -> bool {
         self.0.contains_revision(key)
     }
@@ -59,6 +63,18 @@ pub struct AuthoredSelection {
     dense_parameter: Option<u32>,
 }
 impl AuthoredSelection {
+    /// An exact source class with no selected authored parameters. This grants
+    /// no SDK target and is used only to inspect an unlaned restored state.
+    pub fn for_no_parameters(class: [u8; 16]) -> Result<Self, &'static str> {
+        Ok(Self {
+            class: hex_plugin_state::ClassId::new(class)
+                .map_err(|_| "authored vst3 class is invalid")?,
+            ids: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
+            len: 0,
+            dense_parameter: None,
+        })
+    }
+
     pub fn from_targets(
         targets: impl IntoIterator<Item = (u32, Option<[u8; 16]>)>,
     ) -> Result<Option<Self>, &'static str> {
@@ -318,6 +334,20 @@ impl SourceCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_canonical_selection_keeps_class_without_claiming_parameters() {
+        let selected = AuthoredSelection::for_no_parameters([4; 16]).unwrap();
+        assert_eq!(selected.parameters().0.bytes(), [4; 16]);
+        assert!(selected.parameters().1.is_empty());
+        assert_eq!(selected.dense_parameter(), None);
+        assert!(AuthoredSelection::for_no_parameters([0; 16]).is_err());
+        let values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let capabilities =
+            SourceCapabilities::from_canonical(selected.parameters().0, &values, &steps).unwrap();
+        assert!(capabilities.parameters().is_empty());
+    }
 
     #[test]
     fn dense_selection_merges_one_exact_raw_id_without_discarding_sparse_targets() {

@@ -99,8 +99,8 @@ impl NativeEffectEntry {
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
         self.callback.take_accepted_manual_parameter()
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
-        self.callback.end_staging_at_pause(frame);
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.callback.end_staging_at_rendered_prefix(frame);
     }
     pub(crate) fn reject(&mut self) {
         self.callback.reject_callback();

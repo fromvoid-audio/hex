@@ -124,6 +124,8 @@ def verify(receipt, run=False, expected_source_digest=None, expected_sdk_pins=No
         expected_id = "org.portalsurfer.hex.vst3.instance" if instance else "org.portalsurfer.hex.vst3.discovery"
         if info.get("CFBundleExecutable") != name or info.get("CFBundleIdentifier") != expected_id:
             raise ValueError("unexpected helper package identity")
+        if instance and info.get("NSHighResolutionCapable") is not True:
+            raise ValueError("instance editor helper lacks high-resolution support")
         if run:
             raise ValueError("instance helper requires owned duplex protocol" if instance else
                              "discovery helper requires owned factory protocol; use scanner fixture qualification")
@@ -278,6 +280,7 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
         "CFBundleIdentifier": "org.portalsurfer.hex.vst3.instance" if instance_only else ("org.portalsurfer.hex.vst3.discovery" if discovery_only else "org.portalsurfer.hex.vst3.bootstrap"),
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1",
         ("LSUIElement" if instance_only else "LSBackgroundOnly"): True,
+        **({"NSHighResolutionCapable": True} if instance_only else {}),
     }, sort_keys=True))
     # CommonCrypto's legacy one-shot function remains available for local identity.
     if not minimal:

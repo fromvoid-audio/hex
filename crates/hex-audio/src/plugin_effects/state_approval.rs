@@ -49,6 +49,19 @@ fn approve_processing(
 }
 
 impl NativeEffect {
+    pub(crate) fn approve_sequenced_capture_on_control(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.sequenced_capture_is_current(fact)? {
+            return Err("native sequenced capture is not current");
+        }
+        approve(
+            &self.state_authority,
+            &self.callback.configuration,
+            fact.state(),
+        )
+    }
     pub(crate) fn approve_canonical_processing_on_control(
         &self,
         facts: &CapturedCanonicalBases,
@@ -64,6 +77,15 @@ impl NativeEffect {
 }
 
 impl NativeEffectControl {
+    pub(crate) fn approve_sequenced_capture_on_control(
+        &self,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.sequenced_capture_is_current(fact)? {
+            return Err("native sequenced capture is not current");
+        }
+        approve(&self.state_authority, &self.configuration, fact.state())
+    }
     pub(crate) fn approve_canonical_processing_on_control(
         &self,
         facts: &CapturedCanonicalBases,

@@ -285,6 +285,7 @@ fn devices(project: &Project, owner: Owner) -> Vec<(&Device, NativeDeviceClass)>
                     .collect()
             })
             .unwrap_or_default(),
+        Owner::Source(_) => Vec::new(),
     }
 }
 
@@ -293,6 +294,7 @@ fn owner_exists(project: &Project, owner: Owner) -> bool {
         Owner::Main => true,
         Owner::Track(id) => project.track(id).is_some(),
         Owner::Return(id) => project.return_tracks().iter().any(|track| track.id() == id),
+        Owner::Source(_) => false,
     }
 }
 
@@ -336,6 +338,7 @@ impl Target {
                     .find(|device| device.id() == self.device)?,
                 NativeDeviceClass::Effect,
             ),
+            Owner::Source(_) => return None,
         };
         (class == self.class
             && self

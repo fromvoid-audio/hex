@@ -59,6 +59,7 @@ fn actual_root_reactivation_refreshes_only_the_returned_source() {
             preparation,
             Some(saved.clone()),
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     root.complete_native_source(old, presentation()).unwrap();
@@ -153,6 +154,7 @@ fn actual_root_epoch_requires_original_endpoint_return_and_matching_resume_ack()
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     root.complete_native_source(other, presentation()).unwrap();

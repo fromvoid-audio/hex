@@ -1213,6 +1213,68 @@ fn active_native_editor_gesture_is_not_overwritten_by_host_feedback() {
         "host feedback must not overwrite an active native editor gesture"
     );
     fs::write(end, b"release the editor drag").unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let edits = instance.poll_parameter_edits_on_worker().unwrap();
+        if edits.pending >= 2 {
+            break;
+        }
+        assert!(Instant::now() < until, "final editor point did not arrive");
+        thread::yield_now();
+    }
+    let mut next_block = 1;
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        instance
+            .exchange_on_worker(request(instance.configuration(), next_block))
+            .unwrap();
+        next_block += 1;
+        let delivered = instance.poll_parameter_edits_on_worker().unwrap();
+        if delivered.as_slice().iter().any(|edit| {
+            edit.kind == protocol::ParameterEditKind::Perform && edit.normalized == 0.875
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "final editor point was not processed"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "a lagging processor observation must not replay over the final native target"
+    );
+    let delayed = instance
+        .exchange_on_worker(request(instance.configuration(), next_block))
+        .unwrap();
+    next_block += 1;
+    assert_eq!(
+        delayed.parameters.as_slice(),
+        &[ParameterPoint {
+            frame: 7,
+            id: 7,
+            normalized: 0.25,
+        }],
+        "processor observations still reach the caller"
+    );
+    assert_eq!(
+        first_controller_parameter(&mut instance).normalized,
+        0.875,
+        "output-only feedback must not reintroduce the lagging value"
+    );
+    let mut authored = request(instance.configuration(), next_block);
+    authored
+        .parameters
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    instance.exchange_on_worker(authored).unwrap();
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.5);
     assert!(
         instance
             .stop_and_reap_on_control()

@@ -65,6 +65,57 @@ pub(super) fn interval(a: u64, b: u64, horizon: u64, minimum: u64) -> Option<Vie
     })
 }
 impl EditorView {
+    fn midi_note_fit(&self) -> Option<PianoView> {
+        let source = self.midi_clip()?;
+        let length = source.source_length().raw();
+        let selected = source
+            .notes()
+            .iter()
+            .any(|note| self.midi_selection.contains(note.id()));
+        let mut bounds: Option<(u64, u64, u8, u8)> = None;
+        for note in source.notes() {
+            if selected && !self.midi_selection.contains(note.id()) {
+                continue;
+            }
+            let start = note.start().raw();
+            let end = start.checked_add(note.duration().raw())?;
+            let pitch = note.pitch();
+            bounds = Some(match bounds {
+                Some((a, b, low, high)) => {
+                    (a.min(start), b.max(end), low.min(pitch), high.max(pitch))
+                }
+                None => (start, end, pitch, pitch),
+            });
+        }
+        let Some((start, end, low, high)) = bounds else {
+            return Some(PianoView {
+                start: 0,
+                span: BeatTime::from_raw(length.max(1)),
+                low: 54,
+                rows: 12,
+            });
+        };
+        // Keep short notes readable and leave a modest margin around longer
+        // phrases. Blank viewport space never extends the authored source.
+        let minimum = (BeatTime::ONE.raw() / 16).max(1);
+        let padding = (end - start).div_ceil(20).max(minimum);
+        let time = interval(
+            start.saturating_sub(padding),
+            end.saturating_add(padding),
+            super::midi_scene::zoom_limit(length),
+            minimum,
+        )?;
+        let occupied = u16::from(high) - u16::from(low) + 1;
+        let rows = (occupied + 4).clamp(12, 128) as u8;
+        let low = (i16::from(low) - (i16::from(rows) - occupied as i16) / 2)
+            .clamp(0, 128 - i16::from(rows)) as u8;
+        Some(PianoView {
+            start: i128::from(time.start),
+            span: BeatTime::from_raw(time.length),
+            low,
+            rows,
+        })
+    }
     fn remember_midi_fit(&mut self) {
         let Some(clip) = self.detail_clip_id() else {
             return;
@@ -196,10 +247,20 @@ impl EditorView {
                 }
                 bounded_piano_view(prior, length)
             } else {
-                return self.fit_midi_interval(
-                    self.midi_time_selection_bounds().unwrap_or((0, length)),
-                    true,
-                );
+                let Some(next) = self.midi_note_fit() else {
+                    return false;
+                };
+                if (
+                    self.piano_beat_start,
+                    self.piano_beat_span,
+                    self.piano_pitch_low,
+                    self.piano_pitch_rows,
+                ) == (next.start, next.span, next.low, next.rows)
+                {
+                    return false;
+                }
+                self.remember_midi_fit();
+                next
             };
             self.cancel_midi_note_gesture();
             self.piano_zoom_wheel_accum = 0.0;
@@ -374,6 +435,8 @@ impl EditorView {
                 "zoom back · v"
             } else if target == Target::Arrange {
                 "fit time and selected tracks · z"
+            } else if target == Target::Midi {
+                "fit selected notes or all notes · z"
             } else {
                 "fit time selection or clip/content · z"
             },

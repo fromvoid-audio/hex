@@ -802,6 +802,11 @@ impl VisualTestContext {
                 .collect()
         })
     }
+    /// Consult the display callback's retained-scene policy after real test input.
+    pub fn should_present_drawn_scene(&mut self, required: bool, keepalive: bool) -> bool {
+        self.update(|window, _| window.should_present_drawn_scene(required, keepalive))
+    }
+
     /// Returns the cursor request selected by the current rendered hitbox.
     /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
     pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {

@@ -107,11 +107,10 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
                 f64::from(corners.bottom_left),
                 if last { 2.0 * f64::from(scale) } else { 0.0 }
             );
-            let plate = visual.rendered_path_triangles(selector("track-name-plate", group));
-            assert!(!plate.is_empty(), "the group plate is painted");
+            let plate = visual.rendered_background(selector("track-name-plate", group));
             let pole = visual.rendered_background(key).expect("group pole fill");
             assert!(
-                plate.iter().all(|triangle| triangle.color == pole),
+                plate == Some(pole),
                 "the group plate and its entire pole use the same selected/unselected fill"
             );
         };
@@ -130,10 +129,10 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
         assert_eq!(plate.left(), own_rail.right(), "title joins its own rail");
         assert_eq!(plate.top(), own_rail.top());
         assert!(
-            !visual
-                .rendered_path_triangles(selector("track-name-plate", track))
-                .is_empty(),
-            "group name plate is painted as a shaped path"
+            visual
+                .rendered_background(selector("track-name-plate", track))
+                .is_some(),
+            "group name plate is painted"
         );
     }
     // Resizing a group grows only its plate, keeping the working controls
@@ -155,7 +154,7 @@ fn nested_group_plates_and_poles_join_follow_selection_and_close_at_visible_ends
     let grown = visual
         .debug_bounds(selector("arrangement-track-header", outer))
         .unwrap();
-    assert_eq!(grown.size.height, original_height + px(80.0));
+    assert_eq!(grown.size.height, original_height + px(88.0));
     let name = visual.debug_bounds(selector("track-name", outer)).unwrap();
     assert!(
         name.top() - grown.top() <= px(4.0),
@@ -800,6 +799,66 @@ fn track_clipboard_copy_and_duplicate_from_header(cx: &mut TestAppContext) {
     });
     v.simulate_keystrokes("cmd-z");
     receive(&mut v, &e);
+}
+
+#[gpui::test]
+fn duplicate_and_undo_keep_row_measurements_and_scroll_anchor(cx: &mut TestAppContext) {
+    use gpui::{ListOffset, point, px};
+
+    let (mut visual, editor, ids) = live_tracks(cx, 100, false);
+    let [anchor, source, following] = [ids[1], ids[2], ids[3]];
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll.list.scroll_to(ListOffset {
+            item_ix: 1,
+            offset_in_item: px(5.0),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let following_header =
+        Box::leak(format!("arrangement-track-header-{}", following.value()).into_boxed_str());
+    let original_height = visual.debug_bounds(following_header).unwrap().size.height;
+    let resize = visual
+        .debug_bounds(Box::leak(
+            format!("track-height-resize-{}", following.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let released = point(resize.x, resize.y + px(20.0));
+    visual.simulate_mouse_down(resize, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(released, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(released, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let anchor_before = bounds(&mut visual, anchor);
+    let following_before = visual.debug_bounds(following_header).unwrap();
+    assert_eq!(following_before.size.height, original_height + px(22.0));
+    select(&mut visual, source, false);
+
+    for (shortcut, count, following_index) in [("cmd-d", 101, 4), ("cmd-z", 100, 3)] {
+        editor.update(&mut visual, |view, _| view.track_row_builds = 0);
+        visual.simulate_keystrokes(shortcut);
+        receive(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.tracks().len(), count);
+            assert_eq!(project.tracks()[2].id(), source);
+            assert_eq!(project.tracks()[following_index].id(), following);
+            assert!(
+                view.track_row_builds < ids.len(),
+                "{shortcut} rebuilt {} track rows",
+                view.track_row_builds
+            );
+        });
+        assert_eq!(bounds(&mut visual, anchor), anchor_before);
+        assert_eq!(
+            visual.debug_bounds(following_header).unwrap().size,
+            following_before.size
+        );
+    }
+    assert_eq!(
+        visual.debug_bounds(following_header),
+        Some(following_before)
+    );
 }
 
 #[gpui::test]

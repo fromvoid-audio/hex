@@ -655,14 +655,20 @@ fn linear_export_ignores_transport_and_unused_session_loops_but_refuses_arrangem
 
     let refused_path = dir.0.join("authored-loop.wav");
     let (revision, _) = prepared_hybrid(false, false, true);
+    let error = hex_export::render_prepared_new(&refused_path, revision, 0, 16)
+        .expect_err("arrangement loop must be refused");
+    let hex_export::ExportError::StagingRetained { path: stage, cause } = error else {
+        panic!("failed preparation must report its retained stage");
+    };
     assert!(matches!(
-        hex_export::render_prepared_new(&refused_path, revision, 0, 16),
-        Err(hex_export::ExportError::SessionRender(
+        *cause,
+        hex_export::ExportError::SessionRender(
             SessionPlaybackError::MutableInstrumentLoopUnsupported
-        ))
+        )
     ));
+    assert!(stage.is_file());
     assert!(!refused_path.exists());
-    assert_eq!(fs::read_dir(&dir.0).expect("list files").count(), 1);
+    assert_eq!(fs::read_dir(&dir.0).expect("list files").count(), 2);
 }
 
 #[test]

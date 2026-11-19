@@ -99,6 +99,8 @@ pub use audio_only_inputs::{
 pub mod native_device_resources;
 /// The loaded Sampler's existing authored gain control.
 pub use hex_devices::sampler::catalog::GAIN as SAMPLER_GAIN_PARAMETER;
+#[cfg(feature = "instrument-test-support")]
+pub mod compiled_fade_conformance;
 mod owned_shared;
 mod pcm_arc;
 mod sparse_audio;
@@ -125,6 +127,7 @@ pub use device_modulation::{
     project_device_host_gain_modulation_supported,
     project_device_instrument_output_modulation_supported,
     project_device_modulation_target_supported, project_source_utility_matrix_edit_supported,
+    project_source_utility_mute_edit_supported,
 };
 /// The authored aggregate note-gate ADSR settings.
 pub use hex_devices::modulation::adsr as adsr_modulator;
@@ -178,16 +181,17 @@ mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
-pub use signal_graph::OutputLatency;
 #[cfg(feature = "instrument-test-support")]
 pub use signal_graph::PrintedBranchProbe;
+pub use signal_graph::{OutputLatency, ProcessorGraphLatency};
 mod stream_demand;
 pub use stream_demand::{
     StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
 };
 mod streamed;
 pub use streamed::{
-    BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
+    BorrowedMediaPage, GranularStreamIdentity, MediaPages, RepitchStreamIdentity,
+    STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
 };
 
 pub type Frame = [f32; 2];
@@ -247,6 +251,7 @@ pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;
 #[derive(Clone, Copy)]
 pub(crate) struct StreamedPageSpan<'a> {
     pub source_frame: u64,
+    pub reversed: bool,
     pub timeline_frame: u64,
     pub output_offset: usize,
     pub count: usize,
@@ -264,7 +269,7 @@ pub(crate) fn render_streamed_page_span(
     render_streamed_page_span_captured(mix, source, span, output, pages, None)
 }
 
-pub(crate) fn render_streamed_page_span_captured(
+fn render_forward_streamed_page_span_captured(
     mix: PreparedTrackMix,
     source: &StreamedSourceMetadata,
     span: StreamedPageSpan<'_>,
@@ -274,6 +279,7 @@ pub(crate) fn render_streamed_page_span_captured(
 ) -> usize {
     let StreamedPageSpan {
         source_frame,
+        reversed: _,
         timeline_frame,
         output_offset,
         count: requested_count,
@@ -298,7 +304,7 @@ pub(crate) fn render_streamed_page_span_captured(
         _ => (&[][..], false),
     };
     let available = frames.len().saturating_sub(page_offset).min(count);
-    let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
+    let mut voice = fades.map(|fades| fades.directed_voice(source.key(), source_frame, false));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
         if let Some((fade, fade_start)) = fade
@@ -359,6 +365,96 @@ pub(crate) fn render_streamed_page_span_captured(
     if incomplete {
         pages.request_page(source.key(), page_index);
     } else if prefetch && let Some(next) = next_page {
+        pages.prefetch_page(source.key(), next);
+    }
+    count
+}
+
+pub(crate) fn render_streamed_page_span_captured(
+    mix: PreparedTrackMix,
+    source: &StreamedSourceMetadata,
+    span: StreamedPageSpan<'_>,
+    output: &mut [Frame],
+    pages: &mut (impl MediaPages + ?Sized),
+    mut capture: Option<&mut [Frame]>,
+) -> usize {
+    if !span.reversed {
+        return render_forward_streamed_page_span_captured(
+            mix, source, span, output, pages, capture,
+        );
+    }
+    let StreamedPageSpan {
+        source_frame,
+        reversed: _,
+        timeline_frame,
+        output_offset,
+        count: requested_count,
+        fade,
+        gain: clip_gain,
+    } = span;
+    if requested_count == 0 {
+        return 0;
+    }
+    let page_index = source_frame / STREAM_PAGE_FRAMES as u64;
+    let page_offset = (source_frame % STREAM_PAGE_FRAMES as u64) as usize;
+    let count = requested_count.min(page_offset + 1);
+    let Some(output_end) = output_offset.checked_add(count) else {
+        return 0;
+    };
+    let Some(destination) = output.get_mut(output_offset..output_end) else {
+        return 0;
+    };
+    let (page, fades) = pages.page_and_miss_fades(source.key(), page_index);
+    let (frames, valid) = match page {
+        Some(page) if page.page_index == page_index => (page.frames, true),
+        _ => (&[][..], false),
+    };
+    let mut voice = fades.map(|fades| fades.directed_voice(source.key(), source_frame, true));
+    let mut incomplete = !valid;
+    for (offset, destination) in destination.iter_mut().enumerate() {
+        let source_offset = page_offset - offset;
+        let sample = if let Some(&sample) = frames.get(source_offset).filter(|_| valid) {
+            let mut sample = sample;
+            if let Some((fade, fade_start)) = fade
+                && let Some(frame) = timeline_frame.checked_add(offset as u64)
+            {
+                let gain = fade.gain_at(frame.saturating_sub(fade_start));
+                sample[0] *= gain;
+                sample[1] *= gain;
+            }
+            if clip_gain != 1.0 {
+                sample[0] *= clip_gain;
+                sample[1] *= clip_gain;
+            }
+            voice.as_mut().map_or(sample, |voice| voice.present(sample))
+        } else if valid {
+            // A short valid page denotes source-end silence, not a missing page.
+            incomplete = true;
+            if let Some(voice) = voice.take() {
+                voice.end();
+            }
+            continue;
+        } else {
+            let sample = voice.as_mut().map_or([0.0; 2], |voice| voice.missing());
+            if sample == [0.0; 2] {
+                continue;
+            }
+            sample
+        };
+        mix.add_captured(
+            destination,
+            sample,
+            capture
+                .as_deref_mut()
+                .and_then(|frames| frames.get_mut(output_offset + offset)),
+        );
+    }
+    let prefetch_page = (page_offset + 1 - count <= STREAM_PAGE_FRAMES / 2)
+        .then(|| page_index.checked_sub(1))
+        .flatten();
+    if incomplete {
+        pages.request_page(source.key(), page_index);
+    } else if valid && let Some(next) = prefetch_page {
         pages.prefetch_page(source.key(), next);
     }
     count
@@ -620,6 +716,7 @@ pub struct Clip {
 struct ClipMetadata {
     gain: f32,
     source_phase: u64,
+    reversed: bool,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
     sparse: Option<Arc<SparseFrameMap>>,
@@ -700,6 +797,7 @@ impl Clip {
             Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
+                reversed: false,
                 fade: Some(fade),
                 streamed: None,
                 sparse: None,
@@ -737,6 +835,7 @@ impl Clip {
             self.metadata = Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: phase,
+                reversed: false,
                 fade: None,
                 streamed: None,
                 sparse: None,
@@ -744,6 +843,37 @@ impl Clip {
         }
         Ok(self)
     }
+    /// Set the finite destination-clock envelope on control, outside render.
+    /// Preserves source, gain, streamed and sparse metadata. This builder may
+    /// allocate or reclaim metadata; never call it in the audio callback.
+    pub fn with_fade(mut self, fade: hex_project::ClipFade) -> Result<Self, Invalid> {
+        fade.validate_segment(self.end - self.start)
+            .map_err(|error| Invalid(error.0))?;
+        let fade = (!fade.is_neutral()).then_some(fade);
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.fade = fade;
+            if fade.is_none()
+                && metadata.source_phase == 0
+                && !metadata.reversed
+                && metadata.streamed.is_none()
+                && metadata.sparse.is_none()
+                && metadata.gain == 1.0
+            {
+                self.metadata = None;
+            }
+        } else if fade.is_some() {
+            self.metadata = Some(Box::new(ClipMetadata {
+                gain: 1.0,
+                source_phase: 0,
+                reversed: false,
+                fade,
+                streamed: None,
+                sparse: None,
+            }));
+        }
+        Ok(self)
+    }
+
     /// Control-side clip gain preparation, preserving the compact unity path.
     pub fn with_gain(mut self, gain: hex_project::ClipGain) -> Self {
         let linear = gain.linear();
@@ -761,6 +891,7 @@ impl Clip {
             self.metadata = Some(Box::new(ClipMetadata {
                 gain: linear,
                 source_phase: 0,
+                reversed: false,
                 fade: None,
                 streamed: None,
                 sparse: None,
@@ -802,6 +933,7 @@ impl Clip {
             metadata: Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
+                reversed: false,
                 fade: None,
                 streamed: None,
                 sparse: Some(sparse),
@@ -924,6 +1056,53 @@ impl Clip {
         )
     }
 
+    /// Build a reverse-reading streamed region. This is a playback boundary;
+    /// it does not admit or change any saved clip edit.
+    pub fn streamed_region_reversed(
+        source: Arc<StreamedSourceMetadata>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+        source_length: u64,
+        looping: bool,
+    ) -> Result<Self, Invalid> {
+        let fade = hex_project::ClipFade::neutral(duration).map_err(|error| Invalid(error.0))?;
+        Self::streamed_region_reversed_with_fade(
+            source,
+            start,
+            duration,
+            source_offset,
+            source_length,
+            looping,
+            fade,
+        )
+    }
+
+    /// Build a reverse-reading streamed region with a destination fade.
+    pub fn streamed_region_reversed_with_fade(
+        source: Arc<StreamedSourceMetadata>,
+        start: u64,
+        duration: u64,
+        source_offset: u64,
+        source_length: u64,
+        looping: bool,
+        fade: hex_project::ClipFade,
+    ) -> Result<Self, Invalid> {
+        let mut clip = Self::streamed_region_with_fade(
+            source,
+            start,
+            duration,
+            source_offset,
+            source_length,
+            looping,
+            fade,
+        )?;
+        if let Some(metadata) = clip.metadata.as_mut() {
+            metadata.reversed = true;
+        }
+        Ok(clip)
+    }
+
     /// Build a streamed clip with the canonical fixed-domain fade envelope.
     pub fn streamed_region_with_fade(
         source: Arc<StreamedSourceMetadata>,
@@ -961,6 +1140,7 @@ impl Clip {
             metadata: Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
+                reversed: false,
                 fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
                 sparse: None,
@@ -1727,6 +1907,7 @@ impl Track {
         pages: Option<&mut (impl MediaPages + ?Sized)>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
@@ -1748,6 +1929,7 @@ impl Track {
                 None,
                 continuations,
                 timing,
+                interactive_onset_floor,
             )?;
         }
         Ok(())
@@ -1805,6 +1987,7 @@ impl Track {
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
         loop_fade: Option<loop_seam::LoopEndFade>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let end_frame = start_frame
@@ -1861,6 +2044,7 @@ impl Track {
                 Some(capture),
                 continuations,
                 timing,
+                interactive_onset_floor,
             )?;
         }
         Ok(())
@@ -1889,6 +2073,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -1903,6 +2088,7 @@ impl Track {
             None,
             continuations,
             timing,
+            interactive_onset_floor,
         )
     }
 
@@ -1935,15 +2121,17 @@ impl Track {
         );
         Ok(())
     }
+    /// Frame coordinates are (Arrangement source start, performance start).
     pub(crate) fn render_raw_instrument(
         &self,
-        start: u64,
-        performance: u64,
+        frames: (u64, u64),
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
+        let (start, performance) = frames;
         let end = start
             .checked_add(output.len() as u64)
             .ok_or(Invalid("raw instrument range overflow"))?;
@@ -1957,11 +2145,16 @@ impl Track {
             continuations,
             PreparedTrackMix::identity(),
             timing,
+            interactive_onset_floor,
         )
     }
+    /// Queries analytic source occurrences for reconstruction. Audible capture
+    /// supplies its action's onset floor; structural/capability proofs pass None
+    /// and remain conservative. Already-owned release ledgers are independent.
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
         mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::PreparedMidiNote),
     ) -> Result<(), Invalid> {
         let end = frame
@@ -1969,6 +2162,9 @@ impl Track {
             .ok_or(Invalid("midi span frame overflow"))?;
         if let Some(instrument) = &self.instrument {
             instrument.for_each_intersecting(frame, end, None, |span| {
+                if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                    return;
+                }
                 if let Some(sampler) = instrument.bank.sampler(span.sampler_index) {
                     visit(span, sampler);
                 }
@@ -2215,6 +2411,13 @@ impl Track {
                 let from = output_start + (root.start - first);
                 for (offset, sample) in audio.frames()[packed].iter().copied().enumerate() {
                     let index = from + offset;
+                    let mut sample = sample;
+                    if let Some(fade) = fade {
+                        let position = span_start + (index - output_start) as u64;
+                        let gain = fade.gain_at(position - clip.start);
+                        sample[0] *= gain;
+                        sample[1] *= gain;
+                    }
                     source_mix.add_captured(
                         &mut output[index],
                         sample.map(|channel| channel * clip_gain),
@@ -2299,6 +2502,7 @@ impl Track {
             None,
             &[],
             timing,
+            None,
         )
     }
 
@@ -2313,6 +2517,7 @@ impl Track {
         capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.render_instrument_range_with_mix(
             (start_frame, end_frame),
@@ -2324,6 +2529,7 @@ impl Track {
             continuations,
             self.source_mix,
             timing,
+            interactive_onset_floor,
         )
     }
 
@@ -2339,6 +2545,7 @@ impl Track {
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         source_mix: PreparedTrackMix,
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         if let Some(instrument) = &self.instrument {
@@ -2359,6 +2566,9 @@ impl Track {
                     chunk_end,
                     midi_onset_floor_exclusive,
                     |span| {
+                        if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                            return;
+                        }
                         let carried =
                             self.track_id.is_some_and(|track| {
                                 suppressions
@@ -3509,6 +3719,7 @@ impl RendererRuntime {
                     pages.as_deref_mut(),
                     &[],
                     volume_timing,
+                    None,
                 )?;
                 continue;
             }
@@ -3879,6 +4090,7 @@ pub(crate) fn render_source_generators(
             &[],
             PreparedTrackMix::identity(),
             timing,
+            None,
         )?;
     }
     Ok(())
@@ -4212,9 +4424,10 @@ pub use midi_template::{
     SessionMidiOrigin,
 };
 pub use playback::{
-    MAX_TIMED_TRANSPORT_COMMANDS, PlaybackAction, PlaybackActionError, PlaybackActionRejection,
-    PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability,
-    SessionCapabilityStatus, TimedTransportCommand, TimedTransportError, TransportFadeCompletion,
+    MAX_TIMED_TRANSPORT_COMMANDS, NoteChase, PlaybackAction, PlaybackActionError,
+    PlaybackActionRejection, PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection,
+    SessionCapability, SessionCapabilityStatus, TimedTransportCommand, TimedTransportError,
+    TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
@@ -4230,10 +4443,12 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedPrerollPages,
-    PreparedStreamAction, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
-    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
-    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PausedKeyboardMonitor,
+    PausedMonitorAdmissionError, PausedMonitorForeignBinding, PausedMonitorStorageHold,
+    PausedSourceMonitor, PausedTrackMonitor, PreparedPrerollPages, PreparedStreamAction,
+    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
 
 #[cfg(test)]

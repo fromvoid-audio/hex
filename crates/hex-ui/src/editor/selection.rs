@@ -185,6 +185,10 @@ impl super::EditorView {
         modifiers: gpui::Modifiers,
         window: &mut gpui::Window,
     ) {
+        if super::device_panel::source_sampler_edit_active(self) {
+            self.error = Some("finish the sampler edit before changing the source view".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };

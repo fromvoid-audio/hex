@@ -7,7 +7,7 @@ use hex_session::{
 };
 
 #[test]
-fn main_delay_bypass_publishes_without_a_pcm_step() {
+fn main_delay_power_declicks_and_undo_restarts_with_fresh_history() {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
@@ -22,6 +22,7 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
         class: hex_engine::NativeDeviceClass::Effect,
         type_id: hex_engine::DeviceTypeId::from_static("hex.delay"),
         before: None,
+        control: None,
     });
     let device = added.state.project.main_devices()[0].id();
     (applied, _) = h.applied(applied);
@@ -55,16 +56,21 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
         previous.iter().all(|sample| *sample > 0.3),
         "delay did not reach its sustained output: {previous:?}"
     );
-    for (bypassed, expected_level) in [(true, 0.25_f32), (false, 0.5_f32)] {
-        let previous = if bypassed { previous } else { h.render()[63] };
-        h.service
-            .submit(Request::Edit(hex_project::Command::ToggleDeviceBypass {
-                device,
-            }))
-            .unwrap();
+    for (request, bypassed, expected_level) in [
+        (
+            Request::Edit(hex_project::Command::ToggleDeviceBypass { device }),
+            true,
+            0.25_f32,
+        ),
+        (Request::Undo, false, 0.5_f32),
+        (Request::Redo, true, 0.25_f32),
+    ] {
+        let previous = h.render()[63];
+        h.service.submit(request).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut frames = Vec::new();
         let mut event = None;
+        let mut install_frame = None;
         loop {
             h.pump();
             frames.extend_from_slice(&h.render());
@@ -73,6 +79,9 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
             }
             let status = h.audio.as_ref().unwrap().status().unwrap();
             let active = status.applied_revision.load(Acquire);
+            if active > applied {
+                install_frame.get_or_insert(frames.len() - 64);
+            }
             if let (Some(event), Some((revision, metadata))) = (&event, h.submitted)
                 && revision > applied
                 && active == revision
@@ -90,6 +99,7 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
         let event = event.unwrap();
         assert!(event.error.is_none(), "{:?}", event.error);
         assert_eq!(event.state.project.main_devices()[0].bypassed(), bypassed);
+        let cut = install_frame.unwrap();
         applied = h
             .audio
             .as_ref()
@@ -98,8 +108,6 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
             .unwrap()
             .applied_revision
             .load(Acquire);
-        // Cover the full ramp and the residual feedback, then verify the bypass
-        // settles to the original dry source rather than permanently doubling it.
         for _ in 0..96 {
             frames.extend_from_slice(&h.render());
         }
@@ -110,10 +118,20 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
                 .all(|sample| (*sample - expected_level).abs() < 0.002),
             "bypass={bypassed} did not settle to {expected_level}: {settled:?}"
         );
+        let end = if bypassed {
+            assert!(frames[cut + 239..].iter().all(|frame| *frame == [0.25; 2]));
+            frames.len()
+        } else {
+            // Undo powers on immediately. After the same-signal de-click and
+            // before the new 10 ms echo, old feedback cannot fill the gap.
+            assert_eq!(frames[cut + 239..cut + 480], [[0.0; 2]; 241]);
+            assert_eq!(frames[cut + 480], [0.25; 2]);
+            cut + 480
+        };
         let mut last = previous;
         let mut max_step = 0.0_f32;
         let mut largest_transition = (0, 0, 0.0, 0.0);
-        for (offset, frame) in frames.into_iter().enumerate() {
+        for (offset, &frame) in frames[..end].iter().enumerate() {
             for lane in 0..2 {
                 let step = (frame[lane] - last[lane]).abs();
                 if step > max_step {

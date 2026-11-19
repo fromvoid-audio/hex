@@ -237,7 +237,8 @@ impl ThemeTokens {
         });
         let neutral = elements[hex_project::ElementColor::Gray as usize].accent;
         let inactive_waveform_inks = [false, true].map(|selected| {
-            waveform_ink_for_background(neutral, arrangement_clip_body_fill(0x888888, selected))
+            let fill = arrangement_clip_activity_body_fill(INACTIVE_CLIP_FILL, selected, false);
+            mix(fill, waveform_ink_for_background(neutral, fill), 0.62)
         });
         Self {
             colors,
@@ -693,9 +694,10 @@ pub fn clip_fill(
     }
 }
 
-/// Activation is independent of the persisted color flavor. Keep inactive clips
-/// fully neutral regardless of track hue, flavor or customized theme colors.
-/// Mid-gray retains readable black labels; selection remains visibly lighter.
+const INACTIVE_CLIP_FILL: u32 = 0x777777;
+const INACTIVE_CLIP_SELECTED_FILL: u32 = 0x858585;
+
+/// Inactive clips share a subdued neutral fill across track hues and color flavors.
 pub fn clip_activity_fill(
     color: hex_project::ElementColor,
     flavor: hex_project::ClipFlavor,
@@ -705,10 +707,39 @@ pub fn clip_activity_fill(
     if active {
         clip_fill(color, flavor, selected)
     } else if selected {
-        0x9a9a9a
+        INACTIVE_CLIP_SELECTED_FILL
     } else {
-        0x888888
+        INACTIVE_CLIP_FILL
     }
+}
+
+pub(crate) fn arrangement_clip_activity_body_fill(
+    header: u32,
+    selected: bool,
+    active: bool,
+) -> u32 {
+    if active {
+        arrangement_clip_body_fill(header, selected)
+    } else if selected {
+        INACTIVE_CLIP_SELECTED_FILL
+    } else {
+        header
+    }
+}
+
+/// The neutral outline still distinguishes a selected or hovered inactive clip.
+pub(crate) fn clip_activity_outline(active: bool, role: PaletteRole) -> u32 {
+    if active {
+        color(role)
+    } else if role == PaletteRole::ClipOutline {
+        0x606060
+    } else {
+        0x999999
+    }
+}
+
+pub(crate) fn clip_detail_opacity(active: bool) -> f32 {
+    if active { 1.0 } else { 0.28 }
 }
 
 #[derive(Clone, Copy)]
@@ -862,9 +893,9 @@ mod tests {
                     let ink = tokens.inactive_waveform_inks[usize::from(selected)];
                     assert_eq!(ink >> 16, (ink >> 8) & 255);
                     assert_eq!(ink >> 16, ink & 255);
-                    assert!(
-                        contrast_ratio(ink, arrangement_clip_body_fill(0x888888, selected)) >= 3.0
-                    );
+                    let fill =
+                        arrangement_clip_activity_body_fill(INACTIVE_CLIP_FILL, selected, false);
+                    assert!((1.5..3.0).contains(&contrast_ratio(ink, fill)));
                 }
             }
         }
@@ -897,6 +928,9 @@ mod tests {
             "project changed outside hex at /Users/Me/My Songs/Live Set.hex"
         );
         assert_eq!(text("Plain Status").as_ref(), "plain status");
+        let path = "/Mixed\u{2069}Case/Output.WAV";
+        let message = format!("Open {}", super::verbatim_text::verbatim(path));
+        assert_eq!(text(message).as_ref(), format!("open {path}"));
     }
 
     #[test]

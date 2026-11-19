@@ -163,3 +163,177 @@ fn bounced_pcm(
         .frames()
         .to_vec()
 }
+
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_streamed_main_export_uses_private_worker() {
+    let _native = native_fixture();
+    for limit in [8_192, 32_768] {
+        native_effect_export_case(limit, false);
+    }
+}
+
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_export_refuses_changed_final_latency_without_publishing() {
+    const CHILD: &str = "HEX_OFFLINE_FINAL_LATENCY_REFUSAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "68")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let _native = native_fixture();
+    native_effect_export_case(8_192, true);
+}
+
+fn native_effect_export_case(limit: u64, refuse_final_latency: bool) {
+    use hex_session::service::{ExportControl, ExportSignal};
+    let files = Files::new();
+    let mut selected = selection();
+    let module = files.0.canonicalize().unwrap().join("original.vst3");
+    super::ui::copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Fx", 0).unwrap();
+    let recovery = files.0.join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        48_000,
+        limit,
+        files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+        recovery.join("export.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let original = files.wav(48_000, 16_384);
+    let original_bytes = fs::read(&original).unwrap();
+    let imported = h.run(Request::ImportToNewTrack {
+        path: original.clone(),
+        before_track: None,
+        start: 0,
+    });
+    assert_eq!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_))),
+        limit == 8_192
+    );
+    let (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut insertion = request(&imported.state, PluginEffectDestination::Track(track));
+    insertion.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    h.applied(applied);
+    let before = Arc::clone(&inserted.state.project);
+    let live = h.plugin_progress.lock().unwrap().binding;
+    let path = files.0.join("private-export.wav");
+    let existing = b"previous completed export";
+    if refuse_final_latency {
+        fs::write(&path, existing).unwrap();
+    }
+    let queued = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: path.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: refuse_final_latency,
+        },
+    );
+    assert!(queued.error.is_none(), "{:?}", queued.error);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let completed = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "private export timed out");
+        std::thread::yield_now();
+    };
+    if refuse_final_latency {
+        let error = completed
+            .result
+            .expect_err("final presentation must refuse");
+        assert!(
+            error
+                .message()
+                .contains("presentation latency refused (worker code 5)"),
+            "{error}"
+        );
+        assert_eq!(fs::read(path).unwrap(), existing);
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
+        assert_eq!(queued.state.project, before);
+        assert_eq!(queued.state.revision, inserted.state.revision);
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+        return;
+    }
+    let report = completed.result.expect("private native export");
+    assert_eq!(report.frames, 1024);
+    let wav = fs::read(path).unwrap();
+    let pcm: Vec<_> = wav[44..]
+        .chunks_exact(4)
+        .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
+        .collect();
+    assert!(
+        pcm.iter().any(|sample| (1000..=7000).contains(sample)),
+        "the private effect must audibly reduce the 8192-level input"
+    );
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
+    assert_eq!(queued.state.project, before);
+    assert_eq!(fs::read(&original).unwrap(), original_bytes);
+    let refused = super::super::resident_sections::run_callback(
+        &mut h,
+        Request::ExportRange {
+            path: original.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Main,
+            control: ExportControl::default(),
+            format: hex_export::ExportFormat::Pcm16,
+            overwrite: true,
+        },
+    );
+    assert!(refused.error.is_none(), "{:?}", refused.error);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let error = loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_export_event() {
+            break event.result.unwrap_err();
+        }
+        assert!(Instant::now() < deadline, "refusal timed out");
+        std::thread::yield_now();
+    };
+    assert!(error.message().contains("original media"), "{error}");
+    assert_eq!(fs::read(original).unwrap(), original_bytes);
+}

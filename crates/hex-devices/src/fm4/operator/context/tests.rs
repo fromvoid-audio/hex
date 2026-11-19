@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn empty_modulation_fast_path_matches_full_routing_and_feedback() {
+    let oscillators = [Oscillator::new(1.0, 0.75, 0.0).unwrap(); 4];
+    let envelopes = [OperatorEnvelope::new(1.0, 1.0, 1.0, 0.0, 0.01, 0.01).unwrap(); 4];
+    for (routed, zero) in [(false, 0.0), (false, -0.0), (true, 0.0)] {
+        let mut matrix = [[zero; 4]; 4];
+        if routed {
+            matrix[0][1] = 0.375;
+            matrix[1][2] = -0.25;
+        }
+        let config = PreparedOperatorConfiguration::new(
+            48_000,
+            oscillators,
+            Routing::new(matrix, [0.25; 4]).unwrap(),
+            envelopes,
+        )
+        .unwrap();
+        assert_eq!(config.has_modulation(), routed);
+        let note = config.prepare_note(60, 100).unwrap();
+        let mut expected_history = [0.0; 4];
+        let mut actual_history = [0.0; 4];
+        for frame in 0..128u64 {
+            let phases = std::array::from_fn(|i| frame.wrapping_mul(note.steps[i]));
+            let sample = |operator: usize, phase: u64, _: u64| {
+                ((phase >> 40) as f32 / 16_777_216.0) * (operator as f32 + 1.0) - 1.0
+            };
+            let expected = config.sample_with_waveform_sampler(
+                &note,
+                [0.5; 4],
+                &phases,
+                expected_history,
+                [0.75; 4],
+                [0.25; 4],
+                [0.125, 0.0, 0.0, 0.0],
+                true,
+                None,
+                sample,
+            );
+            let actual = config.sample_with_waveform_sampler(
+                &note,
+                [0.5; 4],
+                &phases,
+                actual_history,
+                [0.75; 4],
+                [0.25; 4],
+                [0.125, 0.0, 0.0, 0.0],
+                config.has_modulation(),
+                None,
+                sample,
+            );
+            assert_eq!(actual.0.to_bits(), expected.0.to_bits());
+            assert_eq!(actual.1.map(f64::to_bits), expected.1.map(f64::to_bits));
+            expected_history = expected.1;
+            actual_history = actual.1;
+        }
+    }
+}
+
+#[test]
 fn compact_notes_match_standalone_pcm_across_routes_gates_and_query_order() {
     let table = SineTable::new();
     let oscillators = [

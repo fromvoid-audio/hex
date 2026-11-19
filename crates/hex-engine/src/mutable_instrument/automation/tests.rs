@@ -100,6 +100,7 @@ fn onsets() -> MutableOnsetBuffer {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                contributor_fade_in: false,
             })
             .unwrap();
     }

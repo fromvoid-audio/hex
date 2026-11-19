@@ -243,6 +243,13 @@ impl StreamOwner {
             retirement.stream = Some(stream);
         }
     }
+    /// Control-only borrow from the original backend custody. No ownership or
+    /// retirement authority transfers to the device timing query.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn stream_on_control(&self) -> Option<&cpal::Stream> {
+        self.retirement.as_ref()?.stream.as_ref()
+    }
+
     pub(crate) fn play(&self) -> Result<(), String> {
         self.retirement
             .as_ref()

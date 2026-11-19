@@ -146,6 +146,7 @@ pub(super) fn render_source_instrument_chunk<T: crate::prepared_tempo::MidiTempo
                     .into_iter()
                     .chain(route_floors.get(index).copied().flatten())
                     .max(),
+                interactive_onset_floor: context.interactive_onset_floor,
                 suppressions: context.suppressions,
                 continuations: context.continuations,
                 index,
@@ -185,6 +186,8 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         arrangement_loop_pass,
         transient,
         chase_at_start,
+        interactive_onset_floor,
+        pending_shared_chase,
         loop_region,
         timing,
     } = context;
@@ -221,13 +224,35 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                 let mut failed = false;
                 track
                     .for_each_mutable_midi_span(arrangement_frame, arrangement_end, |span| {
+                        if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                            return;
+                        }
                         let chase = arrangement_loop_pass > 0
                             && loop_region.is_some_and(|region| {
                                 arrangement_frame == region.start()
                                     && span.start < region.start()
                                     && span.gate_end > region.start()
                             });
-                        let start_chase = chase_at_start
+                        let key = crate::mutable_instrument::MutableOccurrenceKey::new(
+                            track_id,
+                            span.clip,
+                            span.note,
+                            span.iteration,
+                            arrangement_loop_pass,
+                        );
+                        let pending = pending_shared_chase.is_some_and(|pending| {
+                            pending.frame == performance_frame
+                                && pending.signature
+                                    == crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
+                                        key,
+                                        span.onset_beat,
+                                        span.gate_end_beat,
+                                        span.pitch,
+                                        span.channel,
+                                        span.velocity,
+                                    )
+                        });
+                        let start_chase = (chase_at_start || pending)
                             && span.start < arrangement_frame
                             && span.gate_end > arrangement_frame;
                         let start = if chase || start_chase {
@@ -253,13 +278,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                         };
                         failed |= onsets
                             .push(crate::mutable_instrument::MutableNoteOnset {
-                                key: crate::mutable_instrument::MutableOccurrenceKey::new(
-                                    track_id,
-                                    span.clip,
-                                    span.note,
-                                    span.iteration,
-                                    arrangement_loop_pass,
-                                ),
+                                key,
                                 onset_beat: span.onset_beat,
                                 gate_end_beat: span.gate_end_beat,
                                 source_start,
@@ -267,6 +286,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: pending && start_chase,
                             })
                             .is_err();
                     })
@@ -311,6 +331,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                 pitch: span.pitch,
                                 channel: span.channel,
                                 velocity: span.velocity,
+                                contributor_fade_in: false,
                             })
                             .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
                     }

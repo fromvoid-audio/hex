@@ -13,6 +13,59 @@ pub struct PluginParameterQuery {
     pub page_first: Option<u16>,
 }
 
+/// A read-only conversion on the exact source that supplied a parameter row.
+/// The source stamp is an identity, not authority to edit the parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginParameterConversionQuery {
+    pub context: AudioSourceContext,
+    pub device: DeviceId,
+    pub output_identity: u64,
+    pub request_id: u64,
+    pub source: hex_lattice_contract::ForeignProcessorBinding,
+    pub parameter: u32,
+    pub operation: PluginParameterConversion,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PluginParameterConversion {
+    Format(f64),
+    Parse(PluginParameterText),
+}
+
+/// At most 127 non-NUL UTF-16 code units, matching the SDK's terminated string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginParameterText(String);
+
+impl PluginParameterText {
+    pub fn new(text: &str) -> Result<Self, &'static str> {
+        let mut units = 0;
+        for unit in text.encode_utf16() {
+            units += 1;
+            if unit == 0 || units > 127 {
+                return Err("vst3 parameter text is too long or contains a terminator");
+            }
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One correlated observation; errors include stale sources and SDK refusal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginParameterConversionResult {
+    pub query: PluginParameterConversionQuery,
+    pub value: Result<PluginParameterConvertedValue, String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginParameterConvertedValue {
+    pub normalized: f64,
+    pub display: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PluginParameterRow {
     pub id: u32,
@@ -123,6 +176,36 @@ mod tests {
         assert!(!continuation.request_complete);
         assert!(continuation.status.is_none() && continuation.error.is_none());
         assert_eq!(continuation.state.revision, edited.state.revision);
+
+        let conversion = PluginParameterConversionQuery {
+            context: query.context,
+            device,
+            output_identity: 1,
+            request_id: 2,
+            source: hex_lattice_contract::ForeignProcessorBinding {
+                root: 1,
+                instance: 1,
+                graph: 1,
+                epoch: 1,
+            },
+            parameter: 7,
+            operation: PluginParameterConversion::Parse(
+                PluginParameterText::new("double").unwrap(),
+            ),
+        };
+        service
+            .submit(Request::QueryPluginParameterConversion(conversion.clone()))
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.plugin_parameter_observation && refused.request_complete);
+        assert_eq!(refused.state.revision, edited.state.revision);
+        assert_eq!(refused.state.project, edited.state.project);
+        let receipt = refused.plugin_parameter_conversion.unwrap();
+        assert_eq!(receipt.query, conversion);
+        assert!(receipt.value.is_err());
+        assert!(PluginParameterText::new(&"x".repeat(128)).is_err());
+        assert!(PluginParameterText::new("x\0y").is_err());
+        assert!(PluginParameterText::new(&"🎹".repeat(64)).is_err());
     }
 
     #[test]

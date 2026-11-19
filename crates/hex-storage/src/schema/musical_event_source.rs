@@ -95,24 +95,30 @@ fn walk(
 }
 
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
-    let mut snapshot = project.snapshot();
-    let mut rows = Vec::new();
-    walk(project, &mut snapshot, |path, edit| {
-        if let Some(source) = edit.domain.musical_event_source {
-            rows.push(Row {
-                path: path.to_vec(),
-                zero_in_destination: source.zero_in_destination,
-                length_raw: source.length.raw(),
-            });
-            Arc::make_mut(&mut edit.domain).musical_event_source = None;
-            true
-        } else {
-            false
-        }
-    })?;
-    let neutral =
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let mut value = super::sidechain::encode(&neutral)?;
+    // Newer schemas retain this field even when the project has no corresponding state.
+    let (neutral, rows) = if contains(project) {
+        let mut snapshot = project.snapshot();
+        let mut rows = Vec::new();
+        walk(project, &mut snapshot, |path, edit| {
+            if let Some(source) = edit.domain.musical_event_source {
+                rows.push(Row {
+                    path: path.to_vec(),
+                    zero_in_destination: source.zero_in_destination,
+                    length_raw: source.length.raw(),
+                });
+                Arc::make_mut(&mut edit.domain).musical_event_source = None;
+                true
+            } else {
+                false
+            }
+        })?;
+        let neutral =
+            Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+        (Some(neutral), rows)
+    } else {
+        (None, Vec::new())
+    };
+    let mut value = super::sidechain::encode(neutral.as_ref().unwrap_or(project))?;
     value["musical_event_sources"] = serde_json::to_value(rows)?;
     value["version"] = MUSICAL_EVENT_SOURCE_SCHEMA_VERSION.into();
     Ok(value)

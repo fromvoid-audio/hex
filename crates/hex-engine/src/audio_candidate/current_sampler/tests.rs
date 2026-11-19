@@ -267,6 +267,45 @@ fn sampler_constructor_case(grouped: bool) {
         ]
         .map(|frame| frame.map(|sample| sample * gain))
     );
+    let before_missing_scope = owner.test_transport();
+    let mut missing_scope = [[1.0; 2]; 16];
+    assert!(
+        owner
+            .inner
+            .runtime
+            .as_mut()
+            .unwrap()
+            .playback
+            .render_with_live_track_audio(
+                &mut missing_scope,
+                track,
+                &[[0.125, -0.25]; 16],
+                None,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+            )
+            .is_err()
+    );
+    assert_eq!(missing_scope, [[0.0; 2]; 16]);
+    assert_eq!(owner.test_transport(), before_missing_scope);
+    let mut live_output = [[0.0; 2]; 16];
+    owner
+        .inner
+        .runtime
+        .as_mut()
+        .unwrap()
+        .render_with_live_track_audio(
+            &mut live_output,
+            track,
+            &[[0.125, -0.25]; 16],
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+    assert_eq!(live_output, [[0.125 * gain, -0.25 * gain]; 16]);
     let before = owner.test_transport();
     assert!(
         owner
@@ -289,6 +328,27 @@ fn sampler_constructor_case(grouped: bool) {
     let mut replay = [[0.0; 2]; 12];
     owner.test_render(&mut replay).unwrap();
     assert_eq!(replay, output);
+    let runtime = owner.inner.runtime.as_mut().unwrap();
+    runtime
+        .apply_declicked_action(crate::PlaybackAction::Transport(
+            crate::PlaybackCommand::Stop,
+        ))
+        .unwrap();
+    let mut faded = [[0.0; 2]; 96];
+    runtime
+        .render_with_live_track_audio(
+            &mut faded,
+            track,
+            &[[0.125, -0.25]; 96],
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+    assert!(!runtime.playback.playing());
+    assert!(faded[..40].iter().any(|frame| frame[0] != 0.0));
+    assert!(faded[48..].iter().all(|frame| *frame == [0.0; 2]));
     cell.cleanup_on_control().unwrap();
     assert!(cell.owner_on_control().is_none());
     assert!(original.source_view(&token).is_ok());

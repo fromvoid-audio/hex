@@ -111,7 +111,7 @@ pub(super) fn intent(
             .context()
             .project_generation,
         revision: state.revision,
-        track,
+        owner: hex_project::InstrumentAssetOwner::Track(track),
         device: device.id(),
         expected_state: device.state().clone(),
         path,
@@ -665,4 +665,140 @@ fn sampler_replacement_history_stale_cancel_playing_and_postseal_refuse_without_
     );
     assert_eq!(restored.project.assets().count(), 1);
     gain::original_pcm(&mut h);
+}
+
+#[test]
+fn unassigned_sampler_replacement_commits_and_undoes_through_private_fence() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (files, mut h, track, device, original) = gain::current(24);
+    let source = original.project.track(track).unwrap().source_id().unwrap();
+    wav(&files, true);
+    let saved = files.0.join("source-bound.hex");
+    h.run(Request::SaveNew(saved.clone()));
+    let mut project = hex_project::Editor::new(hex_storage::load(&saved).unwrap(), 16).unwrap();
+    project
+        .execute(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    let state = project.project().device(device).unwrap().state().clone();
+    project
+        .execute(Command::InsertInstrument { track, state })
+        .unwrap();
+    let empty = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_engine::DeviceTypeId::from_static("hex.instrument.sampler"),
+    )
+    .unwrap();
+    let hex_project::Created::NativeSource(empty_source) = project
+        .execute(Command::CreateNativeSource {
+            name: "empty".into(),
+            devices: vec![empty],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("empty source")
+    };
+    let empty_device = project
+        .project()
+        .native_source(empty_source)
+        .unwrap()
+        .instrument()
+        .id();
+    let path = files.0.join("source-unassigned.hex");
+    hex_storage::save_new(&path, project.project()).unwrap();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    h.open();
+    let opened = h.run(Request::Open(path));
+    h.open();
+    h.applied(h.context.unwrap());
+    let before = opened.state;
+    let make_edit = || {
+        let mut edit = intent(&before, track, incoming(&files));
+        edit.owner = hex_project::InstrumentAssetOwner::Source(source);
+        edit.device = device;
+        edit.expected_state = before.project.device(device).unwrap().state().clone();
+        edit
+    };
+    let cancelled = make_edit();
+    cancelled
+        .cancel
+        .store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .as_ref()
+        .unwrap()
+        .submit(Request::SamplerEdit(SamplerEdit::Replacement(cancelled)))
+        .unwrap();
+    let refused = h.next();
+    assert!(refused.error.is_some());
+    gain::unchanged(&before, &refused);
+    let changed = accept(&mut h, make_edit());
+    assert_eq!(changed.project.source_contributors(source).count(), 0);
+    assert_eq!(
+        changed
+            .project
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id(),
+        device
+    );
+    assert_ne!(
+        changed.project.device(device).unwrap().state(),
+        before.project.device(device).unwrap().state()
+    );
+    let undone = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(super::history::history(
+            &changed, false,
+        ))),
+    );
+    assert_eq!(
+        undone.project.device(device).unwrap().state(),
+        before.project.device(device).unwrap().state()
+    );
+    let redone = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(super::history::history(&undone, true))),
+    );
+    assert_eq!(
+        redone.project.device(device).unwrap().state(),
+        changed.project.device(device).unwrap().state()
+    );
+    let mut first = intent(&redone, track, incoming(&files));
+    first.owner = hex_project::InstrumentAssetOwner::Source(empty_source);
+    first.device = empty_device;
+    first.expected_state = redone.project.device(empty_device).unwrap().state().clone();
+    let loaded = accept(&mut h, first);
+    assert_eq!(loaded.project.source_contributors(empty_source).count(), 0);
+    assert!(!hex_engine::is_empty_sampler_state_on_control(
+        loaded.project.device(empty_device).unwrap().state()
+    ));
+    let empty_again = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(super::history::history(
+            &loaded, false,
+        ))),
+    );
+    assert!(hex_engine::is_empty_sampler_state_on_control(
+        empty_again.project.device(empty_device).unwrap().state()
+    ));
+    let loaded_again = super::history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(super::history::history(
+            &empty_again,
+            true,
+        ))),
+    );
+    assert_eq!(
+        loaded_again.project.device(empty_device).unwrap().state(),
+        loaded.project.device(empty_device).unwrap().state()
+    );
 }

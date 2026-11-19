@@ -107,23 +107,31 @@ where
         }
 
         let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
-        let new_node = self.push_leaf(new_bounds, ordering);
-        let new_parent = self.push_internal(sibling, new_node);
-
-        // If there was an old parent, we need to update its children indices.
-        if let Some(old_parent) = self.stack.last().copied() {
-            let Node::Internal { left, right, .. } = &mut self.nodes[old_parent] else {
-                unreachable!();
-            };
-
-            if *left == sibling {
-                *left = new_parent;
-            } else {
-                *right = new_parent;
-            }
+        // Equal rectangles intersect exactly the same future queries. Keep
+        // their maximum order in one leaf without removing any scene primitive.
+        if let Node::Leaf { bounds, order } = &mut self.nodes[sibling]
+            && *bounds == new_bounds
+        {
+            *order = (*order).max(ordering);
         } else {
-            // If the old parent was the root, the new parent is the new root.
-            self.root = Some(new_parent);
+            let new_node = self.push_leaf(new_bounds, ordering);
+            let new_parent = self.push_internal(sibling, new_node);
+
+            // If there was an old parent, we need to update its children indices.
+            if let Some(old_parent) = self.stack.last().copied() {
+                let Node::Internal { left, right, .. } = &mut self.nodes[old_parent] else {
+                    unreachable!();
+                };
+
+                if *left == sibling {
+                    *left = new_parent;
+                } else {
+                    *right = new_parent;
+                }
+            } else {
+                // If the old parent was the root, the new parent is the new root.
+                self.root = Some(new_parent);
+            }
         }
 
         for node_index in self.stack.drain(..).rev() {
@@ -366,6 +374,28 @@ mod ordering_verification {
                 }
             }
         }
+        let a = rect(0.25, 1.0, 4.0, 2.0);
+        let b = rect(3.25, 1.0, 4.0, 2.0);
+        let separate = rect(12.0, 1.0, 4.0, 2.0);
+        let mut repeated = BoundsTree::default();
+        require(repeated.insert(a) == 1, "first repeated bounds")?;
+        require(
+            repeated.insert(b) == 2,
+            "overlap precedes the repeated bounds",
+        )?;
+        for order in 3..=10 {
+            require(repeated.insert(a) == order, "repeated bounds lost ordering")?;
+        }
+        require(repeated.reserve(a, 3) == Some(11), "repeated reserve order")?;
+        require(
+            repeated.insert(b) == 15,
+            "later overlap lost reserved ceiling",
+        )?;
+        require(
+            repeated.insert(separate) == 1,
+            "disjoint geometry lost order reuse",
+        )?;
+
         // A union represented as origin + size may round its far edge inward.
         // Placement-path bounds must not introduce a new overlap-pruning test.
         let mut rounded = BoundsTree::default();

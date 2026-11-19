@@ -33,7 +33,7 @@ pub(crate) enum NativeAssetDestination {
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
     ExistingInstrument {
-        track: hex_project::TrackId,
+        owner: hex_project::InstrumentAssetOwner,
         device: hex_project::DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
         state: hex_lattice_contract::NativeDeviceState,
@@ -216,13 +216,13 @@ impl Session {
                 source_slot,
             },
             NativeAssetDestination::ExistingInstrument {
-                track,
+                owner,
                 device,
                 expected_state,
                 state,
                 source_slot,
             } => Command::ImportDeviceAssetReplacingInstrument {
-                track,
+                owner,
                 device,
                 expected_state,
                 path,

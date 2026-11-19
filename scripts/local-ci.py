@@ -229,9 +229,10 @@ UI_UNIT_STEPS = tuple(
 UI_UNIT_STEP_IDS = frozenset(step.step_id for step in UI_UNIT_STEPS)
 
 UI_FEATURE_TARGET_STEPS = (
-    Step("ui-midi-pressure-boundary-tests",
-         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
-          "--test", "midi_pressure_boundary", "--locked"), requires_tests=True),
+    *(Step(f"ui-{target.replace('_', '-')}-tests",
+           ("cargo", "test", "-p", "hex-ui", "--features", feature,
+            "--test", target, "--locked"), requires_tests=True)
+      for target, feature in ci_plan.UI_EXTRA_TEST_FEATURES.items()),
     Step("ui-feature-doctests",
          ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--doc", "--locked")),
 )
@@ -417,6 +418,23 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         for package in tested:
             if package in module_filters and package not in single:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
+        # The durable dense-take regression lives in the integration tier. A
+        # scoped adoption change must still exercise that public boundary.
+        adoption = "service::automation_take::adoption::"
+        session_filters = module_filters.get("hex-session", ())
+        if "hex-session" in tested and any(
+            adoption.startswith(name) or name.startswith(adoption) for name in session_filters
+        ):
+            targets = [target for target in by_name["hex-session"]["targets"]
+                       if target.get("name") == "automation_take_density"]
+            if targets:
+                if (len(targets) != 1 or targets[0].get("kind") != ["test"]
+                        or targets[0].get("src_path") != "tests/automation_take_density.rs"
+                        or targets[0].get("required-features")):
+                    raise ValueError("automation take density integration target is malformed")
+                steps.append(Step("session-automation-take-density",
+                                  ("cargo", "test", "-p", "hex-session", "--test",
+                                   "automation_take_density", "--locked"), requires_tests=True))
         if standalone_ui:
             if tested != ["hex-ui"] or single.get("hex-ui") != "ui-test-support" or module_filters:
                 raise ValueError("standalone UI unit targets require an exclusively test-only hex-ui boundary")
@@ -637,6 +655,21 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       or s.step_id == "runner-tests") for s in steps)
 
 
+def qualification_steps(mode: str | None, plan: dict | None, *,
+                        native_acceptance_opt_in: bool | None,
+                        sharded_full_python: bool = False) -> tuple[Step, ...]:
+    """Bind the complete audit schedule to the recorded discovery mode."""
+    if type(sharded_full_python) is not bool:
+        raise ValueError("full Python discovery marker must be boolean")
+    if sharded_full_python:
+        if mode != "full" or plan is not None or native_acceptance_opt_in is not False:
+            raise ValueError("sharded full Python discovery requires an unscoped full audit without native opt-in")
+        return planned_steps({"scope": "full", "python_tests": {
+            "mode": "comprehensive", "sharded_discovery": True,
+        }})
+    return planned_steps({"scope": "full"} if plan is None else plan)
+
+
 def module_scoped(argv: tuple[str, ...]) -> bool:
     """A test command restricted to changed modules by a libtest filter.
 
@@ -651,21 +684,67 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def reusable_plan(root: Path, plan: dict, report: Path) -> dict:
-    evidence = json.loads(report.read_bytes())
+def validate_report_steps(evidence: dict, *, allow_carried: bool = False) -> None:
+    """Require every ordered configuration; only known Python narrowing may differ."""
+    if not isinstance(evidence, dict):
+        raise ValueError("runtime report must be an object")
     old_plan = evidence.get("plan")
-    if old_plan and old_plan.get("reuse"):
-        raise ValueError("reference the original runtime report, not a chain of metadata reports")
-    expected = planned_steps(old_plan or {"scope": "full"})
-    if [(s.get("step_id"), s.get("argv")) for s in evidence.get("steps", [])] != [
+    if old_plan is not None and not isinstance(old_plan, dict):
+        raise ValueError("historical report plan must be an object")
+    try:
+        expected = qualification_steps(
+            evidence.get("mode"), old_plan,
+            native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
+            sharded_full_python=evidence.get("sharded_full_python", False),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"historical report selection is malformed: {error}") from error
+    rows = evidence.get("steps", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("runtime report steps must be objects")
+    configurations = []
+    for row in rows:
+        argv = row.get("argv")
+        carry = row.get("carry", {})
+        if not isinstance(carry, dict):
+            raise ValueError("runtime report has malformed carried configuration")
+        if allow_carried and "planned_argv" in carry:
+            selection = (old_plan or {}).get("python_tests")
+            groups = selection.get("test_selectors") if isinstance(selection, dict) else None
+            origin = carry.get("carried_remainder_from")
+            if (row.get("step_id") != "runner-tests" or row.get("status") != "passed" or not isinstance(argv, list)
+                    or argv[:3] != ["python3", "scripts/python_shards.py", "--"] or not argv[3:]
+                    or not isinstance(origin, dict) or not origin.get("report") or not origin.get("commit")
+                    or not isinstance(groups, list) or any(not isinstance(group, str) for group in groups)
+                    or any(not isinstance(selector, str) or not any(
+                        selector == group or selector.startswith(group + ".") for group in groups)
+                           for selector in argv[3:])):
+                raise ValueError("runtime report has unknown narrowed configuration")
+            argv = carry["planned_argv"]
+        configurations.append((row.get("step_id"), argv))
+    if configurations != [
             (s.step_id, list(s.argv)) for s in expected]:
         raise ValueError("runtime report does not contain its complete required configurations")
     for required, actual in zip(expected, evidence["steps"]):
         results = actual.get("test_results", {})
+        if (not isinstance(results, dict) or any(not isinstance(results.get(key, []), list)
+                or any(type(count) is not int or count < 0 for count in results.get(key, []))
+                for key in ("rust_passed_by_binary", "python_executions", "python_skipped"))):
+            raise ValueError("runtime report has malformed test counts")
         if required.requires_tests and sum(results.get("rust_passed_by_binary", [])) + sum(
                 results.get("python_executions", [])) - sum(results.get("python_skipped", [])) <= 0:
             raise ValueError("runtime report has a zero-match test configuration")
-    return ci_plan.reuse_checks(root, plan, report)
+
+
+def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
+    report = report.resolve()
+    raw = report.read_bytes()
+    evidence = json.loads(raw)
+    validate_report_steps(evidence)
+    old_plan = evidence.get("plan")
+    if old_plan and old_plan.get("reuse"):
+        raise ValueError("reference the original runtime report, not a chain of metadata reports")
+    return ci_plan.reuse_checks_from_snapshot(root, plan, report, raw, env=env)
 
 
 def carry_decisions(steps: tuple[Step, ...], evidence: dict, basis: dict,
@@ -748,7 +827,11 @@ def target_admission_pending_path(lock_path: Path) -> Path:
 
 
 class CargoTargetLock:
-    """Nonblocking cooperative lock; direct Cargo commands do not participate."""
+    """Nonblocking cooperative lock; its existing file contents are never changed.
+
+    Direct Cargo commands do not participate. Lock-file bytes are untrusted and
+    are neither rewritten nor disclosed as holder information.
+    """
 
     def __init__(self, path: Path, holder: dict[str, object]) -> None:
         self.path = path
@@ -758,28 +841,25 @@ class CargoTargetLock:
     def acquire(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            if self.path.is_symlink():
-                raise TargetCacheError(f"Cargo target lock path is a symlink: {self.path}")
-            self.file = self.path.open("a+", encoding="utf-8")
+            descriptor = os.open(self.path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise TargetCacheError("Cargo target lock is not a regular file")
+                self.file = os.fdopen(descriptor, "r", encoding="utf-8")
+            except BaseException:
+                os.close(descriptor)
+                raise
             fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            previous = ""
             detail = ""
             if self.file is not None:
                 try:
-                    self.file.seek(0)
-                    previous = self.file.read().strip()
-                except OSError as read_error:
-                    detail = f"; could not read current holder: {read_error}"
-                finally:
-                    try:
-                        self.file.close()
-                    except OSError as close_error:
-                        detail = f"{detail}; closing lock file failed: {close_error}"
-                    self.file = None
-            holder_detail = f"; current holder: {previous}" if previous else ""
+                    self.file.close()
+                except OSError as close_error:
+                    detail = f"; closing lock file failed: {close_error}"
+                self.file = None
             raise TargetCacheError(
-                f"Cargo target is already in use by another local CI run{holder_detail}{detail}"
+                f"Cargo target is already in use by another local CI run{detail}"
             ) from error
         except OSError as error:
             detail = str(error)
@@ -827,7 +907,6 @@ class CargoTargetLock:
                 verify_lock_identity()
             finally:
                 os.close(directory)
-            self._write({"active_holder": self.holder})
         except BaseException as error:
             detail = str(error)
             if self.file is not None:
@@ -845,24 +924,11 @@ class CargoTargetLock:
                 raise
             raise TargetCacheError(f"could not admit Cargo target lock: {detail}") from error
 
-    def _write(self, value: dict[str, object]) -> None:
-        if self.file is None:
-            return
-        self.file.seek(0)
-        self.file.truncate()
-        json.dump(value, self.file, sort_keys=True)
-        self.file.write("\n")
-        self.file.flush()
-
     def release(self) -> str | None:
         if self.file is None:
             return None
         failure = None
         try:
-            try:
-                self._write({"last_holder": self.holder, "released_at": utc_now()})
-            except OSError as error:
-                failure = f"could not record Cargo target lock release: {error}"
             try:
                 fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
             except OSError as error:
@@ -879,8 +945,10 @@ class CargoTargetLock:
 
 
 class FreshTargetReservation:
-    """Reserve an explicit empty target under the existing cooperative lock.
+    """Reserve an explicit existing empty target under the cooperative lock.
 
+    An absent directory cannot be created and acquired as one identity-bound
+    operation here; callers must create the empty directory before reservation.
     This standalone primitive performs no Cargo command and does not authorize
     existing entrypoints. Callers acquire before their first Cargo operation,
     revalidate after it and immediately before consuming the reservation, and
@@ -1028,6 +1096,8 @@ class FreshTargetReservation:
             raise TargetCacheError("fresh target reservation is no longer live")
         if self._target_path(selected_target) != self._target:
             raise TargetCacheError("selected Cargo target differs from reservation")
+        if self._absent:
+            raise TargetCacheError("fresh target is absent; create an empty directory and retry")
         try:
             self._verify_lock_identity()
             current, absent = self._open_chain(self._target, require_empty=require_empty)
@@ -1051,49 +1121,6 @@ class FreshTargetReservation:
             self._verify_lock_identity()
         except OSError as error:
             raise TargetCacheError(f"cannot revalidate fresh target or lock identity: {error}") from error
-
-    def _materialize_absent(self) -> None:
-        """Pin a private sibling and publish it at the reserved absent path."""
-        self._verify(self._target)
-        if not self._absent:
-            return
-        parent = self._handles[-1]
-        target = Path(self._target).name
-        staging = f".hex-cargo-target-{uuid.uuid4().hex}.tmp"
-        descriptor = None
-        try:
-            os.mkdir(staging, mode=0o700, dir_fd=parent)
-            descriptor = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                 dir_fd=parent)
-            pinned = os.fstat(descriptor)
-            self._verify(self._target)
-            entry = os.stat(staging, dir_fd=parent, follow_symlinks=False)
-            if (not stat.S_ISDIR(entry.st_mode)
-                    or (entry.st_dev, entry.st_ino) != (pinned.st_dev, pinned.st_ino)
-                    or not self._empty(descriptor)):
-                raise TargetCacheError("fresh target staging directory changed")
-            ci_target_storage.rename_new_directory(parent, staging, target)
-            # Closing the reservation now closes this exact published inode.
-            self._handles.append(descriptor)
-            self._absent = False
-            os.fsync(parent)
-            self._verify(self._target)
-        except OSError as error:
-            raise TargetCacheError(f"cannot publish absent fresh target: {error}") from error
-        finally:
-            if descriptor is not None and descriptor not in self._handles:
-                try:
-                    entry = os.stat(staging, dir_fd=parent, follow_symlinks=False)
-                    pinned = os.fstat(descriptor)
-                    if (stat.S_ISDIR(entry.st_mode)
-                            and (entry.st_dev, entry.st_ino) == (pinned.st_dev, pinned.st_ino)):
-                        os.rmdir(staging, dir_fd=parent)
-                except OSError:
-                    # Retain an ambiguous staging entry. The final path is
-                    # never removed, even if publication returned an error.
-                    pass
-                finally:
-                    os.close(descriptor)
 
     def _require_owner_payload(self, name: str, owner: os.stat_result, payload: bytes) -> None:
         def open_owner(entry, flags):
@@ -1197,6 +1224,54 @@ class FreshTargetReservation:
 
 
 class LocalCiRunner:
+    def _selection_error(self) -> str | None:
+        """Authenticate supplied qualifying selection before target custody.
+
+        Use the source-bound resolver and this runner's Cargo metadata, even
+        for a declared metadata-only plan. Reconstruct reuse overlays through
+        their existing report validation rather than trusting supplied fields.
+        """
+        if self.plan is None or self.plan.get("qualifies_merge") is not True:
+            return None
+        try:
+            if self._plan_metadata is None:
+                return "qualifying selection requires current Cargo metadata"
+            expected = ci_plan.resolve(self.root, profile=self.mode, base=self.plan["base"],
+                                       source=self.plan["source"], metadata=self._plan_metadata, env=self.env)
+            if self.plan.get("reuse"):
+                expected = reusable_plan(self.root, expected, Path(self.plan["reuse"]["report"]), env=self.env)
+            if self.plan != expected:
+                return "qualifying selection differs from source-bound resolution with current Cargo metadata"
+        except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as error:
+            return f"cannot authenticate qualifying selection: {error}"
+        return None
+
+    def _git_scope_error(self) -> str | None:
+        """Check supplied qualifying Git scope independently of its own hash.
+
+        Planner selection and Cargo metadata authentication are separate checks.
+        """
+        if self.plan is None or self.plan.get("qualifies_merge") is not True:
+            return None
+        try:
+            base, source = self.plan.get("base"), self.plan.get("source")
+            if any(not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+                   for sha in (base, source)):
+                return "qualifying Git scope requires canonical base and source commits"
+            for sha in (base, source):
+                if ci_plan.git(self.root, "rev-parse", "--verify", sha + "^{commit}", env=self.env).decode().strip() != sha:
+                    return "qualifying Git scope commit differs"
+            if subprocess.run(["git", "merge-base", "--is-ancestor", base, source],
+                              cwd=self.root, env=self.env, capture_output=True).returncode != 0:
+                return "qualifying Git scope base is not an ancestor of source"
+            tree = ci_plan.git(self.root, "rev-parse", source + "^{tree}", env=self.env).decode().strip()
+            paths = ci_plan.changed_paths(self.root, base, source, env=self.env)
+            if not paths or self.plan.get("tree") != tree or self.plan.get("paths") != paths:
+                return "qualifying Git scope tree or changed paths differ from source"
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return f"cannot authenticate qualifying Git scope: {error}"
+        return None
+
     def delivery_source_error(self) -> str | None:
         """Check this runner module, even when another import shares its name."""
         return delivery_source_error(self.root)
@@ -1207,15 +1282,23 @@ class LocalCiRunner:
     def _step_sequence_error(self) -> str | None:
         """Reject incomplete qualifying execution before any target is prepared.
 
-        This binds execution to the submitted plan, not the plan to source;
-        independent plan authentication is a separate requirement.
+        This binds mode and execution to the submitted plan, not the plan to
+        source; independent plan authentication is a separate requirement.
         """
         if self.mode not in {"full", "merge", "release"} or self.plan is not None and self.plan.get("qualifies_merge") is False:
             return None
         if self.plan is not None and self.plan.get("qualifies_merge") is not True:
             return "plan must explicitly declare its qualification status"
+        if self.plan is not None and self.plan.get("profile") != self.mode:
+            return "qualifying plan profile does not match runner mode"
+        if self.plan is not None and any(key in self.plan for key in ("edit", "health")):
+            return "qualifying plan cannot contain partial edit or health selections"
         try:
-            expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
+            expected = qualification_steps(
+                self.mode, self.plan,
+                native_acceptance_opt_in=bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
+                sharded_full_python=self.summary["sharded_full_python"],
+            )
         except (KeyError, TypeError, ValueError) as error:
             return f"cannot select qualifying steps: {error}"
         if self.steps != expected:
@@ -1263,8 +1346,13 @@ class LocalCiRunner:
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
-        self.steps = steps if steps is not None else (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
-                                                      else planned_steps({"scope": "full"}))
+        native_acceptance_opt_in = bool(ci_plan.python_tests.native_acceptance_inputs(self.env))
+        sharded_full_python = mode == "full" and plan is None and not native_acceptance_opt_in
+        self.steps = steps if steps is not None else (
+            QUICK_STEPS if mode == "quick" and plan is None else
+            qualification_steps(mode, plan, native_acceptance_opt_in=native_acceptance_opt_in,
+                                sharded_full_python=sharded_full_python)
+        )
         self.output_dir = self.root / "artifacts" / "local-ci" / self.run_id
         self.summary_path = self.output_dir / "summary.json"
         self.started_monotonic = time.monotonic()
@@ -1275,7 +1363,8 @@ class LocalCiRunner:
             "platform": sys.platform,
             # Paths alone cannot bind mutable external native fixtures/receipts
             # or Keychain state. Historical absence is unknown for reuse.
-            "native_acceptance_opt_in": bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
+            "native_acceptance_opt_in": native_acceptance_opt_in,
+            "sharded_full_python": sharded_full_python,
             "python_version": sys.version,
             "status": "incomplete",
             "repo_root": str(self.root),
@@ -1299,6 +1388,7 @@ class LocalCiRunner:
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
         self._release_metadata = None
+        self._plan_metadata = None
         self._dependency_inputs = None
         self._compiler_inputs = None
         self._workspace_inputs = None
@@ -1447,6 +1537,7 @@ class LocalCiRunner:
         self.summary.pop("cargo_identity", None)
         self.summary.pop("cargo_metadata_error", None)
         self._cargo_reservation = None
+        self._plan_metadata = None
         resolved = False
         try:
             resolved = self._resolve_cargo_identity_inner(reservation)
@@ -1589,6 +1680,7 @@ class LocalCiRunner:
             "owner_path": str(owner_path),
         }
         self.summary["cargo_identity"] = self.cargo_identity
+        self._plan_metadata = metadata
         return True
 
     @staticmethod
@@ -1710,8 +1802,6 @@ class LocalCiRunner:
             self._check_target_filesystem(target)
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed before fresh dev publication: " + error)
-            if reservation._absent:
-                reservation._materialize_absent()
             record = self._target_owner_record(self.git_identity)
             pinned = os.fstat(reservation._handles[-1])
             if record["target_identity"] != {"device": pinned.st_dev, "inode": pinned.st_ino}:
@@ -1922,6 +2012,11 @@ class LocalCiRunner:
                 for package in dependency_inputs["packages"]:
                     if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
                         cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
+                if self._has_external_build_helpers():
+                    raise TargetCacheError(
+                        "selective cleanup cannot account for external Cargo build scripts or proc macros; "
+                        "use a fresh target with --fresh-target"
+                    )
 
             self.summary["target_cache"] = {
                 "action": ownership_action,
@@ -2078,6 +2173,21 @@ class LocalCiRunner:
             if sum(p["name"] == package["name"] for p in metadata["packages"]) != 1:
                 raise TargetCacheError("path dependency cleanup has an ambiguous package name")
         return sorted(packages, key=lambda p: p["name"])
+
+    def _has_external_build_helpers(self) -> bool:
+        # A non-member helper can read changed workspace inputs without a
+        # Cargo watch. Package fingerprints cannot bound its actual reads.
+        metadata = self._release_metadata
+        members = set(metadata["workspace_members"])
+        return any(
+            package["id"] not in members and (
+                not package.get("targets") or any(
+                    {"custom-build", "proc-macro"}.intersection(target.get("kind", ()))
+                    for target in package["targets"]
+                )
+            )
+            for package in metadata["packages"]
+        )
 
     def _cache_provenance(self, *, checked=False) -> dict | None:
         if self._compiler_inputs is None:
@@ -2283,6 +2393,8 @@ class LocalCiRunner:
 
         An opt-in reservation holds the original lock and target inode through
         build completion. Its first pending owner is published create-only.
+        A release build with locked arguments may reuse only a target verified
+        empty at first admission under the same exact source and input witness.
         Ordinary callers acquire the same target-wide lock as before. Exceptions
         leave any published pending ownership for explicit recovery.
         """
@@ -2360,7 +2472,7 @@ class LocalCiRunner:
                 if (not self._capture_repository_state("release_admission_tree")
                         or self.summary["release_admission_tree"] != source):
                     raise TargetCacheError("release source changed before fresh publication")
-                reservation._materialize_absent()
+                reservation.revalidate(str(target))
                 pinned = os.fstat(reservation._handles[-1])
                 identity = {"device": pinned.st_dev, "inode": pinned.st_ino}
             else:
@@ -2442,11 +2554,21 @@ class LocalCiRunner:
                        for p in entries):
                     raise TargetCacheError("fresh release target changed during preflight")
                 populated = False
-            reuse = bool(record and record["state"] == "ready" and not adopt
-                         and record.get("target_identity") == identity
-                         and record["workspace_owner"] == workspace
-                         and (record["source"] == source if requested_build_argv is None else
-                              cache_key is not None and record.get("build_cache_key") == cache_key))
+            same_owner = bool(record and record.get("target_identity") == identity
+                              and record["workspace_owner"] == workspace and record["source"] == source)
+            if cache_key is not None:
+                # Build scripts and proc macros can read tracked files from
+                # outside their package without declaring Cargo watches.
+                # Package cleanup cannot establish a new dependency lineage.
+                reuse = (same_owner and record.get("build_cache_origin") == "empty-target-v1"
+                         and record.get("build_cache_key") == cache_key)
+                if not reuse and (record is not None or populated or adopt):
+                    raise TargetCacheError(
+                        "release cache does not prove an empty origin for these inputs; "
+                        "choose a fresh release target with --fresh-release-target"
+                    )
+            else:
+                reuse = same_owner and record["state"] == "ready" and not adopt
             invalidated = self._provenance_cleanup(record) if record else []
             pending = {"schema_version": 1, "profile": "release", "state": "pending",
                        "target_directory": str(target), "target_identity": identity,
@@ -2454,6 +2576,7 @@ class LocalCiRunner:
                        "recorded_at": utc_now(), "cache_inputs": self._cache_provenance()}
             if cache_key is not None:
                 pending["build_cache_key"] = cache_key
+                pending["build_cache_origin"] = "empty-target-v1"
                 self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = cache_key
             report = {**pending, "owner_path": str(owner_path), "lock_path": str(lock_path),
                       "action": ("compiler-profile-handoff" if self._invalidate_dependency_profile else
@@ -2651,6 +2774,8 @@ class LocalCiRunner:
 
     def _prepare_carry(self) -> None:
         """Decide per step from an earlier passed report; any refusal runs everything."""
+        self._carry = None
+        self._carry_dependency_inputs = None
         record: dict[str, object] = {"report": str(self.carry_report)}
         self.summary["carry"] = record
         try:
@@ -2659,12 +2784,16 @@ class LocalCiRunner:
             record["sha256"] = hashlib.sha256(raw).hexdigest()
             if not self.plan:
                 raise ValueError("base-advance carry requires a resolved merge plan")
+            validate_report_steps(evidence, allow_carried=True)
             basis = ci_plan.carry_basis(self.root, self.plan, evidence, env=self.env)
             decisions = carry_decisions(self.steps, evidence, basis, self.plan["cargo_inventory"])
-            dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+            cache = evidence.get("target_cache")
+            if not isinstance(cache, dict):
+                raise ValueError("carried report lacks guarded target identity")
+            dependency = cache.get("dependency_inputs")
             if not isinstance(dependency, dict):
                 raise ValueError("carried report lacks guarded toolchain/dependency identity")
-        except (ValueError, OSError, KeyError, TypeError) as error:
+        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
             record["refused"] = f"{error}; every step runs fresh"
             print(f"carry refused: {record['refused']}", flush=True)
             return
@@ -2950,6 +3079,9 @@ class LocalCiRunner:
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif (error := self._git_scope_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    git_scope_error=error)
             elif self.plan and self.plan.get("reuse") and (
                     self.summary["native_acceptance_opt_in"]
                     or self.plan["reuse"].get("native_acceptance_opt_in") is not False):
@@ -2960,16 +3092,20 @@ class LocalCiRunner:
             elif self.plan and self.plan["qualifies_merge"] and (
                     self.summary["start_tree"]["dirty"]
                     or self.summary["start_tree"]["commit"] != self.plan["source"]
-                    or ci_plan.runtime_inputs(self.root) != self.plan["runtime_inputs"]):
+                    or self.summary["runtime_inputs"] != self.plan["runtime_inputs"]):
                 self.summary.update(status="failed", exit_code=2,
                                     metadata_error="resolved plan source/inputs changed or are dirty")
-            elif any(self._uses_cargo_target(step) for step in self.steps) and not (
+            elif (any(self._uses_cargo_target(step) for step in self.steps)
+                  or self.plan is not None and self.plan.get("qualifies_merge") is True) and not (
                     self._resolve_cargo_identity() if reservation is None
                     else self._resolve_cargo_identity(reservation)):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not resolve exact Cargo workspace and target identity"
                 print(self.summary["cargo_metadata_error"], file=sys.stderr, flush=True)
+            elif (error := self._selection_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    selection_error=error)
             elif not self._check_disk_headroom():
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -3220,7 +3356,7 @@ def main(argv: list[str] | None = None) -> int:
         help="assert sole ownership of an unowned Cargo target and clean only this workspace's dev artifacts",
     )
     parser.add_argument("--fresh-target", action="store_true",
-                        help="reserve an explicit absent or empty CARGO_TARGET_DIR before Cargo metadata")
+                        help="reserve an explicit existing empty CARGO_TARGET_DIR before Cargo metadata")
     parser.add_argument("--prepare-changelog", action="store_true",
                         help="generate notes before freezing source, then exit without running sealed checks")
     parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
@@ -3283,9 +3419,9 @@ def _run_cli(arguments, parser, reservation: FreshTargetReservation | None) -> i
             if (error := cli_policy_error(ROOT)) is not None:
                 raise ValueError("CLI planner changed before resolution: " + error)
             plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
-                                   source=arguments.source, metadata=metadata)
+                                   source=arguments.source, metadata=metadata, env=metadata_env)
             if arguments.reuse_report:
-                plan = reusable_plan(ROOT, plan, arguments.reuse_report)
+                plan = reusable_plan(ROOT, plan, arguments.reuse_report, env=metadata_env)
             if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
                 if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
                     raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")

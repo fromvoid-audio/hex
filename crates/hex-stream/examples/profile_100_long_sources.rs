@@ -7,7 +7,7 @@ use hex_engine::{
 };
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
 use hex_project::{Command, Created, Editor, Project};
-use hex_stream::{PageKey, SourceDefinition, StreamConfig, StreamRuntime};
+use hex_stream::{EndpointStats, PageKey, SourceDefinition, StreamConfig, StreamRuntime};
 use std::{
     error::Error,
     fs::{self, OpenOptions},
@@ -100,6 +100,82 @@ fn write_sparse_source(path: &std::path::Path, active: &[[f32; 2]]) -> Result<()
 fn percentile(sorted: &[u128], percent: usize) -> u128 {
     let rank = (sorted.len() * percent).div_ceil(100).max(1);
     sorted[rank - 1]
+}
+
+fn validate_stream_stats(stats: EndpointStats) -> Result<(), Box<dyn Error>> {
+    // Direct requests and speculative lookahead attempts must each be queued
+    // or coalesced; a rejected request is never an acceptable explanation.
+    let expected = u64::try_from(SOURCE_COUNT)?
+        .checked_add(stats.prefetched_requests)
+        .ok_or("request attempt count overflow")?;
+    let observed = stats
+        .queued_requests
+        .checked_add(stats.coalesced_requests)
+        .ok_or("observed request count overflow")?;
+    if stats.misses != 0
+        || stats.rejected_requests != 0
+        || stats.stale_pages != 0
+        || observed != expected
+    {
+        return Err(format!("unexpected warmed 100-track stream statistics: {stats:?}").into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warmed_stats_count_lookahead_without_hiding_failures() {
+        let direct = EndpointStats {
+            queued_requests: 100,
+            ..EndpointStats::default()
+        };
+        assert!(validate_stream_stats(direct).is_ok());
+        let prefetch = EndpointStats {
+            queued_requests: 101,
+            prefetched_requests: 1,
+            ..direct
+        };
+        assert!(validate_stream_stats(prefetch).is_ok());
+        assert!(
+            validate_stream_stats(EndpointStats {
+                coalesced_requests: 1,
+                queued_requests: 100,
+                ..prefetch
+            })
+            .is_ok()
+        );
+        for invalid in [
+            EndpointStats {
+                misses: 1,
+                ..prefetch
+            },
+            EndpointStats {
+                rejected_requests: 1,
+                ..prefetch
+            },
+            EndpointStats {
+                stale_pages: 1,
+                ..prefetch
+            },
+            EndpointStats {
+                queued_requests: 102,
+                ..prefetch
+            },
+            EndpointStats {
+                queued_requests: 100,
+                ..prefetch
+            },
+            EndpointStats {
+                prefetched_requests: u64::MAX,
+                ..direct
+            },
+        ] {
+            assert!(validate_stream_stats(invalid).is_err(), "{invalid:?}");
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -240,12 +316,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     measured.sort_unstable();
     let stats = runtime.stats();
-    if stats.misses != 0
-        || stats.queued_requests != SOURCE_COUNT as u64
-        || stats.rejected_requests != 0
-    {
-        return Err("warmed 100-track render had a page miss or rejected request".into());
-    }
+    validate_stream_stats(stats)?;
 
     let logical_input_bytes = SOURCE_COUNT as u64 * (44 + SOURCE_FRAMES * 4);
     println!(
@@ -268,7 +339,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         measured[measured.len() - 1]
     );
     println!(
-        "manifest_bytes={} unique_kernel_payload_bytes={} kernel_peak_bound_bytes={} verified_reader_scratch_bytes={} worker_source_scratch_bytes={} page_pool_bytes={} active_misses={} queued_requests={}",
+        "manifest_bytes={} unique_kernel_payload_bytes={} kernel_peak_bound_bytes={} verified_reader_scratch_bytes={} worker_source_scratch_bytes={} page_pool_bytes={} active_misses={} queued_requests={} prefetched_requests={} coalesced_requests={} rejected_requests={} stale_pages={}",
         footprint.manifest_bytes,
         footprint.kernel_table_bytes,
         footprint.kernel_peak_bound_bytes,
@@ -276,11 +347,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         footprint.source_scratch_bytes,
         config.page_buffers * PAGE_FRAMES * std::mem::size_of::<hex_engine::Frame>(),
         stats.misses,
-        stats.queued_requests
+        stats.queued_requests,
+        stats.prefetched_requests,
+        stats.coalesced_requests,
+        stats.rejected_requests,
+        stats.stale_pages
     );
     let report = runtime.shutdown()?;
-    if !report.accounting_complete {
-        return Err("page pool accounting failed".into());
+    if !report.worker_joined || !report.accounting_complete {
+        return Err("worker or page custody did not finish".into());
     }
     println!(
         "shutdown_joined={} accounted_buffers={}/{}",

@@ -816,7 +816,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     let pan = self::bounds(&mut visual, "track-pan", track);
     let activator = self::bounds(&mut visual, "track-mute", track);
     let solo = self::bounds(&mut visual, "track-solo", track);
-    let arm = self::bounds(&mut visual, "track-arm-unavailable", track);
+    let arm = self::bounds(&mut visual, "track-audio-arm", track);
     assert_eq!(activator.size.height, px(14.0));
     assert_eq!(solo.size.width, px(16.0));
     assert_eq!(solo.size.height, px(14.0));
@@ -841,7 +841,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     for suffix in [
         "track-mute",
         "track-solo",
-        "track-arm-unavailable",
+        "track-audio-arm",
         "track-volume",
         "track-pan",
     ] {
@@ -960,7 +960,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
     assert!(
         visual
             .debug_bounds(Box::leak(
-                format!("track-arm-unavailable-{}", track.value()).into_boxed_str()
+                format!("track-audio-arm-{}", track.value()).into_boxed_str()
             ))
             .is_some()
     );
@@ -1215,21 +1215,16 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
             mode,
         );
         visual.run_until_parked();
+        for track in [first, second] {
+            let resize = bounds(&mut visual, "track-height-resize", track).center();
+            drag(&mut visual, resize, resize + point(px(0.0), px(44.0)));
+        }
         let lower_gap = |visual: &mut VisualTestContext, track: TrackId| {
-            let a = Box::leak(format!("gain-lane-show-{}", track.value()).into_boxed_str());
-            let next = if mode == hex_session::DocumentAudioMode::Resident {
-                format!("track-return-sends-{}", track.value())
-            } else {
-                format!("track-volume-{}", track.value())
-            };
-            let b = Box::leak(next.into_boxed_str());
-            let left = visual.debug_bounds(a).unwrap();
-            let right = visual.debug_bounds(b).unwrap();
-            assert!(
-                left.right() < right.left(),
-                "use actual unused space between controls"
-            );
-            point((left.right() + right.left()) / 2.0, left.center().y)
+            let controls = bounds(visual, "track-controls", track);
+            let header = bounds(visual, "arrangement-track-header", track);
+            let blank = point(controls.center().x, header.bottom() - px(8.0));
+            assert!(blank.y > controls.bottom(), "use empty mixer space");
+            blank
         };
         let first_gap = lower_gap(&mut visual, first);
         let second_gap = lower_gap(&mut visual, second);
@@ -1274,7 +1269,7 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
             assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
         });
         if mode == hex_session::DocumentAudioMode::Resident {
-            let mute = bounds(&mut visual, "track-mute", first);
+            let sends = bounds(&mut visual, "track-return-sends", first);
             let sample_arm = bounds(&mut visual, "sample-arm-track", first);
             visual.simulate_click(sample_arm.center(), Modifiers::default());
             visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
@@ -1293,8 +1288,8 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
                     "sample arm owns its click"
                 );
             });
-            assert!(mute.right() < sample_arm.left());
-            let gap = point((mute.right() + sample_arm.left()) / 2.0, mute.center().y);
+            assert!(sends.right() < sample_arm.left());
+            let gap = point((sends.right() + sample_arm.left()) / 2.0, sends.center().y);
             visual.simulate_click(gap, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {
@@ -1416,7 +1411,7 @@ fn compact_resize_refuses_to_hide_an_unfinished_header_gain_draft(cx: &mut TestA
         bounds(&mut visual, "arrangement-track-header", track)
             .size
             .height,
-        px(23.0)
+        px(22.0)
     );
     assert!(visual.debug_bounds(selector).is_none());
 }

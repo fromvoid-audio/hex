@@ -7,6 +7,422 @@ mod unprogrammed;
 
 const HELD_PROCESS_FIXTURE: u32 = 140;
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn captured_state_follows_only_latest_live_idle_flush_without_pcm() {
+    use crate::plugin_worker::NativeWorkerSequencedCaptureProgress as Progress;
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(92, &name) {
+        return;
+    }
+    let (mut owner, endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, _other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let input = owner.begin_parameter_change(0, 0.5, true).unwrap();
+    assert!(
+        owner
+            .begin_state_capture_after_idle_parameter_on_control(&input)
+            .is_err()
+    );
+    assert!(
+        other
+            .begin_state_capture_after_idle_parameter_on_control(&input)
+            .is_err()
+    );
+    assert_eq!(
+        terminal(&mut owner, &input),
+        NativeWorkerParameterProgress::Flushed
+    );
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    let capture = owner
+        .begin_state_capture_after_idle_parameter_on_control(&input)
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let fact = loop {
+        match owner.poll_state_capture_after_parameter_on_control(&capture) {
+            Ok(Progress::Pending) | Err("native capture mailbox is busy") => {}
+            Ok(Progress::Captured(fact)) => break fact,
+            _ => panic!("idle sequenced capture must complete"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    assert_eq!(fact.parameter(), 0);
+    assert_eq!(fact.normalized_input(), 0.5);
+    assert_eq!(
+        fact.application(),
+        crate::plugin_worker::NativeWorkerParameterApplication::IdleFlushed
+    );
+    assert_eq!(
+        &hex_plugin_state::decode(fact.state())
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &2.0_f32.to_le_bytes()
+    );
+    assert!(
+        owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        !other
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    let observed = owner
+        .observe_sequenced_capture_input_on_control(&fact)
+        .unwrap()
+        .unwrap();
+    assert!(
+        endpoint
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_some()
+    );
+    let stale_capture = owner
+        .begin_state_capture_after_idle_parameter_on_control(&input)
+        .unwrap();
+    let next = owner.begin_parameter_change(0, 0.75, true).unwrap();
+    assert!(
+        !owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    loop {
+        match owner.poll_state_capture_after_parameter_on_control(&stale_capture) {
+            Ok(Progress::Pending) | Err("native capture mailbox is busy") => {}
+            Err("native sequenced capture was superseded") => break,
+            _ => panic!("superseded idle capture must drain and refuse"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(
+        endpoint
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let withdrawn = owner.withdraw_parameter_change_on_control(&next).unwrap();
+    assert_eq!(
+        terminal(&mut owner, &next),
+        if withdrawn {
+            NativeWorkerParameterProgress::Withdrawn
+        } else {
+            NativeWorkerParameterProgress::Flushed
+        }
+    );
+    owner.revoke_on_control();
+    assert!(
+        !owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_idle_parameter_on_control(&input)
+            .is_err()
+    );
+    assert!(owner.retire_on_control().unwrap().native.status.success());
+    other.revoke_on_control();
+    assert!(other.retire_on_control().unwrap().native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn captured_state_follows_only_the_latest_processed_input_on_the_original_worker() {
+    use crate::plugin_worker::NativeWorkerSequencedCaptureProgress as Progress;
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(92, &name) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let input = begin_change(&mut owner, 0, 0.5);
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    assert!(
+        other
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 2.0, &[]);
+    }
+    assert!(matches!(
+        terminal(&mut owner, &input),
+        NativeWorkerParameterProgress::Processed(_)
+    ));
+    let capture = owner
+        .begin_state_capture_after_parameter_on_control(&input)
+        .unwrap();
+    assert!(owner.poll_state_capture_on_control(&capture).is_err());
+    let until = Instant::now() + Duration::from_secs(3);
+    let fact = loop {
+        match owner.poll_state_capture_after_parameter_on_control(&capture) {
+            Ok(Progress::Pending) | Err("native capture mailbox is busy") => {}
+            Ok(Progress::Captured(fact)) => break fact,
+            _ => panic!("the sequenced capture must complete"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    let decoded = hex_plugin_state::decode(fact.state()).unwrap();
+    assert_eq!(
+        fact.application(),
+        crate::plugin_worker::NativeWorkerParameterApplication::ProcessedPcm
+    );
+    assert_eq!(fact.parameter(), 0);
+    assert_eq!(fact.normalized_input(), 0.5);
+    assert_eq!(
+        f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap()),
+        2.0
+    );
+    assert!(
+        owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        !other
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        other
+            .observe_sequenced_capture_input_on_control(&fact)
+            .unwrap()
+            .is_none()
+    );
+    let observed = owner
+        .observe_sequenced_capture_input_on_control(&fact)
+        .unwrap()
+        .unwrap();
+    assert!(
+        other_endpoint
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    let fence = endpoint
+        .reserve_observed_parameter_input_on_callback(&observed)
+        .unwrap();
+    assert!(fence.is_live());
+    drop(fence);
+    let stale_capture = owner
+        .begin_state_capture_after_parameter_on_control(&input)
+        .unwrap();
+    let next = begin_change(&mut owner, 0, 0.75);
+    assert!(
+        !owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    assert!(
+        owner
+            .observe_sequenced_capture_input_on_control(&fact)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        endpoint
+            .reserve_observed_parameter_input_on_callback(&observed)
+            .is_none()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&input)
+            .is_err()
+    );
+    loop {
+        match owner.poll_state_capture_after_parameter_on_control(&stale_capture) {
+            Ok(Progress::Pending) | Err("native capture mailbox is busy") => {}
+            Err("native sequenced capture was superseded") => break,
+            _ => panic!("superseded capture must drain and refuse"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let plain = owner.begin_state_capture_on_control().unwrap();
+    let _ = complete(&mut owner, &plain);
+    assert!(owner.withdraw_parameter_change_on_control(&next).unwrap());
+    assert_eq!(
+        terminal(&mut owner, &next),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_parameter_on_control(&next)
+            .is_err()
+    );
+    owner.revoke_on_control();
+    assert!(
+        !owner
+            .sequenced_capture_is_current_on_control(&fact)
+            .unwrap()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+    other.revoke_on_control();
+    let retired = other.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_can_change_worker_after_live_capture() {
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(89, &name) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let capture = begin(&mut owner);
+    let before = complete(&mut owner, &capture);
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"editor",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch)) if batch.ready > 0 => break,
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 3.0, &[]);
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch))
+                if batch.as_slice().iter().any(|edit| {
+                    edit.kind == hex_plugin_host::protocol::ParameterEditKind::Perform
+                }) =>
+            {
+                break;
+            }
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor receipt: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let capture = begin(&mut owner);
+    let after = complete(&mut owner, &capture);
+    let gain = |state: &NativeDeviceState| {
+        let decoded = hex_plugin_state::decode(state).unwrap();
+        f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap())
+    };
+    assert_eq!(gain(&before), 1.0);
+    assert_eq!(gain(&after), 3.0);
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_can_change_worker_during_manual_hold() {
+    use crate::plugin_worker::NativeParameterHold;
+    let name = std::thread::current().name().unwrap().to_owned();
+    if fixture_child(147, &name) {
+        return;
+    }
+    let mut instance = original_instance();
+    let class = instance.configuration().identity.class;
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class, &[7])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let hold = owner
+        .parameter_hold_on_control(NativeParameterHold::Begin {
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    for sequence in 0..3 {
+        callback(&owner, &mut endpoint, sequence, 2.0, &[]);
+    }
+    assert!(matches!(
+        terminal(&mut owner, &hold),
+        NativeWorkerParameterProgress::Processed(_)
+    ));
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"editor",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch)) if batch.ready > 0 => break,
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    for sequence in 3..6 {
+        callback(
+            &owner,
+            &mut endpoint,
+            sequence,
+            if sequence < 5 { 2.0 } else { 3.0 },
+            &[],
+        );
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_parameter_edits_on_control() {
+            Ok(Some(batch))
+                if batch.as_slice().iter().any(|edit| {
+                    edit.kind == hex_plugin_host::protocol::ParameterEditKind::Perform
+                }) =>
+            {
+                break;
+            }
+            Ok(_) | Err("native edit observation is busy") => {}
+            other => panic!("editor receipt: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let capture = begin(&mut owner);
+    let after = complete(&mut owner, &capture);
+    let decoded = hex_plugin_state::decode(&after).unwrap();
+    assert_eq!(
+        f32::from_le_bytes(decoded.component.unwrap()[8..12].try_into().unwrap()),
+        3.0
+    );
+    let update = owner
+        .parameter_hold_on_control(NativeParameterHold::Change {
+            hold: &hold,
+            normalized: 0.5,
+        })
+        .unwrap();
+    callback(&owner, &mut endpoint, 6, 3.0, &[]);
+    assert!(matches!(
+        terminal(&mut owner, &update),
+        NativeWorkerParameterProgress::Processed(_)
+    ));
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
 fn begin_change(owner: &mut NativeWorker, id: u32, value: f64) -> NativeWorkerParameterChange {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
@@ -108,6 +524,15 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
         });
     assert!(matches!(result, Err("witness reservation refused")));
     assert!(!signal.parameter_change_requested.load(Acquire));
+    let ordinal = std::num::NonZeroU64::new(refused.unwrap().1).unwrap();
+    assert!(
+        owner
+            .reaper
+            .control
+            .observe_parameter_input_on_control(ordinal)
+            .is_none(),
+        "a refused input must not publish its generation"
+    );
     let (request, reserved) = owner
         .parameter_change_with_before(0, 0.5, false, |request| {
             assert!(!signal.parameter_change_requested.load(Acquire));
@@ -117,6 +542,15 @@ fn actual_parameter_reservation_precedes_publication_and_refusal_keeps_the_ordin
     assert_eq!(Some(reserved), refused);
     assert_eq!(reserved.2, 0);
     assert_eq!(Some(reserved), request.delivery_identity());
+    let source = owner
+        .reaper
+        .control
+        .observe_parameter_input_on_control(ordinal)
+        .expect("the accepted input publishes its paired generation");
+    let fence = endpoint
+        .reserve_observed_parameter_input_on_callback(&source)
+        .expect("the original callback accepts its paired generation");
+    drop(fence);
     for sequence in 0..3 {
         callback(&owner, &mut endpoint, sequence, 2.0, &[]);
     }

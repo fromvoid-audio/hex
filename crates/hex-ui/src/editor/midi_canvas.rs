@@ -83,8 +83,7 @@ impl EditorView {
             clip: clip_id,
             beat_start,
             beat_span: beat_span.raw(),
-            pitch_low,
-            pitch_rows,
+            pitch: super::PitchViewport::from_rows(pitch_low, pitch_rows)?,
         };
         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
         let draw_overwrite = match self.midi_overwrite_preview() {
@@ -1222,10 +1221,10 @@ impl EditorView {
                     (source_values.source_start, "start")
                 }
                 super::midi_source_controls::SourceField::LoopStart => {
-                    (source_values.loop_start, "loop a")
+                    (source_values.loop_start, "scope a")
                 }
                 super::midi_source_controls::SourceField::LoopEnd => {
-                    (source_values.loop_end, "loop b")
+                    (source_values.loop_end, "scope b")
                 }
                 super::midi_source_controls::SourceField::Looping => {
                     (u64::from(source_values.looping), "loop")
@@ -1314,7 +1313,7 @@ impl EditorView {
         source_column = source_column.children([source_row(source_button(
                     super::midi_source_controls::SourceField::SourceLength,
                     "−",
-                    "shorten source extent by one midi grid step · authored notes and loop markers are retained",
+                    "shorten source extent by one midi grid step · authored notes and scope markers are retained",
                     "extend source extent by one midi grid step",
                 ))])
                 .children([source_row(source_button(
@@ -1326,14 +1325,14 @@ impl EditorView {
                 .children([source_row(source_button(
                     super::midi_source_controls::SourceField::LoopStart,
                     "−",
-                    "move retained loop start earlier by one midi grid step",
-                    "move retained loop start later by one midi grid step",
+                    "move retained scope start earlier by one midi grid step",
+                    "move retained scope start later by one midi grid step",
                 ))])
                 .children([source_row(source_button(
                     super::midi_source_controls::SourceField::LoopEnd,
                     "−",
-                    "move retained loop end earlier by one midi grid step",
-                    "move retained loop end later by one midi grid step",
+                    "move retained scope end earlier by one midi grid step",
+                    "move retained scope end later by one midi grid step",
                 ))])
                 .children([source_row(source_button(
                     super::midi_source_controls::SourceField::Looping,

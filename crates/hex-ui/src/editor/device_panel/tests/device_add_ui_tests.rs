@@ -34,6 +34,7 @@ fn utility_request(view: &EditorView, owner: DevicePanelOwner) -> Request {
             None,
             type_id,
         ),
+        DevicePanelOwner::Source(_) => panic!("source view does not insert effects"),
     }
 }
 fn focus_owner(
@@ -64,6 +65,7 @@ fn catalog_entry(owner: DevicePanelOwner) -> String {
         DevicePanelOwner::Track(_) => "add-native-effect-hex.utility".into(),
         DevicePanelOwner::Main => "add-main-effect-hex.utility".into(),
         DevicePanelOwner::Return(_) => "add-return-effect-hex.utility".into(),
+        DevicePanelOwner::Source(_) => panic!("source view has no catalog"),
     }
 }
 

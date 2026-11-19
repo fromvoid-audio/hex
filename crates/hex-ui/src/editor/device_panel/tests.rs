@@ -21,6 +21,7 @@ mod device_reorder_tests;
 mod device_theme_tests;
 mod eq8_marquee_tests;
 pub(in crate::editor) mod eq_ui_tests;
+mod fold_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
 mod header_drop_tests;
@@ -54,7 +55,7 @@ mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
 mod source_housing_tests;
-mod source_picker_ui_tests;
+pub(in crate::editor) mod source_picker_ui_tests;
 mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {
@@ -1020,6 +1021,10 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     });
 
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let loading = visual.debug_bounds("device-chain-loading-slot").unwrap();
+    let anchor = visual.debug_bounds(card_selector).unwrap();
+    assert!(loading.right() <= anchor.left());
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("space").unwrap(),
         is_held: false,

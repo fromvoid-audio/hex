@@ -502,6 +502,71 @@ impl Custody {
             },
         )
     }
+    pub(in crate::candidate_custody) fn prepare_tempo_cut(
+        &self,
+        token: AudioCandidatePreparationToken,
+        observation: crate::prepared::TransportObservation,
+        cut: u64,
+    ) -> Result<hex_engine::session_playback::PreparedTempoAnchor, &'static str> {
+        let loop_state = observation
+            .loop_state
+            .ok_or("tempo cut requires arrangement clock")?;
+        let mut work = self
+            .work
+            .try_lock()
+            .map_err(|_| "candidate preparation is busy")?;
+        let bank = lock(&self.bank);
+        if bank.closing || bank.root != token.root {
+            return Err("candidate tempo cut output differs");
+        }
+        bank.publication
+            .slots
+            .get(token.slot)
+            .filter(|slot| {
+                slot.incarnation == token.incarnation
+                    && slot.phase == Phase::Reserved
+                    && !slot.preparation_retiring
+                    && slot.preparation_reservation.is_some()
+            })
+            .ok_or("candidate preparation token differs")?;
+        let work = &mut work.publication;
+        let predecessor = bank
+            .publication
+            .slots
+            .iter()
+            .find(|slot| {
+                slot.phase == Phase::Accepted
+                    && slot.life.revision.load(Ordering::Acquire) == observation.audio_revision
+                    && slot.context_generation == observation.control_generation
+            })
+            .and_then(|slot| {
+                // Maintenance moves the anchor into its assigned archive
+                // while the same runtime is still active on the callback.
+                slot.anchors
+                    .as_ref()
+                    .or_else(|| work.anchors.get(slot.archive)?.as_ref())
+                    .filter(|anchors| slot.identity == Some(anchors.identity()))
+            })
+            .ok_or("installed candidate anchors unavailable")?;
+        let successor = work
+            .preparations
+            .get_mut(token.slot)
+            .and_then(Option::as_mut)
+            .filter(|e| e.token == token && !e.pending && !e.failed && e.refusal.is_none())
+            .and_then(|e| e.cell.as_mut())
+            .and_then(|cell| cell.owner_on_control())
+            .ok_or("candidate preparation is not ready")?;
+        predecessor
+            .prepare_tempo_cut_for_preparation(
+                successor,
+                observation.arrangement_frame,
+                observation.performance_frame,
+                loop_state,
+                cut,
+            )
+            .map_err(|_| "candidate does not support an exact tempo cut")
+    }
+
     pub(in crate::candidate_custody) fn stage_runtime_preparation(
         &self,
         root: &CandidateRoot,
@@ -590,7 +655,7 @@ impl Custody {
                 .and_then(|c| c.owner_on_control())
                 .ok_or("candidate preparation is not ready")?;
             if expected_context.is_some_and(|expected| owner.source_context() != Some(expected)) {
-                return Err("native epoch successor source context differs");
+                return Err("candidate preparation source context differs");
             }
             if owner.sample_rate() != rate
                 || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned

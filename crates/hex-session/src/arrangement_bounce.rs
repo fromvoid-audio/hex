@@ -360,6 +360,7 @@ impl Session {
         mut render: impl FnMut(
             &Path,
             R,
+            &Project,
             &BounceTrack,
             bool,
             &hex_export::ExportControl,
@@ -442,7 +443,7 @@ impl Session {
                         .checked_add(retained)
                         .ok_or("bounce allowance overflows")?,
                 )?;
-                let frames = render(path, revision, item, tails, control)?;
+                let frames = render(path, revision, &source, item, tails, control)?;
                 published.push(path.clone());
                 let decoded = hex_media::decode_wav_file(
                     path,
@@ -687,10 +688,11 @@ impl Session {
                 })
                 .map_err(|e| e.to_string())
             },
-            |path, revision, item, tails, control| {
+            |path, revision, project, item, tails, control| {
                 streamed::render(
                     path,
                     revision,
+                    Some(project),
                     None,
                     item.start,
                     item.end - item.start,

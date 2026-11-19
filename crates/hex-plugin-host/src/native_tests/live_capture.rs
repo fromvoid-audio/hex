@@ -61,6 +61,69 @@ fn exchange(instance: &mut Prepared, n: u64) {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn saved_vst_state_does_not_claim_to_clone_pending_dsp_history() {
+    let original_case = Case::new();
+    let restored_case = Case::new();
+    let selected = source();
+    let saved = startup_state(&selected, true, 3);
+    let prepare = |source: Source, state: NativeDeviceState, case: &Case| {
+        Pending::prepare_with_restore(
+            &build(),
+            source,
+            options().preparation,
+            Some(state),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(37),
+        )
+        .unwrap()
+        .complete_on_control(Some(options().presentation))
+        .unwrap()
+    };
+    let mut original = prepare(selected, saved, &original_case);
+    let mut impulse = request(original.configuration(), 0);
+    impulse.pcm.fill([0.0; 2]);
+    impulse.pcm[7] = [1.0, -0.5];
+    assert!(
+        original.exchange_on_worker(impulse).unwrap().pcm[..8]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+
+    original.begin_state_capture_on_worker().unwrap();
+    let captured = poll_complete(&mut original);
+    let mut restored = prepare(source(), captured.clone(), &restored_case);
+    assert!(restored.ready().restored);
+    assert_eq!(restored.configuration().restore.as_ref(), Some(&captured));
+    let mut next_original = request(original.configuration(), 1);
+    next_original.pcm.fill([0.0; 2]);
+    let mut next_restored = request(restored.configuration(), 0);
+    next_restored.pcm.fill([0.0; 2]);
+    let original_output = original.exchange_on_worker(next_original).unwrap();
+    let restored_output = restored.exchange_on_worker(next_restored).unwrap();
+    assert_eq!(original_output.pcm[2], [0.375, -0.1875]);
+    assert!(
+        restored_output.pcm[..8]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    assert!(
+        original
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        restored
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_live_capture_keeps_same_processing_instance_and_historical_startup() {
     let case = Case::new();
     let mut instance = Prepared::prepare(

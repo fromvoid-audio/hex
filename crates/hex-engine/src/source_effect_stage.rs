@@ -210,14 +210,16 @@ impl SourceEffectStages {
 
     /// Match by source identity, independently of the current receiver index.
     /// Live publication may change a compatible recipe's control programs
-    /// or attach a fresh stage. An unmatched old stage may retire only when
-    /// its host is stopped and the processor proves its committed state quiet.
+    /// or attach a fresh stage. An exact power edit also needs the same
+    /// receiving track. An unmatched old stage may retire only when its
+    /// host is stopped and the processor proves its committed state quiet.
     pub(crate) fn plan_continuation(
         &self,
         previous: &Self,
         live: bool,
         allow_quiet_retirement: bool,
         generator_matches: impl Fn(hex_project::SourceId) -> bool,
+        receiver_matches: impl Fn(usize, usize) -> bool,
     ) -> Option<SourceEffectTransfer> {
         let mut donors = [None; hex_project::MAX_TRACKS];
         for (index, old) in previous.chains.iter().enumerate() {
@@ -228,9 +230,12 @@ impl SourceEffectStages {
                 .enumerate()
                 .find(|(_, next)| next.as_ref().is_some_and(|next| next.source == old.source));
             if let Some((receiver, Some(next))) = matching
-                && next
+                && (next
                     .chain
                     .can_transfer_source_recipe_history_from(&old.chain, live)
+                    || live
+                        && receiver_matches(index, receiver)
+                        && next.chain.can_transfer_source_power_edit_from(&old.chain))
                 && generator_matches(old.source)
             {
                 *donors.get_mut(receiver)? = Some(index);

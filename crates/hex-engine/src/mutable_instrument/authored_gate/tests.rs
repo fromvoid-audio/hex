@@ -46,6 +46,7 @@ fn foreign_gates_keep_channel_and_identity_across_segment_boundaries() {
                 pitch: 60,
                 channel,
                 velocity: 101,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -64,6 +65,7 @@ fn foreign_gates_keep_channel_and_identity_across_segment_boundaries() {
                 source_start,
                 width: 4,
                 source_age: None,
+                contributor_fade_rate: None,
                 tail_frames: 0,
                 max_active: 4,
                 steals_releasing: false,

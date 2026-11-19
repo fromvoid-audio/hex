@@ -12,7 +12,7 @@ use std::{
 pub(super) struct Target {
     pub(super) generation: u64,
     pub(super) revision: u64,
-    pub(super) track: TrackId,
+    pub(super) owner: hex_project::InstrumentAssetOwner,
     pub(super) path: PathBuf,
     pub(super) slot: SamplerLoadSlot,
 }
@@ -50,6 +50,9 @@ impl EditorView {
             })
     }
     pub(super) fn first_sampler_target(&self, path: PathBuf) -> Result<Target, &'static str> {
+        if let Some(device_panel::DevicePanelOwner::Source(source)) = self.device_panel.owner {
+            return self.sampler_target_on_source(source, path);
+        }
         let track = self
             .selected_track
             .ok_or("select a midi track before loading a sampler")?;
@@ -84,32 +87,84 @@ impl EditorView {
         Ok(Target {
             generation: self.project_generation,
             revision: state.revision,
-            track: track.id(),
+            owner: hex_project::InstrumentAssetOwner::Track(track.id()),
             path,
             slot,
         })
     }
+    fn sampler_target_on_source(
+        &self,
+        source: hex_project::SourceId,
+        path: PathBuf,
+    ) -> Result<Target, &'static str> {
+        if self.edit_pending() || self.sampler_parameter.numeric_draft_active() {
+            return Err("wait for the pending edit before loading a sampler");
+        }
+        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+            return Err("sampler loading requires a resident project");
+        }
+        if !device_panel::source_owner_current(self, source) {
+            return Err("sampler source view changed");
+        }
+        let state = self.state.as_ref().ok_or("project is still loading")?;
+        let device = state
+            .project
+            .native_source(source)
+            .ok_or("sampler source is unavailable")?
+            .instrument();
+        hex_engine::validate_sampler_replacement_on_control(device.state())
+            .map_err(|_| "sample replacement currently requires classic mode")?;
+        if device.bypassed() {
+            return Err("sampler source is unavailable");
+        }
+        Ok(Target {
+            generation: self.project_generation,
+            revision: state.revision,
+            owner: hex_project::InstrumentAssetOwner::Source(source),
+            path,
+            slot: SamplerLoadSlot::Existing {
+                device: device.id(),
+                expected_state: device.state().clone(),
+            },
+        })
+    }
     pub(super) fn first_sampler_target_current(&self, target: &Target) -> bool {
-        target.generation == self.project_generation
-            && self.state.as_ref().is_some_and(|s| {
-                s.revision == target.revision
-                    && s.project
-                        .track(target.track)
-                        .is_some_and(|track| match &target.slot {
-                            SamplerLoadSlot::New(placement) => {
-                                track.instrument().map(hex_project::Device::id)
-                                    == placement.replacement()
-                            }
-                            SamplerLoadSlot::Existing {
-                                device,
-                                expected_state,
-                            } => track.instrument().is_some_and(|current| {
-                                current.id() == *device
-                                    && current.state() == expected_state
-                                    && !current.bypassed()
-                            }),
-                        })
-            })
+        if target.generation != self.project_generation {
+            return false;
+        }
+        let Some(state) = self
+            .state
+            .as_ref()
+            .filter(|state| state.revision == target.revision)
+        else {
+            return false;
+        };
+        match target.owner {
+            hex_project::InstrumentAssetOwner::Track(track) => state
+                .project
+                .track(track)
+                .is_some_and(|track| match &target.slot {
+                    SamplerLoadSlot::New(placement) => {
+                        track.instrument().map(hex_project::Device::id) == placement.replacement()
+                    }
+                    SamplerLoadSlot::Existing {
+                        device,
+                        expected_state,
+                    } => track.instrument().is_some_and(|current| {
+                        current.id() == *device
+                            && current.state() == expected_state
+                            && !current.bypassed()
+                    }),
+                }),
+            hex_project::InstrumentAssetOwner::Source(source) => {
+                device_panel::source_owner_current(self, source)
+                    && matches!(&target.slot, SamplerLoadSlot::Existing { device, expected_state }
+                    if state.project.native_source(source).is_some_and(|source| {
+                        let current = source.instrument();
+                        current.id() == *device && current.state() == expected_state && !current.bypassed()
+                    }))
+            }
+        }
     }
     pub(super) fn open_first_sampler_menu(
         &mut self,
@@ -235,7 +290,7 @@ impl EditorView {
             .map(|track| Target {
                 generation: drag.project_generation,
                 revision: drag.revision,
-                track: track.id(),
+                owner: hex_project::InstrumentAssetOwner::Track(track.id()),
                 path: drag.path.clone(),
                 slot: SamplerLoadSlot::New(track.instrument().map_or(placement, |device| {
                     InstrumentLoadPlacement::Replace(device.id())
@@ -260,6 +315,26 @@ impl EditorView {
                 Err("sample drop canceled · sampler changed")
             }
         });
+        self.finish_browser_sampler_drop(drag, target, cx);
+    }
+
+    pub(super) fn drop_browser_sample_on_source(
+        &mut self,
+        drag: &drag::BrowserAudioDrag,
+        source: hex_project::SourceId,
+        cx: &mut Context<Self>,
+    ) {
+        let target = if drag.project_asset.is_some() {
+            Err("project sample cannot be loaded into sampler yet")
+        } else if !self.browser_sampler_drag_current(drag) {
+            Err("sample drop canceled · project or browser changed")
+        } else if self.sampler_load.pending.is_some()
+            || self.sampler_replacement_pending_id().is_some()
+        {
+            Err("sampler load is already pending")
+        } else {
+            self.sampler_target_on_source(source, drag.path.clone())
+        };
         self.finish_browser_sampler_drop(drag, target, cx);
     }
 
@@ -297,8 +372,9 @@ impl EditorView {
             self.error = Some("sampler load target changed".into());
             return;
         }
-        if matches!(&target.slot, SamplerLoadSlot::Existing { expected_state, .. }
-            if !hex_engine::is_empty_sampler_state_on_control(expected_state))
+        if matches!(target.owner, hex_project::InstrumentAssetOwner::Source(_))
+            || matches!(&target.slot, SamplerLoadSlot::Existing { expected_state, .. }
+                if !hex_engine::is_empty_sampler_state_on_control(expected_state))
         {
             self.submit_sampler_replacement(target);
             cx.notify();
@@ -309,11 +385,15 @@ impl EditorView {
             return;
         };
         let cancel = Arc::new(AtomicBool::new(false));
+        let hex_project::InstrumentAssetOwner::Track(track) = target.owner else {
+            self.error = Some("sampler load target changed".into());
+            return;
+        };
         let request = Request::LoadFirstSampler {
             request_id: id,
             project_generation: target.generation,
             revision: target.revision,
-            track: target.track,
+            track,
             slot: target.slot.clone(),
             path: target.path.clone(),
             cancel: Arc::clone(&cancel),
@@ -360,7 +440,7 @@ impl EditorView {
         if !self.sampler_load.pending.as_ref().is_some_and(|p| {
             p.id == done.request_id
                 && p.target.generation == done.project_generation
-                && p.target.track == done.track
+                && p.target.owner == hex_project::InstrumentAssetOwner::Track(done.track)
         }) {
             return;
         }

@@ -8,6 +8,8 @@ use gpui::{
 use std::ops::Range;
 
 const MAX_NUMERIC_TEXT_BYTES: usize = 256;
+// A 127-unit VST UTF-16 string may require up to 381 UTF-8 bytes.
+const MAX_DEFERRED_TEXT_BYTES: usize = 512;
 
 pub(crate) struct NumericTextElement {
     pub(crate) input: Entity<NumericControl>,
@@ -74,13 +76,24 @@ impl EntityInputHandler for NumericControl {
             .len()
             .saturating_sub(selected.len())
             .checked_add(new_text.len())
-            .is_none_or(|length| length > MAX_NUMERIC_TEXT_BYTES)
+            .is_none_or(|length| {
+                length
+                    > if self.deferred_text_enabled() {
+                        MAX_DEFERRED_TEXT_BYTES
+                    } else {
+                        MAX_NUMERIC_TEXT_BYTES
+                    }
+            })
         {
             self.invalid_text = true;
             cx.notify();
             return;
         }
-        self.text_modified |= !selected.is_empty() || !new_text.is_empty();
+        let changed = !selected.is_empty() || !new_text.is_empty();
+        if changed {
+            self.invalidate_pending_text();
+        }
+        self.text_modified |= changed;
         self.text.replace_range(range.clone(), &new_text);
         let cursor = range.start + new_text.len();
         self.selected = cursor..cursor;
@@ -114,13 +127,24 @@ impl EntityInputHandler for NumericControl {
             .len()
             .saturating_sub(selected.len())
             .checked_add(new_text.len())
-            .is_none_or(|length| length > MAX_NUMERIC_TEXT_BYTES)
+            .is_none_or(|length| {
+                length
+                    > if self.deferred_text_enabled() {
+                        MAX_DEFERRED_TEXT_BYTES
+                    } else {
+                        MAX_NUMERIC_TEXT_BYTES
+                    }
+            })
         {
             self.invalid_text = true;
             cx.notify();
             return;
         }
-        self.text_modified |= !selected.is_empty() || !new_text.is_empty();
+        let changed = !selected.is_empty() || !new_text.is_empty();
+        if changed {
+            self.invalidate_pending_text();
+        }
+        self.text_modified |= changed;
         self.text.replace_range(range.clone(), &new_text);
         self.marked = (!new_text.is_empty()).then_some(range.start..range.start + new_text.len());
         self.selected = new_selected
@@ -145,13 +169,16 @@ impl EntityInputHandler for NumericControl {
         Some(Bounds::from_corners(
             point(
                 origin_x
-                    + line
-                        .x_for_index(self.style.text_case.display_offset(&self.text, range.start)),
+                    + line.x_for_index(
+                        self.value_text_case()
+                            .display_offset(&self.text, range.start),
+                    ),
                 bounds.top(),
             ),
             point(
                 origin_x
-                    + line.x_for_index(self.style.text_case.display_offset(&self.text, range.end)),
+                    + line
+                        .x_for_index(self.value_text_case().display_offset(&self.text, range.end)),
                 bounds.bottom(),
             ),
         ))
@@ -166,7 +193,7 @@ impl EntityInputHandler for NumericControl {
         let bounds = self.last_bounds?;
         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
         let index = self.last_layout.as_ref()?.index_for_x(point.x - origin_x)?;
-        let index = self.style.text_case.source_offset(&self.text, index);
+        let index = self.value_text_case().source_offset(&self.text, index);
         Some(byte_offset_to_utf16(&self.text, index))
     }
 }
@@ -230,10 +257,11 @@ impl Element for NumericTextElement {
         };
         let marked = input.marked.as_ref().map(|range| {
             input
-                .style
-                .text_case
+                .value_text_case()
                 .display_offset(&input.text, range.start)
-                ..input.style.text_case.display_offset(&input.text, range.end)
+                ..input
+                    .value_text_case()
+                    .display_offset(&input.text, range.end)
         });
         let caret_run = TextRun {
             len: 1,
@@ -283,8 +311,7 @@ impl Element for NumericTextElement {
             .max(px(1.0));
         let cursor_x = line.x_for_index(
             input
-                .style
-                .text_case
+                .value_text_case()
                 .display_offset(&input.text, input.cursor()),
         );
         let max_x = (bounds.size.width - cell_width).max(px(0.0));
@@ -303,8 +330,7 @@ impl Element for NumericTextElement {
                         origin_x
                             + line.x_for_index(
                                 input
-                                    .style
-                                    .text_case
+                                    .value_text_case()
                                     .display_offset(&input.text, input.selected.start),
                             ),
                         bounds.top(),
@@ -313,8 +339,7 @@ impl Element for NumericTextElement {
                         origin_x
                             + line.x_for_index(
                                 input
-                                    .style
-                                    .text_case
+                                    .value_text_case()
                                     .display_offset(&input.text, input.selected.end),
                             ),
                         bounds.bottom(),

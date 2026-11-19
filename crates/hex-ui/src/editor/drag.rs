@@ -1369,7 +1369,7 @@ impl super::EditorView {
         })
     }
 
-    fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
+    pub(super) fn painted_arrangement_timeline(&self) -> Option<LaneBounds> {
         let body = self
             .arrangement_bounds
             .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
@@ -1379,12 +1379,28 @@ impl super::EditorView {
             top: body.top,
             height: body.height,
         };
-        lane_contains_pointer(x, y, timeline).then_some(timeline)
+        (timeline.width > 0.0 && timeline.height > 0.0).then_some(timeline)
+    }
+
+    fn painted_arrangement_timeline_at(&self, x: f32, y: f32) -> Option<LaneBounds> {
+        self.painted_arrangement_timeline()
+            .filter(|&lane| lane_contains_pointer(x, y, lane))
+            .filter(|_| {
+                self.arrangement_proposal_rows()
+                    .filter_map(|row| self.track_scroll.list.bounds_for_item(row))
+                    .all(|bounds| y < f32::from(bounds.top()) || y >= f32::from(bounds.bottom()))
+            })
     }
 
     // Use the last painted full row, including attached automation lanes.
     // A virtualized or stale last row cannot claim the trailing hit region.
     fn painted_arrangement_tail_boundary(&self, pointer_y: f32) -> Option<f32> {
+        if let Some(row) = self.arrangement_proposal_rows().next_back()
+            && row + 1 == self.track_scroll.list.item_count()
+        {
+            let bottom = f32::from(self.track_scroll.list.bounds_for_item(row)?.bottom());
+            return (pointer_y >= bottom).then_some(bottom);
+        }
         let state = self.state.as_ref()?;
         let Some(index) = self.arrangement_track_indices().last() else {
             return Some(pointer_y);
@@ -1396,9 +1412,24 @@ impl super::EditorView {
     }
 
     pub(super) fn painted_arrangement_tail(&self, x: f32, y: f32) -> Option<LaneBounds> {
-        let timeline = self.painted_arrangement_timeline_at(x, y)?;
-        self.painted_arrangement_tail_boundary(y)?;
-        Some(timeline)
+        self.painted_arrangement_tail_bounds()
+            .filter(|&lane| lane_contains_pointer(x, y, lane))
+    }
+
+    pub(super) fn painted_arrangement_tail_bounds(&self) -> Option<LaneBounds> {
+        let timeline = self.painted_arrangement_timeline()?;
+        let bottom = timeline.top + timeline.height;
+        let top = if self.track_scroll.list.item_count() == 0 {
+            timeline.top
+        } else {
+            self.painted_arrangement_tail_boundary(bottom)?
+                .max(timeline.top)
+        };
+        (top < bottom).then_some(LaneBounds {
+            top,
+            height: bottom - top,
+            ..timeline
+        })
     }
 
     pub(super) fn painted_track_insertion_target(
@@ -1409,8 +1440,13 @@ impl super::EditorView {
         let timeline = self.painted_arrangement_timeline_at(pointer_x, pointer_y)?;
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
-        if tracks.is_empty() {
+        if self.track_scroll.list.item_count() == 0 {
             return Some((None, timeline, pointer_y));
+        }
+        if tracks.is_empty() {
+            return self
+                .painted_arrangement_tail_boundary(pointer_y)
+                .map(|bottom| (None, timeline, bottom));
         }
 
         let first = state.project.tracks().get(*tracks.first()?)?;

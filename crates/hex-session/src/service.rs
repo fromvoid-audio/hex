@@ -3,6 +3,7 @@ use crate::arrangement_seek::{
     ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
 };
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
+pub use crate::export_error::{ExportFailure, export_error_text};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
 use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT, decode_resident_import};
@@ -70,12 +71,15 @@ mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod clip_audition;
 pub use clip_audition::{
-    ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
-    ArrangementPlayStartAudition, ArrangementStretchAudition, ClipMovePreviewDestination,
-    ClipMovePreviewIdentity, NewTrackMoveDestination, PlayStartEdit, VerifiedClipMoveUpdate,
+    ArrangementGainAudition, ArrangementMoveAudition, ArrangementMoveDestination,
+    ArrangementMoveMode, ArrangementPlayStartAudition, ArrangementStretchAudition,
+    ClipMovePreviewDestination, ClipMovePreviewIdentity, GainEdit, NewTrackMoveDestination,
+    PlayStartEdit, VerifiedArrangementGainSource, VerifiedArrangementGainUpdate,
+    VerifiedClipMoveUpdate,
 };
 mod publication_wait;
 mod resident_audio;
+use resident_audio::device_insert::BrowserEdit;
 mod resident_preview;
 mod resident_seek;
 mod stopped_arrangement;
@@ -88,15 +92,18 @@ pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, OfflineBounceSource, PluginEditorRecordingInput,
-    PluginParameterCapture, PluginParameterDelivery, PluginParameterGestureError,
-    PluginParameterGestureInput, PluginParameterGestureResult, PluginParameterObservation,
-    PluginParameterOverride, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ArrangementEditPosition, DeviceInsertAudioReceipt, DeviceInsertAudioState, NativeSamplerInput,
+    NativeSamplerReservationHold, NativeSamplerRetryFacts, OfflineBounceSource,
+    PausedInputMonitorRequest, PausedNoteGraph, PluginEditorRecordingInput, PluginParameterCapture,
+    PluginParameterDelivery, PluginParameterGestureError, PluginParameterGestureInput,
+    PluginParameterGestureResult, PluginParameterObservation, PluginParameterOverride,
+    ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata, ResidentFilePitch,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationFailure,
-    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationReadiness,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentFreshRuntimeFence, ResidentGraphSubmission, ResidentPublicationAcceptance,
+    ResidentPublicationFailure, ResidentPublicationInputs, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, ResidentSourceOrigin, ResidentTempoEdit, ResidentTempoEditOutcome,
+    WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -113,8 +120,9 @@ mod project_save;
 pub use project_save::sample_take_root;
 mod recording_barrier;
 pub use plugin_parameters::{
-    PluginParameterQuery, PluginParameterResult, PluginParameterRow, vst3_automation_class,
-    vst3_parameter_cache_key,
+    PluginParameterConversion, PluginParameterConversionQuery, PluginParameterConversionResult,
+    PluginParameterConvertedValue, PluginParameterQuery, PluginParameterResult, PluginParameterRow,
+    PluginParameterText, vst3_automation_class, vst3_parameter_cache_key,
 };
 pub use plugin_state_save::{PluginStateCapture, PluginStateCaptureInput};
 pub mod diagnostics;
@@ -255,13 +263,21 @@ pub enum SamplerLoadSlot {
         expected_state: hex_lattice_contract::NativeDeviceState,
     },
 }
+/// Captured owner of a sampler parameter edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SamplerParameterOwner {
+    /// The instrument of an existing track.
+    Track(hex_project::TrackId),
+    /// An unassigned retained source; binding it invalidates this target.
+    Source(hex_project::SourceId),
+}
 /// One completed sampler parameter gesture, bound to its captured canonical target.
 #[derive(Clone, Debug)]
 pub struct SamplerParameterEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
-    pub track: hex_project::TrackId,
+    pub owner: SamplerParameterOwner,
     pub device: hex_project::DeviceId,
     pub parameter: hex_engine::SamplerParameter,
     pub value: f64,
@@ -273,7 +289,7 @@ pub struct SamplerReplacementEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
-    pub track: hex_project::TrackId,
+    pub owner: hex_project::InstrumentAssetOwner,
     pub device: hex_project::DeviceId,
     pub expected_state: hex_lattice_contract::NativeDeviceState,
     pub path: PathBuf,
@@ -332,11 +348,19 @@ pub struct Event {
     pub sampler_edit_complete: Option<u64>,
     /// At most two exact terminals: a refused new request and an invalidated pending one.
     pub plugin_effect_complete: Vec<PluginEffectCompletion>,
+    /// Built-in insertion intent and its canonical terminal, even when
+    /// validation refused it before an audio receipt could exist.
+    pub device_insert_proposal_complete: Option<PluginEffectCompletion>,
+    /// The staged graph edit is waiting for a one-shot decision from the editor.
+    pub device_insert_confirmation: Option<DeviceInsertConfirmation>,
+    /// Terminal for the exact audio-confirmed graph edit.
+    pub device_insert_complete: Option<DeviceInsertCompletion>,
     /// This response consumed a read-only parameter or failed-take query.
     /// Its request completion never acknowledges an editor mutation. Canonical
     /// state and unrelated completions still follow the normal ordered contract.
     pub plugin_parameter_observation: bool,
     pub plugin_parameters: Option<PluginParameterResult>,
+    pub plugin_parameter_conversion: Option<PluginParameterConversionResult>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
@@ -469,7 +493,10 @@ pub struct TuningPreview {
 pub struct ExportEvent {
     pub revision: u64,
     pub path: PathBuf,
-    pub result: Result<ExportReport, String>,
+    /// A failure retains publisher paths and any completed publication report.
+    /// Delivery remains bounded and is not durable across a full/disconnected
+    /// channel or application exit.
+    pub result: Result<ExportReport, ExportFailure>,
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
@@ -557,6 +584,36 @@ pub enum DeviceClipboardAction {
     },
 }
 
+/// Direction for an adjacent, source-owned Utility move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceUtilityMove {
+    Earlier,
+    Later,
+}
+
+/// The terminal of one submitted device insert. An installed terminal is
+/// emitted alongside the newly committed canonical project and Undo step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceInsertCompletion {
+    pub submission: ResidentGraphSubmission,
+    pub outcome: DeviceInsertOutcome,
+}
+
+pub use resident_audio::device_insert::{
+    DeviceInsertConfirmation, GraphEditOperation, VerifiedGraphEditAttempt,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceInsertOutcome {
+    Installed,
+    ConfirmationRequired,
+    Cancelled,
+    Expired,
+    Refused(hex_engine::PlaybackHandoffRejection),
+    OutputClosed,
+    ProjectCommitFailed,
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 // Fixed request storage is bounded by the 32-slot control FIFO.
@@ -585,6 +642,39 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
         source: hex_project::SourceId,
+    },
+    /// Append a neutral Utility to the captured bound source. The worker
+    /// validates the project stamps, track binding, instrument and Utility suffix;
+    /// callers must reject their own unsent gestures before submitting.
+    AppendSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+    },
+    /// Remove one exact leaf Utility from a captured bound Utility source.
+    /// Publication retains the live/quiet retirement guard and Undo history.
+    RemoveSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+        effect: hex_project::DeviceId,
+    },
+    /// Move one captured leaf Utility across its exact adjacent leaf sibling.
+    /// The worker revalidates ownership, order and project stamps; live/quiet
+    /// publication remains with the prepared source stage.
+    MoveSourceUtility {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        source: hex_project::SourceId,
+        instrument: hex_project::DeviceId,
+        effect: hex_project::DeviceId,
+        neighbor: hex_project::DeviceId,
+        direction: SourceUtilityMove,
     },
     /// Explicitly change a captured track binding, including unlinking. A shared
     /// source's receiver must first be moved when other contributors remain.
@@ -796,11 +886,14 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         new_track_gain: Option<f32>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    #[doc(hidden)]
+    ContinueDeviceInsert,
     /// Worker-internal wakeup for a completed recovery publication.
     ContinueRecovery,
     TogglePluginEditor {
@@ -810,6 +903,8 @@ pub enum Request {
     ContinuePluginEditor,
     QueryPluginParameters(PluginParameterQuery),
     ContinuePluginParameters,
+    QueryPluginParameterConversion(PluginParameterConversionQuery),
+    ContinuePluginParameterConversion,
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -820,6 +915,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         before: Option<hex_project::DeviceId>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
@@ -829,6 +925,7 @@ pub enum Request {
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
         new_track_gain: Option<f32>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     /// Copy one captured Arrangement source to a new normal Console column.
     /// Resolve stamps before any gesture barrier, source preparation or history.
@@ -905,6 +1002,12 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
     },
+    /// Prepare a stopped monitor for the exact observed graph, with one
+    /// nonblocking reply. The caller supplies an empty one-slot reply channel.
+    PreparePausedInputMonitor {
+        request: PausedInputMonitorRequest,
+        reply: SyncSender<Result<hex_engine::PausedTrackMonitor, String>>,
+    },
     /// Check all stamps before preparation or history, including requests delayed in either queue.
     GainLane {
         project_generation: u64,
@@ -944,6 +1047,7 @@ pub enum Request {
         track: hex_project::TrackId,
         before: Option<hex_project::DeviceId>,
         replace: Option<hex_project::DeviceId>,
+        control: Option<Arc<PluginEffectControl>>,
     },
     AddNativeDevice {
         track: hex_project::TrackId,
@@ -955,6 +1059,17 @@ pub enum Request {
         device: hex_project::DeviceId,
         class: hex_engine::NativeDeviceClass,
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
+    },
+    /// A picker load follows the captured track/slot through catalog defaults,
+    /// preparation, and the exact callback install receipt.
+    LoadTrackCatalogDevice {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        placement: TrackCatalogPlacement,
+        control: Arc<PluginEffectControl>,
     },
     CompareDevice {
         owner: preset::Owner,
@@ -1174,15 +1289,34 @@ impl ControlledExport {
 }
 
 impl Request {
+    /// Exact cancellation carried by a browser or catalog insertion through
+    /// gesture barriers, preparation, and callback installation.
+    pub fn builtin_device_insert_control(&self) -> Option<&Arc<PluginEffectControl>> {
+        match self {
+            Self::InsertBrowserInstrumentTrack { control, .. }
+            | Self::InsertEffectBusDevice { control, .. }
+            | Self::DropBrowserDeviceOnArrangement { control, .. }
+            | Self::DropNativeDevice {
+                source: NativeDeviceDropSource::Browser { .. },
+                control,
+                ..
+            } => control.as_ref(),
+            Self::LoadTrackCatalogDevice { control, .. } => Some(control),
+            _ => None,
+        }
+    }
     /// Read responses do not acknowledge ordered editor mutations.
     pub fn is_read_only_observation(&self) -> bool {
         matches!(
             self,
             Self::QueryPluginParameters(_)
                 | Self::ContinuePluginParameters
+                | Self::QueryPluginParameterConversion(_)
+                | Self::ContinuePluginParameterConversion
                 | Self::QueryFailedPluginAutomation { .. }
                 | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
+                | Self::PreparePausedInputMonitor { .. }
         )
     }
     /// The canonical `ExportRange` parts of an export request; `Export` is its
@@ -1273,6 +1407,22 @@ impl Request {
         ))
     }
 
+    /// Commit one finalized recording through the existing atomic import path.
+    /// The caller must validate clock alignment and source identity before passing
+    /// the captured Arrangement frame. A stale context is refused by the worker.
+    pub fn recorded_audio_take(
+        path: PathBuf,
+        track: hex_project::TrackId,
+        start: u64,
+        context: AudioBatchContext,
+    ) -> Result<(Self, Arc<AudioBatchControl>), String> {
+        Self::audio_batch(
+            vec![path],
+            AudioBatchDestination::Track { track, start },
+            context,
+        )
+    }
+
     /// Preserve the captured authored frame while monitoring the imported
     /// source from its beginning on the applied output's clock.
     pub fn browser_audio_batch(
@@ -1312,6 +1462,39 @@ impl Request {
 pub enum EffectBusDestination {
     Main,
     Return(hex_project::ReturnId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackCatalogPlacement {
+    Insert {
+        before: Option<hex_project::DeviceId>,
+    },
+    ReplaceInstrument(hex_project::DeviceId),
+}
+
+impl TrackCatalogPlacement {
+    /// Match the captured slot against canonical project state after a known
+    /// parameter gesture, or before worker-side catalog construction.
+    pub fn matches_track(
+        self,
+        class: hex_engine::NativeDeviceClass,
+        track: &hex_project::Track,
+    ) -> bool {
+        use hex_engine::NativeDeviceClass::{Effect, Instrument};
+        match (self, class) {
+            (Self::Insert { before }, Effect) => before.is_none_or(|anchor| {
+                track
+                    .instrument()
+                    .is_some_and(|device| device.id() == anchor)
+                    || track.devices().iter().any(|device| device.id() == anchor)
+            }),
+            (Self::Insert { before: None }, Instrument) => track.instrument().is_none(),
+            (Self::ReplaceInstrument(id), Instrument) => {
+                track.instrument().is_some_and(|device| device.id() == id)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1434,7 +1617,7 @@ type Exporter = Arc<
             hex_export::ExportFormat,
             &hex_export::ExportControl,
             &hex_export::Publication,
-        ) -> Result<ExportReport, String>
+        ) -> Result<ExportReport, ExportFailure>
         + Send
         + Sync,
 >;
@@ -1452,7 +1635,7 @@ fn canonical_exporter() -> Exporter {
                 control,
                 publication,
             )
-            .map_err(|error| error.to_string())
+            .map_err(ExportFailure::from)
         },
     )
 }
@@ -1460,6 +1643,7 @@ fn canonical_exporter() -> Exporter {
 struct ExportJob {
     job_id: u64,
     streamed: Option<streamed_export::StreamedExportJob>,
+    foreign: Option<Box<dyn OfflineBounceSource>>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
@@ -1921,6 +2105,28 @@ impl Service {
     pub fn retire_arrangement_play_start_audition(&self) {
         self.clip_audition
             .clear(Some(clip_audition::Kind::PlayStart), false);
+    }
+
+    /// Replace only the latest held gain target. The worker coalesces pointer
+    /// values before preparation, and the preview does not enter history.
+    pub fn audition_arrangement_gain(&self, target: Option<ArrangementGainAudition>) {
+        match target {
+            Some(target) if target.edit.valid() => {
+                self.clip_audition.set(clip_audition::Target::Gain(target));
+            }
+            _ => self
+                .clip_audition
+                .clear(Some(clip_audition::Kind::Gain), true),
+        }
+    }
+
+    pub fn finish_arrangement_gain_audition(&self) {
+        self.clip_audition.release(clip_audition::Kind::Gain);
+    }
+
+    pub fn retire_arrangement_gain_audition(&self) {
+        self.clip_audition
+            .clear(Some(clip_audition::Kind::Gain), false);
     }
 
     /// Replace the complete held group target. An invalid target cancels the
@@ -2761,6 +2967,7 @@ fn run_worker(
     let mut resident_preview: Option<resident_preview::Preview> = None;
     let mut clip_audition_lane = clip_audition::Lane::default();
     let mut verified_clip_audition_lane = clip_audition::VerifiedLane::default();
+    let mut verified_gain_lane = clip_audition::VerifiedGainLane::default();
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -2826,8 +3033,12 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 plugin_effect_complete: Vec::new(),
+                device_insert_proposal_complete: None,
+                device_insert_confirmation: None,
+                device_insert_complete: None,
                 plugin_parameter_observation: false,
                 plugin_parameters: None,
+                plugin_parameter_conversion: None,
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
                 device_automation_take_complete: None,
@@ -2870,8 +3081,12 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             plugin_effect_complete: Vec::new(),
+            device_insert_proposal_complete: None,
+            device_insert_confirmation: None,
+            device_insert_complete: None,
             plugin_parameter_observation: false,
             plugin_parameters: None,
+            plugin_parameter_conversion: None,
             computer_keyboard_complete: None,
             midi_take_complete: None,
             device_automation_take_complete: None,
@@ -2968,17 +3183,29 @@ fn run_worker(
 
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
+    let mut pending_device_insert: Option<resident_audio::device_insert::Pending> = None;
     let mut pending_stopped_restore = None;
     let mut native_automation_take = native_automation_recording::Lane::default();
     let mut plugin_recording = plugin_recording::State::default();
     let mut recording_barrier = recording_barrier::State::default();
     let mut pending_recovery_outcome: Option<(DeferredRecoveryKind, audio_sink::PendingOutcome)> =
         None;
+    // At most one seek may pass a held locator checkpoint. Its ordinary
+    // terminal remains behind the locator terminal, even if its separate seek
+    // result is ready earlier.
+    let mut pending_locator_seek_outcome: Option<audio_sink::PendingOutcome> = None;
     // Both ordinary and recovery-delayed terminals use the same bounded
     // backpressure/control polling path.
     macro_rules! deliver_outcome {
         ($outcome:expr) => {
             events.send_pending_with_control_poll($outcome, |mut audio| {
+                if let Some(pending) = pending_device_insert.as_ref() {
+                    pending.poll(
+                        session.shutdown.load(Ordering::Acquire)
+                            || pending.document_intent != document_intent.load(Ordering::Acquire),
+                    );
+                    return;
+                }
                 if let Some(seek) = resident_seek.as_mut() {
                     seek.drive(
                         &session,
@@ -3065,9 +3292,15 @@ fn run_worker(
                     return;
                 }
             }
+            if let Some(mut outcome) = pending_locator_seek_outcome.take() {
+                outcome.event.recovery_failure = recovery_tracker.failure();
+                if !deliver_outcome!(outcome) {
+                    return;
+                }
+            }
         };
     }
-    while let Some(queued) = events.next_request_with_control_poll(
+    'requests: while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
         &mut recording_barrier,
@@ -3075,6 +3308,7 @@ fn run_worker(
         pending_plugin_effect
             .as_ref()
             .map(|pending| &pending.insertion),
+        pending_device_insert.as_ref(),
         pending_stopped_restore,
         hex_engine::AudioSourceContext {
             project_generation,
@@ -3093,24 +3327,32 @@ fn run_worker(
                     && !plugin_recording.editor_active()
                     && !plugin_recording.pending();
                 let pending = audio.is_some_and(|sink| {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    let verified_available =
+                        available && session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
                     let verified_pending = verified_clip_audition_lane.drive(
                         &clip_audition,
                         &state,
                         session.project(),
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision,
-                        },
+                        context,
                         sink,
-                        available && session.audio_mode() == DocumentAudioMode::VerifiedStreaming,
+                        verified_available,
                     );
-                    clip_audition_lane.drive(
+                    let verified_gain_pending = verified_gain_lane.drive(
+                        &clip_audition,
+                        &state,
+                        session.project(),
+                        context,
+                        sink,
+                        verified_available,
+                    );
+                    let clip_pending = clip_audition_lane.drive(
                         &clip_audition,
                         &session,
-                        hex_engine::AudioSourceContext {
-                            project_generation,
-                            editor_revision: revision,
-                        },
+                        context,
                         &mut resident_snapshot,
                         &mut resident_preview,
                         sink,
@@ -3125,7 +3367,35 @@ fn run_worker(
                             None,
                         ),
                         available,
-                    ) || verified_pending
+                    );
+                    let pause_snapshot = resident_snapshot.as_ref().filter(|snapshot| {
+                        available
+                            && resident_preview.is_none()
+                            && snapshot
+                                .submission
+                                .is_some_and(|source| source.context == context)
+                    });
+                    let cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
+                    let notes_pending = session.poll_resident_paused_notes(
+                        pause_snapshot,
+                        sink,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
+                        &cancellation,
+                    );
+                    clip_pending || verified_pending || verified_gain_pending || notes_pending
                 });
                 // Cancelling a preview can prepare a new canonical audio owner.
                 if let Some(snapshot) = resident_snapshot.as_ref()
@@ -3225,9 +3495,18 @@ fn run_worker(
         },
     ) {
         // One later edit of the same kind may commit while a checkpoint owns
-        // the journal. Other requests fence it first, including mixed edit kinds.
+        // the journal. One resident seek may also overlap a locator checkpoint;
+        // all other requests fence it first, including mixed edit kinds.
+        let seek_during_locator_recovery = pending_locator_seek_outcome.is_none()
+            && matches!(
+                pending_recovery_outcome.as_ref(),
+                Some((DeferredRecoveryKind::LocatorAdd, _))
+            )
+            && matches!(&queued.request, Request::ResidentArrangementSeek(_));
         if let Some((kind, _)) = pending_recovery_outcome.as_ref()
-            && deferred_recovery_kind(&queued.request) != Some(*kind)
+            && (pending_locator_seek_outcome.is_some()
+                || (!seek_during_locator_recovery
+                    && deferred_recovery_kind(&queued.request) != Some(*kind)))
         {
             finish_pending_recovery!();
         }
@@ -3235,6 +3514,11 @@ fn run_worker(
             continue;
         }
         let mut queued = queued;
+        if !plugin_recording.close_safe() && queued.request.is_project_open() {
+            queued.recording_barrier = Some(recording_barrier::Completion::Failed(
+                "finish or recover the vst3 automation take before replacing the project",
+            ));
+        }
         if plugin_recording.editor_active()
             && matches!(
                 &queued.request,
@@ -3266,17 +3550,21 @@ fn run_worker(
             .as_ref()
             .and_then(resident_preview::Preview::clip_target)
             .is_some_and(|target| target.matches_release(&queued.request));
-        // A move can arrive after its audition was cancelled but before that
-        // preview publication has reached the callback. Keep its FIFO place
-        // behind the same bounded publication wait as a matching release.
+        // A move can arrive before its cancelled audition reaches the
+        // callback. A scope edit can also arrive before an earlier graph is
+        // applied. Keep their FIFO place and bound the wait before native
+        // preparation tries to borrow the preceding graph's sources.
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
                 || matches!(
                     &queued.request,
                     Request::MoveExistingClips { .. }
+                        | Request::LoadTrackCatalogDevice { .. }
                         | Request::Edit(
-                            Command::ToggleDeviceBypass { .. }
+                            Command::SetLoopRegion { .. }
+                                | Command::ToggleLoopRegion
+                                | Command::ToggleDeviceBypass { .. }
                                 | Command::SetDeviceBypass { .. }
                                 | Command::ReplaceDeviceState { .. }
                         )
@@ -3354,11 +3642,30 @@ fn run_worker(
             queued.document_intent,
             queued.publication_waited,
         );
+        let request_document_intent = queued.document_intent;
         let save_correlation = queued.save_correlation;
         let defaults_directory = queued.native_device_defaults;
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let mut device_insert_proposal = None;
+        let mut repeated_device_insert = false;
+        let mut device_insert_proposal_accepted = false;
+        let loading_track_catalog = matches!(&request, Request::LoadTrackCatalogDevice { .. });
+        let replacing_catalog_instrument = matches!(
+            &request,
+            Request::LoadTrackCatalogDevice {
+                placement: TrackCatalogPlacement::ReplaceInstrument(_),
+                ..
+            }
+        );
+        if let Some(control) = request.builtin_device_insert_control() {
+            if control.claim() {
+                device_insert_proposal = Some(Arc::clone(control));
+            } else {
+                repeated_device_insert = true;
+            }
+        }
         let request_recovery_kind = deferred_recovery_kind(&request);
         let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
         let midi_note_update = matches!(
@@ -3397,15 +3704,20 @@ fn run_worker(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
+                | Request::ContinueDeviceInsert
                 | Request::ContinuePluginEditor
                 | Request::ContinuePluginEditorRecording { .. }
                 | Request::ContinuePluginParameters
+                | Request::ContinuePluginParameterConversion
                 | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        let mut device_insert_confirmation = None;
+        let mut device_insert_complete = None;
         let plugin_parameter_observation = request.is_read_only_observation();
         let mut plugin_parameters = None;
+        let mut plugin_parameter_conversion = None;
         let mut sampler_edit_complete = None;
         if matches!(
             &request,
@@ -3413,7 +3725,8 @@ fn run_worker(
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::OpenWithAudioMode { .. }
-        ) && let Some(gain) = pending_sampler_parameter.take()
+        ) && recording_barrier::failure(recording_barrier_completion).is_none()
+            && let Some(gain) = pending_sampler_parameter.take()
         {
             gain.cancel().store(true, Ordering::Release);
             sampler_edit_complete = Some(gain.request_id());
@@ -3455,6 +3768,7 @@ fn run_worker(
         let mut save_confirmation_required = false;
         let mut project_replaced = false;
         let mut replacement_revision = None;
+        let mut installed_verified_source = None;
         let mut replacement_sources: Option<
             Option<hex_engine::native_device_resources::ControlSamplerSources>,
         > = None;
@@ -3619,6 +3933,191 @@ fn run_worker(
                 Ok(Command::SetNativeSourceReceiver {
                     source: *source,
                     track: Some(*track),
+                })
+            })()),
+            Request::AppendSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let source = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                if source.receiver().is_none()
+                    || source.instrument().id() != *instrument
+                    || source.instrument().state().type_id() != default_instrument.type_id()
+                    || source.devices().count() >= hex_project::MAX_SOURCE_DEVICES
+                    || source.post_instrument_effects().iter().any(|effect| {
+                        effect.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                let state = hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .map_err(|_| "utility is unavailable")?;
+                Ok(Command::InsertNestedDevice {
+                    parent: *instrument,
+                    state,
+                })
+            })()),
+            Request::RemoveSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+                effect,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let source = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                let effects = source.post_instrument_effects();
+                if source.receiver().is_none()
+                    || source.instrument().id() != *instrument
+                    || source.instrument().state().type_id() != default_instrument.type_id()
+                    || !effects.iter().any(|item| item.id() == *effect)
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                    || source.devices().any(|item| item.parent() == Some(*effect))
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                Ok(Command::RemoveDevice(*effect))
+            })()),
+            Request::MoveSourceUtility {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                source,
+                instrument,
+                effect,
+                neighbor,
+                direction,
+            } => Some((|| {
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    return Err("source effect canceled · project changed".into());
+                }
+                if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    return Err(
+                        "finish or cancel the active gesture before editing a source".into(),
+                    );
+                }
+                let project = session.project();
+                if project
+                    .track(*track)
+                    .is_none_or(|track| track.source_id() != Some(*source))
+                {
+                    return Err("source effect canceled · track binding changed".into());
+                }
+                let definition = project
+                    .native_source(*source)
+                    .ok_or("source effect canceled · source no longer exists")?;
+                let default_instrument = hex_project::default_instrument_state()
+                    .map_err(|_| "source instrument unavailable")?;
+                let effects = definition.post_instrument_effects();
+                if definition.receiver().is_none()
+                    || definition.instrument().id() != *instrument
+                    || definition.instrument().state().type_id() != default_instrument.type_id()
+                    || effects.iter().any(|item| {
+                        item.state().type_id()
+                            != hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or unsupported".into(),
+                    );
+                }
+                let index = effects
+                    .iter()
+                    .position(|item| item.id() == *effect)
+                    .ok_or("source effect canceled · source chain changed")?;
+                let neighbor_index = match direction {
+                    SourceUtilityMove::Earlier => index.checked_sub(1),
+                    SourceUtilityMove::Later => index.checked_add(1),
+                }
+                .ok_or("source effect canceled · source chain changed")?;
+                let target = effects
+                    .get(index)
+                    .ok_or("source effect canceled · source chain changed")?;
+                let adjacent = effects
+                    .get(neighbor_index)
+                    .ok_or("source effect canceled · source chain changed")?;
+                if adjacent.id() != *neighbor
+                    || target.parent() != adjacent.parent()
+                    || definition.devices().any(|item| {
+                        item.parent() == Some(*effect) || item.parent() == Some(*neighbor)
+                    })
+                {
+                    return Err(
+                        "source effect canceled · source chain changed or contains children".into(),
+                    );
+                }
+                let before = match direction {
+                    SourceUtilityMove::Earlier => Some(*neighbor),
+                    SourceUtilityMove::Later => index
+                        .checked_add(2)
+                        .and_then(|next| effects.get(next))
+                        .map(hex_project::Device::id),
+                };
+                Ok(Command::MoveNativeSourceDevice {
+                    source: *source,
+                    device: *effect,
+                    before,
                 })
             })()),
             Request::RebindNativeSource {
@@ -4360,6 +4859,7 @@ fn run_worker(
                 class,
                 type_id,
                 new_track_gain,
+                ..
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("instrument insertion canceled · project changed".to_owned())
@@ -4398,6 +4898,7 @@ fn run_worker(
                 class,
                 type_id,
                 before,
+                ..
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("effect insertion canceled · project changed".to_owned())
@@ -4413,6 +4914,31 @@ fn run_worker(
                         *before,
                     )
                     .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
+                },
+            ),
+            Request::LoadTrackCatalogDevice {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                track,
+                class,
+                type_id,
+                placement,
+                ..
+            } => Some(
+                if *expected_generation != project_generation || *expected_revision != revision {
+                    Err("device picker load canceled · project changed".into())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active device edit before loading a device".into())
+                } else {
+                    device_defaults::track_picker_command(
+                        session.project(),
+                        *track,
+                        *class,
+                        *type_id,
+                        *placement,
+                        defaults_root,
+                    )
                 },
             ),
             Request::ReplaceDeviceModulation {
@@ -4981,8 +5507,8 @@ fn run_worker(
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
-        let sampler_refusal = private_sampler
-            && !events.resident_publication_enabled()
+        let sampler_without_resident = private_sampler && !events.resident_publication_enabled();
+        let sampler_refusal = sampler_without_resident
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
@@ -4996,10 +5522,13 @@ fn run_worker(
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::ContinueDeviceInsert
                     | Request::TogglePluginEditor { .. }
                     | Request::ContinuePluginEditor
                     | Request::QueryPluginParameters(_)
                     | Request::ContinuePluginParameters
+                    | Request::QueryPluginParameterConversion(_)
+                    | Request::ContinuePluginParameterConversion
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -5039,9 +5568,16 @@ fn run_worker(
         } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
         {
             error = Some("section edits require a revision-bound section request".into());
+        } else if repeated_device_insert {
+            error = Some("device insertion request was already submitted".into());
+        } else if device_insert_proposal
+            .as_ref()
+            .is_some_and(|control| control.is_cancelled())
+        {
+            status = Some("device insertion was cancelled".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
-        } else if sampler_refusal {
+        } else if sampler_refusal || (loading_track_catalog && sampler_without_resident) {
             error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; other history steps and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, other history steps and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
@@ -5110,8 +5646,11 @@ fn run_worker(
                 export_completion = Some(ExportEvent {
                     revision,
                     path: path.clone(),
-                    result: Err(reason.clone()),
+                    result: Err(reason.clone().into()),
                 });
+            }
+            if let Request::PreparePausedInputMonitor { reply, .. } = &request {
+                let _ = reply.try_send(Err(reason.clone()));
             }
             error = Some(reason);
         } else {
@@ -5245,6 +5784,8 @@ fn run_worker(
                                         resident_seek.as_ref(), None,
                                     );
                                     let metadata = ResidentPublicationMetadata {
+                                        source_origin:
+                                            crate::service::ResidentSourceOrigin::Unknown,
                                         clip_preview: None,
                                         context,
                                         device_preview: None,
@@ -5609,7 +6150,10 @@ fn run_worker(
                 Request::ReorderDevices { .. } => {
                     error = Some("device reorder was not resolved".into());
                 }
-                Request::BindUnassignedNativeSource { .. }
+                Request::AppendSourceUtility { .. }
+                | Request::MoveSourceUtility { .. }
+                | Request::RemoveSourceUtility { .. }
+                | Request::BindUnassignedNativeSource { .. }
                 | Request::RebindNativeSource { .. }
                 | Request::ChooseNativeSourceReceiver { .. }
                 | Request::RenameRetainedSource { .. }
@@ -5686,6 +6230,241 @@ fn run_worker(
                         .sampler_edit_audio()
                         .and_then(|audio| audio.take_plugin_parameters());
                 }
+                Request::QueryPluginParameterConversion(query) => {
+                    let result = if query.context.project_generation != project_generation
+                        || query.context.editor_revision != revision
+                        || !session
+                            .project()
+                            .device(query.device)
+                            .is_some_and(|device| {
+                                device.state().type_id().as_str() == Ok("hex.vst3")
+                            }) {
+                        Err("vst3 parameter target changed".into())
+                    } else {
+                        events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 conversion unavailable for this output".to_owned())
+                            .and_then(|audio| {
+                                audio.query_plugin_parameter_conversion(query.clone())
+                            })
+                    };
+                    if let Err(reason) = result {
+                        plugin_parameter_conversion = Some(PluginParameterConversionResult {
+                            query,
+                            value: Err(reason),
+                        });
+                    }
+                }
+                Request::ContinuePluginParameterConversion => {
+                    plugin_parameter_conversion = events
+                        .sampler_edit_audio()
+                        .and_then(|audio| audio.take_plugin_parameter_conversion());
+                    if let Some(result) = &mut plugin_parameter_conversion
+                        && (result.query.context.project_generation != project_generation
+                            || result.query.context.editor_revision != revision
+                            || !session.project().device(result.query.device).is_some_and(
+                                |device| device.state().type_id().as_str() == Ok("hex.vst3"),
+                            ))
+                    {
+                        result.value = Err("vst3 parameter target changed".into());
+                    }
+                }
+                Request::ContinueDeviceInsert => 'device_insert: {
+                    if let Some(mut pending) = pending_device_insert.take() {
+                        use resident_audio::device_insert::Progress;
+                        let cancel = session.shutdown.load(Ordering::Acquire)
+                            || pending.document_intent != document_intent.load(Ordering::Acquire);
+                        let Some(progress) = pending.poll(cancel) else {
+                            // An ordinary request cannot force a pending transaction.
+                            pending_device_insert = Some(pending);
+                            continue 'requests;
+                        };
+                        let terminal = match progress {
+                            Progress::PreparationFailed => {
+                                device_insert_proposal = pending.proposal_control.take();
+                                error = pending.preparation_error();
+                                if let Some(attempt) = pending.verified_attempt()
+                                    && let Some(sink) = events.resident_audio()
+                                {
+                                    sink.finish_verified_graph_edit(attempt, false);
+                                }
+                                request_complete = true;
+                                break 'device_insert;
+                            }
+                            Progress::Proceed => {
+                                let admission = export_lane.admission_with_resident_owners(
+                                    compiled.as_ref().map(|(_, prepared)| {
+                                        hex_engine::native_device_resources::ControlSamplerSelection {
+                                            sources: current_sources.as_ref(),
+                                            prepared: Some(prepared),
+                                        }
+                                    }),
+                                    resident_seek.as_ref(),
+                                    resident_preview.as_ref(),
+                                );
+                                match events
+                                    .resident_audio()
+                                    .ok_or(SessionError::Invalid("native worker unavailable"))
+                                    .and_then(|sink| {
+                                        pending.proceed(
+                                            &mut session,
+                                            sink,
+                                            admission,
+                                            resident_snapshot.as_ref(),
+                                        )
+                                    }) {
+                                    Ok(()) => {
+                                        pending_device_insert = Some(pending);
+                                        continue 'requests;
+                                    }
+                                    Err(reason) => {
+                                        error = Some(reason.to_string());
+                                        DeviceInsertAudioState::Refused(
+                                            hex_engine::PlaybackHandoffRejection::RuntimeFenceChanged,
+                                        )
+                                    }
+                                }
+                            }
+                            Progress::Terminal(DeviceInsertAudioState::Refused(
+                                hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                            )) if cancel => DeviceInsertAudioState::Cancelled,
+                            Progress::Terminal(terminal) => terminal,
+                        };
+                        if !cancel
+                            && terminal == DeviceInsertAudioState::Refused(
+                                hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation,
+                            )
+                            && let Some(offer) =
+                                events.resident_audio().and_then(|sink| pending.offer(sink))
+                        {
+                            device_insert_confirmation = Some(offer);
+                            pending_device_insert = Some(pending);
+                            break 'device_insert;
+                        }
+                        let operation = pending.operation;
+                        let edit_name = if operation.device().is_some() {
+                            "device edit"
+                        } else {
+                            "tempo edit"
+                        };
+                        let Some(submission) = pending.submission() else {
+                            device_insert_proposal = pending.proposal_control.take();
+                            if let Some(attempt) = pending.verified_attempt()
+                                && let Some(sink) = events.resident_audio()
+                            {
+                                sink.finish_verified_graph_edit(attempt, false);
+                            }
+                            status = Some(format!("{edit_name} cancelled"));
+                            request_complete = true;
+                            break 'device_insert;
+                        };
+                        let verified = pending.verified_attempt().cloned();
+                        let was_offered = pending.awaiting_confirmation();
+                        let plugin = pending.plugin.take();
+                        let publish_created = pending.publish_created
+                            && plugin.as_ref().is_none_or(|plugin| {
+                                !matches!(
+                                    plugin.insertion.destination,
+                                    PluginEffectDestination::NewTrack { .. }
+                                )
+                            });
+                        request_complete = plugin.is_none();
+                        device_insert_proposal = pending.proposal_control.take();
+                        let outcome = match terminal {
+                            DeviceInsertAudioState::Installed => {
+                                let cut_devices = pending.cut_devices.take();
+                                let cut_tracks = pending.cut_tracks.take();
+                                match pending.commit(&mut session, resident_snapshot.as_ref()) {
+                                    Ok((new, prepared, snapshot)) => {
+                                        if publish_created {
+                                            created = Some(new);
+                                        }
+                                        unsaved = true;
+                                        replacement_revision = Some(prepared);
+                                        installed_verified_source = verified
+                                            .as_ref()
+                                            .map(|attempt| Arc::clone(attempt.source()));
+                                        if let Some(snapshot) = snapshot {
+                                            resident_snapshot = Some(snapshot);
+                                        }
+                                        cut_device_clipboard = cut_devices;
+                                        cut_clipboard = cut_tracks;
+                                        status = Some(operation.installed_status().into());
+                                        DeviceInsertOutcome::Installed
+                                    }
+                                    Err(reason) => {
+                                        error = Some(reason.to_string());
+                                        DeviceInsertOutcome::ProjectCommitFailed
+                                    }
+                                }
+                            }
+                            DeviceInsertAudioState::Refused(reason) => {
+                                if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
+                                    error = Some(match operation.device() {
+                                        Some(GraphEditOperation::InsertDevice) => "stop playback to insert this device",
+                                        Some(GraphEditOperation::RemoveDevice) => "stop playback to remove this device",
+                                        Some(GraphEditOperation::MoveDevice) => "stop playback to move devices",
+                                        Some(GraphEditOperation::RemoveTrack) => "stop playback to remove this track",
+                                        None => reason.message(),
+                                    }.into());
+                                    DeviceInsertOutcome::ConfirmationRequired
+                                } else {
+                                    if error.is_none() {
+                                        error = Some(reason.message().into());
+                                    }
+                                    DeviceInsertOutcome::Refused(reason)
+                                }
+                            }
+                            DeviceInsertAudioState::OutputClosed => {
+                                error =
+                                    Some("audio output closed · restart audio to recover".into());
+                                DeviceInsertOutcome::OutputClosed
+                            }
+                            DeviceInsertAudioState::Cancelled => {
+                                if was_offered
+                                    || device_insert_proposal.as_ref().is_some_and(|control| control.is_cancelled())
+                                {
+                                    status = Some("device edit cancelled".into());
+                                } else {
+                                    error = Some(
+                                        format!("{edit_name} cancelled before installation"),
+                                    );
+                                }
+                                DeviceInsertOutcome::Cancelled
+                            }
+                            DeviceInsertAudioState::Expired => {
+                                error =
+                                    Some("device edit timed out before installation".into());
+                                DeviceInsertOutcome::Expired
+                            }
+                            DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
+                                pending.plugin = plugin;
+                                pending.proposal_control = device_insert_proposal.take();
+                                pending_device_insert = Some(pending);
+                                continue 'requests;
+                            }
+                        };
+                        if operation.device().is_some() {
+                            device_insert_complete = Some(DeviceInsertCompletion {
+                                submission,
+                                outcome,
+                            });
+                        }
+                        let accepted = outcome == DeviceInsertOutcome::Installed;
+                        device_insert_proposal_accepted = accepted;
+                        if let Some(sink) = events.resident_audio() {
+                            if let Some(attempt) = verified.as_ref() {
+                                sink.finish_verified_graph_edit(attempt, accepted);
+                            } else {
+                                sink.finish_resident_effect_edit(submission.context, accepted);
+                            }
+                        }
+                        if let Some(plugin) = plugin {
+                            plugin_effect_complete
+                                .push(plugin.finish(events.sampler_edit_audio(), accepted));
+                        }
+                    }
+                }
                 request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
                     if let Request::InsertPluginEffect(insertion) = request {
                         match plugin_effect::Pending::new(insertion, session.project()) {
@@ -5736,6 +6515,7 @@ fn run_worker(
                                         compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }),
                                         resident_seek.as_ref(), resident_preview.as_ref(),
                                     );
+                                    let mut staged_insert = None;
                                     let committed = result.and_then(|state| {
                                         let PluginEffectPreparationState::Ready(state) = state
                                         else {
@@ -5747,6 +6527,21 @@ fn run_worker(
                                         let sink = events
                                             .resident_audio()
                                             .ok_or("native worker unavailable")?;
+                                        if sink.confirms_device_inserts() {
+                                            staged_insert = session
+                                                .stage_resident_device_insert(
+                                                    command,
+                                                    context,
+                                                    sink,
+                                                    admission,
+                                                    resident_snapshot.as_ref(),
+                                                    Some(&pending.insertion.control),
+                                                    None,
+                                                    request_document_intent,
+                                                )
+                                                .map_err(|e| e.to_string())?;
+                                            return Ok(None);
+                                        }
                                         session
                                             .plugin_effect_resident_snapshot(
                                                 command,
@@ -5759,29 +6554,38 @@ fn run_worker(
                                                 admission,
                                                 resident_snapshot.as_ref(),
                                             )
+                                            .map(Some)
                                             .map_err(|e| e.to_string())
                                     });
-                                    let accepted = committed.is_ok();
-                                    match committed {
-                                        Ok((new, snapshot)) => {
-                                            if !matches!(
-                                                pending.insertion.destination,
-                                                PluginEffectDestination::NewTrack { .. }
-                                            ) {
-                                                created = Some(new);
+                                    if let Some(mut staged) = staged_insert {
+                                        staged.plugin = Some(pending);
+                                        pending_device_insert = Some(staged);
+                                        status = Some("vst3 pending · waiting for audio".into());
+                                    } else {
+                                        let accepted = matches!(committed, Ok(Some(_)));
+                                        match committed {
+                                            Ok(Some((new, snapshot))) => {
+                                                if !matches!(
+                                                    pending.insertion.destination,
+                                                    PluginEffectDestination::NewTrack { .. }
+                                                ) {
+                                                    created = Some(new);
+                                                }
+                                                unsaved = true;
+                                                replacement_revision =
+                                                    Some(Arc::clone(&snapshot.prepared));
+                                                resident_snapshot = Some(snapshot);
+                                                status = Some(
+                                                    "vst3 inserted · waiting for audio".into(),
+                                                );
                                             }
-                                            unsaved = true;
-                                            replacement_revision =
-                                                Some(Arc::clone(&snapshot.prepared));
-                                            resident_snapshot = Some(snapshot);
-                                            status =
-                                                Some("vst3 inserted · waiting for audio".into());
+                                            Ok(None) => {}
+                                            Err(reason) => error = Some(reason),
                                         }
-                                        Err(reason) => error = Some(reason),
+                                        plugin_effect_complete.push(
+                                            pending.finish(events.sampler_edit_audio(), accepted),
+                                        );
                                     }
-                                    plugin_effect_complete.push(
-                                        pending.finish(events.sampler_edit_audio(), accepted),
-                                    );
                                 }
                             }
                         }
@@ -5790,6 +6594,9 @@ fn run_worker(
                 Request::InsertEffectBusDevice { .. } => {
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
+                }
+                Request::LoadTrackCatalogDevice { .. } => {
+                    error = Some("device picker request was not prepared; select it again".into());
                 }
                 Request::PaintMidiClip(_) => {
                     error = Some("clip paint target was not resolved".into());
@@ -5824,6 +6631,7 @@ fn run_worker(
                     type_id,
                     destination,
                     new_track_gain,
+                    ..
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -5844,14 +6652,12 @@ fn run_worker(
                         })
                     };
                     match command.and_then(|command| {
-                        resident_audio::execute_command(
+                        resident_audio::device_insert::submit_browser_edit(
                             &mut session,
                             command,
+                            &state,
+                            project_generation,
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            hex_engine::AudioSourceContext {
-                                project_generation,
-                                editor_revision: revision.saturating_add(1),
-                            },
                             &mut events,
                             &mut resident_snapshot,
                             export_lane.admission_with_resident_owners(
@@ -5864,17 +6670,28 @@ fn run_worker(
                                 resident_seek.as_ref(),
                                 resident_preview.as_ref(),
                             ),
+                            request_document_intent,
+                            device_insert_proposal.as_ref(),
                         )
                         .map_err(|error| {
                             hex_storage::text::lowercase_outside_verbatim(&error.to_string())
                         })
                     }) {
-                        Ok((_, prepared)) => {
+                        Ok(BrowserEdit::Pending(mut staged)) => {
+                            staged.publish_created = false;
+                            staged.proposal_control = device_insert_proposal.take();
+                            pending_device_insert = Some(*staged);
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(BrowserEdit::Applied(_, prepared)) => {
                             // No Created::Track focus response: this drop preserves prior selection.
                             unsaved = true;
                             replacement_revision = Some(prepared);
+                            device_insert_proposal_accepted = true;
                             status = Some("device added to arrangement".into());
                         }
+                        Ok(BrowserEdit::Unchanged) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason),
                     }
                 }
@@ -5885,6 +6702,7 @@ fn run_worker(
                     track,
                     before,
                     replace,
+                    ..
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -5986,14 +6804,12 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match resident_audio::execute_command(
+                            match resident_audio::device_insert::submit_browser_edit(
                                 &mut session,
                                 command,
+                                &state,
+                                project_generation,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision.saturating_add(1),
-                                },
                                 &mut events,
                                 &mut resident_snapshot,
                                 export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
@@ -6002,10 +6818,20 @@ fn run_worker(
                                         prepared: Some(prepared),
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
+                                request_document_intent,
+                                device_insert_proposal.as_ref(),
                             ) {
-                                Ok((_, prepared)) if session.project() != &before_project => {
+                                Ok(BrowserEdit::Pending(mut staged)) => {
+                                    staged.publish_created = false;
+                                    staged.proposal_control = device_insert_proposal.take();
+                                    pending_device_insert = Some(*staged);
+                                    request_complete = false;
+                                    status = Some("device edit pending · waiting for audio".into());
+                                }
+                                Ok(BrowserEdit::Applied(_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                    device_insert_proposal_accepted = true;
                                     status = Some(match source {
                                         NativeDeviceDropSource::Browser { .. }
                                             if replace.is_some() =>
@@ -6020,7 +6846,7 @@ fn run_worker(
                                         }
                                     });
                                 }
-                                Ok(_) => status = Some("no change".into()),
+                                Ok(BrowserEdit::Applied(..) | BrowserEdit::Unchanged) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
@@ -6315,7 +7141,7 @@ fn run_worker(
                                         frames,
                                     )?;
                                 crate::native_assets::NativeAssetDestination::ExistingInstrument {
-                                    track,
+                                    owner: hex_project::InstrumentAssetOwner::Track(track),
                                     device,
                                     expected_state,
                                     state,
@@ -6476,6 +7302,100 @@ fn run_worker(
                 {
                     error = Some("vst3 recovery lost its resident publication path".into());
                 }
+                Request::Edit(command) if device_insert_proposal.is_some() => {
+                    // Catalog additions and picker replacements are resolved through
+                    // their existing default/owner validation and gesture barrier.
+                    // Keep their Created result after the exact install.
+                    let result = resident_audio::device_insert::submit_browser_edit(
+                        &mut session,
+                        command,
+                        &state,
+                        project_generation,
+                        compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                        &mut events,
+                        &mut resident_snapshot,
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
+                        request_document_intent,
+                        device_insert_proposal.as_ref(),
+                    );
+                    match result {
+                        Ok(BrowserEdit::Pending(mut staged)) => {
+                            staged.publish_created = !replacing_catalog_instrument;
+                            staged.proposal_control = device_insert_proposal.take();
+                            pending_device_insert = Some(*staged);
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(BrowserEdit::Applied(new, prepared)) => {
+                            if session.project() != state.project.as_ref() {
+                                if !replacing_catalog_instrument {
+                                    created = Some(new);
+                                }
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                            }
+                            device_insert_proposal_accepted = true;
+                            status = Some(
+                                if replacing_catalog_instrument {
+                                    "device replaced"
+                                } else {
+                                    "device inserted"
+                                }
+                                .into(),
+                            );
+                        }
+                        Ok(BrowserEdit::Unchanged) => {
+                            device_insert_proposal_accepted = device_insert_proposal
+                                .as_ref()
+                                .is_some_and(|control| control.begin_commit());
+                            status = Some("no change".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                Request::Edit(command)
+                    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && resident_audio::device_insert::graph_edit_operation(&command)
+                            .is_some()
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
+                {
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.stage_verified_graph_edit(
+                                command,
+                                &state,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                                sink,
+                                request_document_intent,
+                                device_gesture.snapshot().as_ref(),
+                                None,
+                            )
+                        });
+                    match result {
+                        Ok(Some(mut staged)) => {
+                            staged.cut_devices = cut_device_clipboard.take();
+                            staged.cut_tracks = cut_clipboard.take();
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(None) => status = Some("no change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 Request::Edit(command)
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
@@ -6498,6 +7418,35 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
+                            if let Some(operation) =
+                                resident_audio::device_insert::graph_edit_operation(&command)
+                                && sink.confirms_device_inserts()
+                                && (operation == GraphEditOperation::InsertDevice
+                                    || !matches!(
+                                        sink.resident_publication_readiness(),
+                                        ResidentPublicationReadiness::NoOutput
+                                    ))
+                            {
+                                let staged = session.stage_resident_device_insert(
+                                    command,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    sink,
+                                    admission,
+                                    resident_snapshot.as_ref(),
+                                    None,
+                                    None,
+                                    request_document_intent,
+                                )?;
+                                if let Some(mut staged) = staged {
+                                    staged.cut_devices = cut_device_clipboard.take();
+                                    staged.cut_tracks = cut_clipboard.take();
+                                    pending_device_insert = Some(staged);
+                                }
+                                return Ok(None);
+                            }
                             if let Some((_, target)) = adopted_device_draft.as_ref() {
                                 session.device_take_resident_snapshot(
                                     command,
@@ -6516,9 +7465,15 @@ fn run_worker(
                                     resident_snapshot.as_ref(),
                                 )
                             }
+                            .map(Some)
                         });
                     match result {
-                        Ok((new, snapshot)) => {
+                        Ok(None) if pending_device_insert.is_some() => {
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(None) => status = Some("no change".into()),
+                        Ok(Some((new, snapshot))) => {
                             if failed_plugin_adoption.is_some() {
                                 // Device-take VST3 publication returns only after the exact
                                 // output/revision callback confirmation.
@@ -7394,14 +8349,12 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match resident_audio::execute_command(
+                            match resident_audio::device_insert::submit_browser_edit(
                                 &mut session,
                                 command,
+                                &state,
+                                project_generation,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision.saturating_add(1),
-                                },
                                 &mut events,
                                 &mut resident_snapshot,
                                 export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
@@ -7410,14 +8363,21 @@ fn run_worker(
                                         prepared: Some(prepared),
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
+                                request_document_intent,
+                                None,
                             ) {
-                                Ok((result, prepared)) if session.project() != &before_project => {
+                                Ok(BrowserEdit::Pending(staged)) => {
+                                    pending_device_insert = Some(*staged);
+                                    request_complete = false;
+                                    status = Some("device edit pending · waiting for audio".into());
+                                }
+                                Ok(BrowserEdit::Applied(result, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     created = Some(result);
                                     status = Some("device added".into());
                                 }
-                                Ok(_) => status = Some("no change".into()),
+                                Ok(BrowserEdit::Applied(..) | BrowserEdit::Unchanged) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
@@ -7897,6 +8857,41 @@ fn run_worker(
                         }
                     }
                 }
+                Request::PreparePausedInputMonitor { request, reply } => {
+                    let result = (|| {
+                        if request.source.context
+                            != (hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            })
+                            || session.audio_mode() != DocumentAudioMode::Resident
+                        {
+                            return Err("paused input monitor source changed".into());
+                        }
+                        let sink = events
+                            .resident_audio()
+                            .ok_or("paused input monitor output is unavailable")?;
+                        let snapshot = resident_snapshot
+                            .as_ref()
+                            .ok_or("paused input monitor graph is unavailable")?;
+                        session.prepare_resident_paused_input_monitor(
+                            request,
+                            snapshot,
+                            sink,
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, p)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(p),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
+                        )
+                    })();
+                    let _ = reply.try_send(result);
+                }
                 Request::ArmGainRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -8256,6 +9251,40 @@ fn run_worker(
                             }
                             Err(reason) => error = Some(reason.to_string()),
                         }
+                    }
+                }
+                Request::Edit(command)
+                    if resident_audio::device_insert::is_tempo_edit(&command)
+                        && session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && compiled.as_ref().is_some_and(|(_, prepared)| {
+                            prepared.arrangement().main_latency_frames() != 0
+                        })
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.verified_tempo_playing()) =>
+                {
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.stage_verified_graph_edit(
+                                command,
+                                &state,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                                sink,
+                                request_document_intent,
+                                None,
+                                None,
+                            )
+                        });
+                    match result {
+                        Ok(Some(staged)) => {
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("tempo edit pending · waiting for audio".into());
+                        }
+                        Ok(None) => status = Some("no change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 Request::Edit(command) => {
@@ -8726,30 +9755,41 @@ fn run_worker(
                 request @ (Request::Export(_) | Request::ExportRange { .. }) => {
                     // Both spellings are export requests, so their parts always exist.
                     if let Some((path, frames, controlled)) = request.into_export_range() {
-                        let job = match compiled.as_ref() {
-                            Some((compiled_revision, prepared))
-                                if *compiled_revision == revision =>
-                            {
-                                hex_export::controlled_frame_count(
-                                    prepared.arrangement(),
-                                    controlled.start,
-                                    frames,
-                                    &controlled.signal,
-                                )
-                                .map_err(|error| error.to_string())
-                                .map(|frames| ExportJob {
-                                    job_id: 0,
-                                    streamed: None,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some(controlled),
-                                })
+                        let job = if audio_sink::requires_plugin_profile(session.project())
+                            && export_destination_is_original_media(
+                                session.project(),
+                                &path,
+                                media_base.as_deref(),
+                            ) {
+                            Err("export destination is original media; choose another path"
+                                .to_owned())
+                        } else {
+                            match compiled.as_ref() {
+                                Some((compiled_revision, prepared))
+                                    if *compiled_revision == revision =>
+                                {
+                                    hex_export::controlled_frame_count(
+                                        prepared.arrangement(),
+                                        controlled.start,
+                                        frames,
+                                        &controlled.signal,
+                                    )
+                                    .map_err(|error| error.to_string())
+                                    .map(|frames| ExportJob {
+                                        job_id: 0,
+                                        streamed: None,
+                                        foreign: None,
+                                        sources: None,
+                                        resources: None,
+                                        revision,
+                                        path: path.clone(),
+                                        prepared: Arc::clone(prepared),
+                                        frames,
+                                        controlled: Some(controlled),
+                                    })
+                                }
+                                _ => Err("latest project revision has not compiled".to_owned()),
                             }
-                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
                         .and_then(|mut job| {
                             if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
@@ -8774,7 +9814,7 @@ fn run_worker(
                                 export_completion = Some(ExportEvent {
                                     revision,
                                     path,
-                                    result: Err(reason),
+                                    result: Err(reason.into()),
                                 })
                             }
                         }
@@ -8871,6 +9911,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -8938,6 +9979,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.expression = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9061,6 +10103,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.audition = Some(Arc::clone(&input));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9202,6 +10245,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.keyboard = Some((track, Arc::clone(&input)));
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context: hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9330,6 +10374,7 @@ fn run_worker(
                             )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
+                                source_origin: crate::service::ResidentSourceOrigin::Unknown,
                                 clip_preview: None,
                                 context,
                                 device_preview: None,
@@ -9474,14 +10519,17 @@ fn run_worker(
             }
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
+            // The verified receipt and committed edit refer to the same staged
+            // snapshot. Keep that identity for the next native admission.
             state = events.measure_section_view(|| {
-                view_state(
+                view_state_bound(
                     &session,
                     Arc::clone(&midi_preview),
                     revision,
                     project_generation,
                     unsaved,
                     document.as_ref().map(|handle| handle.path.as_path()),
+                    installed_verified_source.map(|source| (source, None)),
                 )
             });
             compiled = Some((revision, Arc::clone(&prepared)));
@@ -9757,10 +10805,14 @@ fn run_worker(
                 .as_ref()
                 .is_some_and(|(pending, _)| pending == kind)
         });
-        if pending_recovery_outcome.is_some() && stage_recovery.is_none() {
+        if pending_recovery_outcome.is_some()
+            && stage_recovery.is_none()
+            && !seek_during_locator_recovery
+        {
             finish_pending_recovery!();
         }
         if stage_recovery.is_none()
+            && !seek_during_locator_recovery
             && let Some(untitled_path) = recovery.as_deref()
         {
             let journal_result = if let Some(kind) = eligible {
@@ -9957,24 +11009,84 @@ fn run_worker(
         if let Some(job) = export_job.as_mut() {
             let streamed = job.streamed.is_some();
             let verified_only = session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
-            if let Err(reason) = export_lane.prepare_job(
-                job,
-                &session,
-                current_sources.as_ref().filter(|_| !streamed),
-                resident_snapshot.as_ref().filter(|_| !verified_only).zip(
-                    events
-                        .resident_audio()
-                        .map(|sink| &*sink as &dyn WorkerAudioSink),
-                ),
-                resident_seek.as_ref(),
-                resident_preview.as_ref(),
-            ) {
+            let needs_private = audio_sink::requires_plugin_profile(session.project());
+            let result = if needs_private {
+                let preflight = export_lane.preflight_private_job(job);
+                let control = job
+                    .controlled
+                    .as_ref()
+                    .map(|c| c.control.clone())
+                    .unwrap_or_default();
+                let cancellation = RequestCancellation::new(
+                    Arc::clone(&session.shutdown),
+                    Arc::clone(&document_intent),
+                    document_intent.load(Ordering::Acquire),
+                )
+                .with_bounce(&control);
+                let context = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                preflight.and_then(|()| match events.resident_audio() {
+                    Some(sink) => {
+                        let prepared = {
+                            let admission = export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            );
+                            resident_audio::prepare_private_export(
+                                &session,
+                                context,
+                                sink,
+                                admission,
+                                resident_snapshot.as_ref(),
+                                &cancellation,
+                                &control,
+                            )
+                        };
+                        prepared.and_then(|(snapshot, owner)| {
+                            job.prepared = Arc::clone(&snapshot.prepared);
+                            job.foreign = Some(owner);
+                            export_lane.prepare_private_job(
+                                job,
+                                &session,
+                                &snapshot,
+                                resident_snapshot.as_ref(),
+                                sink,
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            )
+                        })
+                    }
+                    None => Err("private vst3 export is unavailable for this output".into()),
+                })
+            } else {
+                export_lane.prepare_job(
+                    job,
+                    &session,
+                    current_sources.as_ref().filter(|_| !streamed),
+                    resident_snapshot.as_ref().filter(|_| !verified_only).zip(
+                        events
+                            .resident_audio()
+                            .map(|sink| &*sink as &dyn WorkerAudioSink),
+                    ),
+                    resident_seek.as_ref(),
+                    resident_preview.as_ref(),
+                )
+            };
+            if let Err(reason) = result {
                 let failed = export_job.take();
                 if let Some(job) = failed {
                     export_completion = Some(ExportEvent {
                         revision: job.revision,
                         path: job.path.clone(),
-                        result: Err(reason),
+                        result: Err(reason.into()),
                     });
                 }
             }
@@ -10111,8 +11223,14 @@ fn run_worker(
             sampler_load_complete,
             sampler_edit_complete,
             plugin_effect_complete,
+            device_insert_proposal_complete: device_insert_proposal.map(|control| {
+                PluginEffectCompletion::finish(control, device_insert_proposal_accepted)
+            }),
+            device_insert_confirmation,
+            device_insert_complete,
             plugin_parameter_observation,
             plugin_parameters,
+            plugin_parameter_conversion,
             computer_keyboard_complete,
             midi_take_complete,
             device_automation_take_complete,
@@ -10149,7 +11267,9 @@ fn run_worker(
             active_tuning_gesture: tuning_gesture.snapshot(),
             tuning_library,
         });
-        if let Some(kind) = stage_recovery {
+        if seek_during_locator_recovery {
+            pending_locator_seek_outcome = Some(outcome);
+        } else if let Some(kind) = stage_recovery {
             // Acknowledge this committed source before waiting for the older
             // checkpoint, while retaining both ordered terminals on control.
             let previous = pending_recovery_outcome
@@ -10233,6 +11353,44 @@ fn run_worker(
     }
 }
 
+fn export_destination_is_original_media(
+    project: &Project,
+    destination: &Path,
+    base: Option<&Path>,
+) -> bool {
+    let Ok(destination_metadata) = std::fs::metadata(destination) else {
+        return false;
+    };
+    let destination_path = std::fs::canonicalize(destination).ok();
+    project.assets().any(|asset| {
+        let source = asset.path();
+        let source = if source.is_absolute() {
+            source.to_path_buf()
+        } else {
+            base.unwrap_or(Path::new(".")).join(source)
+        };
+        let Ok(source_metadata) = std::fs::metadata(&source) else {
+            return false;
+        };
+        same_media_file(&source_metadata, &destination_metadata)
+            || destination_path.as_ref().is_some_and(|destination| {
+                std::fs::canonicalize(&source).is_ok_and(|source| &source == destination)
+            })
+    })
+}
+
+#[cfg(unix)]
+fn same_media_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_media_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    // The native VST hosting boundary currently supports macOS only.
+    false
+}
+
 fn latest_timeline_content_end(project: &Project) -> u64 {
     let audio_end = project
         .tracks()
@@ -10292,6 +11450,9 @@ fn run_export_worker(
                         .unwrap_or_else(ControlledExport::whole_main);
                     match controlled.publication(&job.path) {
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
+                            foreign: std::cell::RefCell::new(job.foreign.as_deref_mut().map(
+                                |source| source as &mut dyn hex_export::ForeignBounceRenderer,
+                            )),
                             source: &streamed.source,
                             prepared: &job.prepared,
                             resources: job.resources.as_ref(),
@@ -10303,8 +11464,34 @@ fn run_export_worker(
                             control: &controlled.control,
                             publication: &publication,
                         }),
-                        Err(error) => Err(error.to_string()),
+                        Err(error) => Err(error.into()),
                     }
+                }
+            } else if let Some(foreign) = job.foreign.as_deref_mut() {
+                let controlled = job
+                    .controlled
+                    .take()
+                    .unwrap_or_else(ControlledExport::whole_main);
+                match controlled.publication(&job.path) {
+                    Ok(publication)
+                        if matches!(controlled.signal, hex_export::ExportSignal::Main) =>
+                    {
+                        hex_export::render_linear_main_with_foreign(
+                            &job.path,
+                            Arc::clone(&job.prepared),
+                            job.resources.as_ref(),
+                            controlled.start,
+                            job.frames,
+                            controlled.format,
+                            &controlled.control,
+                            &publication,
+                            None,
+                            foreign,
+                        )
+                        .map_err(ExportFailure::from)
+                    }
+                    Ok(_) => Err("private vst3 export requires main output".into()),
+                    Err(error) => Err(error.into()),
                 }
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
@@ -10325,7 +11512,7 @@ fn run_export_worker(
                                 &policy,
                             )
                         })
-                        .map_err(|error| error.to_string())
+                        .map_err(ExportFailure::from)
                 } else {
                     hex_export::render_prepared_new_with_device_resources(
                         &job.path,
@@ -10334,7 +11521,7 @@ fn run_export_worker(
                         0,
                         job.frames,
                     )
-                    .map_err(|error| error.to_string())
+                    .map_err(ExportFailure::from)
                 }
             } else if let Some(sources) = job.sources.take() {
                 let controlled = job
@@ -10356,14 +11543,14 @@ fn run_export_worker(
                             &policy,
                         )
                     })
-                    .map_err(|e| e.to_string())
+                    .map_err(ExportFailure::from)
             } else {
                 // Every service request carries controlled parts; a bare job
                 // renders as the automatic whole-project Main export.
                 let controlled = job.controlled.unwrap_or_else(ControlledExport::whole_main);
                 controlled
                     .publication(&job.path)
-                    .map_err(|e| e.to_string())
+                    .map_err(ExportFailure::from)
                     .and_then(|policy| {
                         exporter(
                             &job.path,
@@ -10388,19 +11575,26 @@ fn run_export_worker(
         }; // All renderer/runtime/job source handles have dropped before terminal.
         let terminal_delivered = finished.try_send(id).is_ok();
         if !terminal_delivered {
-            event.result = Err(
-                "export finished but control custody notification failed; export worker stopped"
-                    .into(),
-            );
+            let notification =
+                "export finished but control custody notification failed; export worker stopped";
+            event.result = Err(match event.result {
+                Ok(report) => ExportFailure::notification_after_publication(report, notification),
+                Err(mut error) => {
+                    error.append_context(notification);
+                    error
+                }
+            });
         }
         loop {
-            if shutdown.load(Ordering::Acquire) {
-                return;
-            }
             match events.try_send(event) {
                 Ok(()) => break,
                 Err(TrySendError::Disconnected(_)) => return,
-                Err(TrySendError::Full(returned)) => event = returned,
+                Err(TrySendError::Full(returned)) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    event = returned;
+                }
             }
             thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -13040,7 +14234,7 @@ mod service_tests {
             ParameterValue::Float(4.0)
         );
         assert_eq!(
-            next_export_event(&service).result.unwrap_err(),
+            next_export_event(&service).result.unwrap_err().message(),
             "invalid wav export: invalid export range"
         );
         let replace_key = GestureKey {
@@ -13359,6 +14553,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("drop utility from browser");
         let added_effect = next_event(&service);
@@ -13378,6 +14573,7 @@ mod service_tests {
                 track: first_track,
                 before: Some(utility_id),
                 replace: None,
+                control: None,
             })
             .expect("drop sine into empty instrument slot");
         let added_instrument = next_event(&service);
@@ -13420,6 +14616,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("occupied instrument drop");
         let occupied = next_event(&service);
@@ -13443,6 +14640,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(utility_id),
+                control: None,
             })
             .expect("invalid replacement target");
         let invalid_replace = next_event(&service);
@@ -13466,6 +14664,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(instrument_id),
+                control: None,
             })
             .expect("existing-device drag cannot claim replacement intent");
         let invalid_source = next_event(&service);
@@ -13489,6 +14688,7 @@ mod service_tests {
                 track: first_track,
                 before: None,
                 replace: Some(instrument_id),
+                control: None,
             })
             .expect("replace sine in its instrument card");
         let replaced = next_event(&service);
@@ -13565,6 +14765,7 @@ mod service_tests {
                 track: destination_track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("move instrument to destination");
         let moved_instrument = next_event(&service);
@@ -13597,6 +14798,7 @@ mod service_tests {
                 track: destination_track,
                 before: Some(utility_id),
                 replace: None,
+                control: None,
             })
             .expect("anchor from another track");
         let rejected_anchor = next_event(&service);
@@ -13622,6 +14824,7 @@ mod service_tests {
                     track: destination_track,
                     before: None,
                     replace: None,
+                    control: None,
                 })
                 .expect("stale device drop");
             let rejected = next_event(&service);
@@ -13683,6 +14886,7 @@ mod service_tests {
                 type_id: utility,
                 destination: ArrangementDeviceDestination::NewTrack { before_track: None },
                 new_track_gain: None,
+                control: None,
             })
             .expect("arrangement drop during parameter gesture");
         let refused_arrangement = next_event(&service);
@@ -13706,6 +14910,7 @@ mod service_tests {
                 track,
                 before: None,
                 replace: None,
+                control: None,
             })
             .expect("drop during parameter gesture");
         let refused = next_event(&service);
@@ -14381,9 +15586,7 @@ mod service_tests {
                         control,
                         publication,
                     )
-                    .map_err(|error| {
-                        hex_storage::text::lowercase_outside_verbatim(&error.to_string())
-                    })
+                    .map_err(ExportFailure::from)
                 },
             )
         };
@@ -14458,7 +15661,7 @@ mod service_tests {
             .unwrap();
         next_event(&service);
         let refused = next_export_event(&service);
-        assert_eq!(refused.result.unwrap_err(), "export cancelled");
+        assert_eq!(refused.result.unwrap_err().message(), "export cancelled");
         assert!(!output.exists());
         let control = ExportControl::default();
         service
@@ -14565,7 +15768,7 @@ mod service_tests {
         assert_eq!(result.revision, 0);
         assert_eq!(result.path, path);
         assert_eq!(
-            result.result.expect_err("empty project refusal"),
+            result.result.expect_err("empty project refusal").message(),
             "invalid wav export: invalid export range"
         );
         assert!(!result.path.exists());

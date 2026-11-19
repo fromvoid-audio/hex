@@ -180,6 +180,8 @@ pub(super) enum Guard {
 }
 pub(super) struct HostOwner {
     guard: Guard,
+    // The real mutable owner retains the project rate for contributor fades.
+    sample_rate: u32,
     frozen_parameters: crate::mutable_instrument::frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
     output_trim: Option<crate::mutable_instrument::output_trim::OutputTrim>,

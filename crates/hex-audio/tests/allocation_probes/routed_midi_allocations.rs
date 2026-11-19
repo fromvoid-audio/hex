@@ -2,7 +2,7 @@
 use hex_audio::prepared;
 use hex_engine::{
     LaunchQuantization, PlaybackCommand, PreparedRevision, SessionPlaybackCommand, SineTable,
-    playback::Playback,
+    playback::{Playback, PlaybackAction},
 };
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
@@ -19,6 +19,155 @@ fn measured(action: impl FnOnce()) {
         (0, 0, 0, 0),
         "{stats:?}"
     );
+}
+
+#[test]
+fn compensated_mutable_arrangement_matches_scalar_gates_without_callback_allocations() {
+    use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata};
+
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let operator = hex_devices::operator_state::OPERATOR_METADATA
+        .default_state()
+        .unwrap();
+    let operator_type = operator.type_id();
+    let Created::Track(instrument) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "operator".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: operator,
+        })
+        .unwrap()
+    else {
+        panic!("instrument track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: instrument,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip")
+    };
+    for (start, duration, pitch) in [(0, 960, 48), (509, 345, 60), (940, 450, 70)] {
+        let tempo = editor.project().tempo_map();
+        let start = tempo.frame_to_beat(start).unwrap();
+        let duration = tempo.frame_to_beat(duration).unwrap();
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 96,
+            })
+            .unwrap();
+    }
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "residual audio".into(),
+            path: "memory/companion.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: 1_250,
+            playback_frames: 1_250,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("audio track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 64,
+            end: 1_250,
+            enabled: true,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(RATE, vec![[0.01, -0.01]; 1_250]).unwrap(),
+    )]);
+    let device = editor
+        .project()
+        .track(instrument)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let prepare = || {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    for command in [PlaybackCommand::Play, PlaybackCommand::PlayFrom(181)] {
+        let reference = prepare();
+        let expected_meter =
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&reference).unwrap();
+        let mut reference = Playback::try_from_prepared_with_session(reference).unwrap();
+        reference.set_device_metering(true);
+        reference
+            .try_apply_declicked_action(PlaybackAction::Transport(command))
+            .unwrap();
+        let mut expected = [[0.0; 2]; 2_048];
+        for frame in expected.chunks_mut(1) {
+            reference.render(frame).unwrap();
+        }
+        // The opposing audio channels cannot produce this audible mono sum.
+        assert!(
+            expected[200..500]
+                .iter()
+                .any(|frame| (frame[0] + frame[1]).abs() > 0.01)
+        );
+        let revision = prepare();
+        assert_eq!(revision.arrangement().main_latency_frames(), 72);
+        let meter = hex_engine::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+        control
+            .publish(Playback::try_from_prepared_with_session(revision).unwrap())
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        control.command(command).unwrap();
+        let mut actual = [[0.0; 2]; 2_048];
+        for block in actual.chunks_mut(257) {
+            measured(|| {
+                callback.begin_block();
+                callback.render(block).unwrap();
+                callback.finish_gain_recording_quantum(true);
+            });
+        }
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+        let expected_peaks = expected_meter
+            .meter(device.value(), operator_type)
+            .unwrap()
+            .take_peaks();
+        assert_eq!(expected_peaks.input, 0.0);
+        assert!(expected_peaks.output.iter().all(|&peak| peak > 0.0));
+        assert_eq!(
+            meter
+                .meter(device.value(), operator_type)
+                .unwrap()
+                .take_peaks(),
+            expected_peaks,
+        );
+        control.stop();
+        control.reclaim();
+    }
 }
 
 #[test]
@@ -512,7 +661,9 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     };
     let wet = compare(&mut callback);
     assert!(wet[..100].iter().flatten().all(|sample| *sample == 0.0));
-    let rejected = publish(&mut control, changed);
+    // A simultaneous receiver and power change still lacks an exact power
+    // continuation witness. The source keeps running at the old receiver.
+    let rejected = publish(&mut control, Arc::clone(&changed));
     compare(&mut callback);
     assert_ne!(old, rejected);
     assert_eq!(control.status.applied_revision.load(Ordering::Acquire), old);
@@ -548,7 +699,7 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     };
     control.stop();
     assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
-    let removed = publish(&mut control, dry);
+    let removed = publish(&mut control, Arc::clone(&dry));
     assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
     assert_eq!(
         control.status.applied_revision.load(Ordering::Acquire),
@@ -577,6 +728,26 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
         control.status.applied_revision.load(Ordering::Acquire),
         attached
     );
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+
+    // The very same recipe can now change power at its unchanged receiver.
+    let position = control.status.position.load(Ordering::Acquire) as usize;
+    let mut dry_reference =
+        hex_engine::SessionPlayback::new_with_device_resources(dry, &resources).unwrap();
+    dry_reference.apply(SessionPlaybackCommand::Play).unwrap();
+    dry_reference.render(&mut vec![[0.0; 2]; position]).unwrap();
+    let powered_off = publish(&mut control, changed);
+    let fade = render(&mut callback);
+    let mut expected = [[0.0; 2]; 256];
+    dry_reference.render(&mut expected).unwrap();
+    assert_eq!(fade[239..], expected[239..]);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        powered_off
+    );
+    dry_reference.render(&mut expected).unwrap();
+    assert_eq!(render(&mut callback), expected);
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
 }

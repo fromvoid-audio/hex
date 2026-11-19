@@ -142,7 +142,7 @@ fn shared(job: Job, sources: &PreviewSources, path: &Path, cancel: &AtomicBool) 
     match result {
         Ok(()) => "ready",
         Err(PreviewFailure::Cancelled) => "cancelled",
-        Err(PreviewFailure::Failed(_)) => "failed",
+        Err(PreviewFailure::Failed(_) | PreviewFailure::SourceChanged) => "failed",
     }
 }
 

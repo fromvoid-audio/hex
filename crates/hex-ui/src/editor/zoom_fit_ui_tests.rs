@@ -13,6 +13,174 @@ fn click(v: &mut VisualTestContext, id: &'static str) {
     v.run_until_parked();
 }
 #[gpui::test]
+fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut TestAppContext) {
+    use hex_project::MidiNoteInsert;
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let beat = BeatTime::ONE.raw();
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::AddMidiNotes {
+                clip,
+                notes: [(0, 48), (beat, 64), (3 * beat, 90)]
+                    .into_iter()
+                    .map(|(start, pitch)| MidiNoteInsert {
+                        active: true,
+                        start: BeatTime::from_raw(start),
+                        duration: BeatTime::from_raw(if start == 0 { beat / 4 } else { beat / 2 }),
+                        pitch,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .collect(),
+            }))
+        );
+    });
+    pump(&editor, &mut visual);
+    let (selected, before) = editor.update(&mut visual, |v, cx| {
+        let source = v.midi_clip().unwrap();
+        let selected = source
+            .notes()
+            .iter()
+            .find(|n| n.pitch() == 64)
+            .unwrap()
+            .id();
+        v.midi_selection.set_single(selected);
+        v.piano_beat_start = 0;
+        v.piano_beat_span = BeatTime::from_quarters(4).unwrap();
+        v.piano_pitch_low = 48;
+        v.piano_pitch_rows = 24;
+        cx.notify();
+        let state = v.state.as_ref().unwrap();
+        (
+            selected,
+            (state.project.snapshot(), state.can_undo, state.can_redo),
+        )
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    let (start, span, low, rows) = editor.read_with(&visual, |v, _| {
+        assert!(v.piano_beat_start < i128::from(beat));
+        assert!(
+            v.piano_beat_start + i128::from(v.piano_beat_span.raw()) > i128::from(beat * 3 / 2)
+        );
+        assert!(v.piano_beat_span.raw() < 4 * beat);
+        assert_eq!(v.piano_pitch_rows, 12);
+        assert!(
+            v.piano_pitch_low < 64
+                && u16::from(v.piano_pitch_low) + u16::from(v.piano_pitch_rows) > 65
+        );
+        (
+            v.piano_beat_start,
+            v.piano_beat_span.raw(),
+            v.piano_pitch_low,
+            v.piano_pitch_rows,
+        )
+    });
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let note_center = point(
+        roll.origin.x
+            + roll.size.width * ((beat as f64 * 1.25 - start as f64) / span as f64) as f32,
+        roll.origin.y
+            + roll.size.height * ((f32::from(low + rows - 1 - 64) + 0.5) / f32::from(rows)),
+    );
+    visual.simulate_mouse_move(note_center, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::OpenHand)
+    );
+    visual.simulate_keystrokes("z v");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (
+                v.piano_beat_start,
+                v.piano_beat_span.raw(),
+                v.piano_pitch_low,
+                v.piano_pitch_rows
+            ),
+            (0, 4 * beat, 48, 24)
+        );
+        assert_eq!(v.midi_selection.ids(), &[selected]);
+    });
+    editor.update(&mut visual, |v, cx| {
+        let edge = v
+            .midi_clip()
+            .unwrap()
+            .notes()
+            .iter()
+            .find(|n| n.pitch() == 48)
+            .unwrap()
+            .id();
+        v.midi_selection.set_single(edge);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (0, beat / 4 + beat / 16),
+            "left-edge singleton retains the minimum right margin"
+        );
+    });
+    visual.simulate_keystrokes("v");
+    editor.update(&mut visual, |v, cx| {
+        v.midi_selection.clear();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(&mut visual, "midi-zoom-fit");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.piano_beat_start, 0);
+        assert!(v.piano_beat_span.raw() > beat * 7 / 2 && v.piano_beat_span.raw() < 4 * beat);
+        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (46, 47));
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(
+            (state.project.snapshot(), state.can_undo, state.can_redo),
+            before
+        );
+    });
+    visual.simulate_keystrokes("v");
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::RemoveMidiNote(selected))))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, cx| {
+        v.midi_selection.set_single(selected);
+        assert!(v.apply_zoom_fit(Target::Midi, false));
+        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (46, 47));
+        cx.notify();
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::AddMidiNotes {
+                clip,
+                notes: [0, 127]
+                    .into_iter()
+                    .map(|pitch| MidiNoteInsert {
+                        active: true,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 100
+                    })
+                    .collect(),
+            }))
+        )
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, cx| {
+        v.midi_selection.clear();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (0, 128))
+    });
+}
+#[gpui::test]
 fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_prior(
     cx: &mut TestAppContext,
 ) {
@@ -112,7 +280,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
     });
 }
 #[gpui::test]
-fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
+fn empty_midi_fit_keeps_ruler_selection_and_back_geometry_through_ack_and_reset(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
@@ -138,8 +306,9 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (v.piano_beat_start, v.piano_beat_span.raw()),
-            (i128::from(BeatTime::ONE.raw()), 2 * BeatTime::ONE.raw())
+            (0, 4 * BeatTime::ONE.raw())
         );
+        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12));
         assert_eq!(
             v.midi_time_selection_bounds(),
             Some((BeatTime::ONE.raw(), 3 * BeatTime::ONE.raw()))

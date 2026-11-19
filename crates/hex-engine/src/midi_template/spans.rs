@@ -51,6 +51,7 @@ pub(crate) fn admit_held_transport_loop_density(
 
 #[derive(Clone, Copy, Debug)]
 struct VoiceSpan {
+    starts_inside_gate: bool,
     start: u64,
     gate_end: u64,
     raw_end: u128,
@@ -129,6 +130,8 @@ fn silent_note_sample(
 /// One immutable rendered-note interval in absolute project frames.
 #[derive(Clone, Copy, Debug)]
 pub struct MidiRenderSpan {
+    /// Direction-aware source-window clipping provenance, not a new note-on.
+    pub starts_inside_gate: bool,
     pub start_frame: u64,
     pub gate_end_frame: u64,
     pub end_frame: u64,
@@ -1374,6 +1377,7 @@ fn prepare_spans(
             .checked_add(u128::from(release_raw))
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         result.push(VoiceSpan {
+            starts_inside_gate: span.starts_inside_gate,
             start: span.start,
             gate_end: span.gate_end,
             raw_end,

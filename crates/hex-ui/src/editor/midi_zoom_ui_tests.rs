@@ -383,8 +383,11 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
                 clip,
                 beat_start: v.piano_beat_start,
                 beat_span: v.piano_beat_span.raw(),
-                pitch_low: v.piano_pitch_low,
-                pitch_rows: v.piano_pitch_rows,
+                pitch: crate::editor::PitchViewport::from_rows(
+                    v.piano_pitch_low,
+                    v.piano_pitch_rows,
+                )
+                .unwrap(),
             },
             state.project.midi_source(clip).unwrap().notes(),
         );
@@ -398,7 +401,9 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
             .collect::<Vec<_>>()
     };
     let before = editor.read_with(&visual, |v, _| {
-        assert_eq!(widths(v), vec![1000.0, 1000.0]);
+        // Note-aware Z leaves a 1/16-beat margin after this quarter-beat
+        // source, so each note occupies 80% of the fitted viewport.
+        assert_eq!(widths(v), vec![800.0, 800.0]);
         v.state.as_ref().unwrap().project.snapshot()
     });
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
@@ -413,7 +418,7 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
         let widths = widths(v);
         assert_eq!(widths.len(), 2);
         assert!(
-            widths.iter().all(|w| (*w - 800.0).abs() < 0.01),
+            widths.iter().all(|w| (*w - 640.0).abs() < 0.01),
             "paint geometry must shrink, got {widths:?}"
         );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);

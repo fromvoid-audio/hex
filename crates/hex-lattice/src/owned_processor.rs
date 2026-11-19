@@ -27,6 +27,12 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn supports_smoothed_bypass(&self) -> bool {
         false
     }
+    /// Opt into authored power-off for a zero-latency, smoothed effect. Once
+    /// the off ramp commits, the host resets the runtime and skips its block
+    /// transactions until it turns on. Reset must be bounded and allocation-free.
+    fn supports_power_off(&self) -> bool {
+        false
+    }
     fn parameter_automation_descriptor(
         &self,
         _parameter: hex_lattice_contract::ParameterId,
@@ -383,6 +389,14 @@ pub struct PreparedRuntimeInstance {
     pub definition: Option<PreparedProcessorFactory>,
 }
 impl PreparedRuntimeInstance {
+    /// Processing facts for this prepared instance, without endpoint custody.
+    pub fn foreign_processor(&self) -> Option<crate::PreparedForeignProcessor> {
+        match self.definition {
+            Some(PreparedProcessorFactory::Foreign(processor)) => Some(processor),
+            _ => None,
+        }
+    }
+
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         if self.bypassed
             && self.definition.as_ref().is_none_or(|factory| {

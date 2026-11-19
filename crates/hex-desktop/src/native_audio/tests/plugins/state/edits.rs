@@ -301,8 +301,34 @@ fn native_effect_reused_graph_document_cancellation_respects_admission() {
         }
         let replaced = h.next();
         assert!(replaced.project_replaced && replaced.state.project.tracks().is_empty());
-        h.release_relinquished_output();
-        h.wait_fresh_output(old_output);
+        let context = replaced
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let terminal = (context.project_generation, old_output);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            h.pump();
+            if h.released.last() == Some(&terminal) {
+                h.release_relinquished_output();
+                h.wait_fresh_output(old_output);
+                break;
+            }
+            if h.rebound == Some(terminal) {
+                assert_eq!(
+                    h.audio.as_ref().unwrap().control.output_identity(),
+                    Some(old_output)
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "document output did not settle");
+            h.render_worker_step();
+            std::thread::yield_now();
+        }
+        let (_, metadata) = h.applied(0);
+        assert_eq!(metadata.context, context);
         assert_eq!(fs::read(files.0.join("effect.hex")).unwrap(), original);
     }
 }

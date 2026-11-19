@@ -1,7 +1,8 @@
 //! Revision/viewport-keyed piano-roll geometry and deterministic overlap hits.
 //! Time zoom may reveal blank space beyond the source; that space never extends
-//! the authored source or clips notes. Pitch rows are part of cache identity and
-//! shared by paint, preview and hit geometry.
+//! the authored source or clips notes. The exact pitch viewport is part of cache
+//! identity and shared by canonical, preview and hit geometry. Integer note-cell
+//! coverage is derived only for bounded row indexing.
 use hex_project::{ClipId, MidiNote, MidiNoteInsert, NoteId};
 use std::{collections::HashMap, sync::Arc};
 
@@ -117,8 +118,7 @@ pub(super) struct SceneKey {
     pub(super) clip: ClipId,
     pub(super) beat_start: i128,
     pub(super) beat_span: u64,
-    pub(super) pitch_low: u8,
-    pub(super) pitch_rows: u8,
+    pub(super) pitch: crate::editor::PitchViewport,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -175,13 +175,12 @@ pub(super) struct MidiSceneCache {
 impl MidiScene {
     pub(super) fn build(key: SceneKey, notes: &[MidiNote]) -> Self {
         let mut visible = Vec::with_capacity(notes.len());
-        let mut rows = vec![Vec::new(); usize::from(key.pitch_rows)];
+        let mut rows = vec![Vec::new(); key.pitch.coverage().len()];
         let mut by_id = HashMap::with_capacity(notes.len());
         let view_end = key.beat_start.checked_add(i128::from(key.beat_span));
 
         if key.beat_span > 0
             && key.beat_start == clamp_start(key.beat_start, key.beat_span)
-            && valid_pitch_range(key.pitch_low, key.pitch_rows)
             && let Some(view_end) = view_end
         {
             for note in notes {
@@ -190,14 +189,13 @@ impl MidiScene {
                 let Some(end) = start.checked_add(i128::from(duration)) else {
                     continue;
                 };
-                if end <= key.beat_start
-                    || start >= view_end
-                    || note.pitch() < key.pitch_low
-                    || note.pitch() >= key.pitch_low.saturating_add(key.pitch_rows)
-                {
+                if end <= key.beat_start || start >= view_end {
                     continue;
                 }
-                let row = usize::from(key.pitch_low + (key.pitch_rows - 1) - note.pitch());
+                let Some(y) = key.pitch.note_top(note.pitch()) else {
+                    continue;
+                };
+                let row = usize::from(key.pitch.coverage().end - 1 - note.pitch());
                 let visible_start = start.max(key.beat_start);
                 let visible_end = end.min(view_end);
                 let x = (visible_start - key.beat_start) as f64 / key.beat_span as f64;
@@ -211,7 +209,7 @@ impl MidiScene {
                     velocity: note.velocity(),
                     active: note.active(),
                     x: x as f32,
-                    y: row as f32 / f32::from(key.pitch_rows),
+                    y,
                     width: width as f32,
                     leading_edge_visible: start >= key.beat_start,
                     trailing_edge_visible: end <= view_end,
@@ -331,8 +329,8 @@ impl MidiScene {
         {
             return None;
         }
-        let row = ((y / height * f32::from(self.key.pitch_rows)).floor() as usize)
-            .min(self.rows.len().saturating_sub(1));
+        let pitch = self.key.pitch.pitch_at(f64::from(y) / f64::from(height))?;
+        let row = usize::from(self.key.pitch.coverage().end - 1 - pitch);
         let local_x = x;
         let previous = cycle.filter(|last| {
             last.key == self.key && last.row as usize == row && last.x_cell == x.floor() as u32
@@ -437,21 +435,18 @@ fn insert_geometry(key: SceneKey, start: u64, duration: u64, pitch: u8) -> Optio
     let end = start.checked_add(i128::from(duration))?;
     if key.beat_span == 0
         || key.beat_start != clamp_start(key.beat_start, key.beat_span)
-        || !valid_pitch_range(key.pitch_low, key.pitch_rows)
         || duration == 0
-        || pitch < key.pitch_low
-        || pitch >= key.pitch_low.saturating_add(key.pitch_rows)
         || end <= key.beat_start
         || start >= view_end
     {
         return None;
     }
-    let row = usize::from(key.pitch_low + (key.pitch_rows - 1) - pitch);
+    let y = key.pitch.note_top(pitch)?;
     let visible_start = start.max(key.beat_start);
     let visible_end = end.min(view_end);
     Some(InsertGeometry {
         x: ((visible_start - key.beat_start) as f64 / key.beat_span as f64) as f32,
-        y: row as f32 / f32::from(key.pitch_rows),
+        y,
         width: ((visible_end - visible_start) as f64 / key.beat_span as f64) as f32,
     })
 }
@@ -538,8 +533,7 @@ mod tests {
             clip,
             beat_start: 0,
             beat_span: SPAN,
-            pitch_low: 48,
-            pitch_rows: 24,
+            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
         }
     }
 
@@ -636,11 +630,11 @@ mod tests {
                 ..original
             },
             SceneKey {
-                pitch_low: 49,
+                pitch: crate::editor::PitchViewport::from_rows(49, 24).unwrap(),
                 ..original
             },
             SceneKey {
-                pitch_rows: 12,
+                pitch: crate::editor::PitchViewport::from_rows(48, 12).unwrap(),
                 ..original
             },
         ] {
@@ -725,8 +719,7 @@ mod tests {
         for (low, rows) in [(48, 1), (48, 12), (0, 128)] {
             let scene = MidiScene::build(
                 SceneKey {
-                    pitch_low: low,
-                    pitch_rows: rows,
+                    pitch: crate::editor::PitchViewport::from_rows(low, rows).unwrap(),
                     ..key(clip)
                 },
                 notes,
@@ -757,18 +750,62 @@ mod tests {
             super::super::midi_drag::pitch_at_point(f32::MAX, [0.0, 0.0, 100.0, 1.0], 0, 128),
             Some(0)
         );
-        for (low, rows) in [(0, 0), (127, 2), (128, 1)] {
-            let scene = MidiScene::build(
-                SceneKey {
-                    pitch_low: low,
-                    pitch_rows: rows,
-                    ..key(clip)
-                },
-                notes,
+        // Invalid pitch pairs are now rejected by PitchViewport construction,
+        // before a SceneKey can carry them (covered by that owner).
+    }
+
+    #[test]
+    fn fractional_partial_rows_share_scene_hit_preview_and_cache_identity() {
+        let (project, clip) = fixture(24, false);
+        let notes = project.midi_source(clip).unwrap().notes();
+        let key = SceneKey {
+            pitch: crate::editor::PitchViewport::new(59.25, 12.5).unwrap(),
+            ..key(clip)
+        };
+        let mut cache = MidiSceneCache::default();
+        let (scene, reused) = cache.get_or_build(key, notes);
+        assert!(!reused);
+        assert_eq!(scene.notes().len(), 13);
+        assert!(scene.notes().iter().any(|note| note.y < 0.0));
+        let row_height = key.pitch.row_height_pixels(240.0).unwrap();
+        assert!(
+            scene
+                .notes()
+                .iter()
+                .any(|note| note.y * 240.0 + row_height > 240.0)
+        );
+        for note in scene.notes() {
+            let (left, right) = pixel_bounds(*note, 1000.0).unwrap();
+            let top = (note.y * 240.0).max(0.0);
+            let bottom = (note.y * 240.0 + row_height).min(240.0);
+            assert_eq!(
+                scene.hit(
+                    (left + right) / 2.0,
+                    (top + bottom) / 2.0,
+                    1000.0,
+                    240.0,
+                    &mut None
+                ),
+                Some(note.id)
             );
-            assert!(scene.notes().is_empty());
-            assert!(scene.hit(0.0, 0.0, 1000.0, 240.0, &mut None).is_none());
+            let preview = scene
+                .preview_geometry(
+                    note.id,
+                    note.start,
+                    note.duration,
+                    note.pitch,
+                    note.channel,
+                    note.velocity,
+                )
+                .unwrap();
+            assert_eq!(preview.y, note.y);
         }
+        assert!(cache.get_or_build(key, notes).1);
+        let next = SceneKey {
+            pitch: crate::editor::PitchViewport::new(59.25 + 1.0 / 4096.0, 12.5).unwrap(),
+            ..key
+        };
+        assert!(!cache.get_or_build(next, notes).1);
     }
 
     #[test]

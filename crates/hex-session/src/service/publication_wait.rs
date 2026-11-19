@@ -127,6 +127,7 @@ mod tests {
             output_identity: 3,
             audio_revision: 4,
             source_context: None,
+            source_origin: crate::service::ResidentSourceOrigin::Unknown,
             section_loop: None,
         }
     }

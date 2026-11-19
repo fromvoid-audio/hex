@@ -49,6 +49,7 @@ fn transformed_cropped_musical_fades_keep_readouts_reset_adjust_and_projected_cu
         project.tempo_map(),
         tail_clip.start(),
         tail_clip.start() + tail_clip.duration(),
+        None,
     )
     .unwrap();
     assert!(!samples.is_empty());

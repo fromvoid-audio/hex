@@ -465,6 +465,19 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
             })
     }
 
+    fn can_retarget_source_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.automation.is_none()
+                    && previous.automation.is_none()
+                    && self.prepared.output_muted != previous.prepared.output_muted
+                    && self.prepared.with_output_mute(false)
+                        == previous.prepared.with_output_mute(false)
+            })
+    }
+
     fn supports_parameter_automation(&self, parameter: hex_lattice_contract::ParameterId) -> bool {
         self.automation
             .is_some_and(|automation| automation.supports(parameter))

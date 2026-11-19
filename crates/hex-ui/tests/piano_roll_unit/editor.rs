@@ -1,3 +1,6 @@
+#[path = "../../src/editor/midi_pitch_viewport.rs"]
+mod midi_pitch_viewport;
+use midi_pitch_viewport::PitchViewport;
 // These source modules share pure geometry contracts. Their production callers
 // use more methods than this unit-only target, so unused items are expected here.
 #[allow(dead_code)]

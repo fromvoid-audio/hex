@@ -39,7 +39,6 @@ impl Marquee {
                 .beat_start
                 .checked_add(i128::from(context.scene.beat_span))
                 .is_none()
-            || !midi_scene::valid_pitch_range(context.scene.pitch_low, context.scene.pitch_rows)
             || !first.into_iter().all(f32::is_finite)
             || first[0] < 0.0
             || first[0] >= context.bounds.width
@@ -93,7 +92,7 @@ impl Marquee {
                 last,
                 context.bounds.width,
                 context.bounds.height,
-                context.scene.pitch_rows,
+                context.scene.pitch,
             )
         })
     }
@@ -386,14 +385,13 @@ pub(super) fn marquee_hits(
     last: [f32; 2],
     width: f32,
     height: f32,
-    pitch_rows: u8,
+    pitch: crate::editor::PitchViewport,
 ) -> Result<Vec<NoteId>, &'static str> {
     if !first.into_iter().chain(last).all(f32::is_finite)
         || !width.is_finite()
         || !height.is_finite()
         || width <= 0.0
         || height <= 0.0
-        || pitch_rows == 0
     {
         return Ok(Vec::new());
     }
@@ -410,7 +408,10 @@ pub(super) fn marquee_hits(
         let (left, right) =
             midi_scene::pixel_bounds(*note, width).ok_or("invalid midi scene width")?;
         let top = note.y * height;
-        let bottom = top + height / f32::from(pitch_rows);
+        let bottom = top
+            + pitch
+                .row_height_pixels(height)
+                .ok_or("invalid midi scene height")?;
         if right >= rect[0] && left <= rect[2] && bottom >= rect[1] && top <= rect[3] {
             hits.push(note.id);
         }
@@ -527,7 +528,15 @@ mod tests {
             },
         ];
         assert_eq!(
-            marquee_hits(&notes, [29.0, 4.0], [21.0, 7.0], 100.0, 240.0, 24).unwrap(),
+            marquee_hits(
+                &notes,
+                [29.0, 4.0],
+                [21.0, 7.0],
+                100.0,
+                240.0,
+                crate::editor::PitchViewport::from_rows(48, 24).unwrap()
+            )
+            .unwrap(),
             [ids[0]]
         );
     }

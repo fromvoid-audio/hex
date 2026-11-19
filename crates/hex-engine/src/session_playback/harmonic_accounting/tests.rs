@@ -157,6 +157,11 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
 
 #[test]
 fn independent_byte_count_and_overflow_boundaries_are_not_hidden() {
+    assert!(
+        size_of::<payload::HostOwner>()
+            >= size_of::<crate::mutable_instrument::MutableInstrumentTrackRuntime>(),
+        "the proposed owner must charge at least the complete actual owner header"
+    );
     let pool = payload::PoolCapacity::allocated();
     let mut input = empty(pool);
     input.base = 32 * 1024 * 1024 - pool.bytes().unwrap();
