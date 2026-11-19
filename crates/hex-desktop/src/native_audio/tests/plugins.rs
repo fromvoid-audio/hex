@@ -2272,3 +2272,119 @@ fn confirmed_vst3_insert_keeps_the_prepared_worker_and_output() {
     wait(|| h.plugin_completed.load(Acquire) >= 2);
     assert_eq!(h.render_plugin_block(), [[0.125; 2]; 256]);
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let (reached, facts) = mpsc::sync_channel(1);
+    let (resume, resumed) = mpsc::sync_channel(1);
+    let mut h = ResidentHarness::with_plugins_paused_at_facts(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        crate::native_audio::plugins::FactsGate::new(reached, resumed),
+        None,
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 8192)));
+    let (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, _) = h.applied(applied);
+    let eq = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.eq"),
+    )
+    .unwrap();
+    let before = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: eq,
+    }));
+    let (applied, _) = h.applied(applied);
+    let device = before.state.project.main_devices()[0].id();
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let request = request(&before.state, PluginEffectDestination::Main);
+    h.run(Request::InsertPluginEffect(request.clone()));
+    facts.recv_timeout(Duration::from_secs(2)).unwrap();
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let edited = h.run(Request::SetDeviceParameter {
+        device,
+        parameter: hex_lattice_contract::ParameterId::from_static(202),
+        value: hex_lattice_contract::ParameterValue::Float(-6.0),
+    });
+    assert!(edited.plugin_effect_complete.is_empty());
+    assert_eq!(edited.state.revision, before.state.revision + 1);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, edited.state.revision);
+    for _ in 0..8 {
+        h.render();
+    }
+    let expected = 0.25 * 10.0_f32.powf(-6.0 / 20.0);
+    assert!(
+        h.render()
+            .into_iter()
+            .flatten()
+            .all(|sample| (sample - expected).abs() < 1e-5)
+    );
+
+    resume.send(()).unwrap();
+    let mut installed = None;
+    wait(|| {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if let Some(offer) = &event.device_insert_confirmation {
+                assert!(offer.proceed());
+            }
+            if !event.plugin_effect_complete.is_empty() {
+                installed = Some(event);
+            }
+        }
+        installed.is_some()
+    });
+    let installed = installed.unwrap();
+    assert!(installed.plugin_effect_complete[0].accepted);
+    assert!(Arc::ptr_eq(
+        &installed.plugin_effect_complete[0].control,
+        &request.control
+    ));
+    assert_eq!(installed.state.revision, edited.state.revision + 1);
+    assert_eq!(installed.state.project.main_devices().len(), 2);
+    assert_eq!(
+        installed.state.project.device(device),
+        edited.state.project.device(device)
+    );
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+    let terminal = installed.device_insert_complete.unwrap();
+    assert_eq!(
+        terminal.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
+    let source = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_eq!(source.context, terminal.submission.context);
+    assert_eq!(source.audio_revision, terminal.submission.audio_revision);
+}

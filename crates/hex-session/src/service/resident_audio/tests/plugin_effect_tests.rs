@@ -340,7 +340,12 @@ fn accepted_eq_write_survives_pending_vst3_failure_or_cancel() {
             &request.control
         ));
         if !cancel {
-            assert!(finished.error.unwrap().contains("different device provider"));
+            assert!(
+                finished
+                    .error
+                    .unwrap()
+                    .contains("different device provider")
+            );
         }
         assert_eq!(
             observed.plugin_preparations.load(Ordering::Acquire),
