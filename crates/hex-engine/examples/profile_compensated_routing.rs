@@ -1,4 +1,4 @@
-//! Headless, reproducible 100-track compensated routing workload.
+//! Headless, reproducible compensated Track, Return, and mixed-source workloads.
 //!
 //! Run with `cargo run --release -p hex-engine --example profile_compensated_routing`.
 //! This measures SessionPlayback, not a native callback or device deadline.
@@ -8,7 +8,7 @@ mod session_audio_fixture;
 
 use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
 use hex_lattice_contract::NativeDeviceMetadata;
-use hex_project::{Command, Created, Editor};
+use hex_project::{BeatTime, Command, Created, Editor, TrackDeviceSlot};
 use std::{error::Error, hint::black_box, sync::Arc, time::Instant};
 
 const BLOCK: usize = 256;
@@ -17,14 +17,21 @@ const WARMUP: usize = 100;
 const MEASURED: usize = 300;
 const VERIFY_FRAMES: usize = 8_448; // Includes the first loop wrap.
 
-fn prepared(return_latency: bool) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
+#[derive(Clone, Copy)]
+enum Workload {
+    Track,
+    Return,
+    Mixed,
+}
+
+fn prepared(workload: Workload) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     let fixture = session_audio_fixture::fixture(false)?;
     if fixture.tracks.len() != TRACKS {
         return Err("fixture track count changed".into());
     }
     let mut editor = Editor::new(fixture.project, 8)?;
     let limiter = hex_devices::limiter::DEFINITION.default_state()?;
-    if return_latency {
+    if matches!(workload, Workload::Return) {
         let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
             name: "profile return".into(),
         })?
@@ -49,6 +56,38 @@ fn prepared(return_latency: bool) -> Result<Arc<PreparedRevision>, Box<dyn Error
             before: None,
             state: limiter,
         })?;
+    }
+    if matches!(workload, Workload::Mixed) {
+        // Interleave mutable instruments with already-aligned audio tracks,
+        // including an instrument first in the Main mix order.
+        let state = hex_devices::operator_state::OPERATOR_METADATA.default_state()?;
+        for (ordinal, &before_track) in fixture.tracks.iter().step_by(25).enumerate() {
+            let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
+                name: "profile operator".into(),
+                before_track: Some(before_track),
+                slot: TrackDeviceSlot::Instrument,
+                state: state.clone(),
+            })?
+            else {
+                return Err("expected instrument track".into());
+            };
+            let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4)?,
+            })?
+            else {
+                return Err("expected MIDI clip".into());
+            };
+            editor.execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1)?,
+                pitch: 48 + ordinal as u8,
+                channel: 0,
+                velocity: 96,
+            })?;
+        }
     }
     editor.execute(Command::SetLoopRegion {
         start: 0,
@@ -98,6 +137,7 @@ fn verify(revision: &Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
 fn measure(label: &str, revision: Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
     verify(&revision)?;
     let latency = revision.arrangement().main_latency_frames();
+    let tracks = revision.arrangement().tracks().len();
     let mut playback = playback(revision)?;
     let mut output = [[0.0; 2]; BLOCK];
     for _ in 0..WARMUP {
@@ -116,7 +156,7 @@ fn measure(label: &str, revision: Arc<PreparedRevision>) -> Result<(), Box<dyn E
     }
     times.sort_unstable();
     println!(
-        "case={label} tracks={TRACKS} rate={} block={BLOCK} latency_frames={latency} warmup={WARMUP} measured={MEASURED} p50_us={:.3} p99_us={:.3} max_us={:.3} pcm_digest={digest:016x}",
+        "case={label} tracks={tracks} rate={} block={BLOCK} latency_frames={latency} warmup={WARMUP} measured={MEASURED} p50_us={:.3} p99_us={:.3} max_us={:.3} pcm_digest={digest:016x}",
         session_audio_fixture::RATE,
         times[MEASURED / 2] as f64 / 1000.0,
         times[(MEASURED * 99).div_ceil(100) - 1] as f64 / 1000.0,
@@ -131,7 +171,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::consts::ARCH,
         std::env::consts::OS
     );
-    measure("track_latency", prepared(false)?)?;
-    measure("return_latency", prepared(true)?)?;
+    measure("track_latency", prepared(Workload::Track)?)?;
+    measure("return_latency", prepared(Workload::Return)?)?;
+    measure("mixed_latency", prepared(Workload::Mixed)?)?;
     Ok(())
 }
