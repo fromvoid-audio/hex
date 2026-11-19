@@ -304,12 +304,24 @@ enum RouteOwner {
     Session {
         clip: ClipId,
         origin: SessionMidiOrigin,
+        note_chase: crate::NoteChase,
     },
     SessionAudio {
         clip: ClipId,
         launch_frame: u64,
     },
     Silence,
+}
+
+impl RouteOwner {
+    /// Initial-window admission belongs to this route incarnation, never to
+    /// mutable preferences or the source origin. Other owners have no such cut.
+    fn note_chase(self) -> crate::NoteChase {
+        match self {
+            Self::Session { note_chase, .. } => note_chase,
+            _ => crate::NoteChase::On,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,6 +341,7 @@ struct CurrentPendingCut {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingRoute {
+    note_chase: crate::NoteChase,
     frame: u64,
     beat: BeatTime,
     target: RouteTarget,
@@ -2468,7 +2481,7 @@ impl SessionPlayback {
         let route = self.routes.get(index)?;
         let (owner, active_origin, audio_launch_frame) = match route.owner {
             RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None, None),
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 (SessionPlaybackOwner::Session { clip }, Some(origin), None)
             }
             RouteOwner::SessionAudio { clip, launch_frame } => (
@@ -2841,6 +2854,7 @@ impl SessionPlayback {
         target: RouteTarget,
         beat: BeatTime,
         frame: u64,
+        note_chase: crate::NoteChase,
     ) -> Result<RouteOwner, SessionPlaybackError> {
         Ok(match target {
             RouteTarget::Arrangement => RouteOwner::Arrangement,
@@ -2862,6 +2876,7 @@ impl SessionPlayback {
                 RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(beat),
+                    note_chase,
                 }
             }
             RouteTarget::Session(_) => return Err(SessionPlaybackError::UnknownClip),

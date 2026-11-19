@@ -760,7 +760,7 @@ impl SessionPlayback {
                 }
                 frame
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let frame = previous.performance_frame;
                 let end = frame
                     .checked_add(1)
@@ -776,7 +776,13 @@ impl SessionPlayback {
                 }
                 prepared
                     .instrument_template()
-                    .query_with_origin(origin, timing, frame, end, spans)
+                    .query_with_origin_and_note_chase(
+                        origin,
+                        timing,
+                        (frame, end),
+                        spans,
+                        owner.note_chase(),
+                    )
                     .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans().copied() {
                     let Some(slot) = candidates.get_mut(count) else {
@@ -1960,7 +1966,7 @@ impl SessionPlayback {
             for route in &mut self.route_scratch {
                 if let Some(old) = previous.routes.iter().find(|old| old.id == route.id) {
                     route.owner = match old.owner {
-                        RouteOwner::Session { clip, origin }
+                        RouteOwner::Session { clip, origin, .. }
                             if crate::session_inventory::EffectiveSessionMidi::new(
                                 self.revision.session(),
                                 self.midi_admission.as_ref(),
@@ -1968,7 +1974,11 @@ impl SessionPlayback {
                             .midi_clip(clip)
                             .is_some_and(|clip| clip.track == route.id) =>
                         {
-                            RouteOwner::Session { clip, origin }
+                            RouteOwner::Session {
+                                clip,
+                                origin,
+                                note_chase: old.owner.note_chase(),
+                            }
                         }
                         RouteOwner::SessionAudio { clip, launch_frame }
                             if self
@@ -2036,6 +2046,7 @@ impl SessionPlayback {
                             route.owner = RouteOwner::Session {
                                 clip,
                                 origin: SessionMidiOrigin::launch(beat),
+                                note_chase: crate::NoteChase::On,
                             };
                         }
                         if let RouteOwner::SessionAudio { clip, .. } = route.owner {
@@ -2832,7 +2843,7 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     active
                 }
-                RouteOwner::Session { clip, origin } => {
+                RouteOwner::Session { clip, origin, .. } => {
                     let Some(prepared) = crate::session_inventory::EffectiveSessionMidi::new(
                         self.revision.session(),
                         self.midi_admission.as_ref(),
@@ -2947,7 +2958,7 @@ impl SessionPlayback {
                 match old_route.owner {
                     RouteOwner::Arrangement => RouteOwner::Arrangement,
                     RouteOwner::Silence => RouteOwner::Silence,
-                    RouteOwner::Session { clip, origin } => {
+                    RouteOwner::Session { clip, origin, .. } => {
                         if crate::session_inventory::EffectiveSessionMidi::new(
                             self.revision.session(),
                             self.midi_admission.as_ref(),
@@ -2955,7 +2966,11 @@ impl SessionPlayback {
                         .midi_clip_for_track(clip, new_route.id)
                         .is_some_and(|prepared| prepared.track == new_route.id)
                         {
-                            RouteOwner::Session { clip, origin }
+                            RouteOwner::Session {
+                                clip,
+                                origin,
+                                note_chase: old_route.owner.note_chase(),
+                            }
                         } else {
                             RouteOwner::Silence
                         }
@@ -3486,7 +3501,7 @@ impl SessionPlayback {
             route.owner = match old_route.owner {
                 RouteOwner::Arrangement => RouteOwner::Arrangement,
                 RouteOwner::Silence => RouteOwner::Silence,
-                RouteOwner::Session { clip, origin } => {
+                RouteOwner::Session { clip, origin, .. } => {
                     if let Some(next) = crate::session_inventory::EffectiveSessionMidi::new(
                         self.revision.session(),
                         self.midi_admission.as_ref(),
@@ -3534,7 +3549,11 @@ impl SessionPlayback {
                                         Some(floor.map_or(old_beat, |prior| prior.max(old_beat)));
                                 }
                             }
-                            RouteOwner::Session { clip, origin }
+                            RouteOwner::Session {
+                                clip,
+                                origin,
+                                note_chase: old_route.owner.note_chase(),
+                            }
                         }
                     } else {
                         source_changed = true;
@@ -4295,7 +4314,7 @@ impl SessionPlayback {
                 if !midi_route_changed.get(old_index).copied().unwrap_or(false) {
                     continue;
                 }
-                let RouteOwner::Session { clip, origin } = old_route.owner else {
+                let RouteOwner::Session { clip, origin, .. } = old_route.owner else {
                     continue;
                 };
                 let old_clip = crate::session_inventory::EffectiveSessionMidi::new(
@@ -4314,23 +4333,23 @@ impl SessionPlayback {
                 let old_template = old_clip.instrument_template();
                 if let Some(floor) = previous.historical_floor_for(old_index) {
                     old_template
-                        .query_after_onset_with_origin(
+                        .query_after_onset_with_origin_and_note_chase(
                             origin,
                             &old_clock,
-                            previous.performance_frame,
-                            end,
+                            (previous.performance_frame, end),
                             &mut self.spans,
                             floor,
+                            old_route.owner.note_chase(),
                         )
                         .map_err(SessionPlaybackError::Midi)?;
                 } else {
                     old_template
-                        .query_with_origin(
+                        .query_with_origin_and_note_chase(
                             origin,
                             &old_clock,
-                            previous.performance_frame,
-                            end,
+                            (previous.performance_frame, end),
                             &mut self.spans,
+                            old_route.owner.note_chase(),
                         )
                         .map_err(SessionPlaybackError::Midi)?;
                 }
@@ -6713,7 +6732,7 @@ fn remap_release_gate(
     else {
         return Ok(None);
     };
-    let RouteOwner::Session { clip, origin } =
+    let RouteOwner::Session { clip, origin, .. } =
         effective_midi_route(&previous.revision, &previous.routes, index)?.owner
     else {
         return Ok(None);
@@ -7312,7 +7331,7 @@ fn retune_inline_release(
                 .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
             sampler
         }
-        RouteOwner::Session { clip, origin } => candidate
+        RouteOwner::Session { clip, origin, .. } => candidate
             .session()
             .midi_clip_for_track(clip, release.track_id)
             .and_then(|clip| {
