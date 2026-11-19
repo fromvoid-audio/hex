@@ -354,13 +354,21 @@ impl PluginEffectInsertion {
     }
 }
 
-/// Synchronous worker borrow. The planned ID is allocated only by the eventual
-/// canonical command; stale revisions must be cancelled before that command.
+/// Synchronous worker borrow. The original insertion identifies native
+/// preparation. The validated canonical context identifies the predecessor for
+/// publication after any accepted independent EQ write. The eventual command
+/// allocates the planned ID.
 pub struct PluginEffectPreparation<'a> {
     pub insertion: &'a PluginEffectInsertion,
+    canonical_context: hex_engine::AudioSourceContext,
     pub project: &'a Project,
     pub prepared: Option<&'a PreparedRevision>,
     pub device_id: u64,
+}
+impl PluginEffectPreparation<'_> {
+    pub fn canonical_context(&self) -> hex_engine::AudioSourceContext {
+        self.canonical_context
+    }
 }
 pub enum PluginEffectPreparationState {
     Preparing,
@@ -388,6 +396,7 @@ impl PluginEffectCompletion {
 /// with the sink through its matching finish/cancel hook, including failures.
 pub(super) struct Pending {
     pub insertion: PluginEffectInsertion,
+    canonical_context: hex_engine::AudioSourceContext,
     next_identity: u64,
     native_started: bool,
 }
@@ -397,11 +406,56 @@ impl Pending {
             return Err("vst3 insertion request was already submitted".into());
         }
         Ok(Self {
+            canonical_context: insertion.context,
             insertion,
             next_identity: project.next_identity(),
             native_started: false,
         })
     }
+    pub fn matches_context(&self, context: hex_engine::AudioSourceContext) -> bool {
+        self.canonical_context == context
+    }
+
+    pub fn was_rebased(&self) -> bool {
+        self.canonical_context != self.insertion.context
+    }
+
+    pub fn validate(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        project: &Project,
+    ) -> Result<(), String> {
+        if !self.matches_context(context) {
+            return Err("vst3 insertion cancelled · source changed".into());
+        }
+        self.insertion.validate(self.insertion.context, project)
+    }
+
+    /// Call only after the worker commits one ordinary EQ parameter write.
+    /// This edit can change parameter read selection but cannot change the
+    /// destination, the insertion anchor or the reserved device identity.
+    pub fn rebase_after_accepted_eq_write(
+        &mut self,
+        predecessor: hex_engine::AudioSourceContext,
+        project: &Project,
+        device: hex_project::DeviceId,
+    ) {
+        if self.validate(predecessor, project).is_ok()
+            && self.insertion.destination.devices(project).is_ok()
+            && project.next_identity() == self.next_identity
+            && project.device(device).is_some_and(|device| {
+                device.state().type_id()
+                    == hex_lattice_contract::DeviceTypeId::from_static("hex.eq")
+            })
+            && let Some(editor_revision) = predecessor.editor_revision.checked_add(1)
+        {
+            self.canonical_context = hex_engine::AudioSourceContext {
+                editor_revision,
+                ..predecessor
+            };
+        }
+    }
+
     pub fn prepare(
         &mut self,
         session: &Session,
@@ -409,7 +463,7 @@ impl Pending {
         prepared: Option<&PreparedRevision>,
         sink: &mut dyn WorkerAudioSink,
     ) -> Result<PluginEffectPreparationState, String> {
-        self.insertion.validate(context, session.project())?;
+        self.validate(context, session.project())?;
         if session.audio_mode() != DocumentAudioMode::Resident
             || session.project().next_identity() != self.next_identity
             || !sink.resident_publication_enabled()
@@ -427,6 +481,7 @@ impl Pending {
         self.native_started = true;
         sink.prepare_plugin_effect(PluginEffectPreparation {
             insertion: &self.insertion,
+            canonical_context: context,
             project: session.project(),
             prepared,
             device_id,

@@ -1243,6 +1243,25 @@ fn powered_off_delay_does_not_acknowledge_unprocessed_parameter_input() {
 }
 
 #[test]
+fn cancelled_removal_of_powered_off_delay_leaves_the_predecessor_dry() {
+    let configured = state(&[(DRY_WET, ParameterValue::Float(1.0))]);
+    let mut predecessor = split_test_chain(&configured, true);
+    let removal = hex_lattice::NativeRuntimeChain::empty()
+        .native_removal_transition_from(&predecessor)
+        .unwrap();
+    assert!(predecessor.begin_native_removal(removal));
+    assert!(predecessor.native_removal_ready(removal));
+    predecessor.cancel_native_removal(removal);
+
+    let mut dry = [[0.25; 2]; 64];
+    predecessor.begin_block();
+    predecessor.process_block(&mut dry).unwrap();
+    predecessor.commit_block();
+    assert_eq!(dry, [[0.25; 2]; 64]);
+    assert!(predecessor.committed_range_is_quiescent(0..1));
+}
+
+#[test]
 fn tail_split_meter_observes_the_combined_signal() {
     for initial_bypass in [false, true] {
         for gain in [-6000, 0, 6000] {

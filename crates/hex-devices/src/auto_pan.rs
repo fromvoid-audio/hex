@@ -407,6 +407,9 @@ impl PreparedNativeProcessor for PreparedAutoPan {
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
+    fn supports_power_off(&self) -> bool {
+        true
+    }
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
