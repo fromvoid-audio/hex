@@ -609,6 +609,21 @@ impl ResidentGraphSubmission {
         } if output_identity == self.output_identity && audio_revision == self.audio_revision && context == self.context)
     }
 }
+
+/// Borrow the compiled clock associated with the exact outgoing graph.
+/// The sink observes its running transport before selecting a cut.
+#[derive(Clone, Copy)]
+pub struct ResidentTempoEdit<'a> {
+    pub source: ResidentGraphSubmission,
+    pub previous: &'a Arc<PreparedRevision>,
+}
+
+/// Optional inputs for the ordinary prepared-transition publisher.
+#[derive(Default)]
+pub struct ResidentPublicationInputs<'a> {
+    pub files: Option<ResidentFilePublication<'a>>,
+    pub tempo_edit: Option<ResidentTempoEdit<'a>>,
+}
 /// Reason category for a refused resident publication. The unavailable
 /// category describes source custody only; it does not imply a deadline fault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -751,6 +766,16 @@ pub trait WorkerAudioSink: Send {
                 Err("source effect publication confirmation is unavailable".into())
             }
         }
+    }
+
+    /// If the host scheduled this submission, await its exact callback
+    /// terminal before committing the canonical tempo edit.
+    fn confirm_resident_tempo_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        Ok(())
     }
 
     /// Called for every Commit attempt, including capture/compilation/publication
@@ -1077,7 +1102,7 @@ pub trait WorkerAudioSink: Send {
     /// cancellation. Hosts without file consumers keep the resident-only path;
     /// metadata alone cannot authorize a streamed graph or offline recovery.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
-    fn publish_resident_with_files(
+    fn publish_resident_transition(
         &mut self,
         playback: Playback,
         resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
@@ -1088,7 +1113,7 @@ pub trait WorkerAudioSink: Send {
         admit: &mut dyn FnMut(
             &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
         ) -> Result<(), String>,
-        _files: Option<ResidentFilePublication<'_>>,
+        _inputs: ResidentPublicationInputs<'_>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         if playback.contains_streamed_sources() {
             return Err(ResidentPublicationRefusal {

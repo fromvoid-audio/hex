@@ -133,7 +133,8 @@ fn run(streamed: bool) {
         let status = h.audio.as_ref().unwrap().status().unwrap();
         let previous_revision = status.applied_revision.load(Acquire);
         let previous_position = status.position.load(Acquire);
-        let pcm = render_completed_block(&h);
+        let pcm = render_replay_block(&h);
+        std::thread::sleep(Duration::from_millis(2));
         if previous_revision == applied && status.applied_revision.load(Acquire) > applied {
             cut = Some((previous_position, status.position.load(Acquire)));
         }
@@ -442,7 +443,8 @@ fn running_loop_tempo_edit_keeps_hosted_pcm_after_a_wrap() {
             let before_position = status.position.load(Acquire);
             let before_frame = status.performance_frame.load(Acquire);
             let before_revision = status.applied_revision.load(Acquire);
-            let pcm = render_completed_block(&playback);
+            let pcm = render_replay_block(&playback);
+            std::thread::sleep(Duration::from_millis(2));
             assert!(!status.stream_buffering.load(Acquire));
             assert_eq!(status.performance_frame.load(Acquire), before_frame + 256);
             if before_revision == revision && status.applied_revision.load(Acquire) > revision {

@@ -1853,6 +1853,18 @@ impl WorkerAudioSink for ResidentSink {
             .store(false, std::sync::atomic::Ordering::Release);
         result
     }
+    fn confirm_resident_tempo_edit(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<(), String> {
+        self.file_publication_waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        let result = self.inner.confirm_resident_tempo_edit(context, acceptance);
+        self.file_publication_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        result
+    }
     fn finish_plugin_parameter_commit(
         &mut self,
         context: AudioSourceContext,
@@ -1951,7 +1963,7 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.prepare_resident_file_metadata(input)
     }
     #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Exact production inputs and injected final admission refusal.
-    fn publish_resident_with_files(
+    fn publish_resident_transition(
         &mut self,
         playback: Playback,
         resources: Option<&PreparedDeviceResources>,
@@ -1960,16 +1972,16 @@ impl WorkerAudioSink for ResidentSink {
         policy: ResidentPublicationPolicy,
         limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
-        files: Option<hex_session::service::ResidentFilePublication<'_>>,
+        inputs: hex_session::service::ResidentPublicationInputs<'_>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.file_publication_waiting
-            .store(files.is_some(), std::sync::atomic::Ordering::Release);
+            .store(inputs.files.is_some(), std::sync::atomic::Ordering::Release);
         let refuse = self.refuse.load(Acquire);
         if let Some(probe) = self.publication_probe.lock().unwrap().take() {
             self.inner.native_graph_gate = Some((probe.ready, probe.resume));
             self.inner.native_graph_busy_observer = Some(probe.busy);
         }
-        let result = self.inner.publish_resident_with_files(
+        let result = self.inner.publish_resident_transition(
             playback,
             resources,
             observation,
@@ -1984,7 +1996,7 @@ impl WorkerAudioSink for ResidentSink {
                     Ok(())
                 }
             },
-            files,
+            inputs,
         );
         self.inner.native_graph_gate = None;
         self.inner.native_graph_busy_observer = None;

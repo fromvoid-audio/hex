@@ -1009,58 +1009,91 @@ impl Inputs<'_> {
             },
             ..metadata
         };
-        let mut plugin_admitted = false;
-        sink.publish_resident_with_files(
-            playback,
-            Some(&snapshot.resources),
-            observation,
-            metadata,
-            policy,
-            self.limits.storage.max_retained_bytes,
-            &mut |native| {
-                self.admit_with_requirements(
-                    &snapshot.resources,
-                    Some(&snapshot.prepared),
-                    native,
-                    runtime,
-                    0,
-                    snapshot.file_requirements(),
-                )
-                .map_err(|error| error.to_string())?;
-                // The hook returns immediately to enqueue/fixed offline custody. A late cancel
-                // still refuses here; no cancellation/refusal is reported after acceptance.
-                if self.shutdown.load(Ordering::Acquire)
-                    || self
-                        .cancel
-                        .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-                {
-                    return Err("resident publication cancelled".into());
-                }
-                if let Some(control) = self.plugin_effect
-                    && !plugin_admitted
-                {
-                    if !control.begin_commit() {
-                        return Err("vst3 effect insertion cancelled before admission".into());
-                    }
-                    plugin_admitted = true;
-                }
-                Ok(())
-            },
-            snapshot
-                .file_sources
-                .as_ref()
-                .map(|sources| ResidentFilePublication {
-                    sources,
-                    shutdown: self.shutdown,
-                    cancel: self.cancel,
-                }),
-        )
-        .map_err(|refused| match refused.kind {
-            super::ResidentPublicationFailure::NativeSourceUnavailable => {
-                SessionError::NativeSourceUnavailable(refused.error)
+        let tempo_edit = match (policy, self.current) {
+            (ResidentPublicationPolicy::InheritRuntimeAt(witness), Some(previous))
+                if metadata.source_origin == ResidentSourceOrigin::CanonicalCandidate
+                    && witness.section_loop.is_none()
+                    && snapshot
+                        .prepared
+                        .can_schedule_resident_tempo_edit_from(&previous.prepared) =>
+            {
+                previous
+                    .submission
+                    .filter(|source| {
+                        witness.output_identity == source.output_identity
+                            && witness.audio_revision == source.audio_revision
+                            && witness.source_context == Some(source.context)
+                    })
+                    .map(|source| super::ResidentTempoEdit {
+                        source,
+                        previous: &previous.prepared,
+                    })
             }
-            super::ResidentPublicationFailure::Other => SessionError::NativeAudio(refused.error),
-        })
+            _ => None,
+        };
+        let mut plugin_admitted = false;
+        let acceptance = sink
+            .publish_resident_transition(
+                playback,
+                Some(&snapshot.resources),
+                observation,
+                metadata,
+                policy,
+                self.limits.storage.max_retained_bytes,
+                &mut |native| {
+                    self.admit_with_requirements(
+                        &snapshot.resources,
+                        Some(&snapshot.prepared),
+                        native,
+                        runtime,
+                        0,
+                        snapshot.file_requirements(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    // Check before enqueue. A scheduled edit can also be
+                    // cancelled while its callback receipt is pending.
+                    if self.shutdown.load(Ordering::Acquire)
+                        || self
+                            .cancel
+                            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+                    {
+                        return Err("resident publication cancelled".into());
+                    }
+                    if let Some(control) = self.plugin_effect
+                        && !plugin_admitted
+                    {
+                        if !control.begin_commit() {
+                            return Err("vst3 effect insertion cancelled before admission".into());
+                        }
+                        plugin_admitted = true;
+                    }
+                    Ok(())
+                },
+                super::ResidentPublicationInputs {
+                    files: snapshot
+                        .file_sources
+                        .as_ref()
+                        .map(|sources| ResidentFilePublication {
+                            sources,
+                            shutdown: self.shutdown,
+                            cancel: self.cancel,
+                        }),
+                    tempo_edit,
+                },
+            )
+            .map_err(|refused| match refused.kind {
+                super::ResidentPublicationFailure::NativeSourceUnavailable => {
+                    SessionError::NativeSourceUnavailable(refused.error)
+                }
+                super::ResidentPublicationFailure::Other => {
+                    SessionError::NativeAudio(refused.error)
+                }
+            })?;
+        if tempo_edit.is_some() {
+            sink.confirm_resident_tempo_edit(metadata.context, acceptance)
+                .map_err(SessionError::NativeAudio)?;
+        }
+        Ok(acceptance)
     }
 }
 

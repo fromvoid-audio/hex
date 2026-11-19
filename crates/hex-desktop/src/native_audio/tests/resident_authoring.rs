@@ -1328,7 +1328,11 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
                 cut = Some((before_position, status.position.load(Acquire)));
             }
             assert!(Instant::now() < until, "tempo edit did not publish");
-            std::thread::sleep(Duration::from_millis(1));
+            if h.submitted.is_some_and(|(revision, _)| revision > applied) {
+                std::thread::yield_now();
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         let edited = edited.unwrap();
         assert!(
@@ -1337,20 +1341,29 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
             edited.error
         );
         let (before_position, after_position) = cut.unwrap();
-        let beat = old_tempo.frame_to_beat(before_position).unwrap();
+        // The headless output negotiates a 256-frame worker quantum even
+        // for a built-in effect. The cut is scheduled two quanta ahead.
+        let prefix = if compensated {
+            512 % partition as u64
+        } else {
+            0
+        };
+        let old_cut = before_position + prefix;
+        let old_cut = if looped && old_cut >= 224 {
+            128 + (old_cut - 224) % (224 - 128)
+        } else {
+            old_cut
+        };
+        let beat = old_tempo.frame_to_beat(old_cut).unwrap();
         let relocated = edited
             .state
             .project
             .tempo_map()
             .beat_to_frame(beat)
             .unwrap();
-        let advanced = relocated + partition as u64;
+        let advanced = relocated + partition as u64 - prefix;
         let expected_position = match edited.state.project.loop_region() {
             Some(region) if region.enabled() && advanced >= region.end() => {
-                if partition == 257 {
-                    assert!(relocated >= region.start() && relocated < region.end());
-                    assert!(partition as u64 > region.end() - region.start());
-                }
                 region.start() + (advanced - region.start()) % (region.end() - region.start())
             }
             _ => advanced,
@@ -1366,6 +1379,131 @@ fn running_tempo_edit_with_latency_keeps_the_audio_graph_playing() {
             (0..16).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
             "audio must continue after the tempo edit; compensated={compensated}"
         );
+    }
+}
+
+#[test]
+fn resident_tempo_command_waits_for_its_cut_and_stop_preserves_the_project() {
+    let _native = native_fixture();
+    for stop_before_cut in [false, true] {
+        let files = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(32_768);
+        assert!(h.next().error.is_none());
+        let (initial, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 8192)));
+        let (applied, _) = h.applied(initial);
+        let track = imported.state.project.tracks()[0].id();
+        let original = h.run(Request::AddNativeDevice {
+            track,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+            before: None,
+        });
+        let (applied, _) = h.applied(applied);
+        use hex_engine::playback::PlaybackCommand;
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render();
+        h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let frame = status.performance_frame.load(Acquire);
+        let position = status.position.load(Acquire);
+        h.service
+            .submit(Request::Edit(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let submitted = loop {
+            h.pump();
+            if let Some((revision, _)) = h.submitted
+                && revision > applied
+            {
+                break revision;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        // Give control a chance to emit an ordinary queue-only success while
+        // the callback remains held at its observed predecessor.
+        std::thread::sleep(Duration::from_millis(12));
+        assert!(
+            h.service.try_event().is_err(),
+            "canonical tempo changed before installation"
+        );
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.applied_revision.load(Acquire), applied);
+        assert_eq!(status.performance_frame.load(Acquire), frame);
+        if stop_before_cut {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Stop)
+                .unwrap();
+            h.render();
+            let event = h.next();
+            assert!(event.error.is_some());
+            assert_eq!(event.state.revision, original.state.revision);
+            assert_eq!(
+                event.state.project.tempo_map(),
+                original.state.project.tempo_map()
+            );
+            assert_eq!(
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .applied_revision
+                    .load(Acquire),
+                applied
+            );
+        } else {
+            let render = |h: &ResidentHarness, frames: &mut [hex_engine::Frame]| {
+                h.callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .render(frames)
+                    .unwrap();
+            };
+            for _ in 0..2 {
+                render(&h, &mut [[0.0; 2]; 256]);
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(status.performance_frame.load(Acquire), frame + 512);
+            assert_eq!(status.applied_revision.load(Acquire), applied);
+            assert!(h.service.try_event().is_err());
+            render(&h, &mut [[0.0; 2]; 1]);
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert_eq!(
+                status.applied_revision.load(Acquire),
+                submitted,
+                "{:?}",
+                status.rejected_revision()
+            );
+            assert_eq!(status.performance_frame.load(Acquire), frame + 513);
+            let retimed = status.position.load(Acquire);
+            let event = h.next();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert_eq!(event.state.revision, original.state.revision + 1);
+            let beat = original
+                .state
+                .project
+                .tempo_map()
+                .frame_to_beat(position + 512)
+                .unwrap();
+            assert_eq!(
+                retimed,
+                event.state.project.tempo_map().beat_to_frame(beat).unwrap() + 1
+            );
+        }
     }
 }
 
