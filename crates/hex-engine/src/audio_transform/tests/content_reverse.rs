@@ -801,11 +801,15 @@ fn reverse_musical_repeat_filter_uses_neighbor_occurrences_at_internal_joins() {
     let mut snapshot = editor.project().snapshot();
     let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
     let domain = Arc::make_mut(&mut row.edit.as_mut().unwrap().domain);
-    let fade = ClipFade::new(16_000, 0, 3_000, 9_000).unwrap();
+    let fade = ClipFade::new(8_000, 0, 3_000, 1_000).unwrap();
     domain.fade = fade;
     domain.fade_start = 0;
     domain.fade_clock = hex_project::AudioClipFadeClock::LegacyRoot;
-    domain.fade_projection = None;
+    domain.fade_projection = Some(hex_project::AudioFadeProjection {
+        tempo: hex_project::TempoMap::constant(16_000, Tempo::DEFAULT).unwrap(),
+        origin_beat_raw: 0,
+        local_start_raw: 0,
+    });
     let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
     let project = editor.project();
     let clip = project.clip(clip).unwrap();
@@ -828,7 +832,7 @@ fn reverse_musical_repeat_filter_uses_neighbor_occurrences_at_internal_joins() {
         let cycle_age = if frame < 16_000 {
             frame % 8_000
         } else {
-            (frame - 16_000) % 16_000
+            ((frame - 16_000) % 16_000).div_ceil(2)
         };
         let expected_gain = fade.gain_at(cycle_age);
         assert_eq!(
