@@ -66,6 +66,7 @@ class UiBuildIdentityTests(unittest.TestCase):
         self.commit("fixture")
         self.count = 0
         self.notes = root / "changelog/generated.json"
+        self.release_target = root / "release-target" / "initial"
 
     def command(self, *args):
         return subprocess.check_output(args, cwd=self.root, text=True).strip()
@@ -90,7 +91,7 @@ class UiBuildIdentityTests(unittest.TestCase):
             return self.inspect_artifact(result.stdout)
         if optimized:
             runner = delivery.ci.LocalCiRunner(self.root, run_id=f"optimized-identity-{self.count}",
-                env={**self.env, "CARGO_TARGET_DIR": str(self.root / "release-target")}, min_free_bytes=0)
+                env={**self.env, "CARGO_TARGET_DIR": str(self.release_target)}, min_free_bytes=0)
             with delivery.optimized_artifact(runner, package="identity-fixture") as (_, ownership):
                 result = self.inspect_artifact(Path(ownership["build_log"]).read_text())
             self.cleanup = ownership["cleanup_status"]
@@ -102,19 +103,25 @@ class UiBuildIdentityTests(unittest.TestCase):
         self.cleanup = runner.summary["target_cache"]["cleanup_status"]
         return self.inspect_artifact((runner.output_dir / "01-build.log").read_text())
 
-    def assert_dirty_optimized_refused(self):
-        # A refused dirty build preserves both the READY owner and artifacts.
+    def assert_optimized_refused(self, error_pattern):
+        # A refused build preserves both the READY owner and artifacts.
         owner_before = self.release_owner.read_bytes()
 
         def artifacts():
             return {str(p.relative_to(self.root)): (hashlib.sha256(p.read_bytes()).hexdigest(),
-                    p.stat().st_mtime_ns) for p in (self.root / "release-target").rglob("*") if p.is_file()}
+                    p.stat().st_mtime_ns) for p in self.release_target.rglob("*") if p.is_file()}
 
         before = artifacts()
-        with self.assertRaisesRegex(delivery.ci.TargetCacheError, "requires exact clean source"):
+        with self.assertRaisesRegex(delivery.ci.TargetCacheError, error_pattern):
             self.build(optimized=True)
         self.assertEqual(self.release_owner.read_bytes(), owner_before)
         self.assertEqual(artifacts(), before)
+
+    def rebuild_with_fresh_release_target(self):
+        self.assert_optimized_refused("release cache does not prove an empty origin")
+        self.release_target = self.root / "release-target" / f"build-{self.count}"
+        self.release_target.mkdir()
+        return self.build(optimized=True)
 
     @staticmethod
     def rewrite_with_old_mtime(path, content):
@@ -172,18 +179,18 @@ class UiBuildIdentityTests(unittest.TestCase):
         self.assertFalse(self.build(optimized=True)[0])
         self.assertTrue(self.build(optimized=True)[0])
         (self.root / "untracked-input").write_text("new input")
-        self.assert_dirty_optimized_refused()
+        self.assert_optimized_refused("requires exact clean source")
         self.rewrite_with_old_mtime(self.font, "new-font")
-        self.assert_dirty_optimized_refused()
+        self.assert_optimized_refused("requires exact clean source")
         self.notes.write_text('{"batches":[]}')
         self.commit("new HEAD and notes")
-        self.assertFalse(self.build(optimized=True)[0])
+        self.assertFalse(self.rebuild_with_fresh_release_target()[0])
         self.assertEqual(self.cleanup, "not_needed")
         self.assertTrue(self.build(optimized=True)[0])
         self.rewrite_with_old_mtime(self.notes, '{"batches": []}')
-        self.assert_dirty_optimized_refused()
+        self.assert_optimized_refused("requires exact clean source")
         self.commit("notes changed with retained mtime")
-        self.assertTrue(self.build(optimized=True)[1].endswith('|{"batches": []}'))
+        self.assertTrue(self.rebuild_with_fresh_release_target()[1].endswith('|{"batches": []}'))
         self.assertEqual(self.cleanup, "not_needed")
 
         # A frozen release projection is a compiler input, including a
@@ -192,13 +199,13 @@ class UiBuildIdentityTests(unittest.TestCase):
         frozen.write_text('{"format":1,"batches":[]}')
         self.env["HEX_RELEASE_CHANGELOG"] = str(frozen)
         self.env["HEX_RELEASE_LABEL"] = "0.1.0-beta.1"
-        fresh, output = self.build(optimized=True)
+        fresh, output = self.rebuild_with_fresh_release_target()
         self.assertFalse(fresh)
         self.assertEqual(self.display_version, "0.1.0-beta.1")
         self.assertTrue(output.startswith(self.command("git", "rev-parse", "--short=8", "HEAD")))
         self.assertTrue(output.endswith('|{"format":1,"batches":[]}'))
         self.rewrite_with_old_mtime(frozen, '{"format":1, "batches":[]}')
-        fresh, output = self.build(optimized=True)
+        fresh, output = self.rebuild_with_fresh_release_target()
         self.assertFalse(fresh)
         self.assertTrue(output.endswith('|{"format":1, "batches":[]}'))
 

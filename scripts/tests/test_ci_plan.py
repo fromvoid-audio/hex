@@ -718,18 +718,30 @@ class ScopeTests(unittest.TestCase):
             self.assertNotIn(":tool_dependency", log.read_text())
             self.assertNotIn(":tool_consumer", log.read_text())
             delivery = module("compiler_release_fixture", "hex-test-build.py")
-            def release(name):
-                runner = delivery.ci.LocalCiRunner(root, env={**env, "CARGO_TARGET_DIR": str(root / "release-target")}, run_id=name, min_free_bytes=0)
+            def release(name, target):
+                runner = delivery.ci.LocalCiRunner(root, env={**env, "CARGO_TARGET_DIR": str(target)},
+                                                   run_id=name, min_free_bytes=0)
                 with delivery.optimized_artifact(runner, package="tool-consumer") as (binary, ownership):
                     self.assertEqual(command(str(binary)), "7")
                 return ownership
-            release("old-release-tool")
+
+            old_target = root / "release-target" / "initial"
+            old = release("old-release-tool", old_target)
+            old_owner = Path(old["owner_path"])
+            old_owner_bytes = old_owner.read_bytes()
             log.write_text("")
             write_wrapper("third")
-            release("new-release-tool")
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "release cache does not prove an empty origin"):
+                release("changed-wrapper-old-target", old_target)
+            self.assertEqual(old_owner.read_bytes(), old_owner_bytes)
+            self.assertNotIn(":tool_dependency", log.read_text())
+
+            new_target = root / "release-target" / "changed-wrapper"
+            new_target.mkdir()
+            release("new-release-tool", new_target)
             self.assertIn("third:tool_dependency", log.read_text())
             log.write_text("")
-            reused = release("same-release-tool")
+            reused = release("same-release-tool", new_target)
             self.assertNotIn(":tool_dependency", log.read_text())
             self.assertNotIn(":tool_consumer", log.read_text())
             self.assertEqual(reused["cleanup_status"], "not_needed")
