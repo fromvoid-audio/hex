@@ -44,29 +44,7 @@ fn main_append_revisions(
     state: hex_lattice_contract::NativeDeviceState,
     pcm: Vec<Frame>,
 ) -> ([Arc<hex_engine::PreparedRevision>; 2], hex_project::TrackId) {
-    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
-    let frames = pcm.len() as u64;
-    let Created::Imported { track, asset, .. } = editor
-        .execute(Command::ImportPreparedAudioTrack {
-            name: "resident input".into(),
-            path: "memory/resident.wav".into(),
-            source_sample_rate: RATE,
-            source_frames: frames,
-            playback_frames: frames,
-            conversion_version: hex_project::IDENTITY_CONVERSION,
-        })
-        .unwrap()
-    else {
-        panic!("audio import");
-    };
-    let media = BTreeMap::from([(asset, hex_engine::Audio::new(RATE, pcm).unwrap())]);
-    let table = Arc::new(hex_engine::SineTable::new());
-    let prepare = |project: &Project| {
-        Arc::new(
-            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
-                .unwrap(),
-        )
-    };
+    let (mut editor, track, prepare) = resident_input(pcm);
     if let Some(state) = prefix {
         editor
             .execute(Command::InsertMainDevice {
@@ -84,6 +62,39 @@ fn main_append_revisions(
         .unwrap();
     let after = prepare(editor.project());
     ([before, after], track)
+}
+
+fn resident_input(
+    pcm: Vec<Frame>,
+) -> (
+    Editor,
+    hex_project::TrackId,
+    impl Fn(&Project) -> Arc<hex_engine::PreparedRevision>,
+) {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let frames = pcm.len() as u64;
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "resident input".into(),
+            path: "memory/resident.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: frames,
+            playback_frames: frames,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("audio import");
+    };
+    let media = BTreeMap::from([(asset, hex_engine::Audio::new(RATE, pcm).unwrap())]);
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = move |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    (editor, track, prepare)
 }
 
 pub(super) fn begin_insert(
@@ -442,6 +453,108 @@ fn resident_native_removal_installs_with_an_ordinary_stream_workspace() {
             ..predecessor
         })
     );
+}
+
+#[test]
+fn removing_settled_off_main_effect_preserves_the_downstream_delay_history() {
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+
+    const CUT: usize = 384;
+    const TOTAL: usize = 1_152;
+    let mut source = vec![[0.0; 2]; 2_048];
+    source[0] = [0.125, -0.0625];
+    let (mut editor, _, prepare) = resident_input(source);
+    let Created::Device(removed) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("powered-off Main effect");
+    };
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: removed,
+            bypassed: true,
+        })
+        .unwrap();
+
+    let mut echo = DEFINITION.default_state().unwrap();
+    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+        echo = DEFINITION
+            .patch_parameter(&echo, parameter, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+        echo = DEFINITION
+            .patch_parameter(&echo, parameter, ParameterValue::Float(value))
+            .unwrap();
+    }
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: echo,
+        })
+        .unwrap();
+    let old = prepare(editor.project());
+    editor.execute(Command::RemoveDevice(removed)).unwrap();
+    let next = prepare(editor.project());
+
+    let mut reference = Playback::try_from_prepared_with_session(Arc::clone(&next)).unwrap();
+    reference.apply(PlaybackCommand::Play);
+    let mut expected = [[0.0; 2]; TOTAL];
+    reference.render(&mut expected).unwrap();
+    assert_eq!(
+        expected.iter().position(|sample| *sample != [0.0; 2]),
+        Some(480)
+    );
+    assert!(expected[960..].iter().any(|sample| *sample != [0.0; 2]));
+
+    for partition in [1, BLOCK] {
+        let (mut control, mut callback, predecessor, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, CUT);
+        let mut actual = [[0.0; 2]; TOTAL - CUT];
+        let render = || {
+            for part in actual.chunks_mut(partition) {
+                callback.begin_block();
+                callback.render(part).unwrap();
+                assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+            }
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0),
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut render = render;
+            render();
+        }
+        assert_eq!(actual, expected[CUT..]);
+        assert_eq!(control.status.position.load(Acquire), TOTAL as u64);
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: receipt.context().unwrap(),
+                audio_revision: receipt.revision(),
+                ..predecessor
+            })
+        );
+        assert_eq!(control.reclaim(), 1);
+    }
 }
 
 #[test]
@@ -1009,4 +1122,154 @@ fn device_insert_expires_at_callback_without_control_polling() {
     );
     assert!(pcm[..10].iter().all(|frame| *frame == SIGNAL));
     assert!(pcm[10..].iter().all(|frame| *frame == [0.0; 2]));
+}
+
+#[test]
+fn resident_auto_pan_power_installs_and_restarts_at_the_callback_boundary() {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    let (mut editor, media) = {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "resident input".into(),
+                path: "memory/resident.wav".into(),
+                source_sample_rate: RATE,
+                source_frames: 8192,
+                playback_frames: 8192,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("audio import");
+        };
+        let media = BTreeMap::from([(
+            asset,
+            hex_engine::Audio::new(RATE, vec![SIGNAL; 8192]).unwrap(),
+        )]);
+        (editor, media)
+    };
+    let auto_pan = &hex_devices::auto_pan::AUTO_PAN_DEFINITION;
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: auto_pan
+                .patch_parameter(
+                    &auto_pan.default_state().unwrap(),
+                    hex_devices::auto_pan::parameter::RATE,
+                    ParameterValue::Float(20.0),
+                )
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("Auto Pan insertion");
+    };
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: hex_devices::auto_pan::parameter::AMOUNT,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(1.0).unwrap(),
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })
+        .unwrap();
+
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    let on = prepare(editor.project());
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off = prepare(editor.project());
+
+    let publish = |control: &mut Control, prepared, editor_revision, policy| {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 5,
+            editor_revision,
+        };
+        let revision = control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(prepared).unwrap(),
+                policy,
+                context.project_generation,
+                true,
+                false,
+                Some(context),
+            )
+            .unwrap();
+        (context, revision)
+    };
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    publish(
+        &mut control,
+        Arc::clone(&on),
+        1,
+        PublicationPolicy::InstallFreshRuntime,
+    );
+    control.command(PlaybackCommand::Play).unwrap();
+
+    const FADE: usize = 240; // 5 ms at 48 kHz.
+    let mut initial = [[0.0; 2]; 2 * BLOCK];
+    callback.begin_block();
+    callback.render(&mut initial).unwrap();
+    assert_ne!(initial[BLOCK], SIGNAL);
+
+    for (prepared, revision) in [(off, 2), (on, 3)] {
+        let (context, audio_revision) = publish(
+            &mut control,
+            prepared,
+            revision,
+            PublicationPolicy::InheritRuntime,
+        );
+        let start = control.status.position.load(Acquire);
+        let mut actual = [[0.0; 2]; 2 * BLOCK];
+        let mut render = || {
+            for block in actual.chunks_mut(BLOCK) {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            }
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+
+        let applied = control.status.recording_source().unwrap();
+        assert_eq!(
+            (applied.context, applied.audio_revision),
+            (context, audio_revision)
+        );
+        assert_eq!(
+            control.status.position.load(Acquire),
+            start + actual.len() as u64
+        );
+        if revision == 2 {
+            assert_eq!(actual[FADE..], [SIGNAL; 2 * BLOCK - FADE]);
+        } else {
+            assert_eq!(actual[FADE..], initial[FADE..]);
+        }
+        assert_eq!(control.reclaim(), 1);
+    }
 }

@@ -1765,7 +1765,12 @@ impl SessionPlayback {
             self.route_scratch[index].owner = if let Some(plan) = current_plan {
                 plan.owner
             } else {
-                self.owner_for_target(pending.target, target_beat, performance_frame)?
+                self.owner_for_target(
+                    pending.target,
+                    target_beat,
+                    performance_frame,
+                    pending.note_chase,
+                )?
             };
             self.route_scratch[index].pending = None;
             let fade = self.audio_release_fade();
@@ -3146,7 +3151,7 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
     spans: &mut MidiSpanBuffer,
     onsets: &mut MutableOnsetBuffer,
 ) -> Result<(), SessionPlaybackError> {
-    let RouteOwner::Session { clip, origin } = route.owner else {
+    let RouteOwner::Session { clip, origin, .. } = route.owner else {
         return Err(SessionPlaybackError::InvalidCommand);
     };
     let prepared = midi
@@ -3160,7 +3165,13 @@ pub(super) fn collect_console_midi_onsets<T: MidiTiming + ?Sized>(
     }
     prepared
         .instrument_template()
-        .query_with_origin(origin, timing, start, end, spans)
+        .query_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start, end),
+            spans,
+            route.owner.note_chase(),
+        )
         .map_err(SessionPlaybackError::Midi)?;
     for span in spans.spans() {
         onsets
@@ -3370,7 +3381,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
         _ => performance_frame,
     };
     let arrangement_volumes = track.instrument.as_ref().and_then(|i| i.volumes.as_ref());
-    let console = if let RouteOwner::Session { clip, origin } = midi_route.owner {
+    let console = if let RouteOwner::Session { clip, origin, .. } = midi_route.owner {
         midi.midi_clip_for_track(clip, track_id)
             .map(|prepared| (clip, origin, prepared))
     } else {
@@ -3526,7 +3537,7 @@ fn render_mutable_instrument_inner<T: crate::prepared_tempo::MidiTempoBreaks + ?
                     },
                 )
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
                     return Ok(None);
                 }
@@ -3909,7 +3920,7 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         }
         RouteOwner::Silence => {}
-        RouteOwner::Session { clip, origin } => {
+        RouteOwner::Session { clip, origin, .. } => {
             if stage.is_audio() {
                 return Ok(());
             }
@@ -3921,7 +3932,8 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
             }
             if prepared.instrument_enabled() && !prepared.instrument_template().is_event_source() {
                 let context =
-                    crate::MidiInstrumentRenderContext::with_origin(origin, timing, table);
+                    crate::MidiInstrumentRenderContext::with_origin(origin, timing, table)
+                        .with_note_chase(route.owner.note_chase());
                 let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
                 let context = context
                     .with_suppressions(suppressions)

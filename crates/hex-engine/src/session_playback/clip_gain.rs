@@ -30,6 +30,7 @@ pub(super) fn at_cut(
         RouteOwner::Session {
             origin,
             clip: active,
+            ..
         } if active == clip => {
             let timing = timing_view_for(
                 previous.revision.session(),
