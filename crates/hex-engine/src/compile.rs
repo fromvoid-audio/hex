@@ -2,7 +2,8 @@
 //! This allocates and retains PCM references; it must never run in a callback.
 use crate::{
     Audio, Invalid, Project, StreamedSourceMetadata, Track,
-    audio_transform::materializes_musical_outer_fade, serial_effect_power::EffectPower,
+    audio_transform::{materializes_musical_outer_fade, previews_transformed_frame_events},
+    serial_effect_power::EffectPower,
 };
 use hex_project::{Asset, AssetId, DeviceId};
 use std::{collections::BTreeMap, sync::Arc};
@@ -861,6 +862,10 @@ fn compile_project_inner<'a>(
                         length: compiled.end - compiled.start,
                         sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
                         neutral_musical_peaks,
+                        event_source_peaks: clip
+                            .audio_edit()
+                            .filter(|edit| previews_transformed_frame_events(edit))
+                            .and_then(|_| transforms.event_source_peaks(audio)),
                         repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
                             period: compiled.source_length as u64,
                             phase: compiled
