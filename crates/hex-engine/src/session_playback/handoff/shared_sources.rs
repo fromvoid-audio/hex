@@ -876,7 +876,7 @@ fn analytic_source_has_precut(
             RouteOwner::Arrangement => {
                 let mut past = false;
                 track
-                    .for_each_active_midi_span(previous.arrangement_frame, |span, _| {
+                    .for_each_active_midi_span(previous.arrangement_frame, None, |span, _| {
                         past |= span.start < previous.arrangement_frame;
                     })
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;

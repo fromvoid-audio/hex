@@ -620,6 +620,10 @@ impl ForeignArrangement {
                     let mut overflow = false;
                     track
                         .for_each_mutable_midi_span(context.arrangement, end, |span| {
+                            if !span.admitted_at_interactive_start(context.interactive_onset_floor)
+                            {
+                                return;
+                            }
                             if span.start < context.arrangement
                                 && !(chase || wrapped || first_route)
                             {
@@ -861,4 +865,5 @@ pub(super) struct FrameContext {
     pub(super) loop_pass: u64,
     pub(super) playing: bool,
     pub(super) chase: bool,
+    pub(super) interactive_onset_floor: Option<u64>,
 }

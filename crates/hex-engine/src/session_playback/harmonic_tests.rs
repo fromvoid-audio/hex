@@ -905,3 +905,67 @@ fn first_track_limiter_keeps_held_mutable_voice_and_its_note_off() {
             .all(|proof| proof.note_off_sent)
     );
 }
+
+#[test]
+fn note_chase_off_imports_only_the_admitted_analytic_voice() {
+    let run = |keep_historical: bool| {
+        let mut snapshot = fixture(1, 1 << 30).snapshot();
+        let id = snapshot.next_id;
+        snapshot.next_id += 1;
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips)
+            | TrackContentSnapshot::Hybrid {
+                midi_clips: clips, ..
+            } => clips,
+            TrackContentSnapshot::Audio(_) => panic!("midi fixture"),
+        };
+        clips[0].notes.push(MidiNoteSnapshot {
+            active: true,
+            id,
+            start_raw: 1 << 27,
+            duration_raw: 1 << 29,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        });
+        if !keep_historical {
+            clips[0].notes.remove(0);
+        }
+        let source = Project::from_snapshot(snapshot).unwrap();
+        let table = Arc::new(hex_devices::SineTable::new());
+        let mut old = SessionPlayback::new(revision(&source, Arc::clone(&table))).unwrap();
+        old.play_from_with_note_chase(750, crate::NoteChase::Off)
+            .unwrap();
+        old.render(&mut [[0.0; 2]; 17]).unwrap();
+        let custom = edit(
+            &source,
+            &[
+                (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+                (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+            ],
+        );
+        let prepared = Arc::new(
+            PreparedRevision::prepare(
+                &custom,
+                &BTreeMap::new(),
+                table,
+                Some(old.revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut next = SessionPlayback::new(prepared).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(
+            next.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .count(),
+            1
+        );
+        render_checkpoint_partitioned(&mut next, &[1, 7, 64], 128)
+    };
+    let expected = run(false);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    assert_eq!(run(true), expected);
+}

@@ -2495,3 +2495,45 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     assert!(prefix_calls > 0 && project_calls > 0);
     assert_eq!(output, [[0.0; 2]; 80]);
 }
+
+mod note_chase {
+    use super::*;
+
+    #[test]
+    fn hosted_start_policy_keeps_exact_onset_and_authored_release_without_orphan_off() {
+        let (editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+        let prepared = prepare(&editor, identity, true).unwrap();
+        for (destination, policy, expected_on) in [
+            (375, crate::NoteChase::Off, false),
+            (375, crate::NoteChase::On, true),
+            (0, crate::NoteChase::Off, true),
+            (750, crate::NoteChase::On, false),
+        ] {
+            let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            playback
+                .play_from_with_note_chase(destination, policy)
+                .unwrap();
+            let mut endpoint = NoteEndpoint::default();
+            endpoint.render(&mut playback, &mut [[0.0; 2]; 32]).unwrap();
+            assert_eq!(endpoint.notes.iter().any(|(_, note)| note.on), expected_on);
+            let onset = endpoint
+                .notes
+                .iter()
+                .find(|(_, note)| note.on)
+                .map(|(_, note)| *note);
+            endpoint
+                .render(&mut playback, &mut [[0.0; 2]; 750])
+                .unwrap();
+            if let Some(onset) = onset {
+                let release = endpoint.notes.iter().find(|(_, note)| !note.on).unwrap();
+                assert_eq!(release.1.note_id, onset.note_id);
+                assert_eq!(release.0 as u64 + destination + 32, 750);
+            } else {
+                assert!(
+                    endpoint.notes.is_empty(),
+                    "no note-off without its admitted onset"
+                );
+            }
+        }
+    }
+}

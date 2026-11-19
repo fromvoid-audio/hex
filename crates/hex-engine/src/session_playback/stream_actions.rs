@@ -46,8 +46,9 @@ impl PreparedStreamAction {
         self.expected.playing
             || matches!(
                 self.action,
-                PlaybackAction::Transport(PlaybackCommand::PlayFrom(_))
-                    | PlaybackAction::LaunchAndPlay(_)
+                PlaybackAction::Transport(
+                    PlaybackCommand::PlayFrom(_) | PlaybackCommand::PlayFromWithNoteChase { .. }
+                ) | PlaybackAction::LaunchAndPlay(_)
             )
     }
     pub(crate) fn bind_owner(
@@ -170,7 +171,10 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         let resolved = match action {
-            PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => Resolved::Seek {
+            PlaybackAction::Transport(
+                PlaybackCommand::PlayFrom(frame)
+                | PlaybackCommand::PlayFromWithNoteChase { frame, .. },
+            ) => Resolved::Seek {
                 frame,
                 beat: self.play_from_coordinates(frame)?,
             },

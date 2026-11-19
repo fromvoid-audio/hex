@@ -259,6 +259,7 @@ pub const RENDER_QUERY_FRAMES: u64 = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CompiledNoteSpan {
+    pub(crate) starts_inside_gate: bool,
     pub(crate) start: u64,
     pub(crate) gate_end: u64,
     pub(crate) end: u64,
@@ -534,7 +535,7 @@ fn compile_instrument_track_with_empty_bank(
              onset_beat,
              off_beat,
              playable,
-             _starts_inside_gate| {
+             starts_inside_gate| {
                 if let Some((ordinals, samples)) = preview.as_mut()
                     && ordinals.get(samples.len()).copied() == Some(emitted)
                 {
@@ -576,6 +577,7 @@ fn compile_instrument_track_with_empty_bank(
                         )
                     };
                     spans.push(CompiledNoteSpan {
+                        starts_inside_gate,
                         start,
                         gate_end,
                         end,
@@ -636,6 +638,17 @@ trait DensitySpan {
     fn start(&self) -> u64;
     fn gate_end(&self) -> u64;
     fn end(&self) -> u64;
+}
+
+impl CompiledNoteSpan {
+    /// One explicit interactive start excludes historical onsets and a gate
+    /// synthetically clipped exactly to that destination. Later clip onsets
+    /// and later loop occurrences retain their existing playback law.
+    pub(crate) fn admitted_at_interactive_start(&self, floor: Option<u64>) -> bool {
+        floor.is_none_or(|floor| {
+            self.start > floor || (self.start == floor && !self.starts_inside_gate)
+        })
+    }
 }
 
 impl DensitySpan for CompiledNoteSpan {

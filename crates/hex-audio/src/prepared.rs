@@ -293,7 +293,10 @@ fn command_cut(entry_ticket: u64, stop_marker: u64) -> CommandCut {
 fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     match action {
         PlaybackAction::Transport(
-            PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_),
+            PlaybackCommand::Stop
+            | PlaybackCommand::Seek(_)
+            | PlaybackCommand::PlayFrom(_)
+            | PlaybackCommand::PlayFromWithNoteChase { .. },
         )
         | PlaybackAction::Session(
             hex_engine::SessionPlaybackCommand::Stop | hex_engine::SessionPlaybackCommand::Seek(_),
@@ -316,14 +319,16 @@ fn is_pause_action(action: PlaybackAction) -> bool {
 fn starts_playback(action: PlaybackAction) -> bool {
     matches!(
         action,
-        PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::PlayFrom(_))
-            | PlaybackAction::Session(
-                hex_engine::SessionPlaybackCommand::Play
-                    | hex_engine::SessionPlaybackCommand::LaunchClip { .. }
-                    | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
-                    | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
-            )
-            | PlaybackAction::LaunchAndPlay(_)
+        PlaybackAction::Transport(
+            PlaybackCommand::Play
+                | PlaybackCommand::PlayFrom(_)
+                | PlaybackCommand::PlayFromWithNoteChase { .. }
+        ) | PlaybackAction::Session(
+            hex_engine::SessionPlaybackCommand::Play
+                | hex_engine::SessionPlaybackCommand::LaunchClip { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
+                | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
+        ) | PlaybackAction::LaunchAndPlay(_)
     )
 }
 
@@ -338,7 +343,9 @@ fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
 // a start: it still applies to the stopped graph while a render fault is latched.
 fn fault_cursor_intent(action: PlaybackAction) -> Option<u64> {
     match action {
-        PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => Some(frame),
+        PlaybackAction::Transport(
+            PlaybackCommand::PlayFrom(frame) | PlaybackCommand::PlayFromWithNoteChase { frame, .. },
+        ) => Some(frame),
         _ => None,
     }
 }
@@ -347,7 +354,10 @@ fn recovery_cursor_action(action: PlaybackAction) -> bool {
     matches!(
         action,
         PlaybackAction::Transport(
-            PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+            PlaybackCommand::Stop
+                | PlaybackCommand::Seek(_)
+                | PlaybackCommand::PlayFrom(_)
+                | PlaybackCommand::PlayFromWithNoteChase { .. }
         ) | PlaybackAction::Session(
             hex_engine::SessionPlaybackCommand::Stop | hex_engine::SessionPlaybackCommand::Seek(_)
         )

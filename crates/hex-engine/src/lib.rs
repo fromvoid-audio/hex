@@ -1874,6 +1874,7 @@ impl Track {
         pages: Option<&mut (impl MediaPages + ?Sized)>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
@@ -1895,6 +1896,7 @@ impl Track {
                 None,
                 continuations,
                 timing,
+                interactive_onset_floor,
             )?;
         }
         Ok(())
@@ -1952,6 +1954,7 @@ impl Track {
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
         loop_fade: Option<loop_seam::LoopEndFade>,
+        interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let end_frame = start_frame
@@ -2008,6 +2011,7 @@ impl Track {
                 Some(capture),
                 continuations,
                 timing,
+                interactive_onset_floor,
             )?;
         }
         Ok(())
@@ -2036,6 +2040,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -2050,6 +2055,7 @@ impl Track {
             None,
             continuations,
             timing,
+            interactive_onset_floor,
         )
     }
 
@@ -2090,6 +2096,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
         let end = start
             .checked_add(output.len() as u64)
@@ -2104,11 +2111,16 @@ impl Track {
             continuations,
             PreparedTrackMix::identity(),
             timing,
+            interactive_onset_floor,
         )
     }
+    /// Queries analytic source occurrences for reconstruction. Audible capture
+    /// supplies its action's onset floor; structural/capability proofs pass None
+    /// and remain conservative. Already-owned release ledgers are independent.
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
+        interactive_onset_floor: Option<u64>,
         mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::PreparedMidiNote),
     ) -> Result<(), Invalid> {
         let end = frame
@@ -2116,6 +2128,9 @@ impl Track {
             .ok_or(Invalid("midi span frame overflow"))?;
         if let Some(instrument) = &self.instrument {
             instrument.for_each_intersecting(frame, end, None, |span| {
+                if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                    return;
+                }
                 if let Some(sampler) = instrument.bank.sampler(span.sampler_index) {
                     visit(span, sampler);
                 }
@@ -2446,6 +2461,7 @@ impl Track {
             None,
             &[],
             timing,
+            None,
         )
     }
 
@@ -2460,6 +2476,7 @@ impl Track {
         capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
         self.render_instrument_range_with_mix(
             (start_frame, end_frame),
@@ -2471,6 +2488,7 @@ impl Track {
             continuations,
             self.source_mix,
             timing,
+            interactive_onset_floor,
         )
     }
 
@@ -2486,6 +2504,7 @@ impl Track {
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         source_mix: PreparedTrackMix,
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        interactive_onset_floor: Option<u64>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         if let Some(instrument) = &self.instrument {
@@ -2506,6 +2525,9 @@ impl Track {
                     chunk_end,
                     midi_onset_floor_exclusive,
                     |span| {
+                        if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                            return;
+                        }
                         let carried =
                             self.track_id.is_some_and(|track| {
                                 suppressions
@@ -3656,6 +3678,7 @@ impl RendererRuntime {
                     pages.as_deref_mut(),
                     &[],
                     volume_timing,
+                    None,
                 )?;
                 continue;
             }
@@ -4026,6 +4049,7 @@ pub(crate) fn render_source_generators(
             &[],
             PreparedTrackMix::identity(),
             timing,
+            None,
         )?;
     }
     Ok(())
@@ -4359,9 +4383,10 @@ pub use midi_template::{
     SessionMidiOrigin,
 };
 pub use playback::{
-    MAX_TIMED_TRANSPORT_COMMANDS, PlaybackAction, PlaybackActionError, PlaybackActionRejection,
-    PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability,
-    SessionCapabilityStatus, TimedTransportCommand, TimedTransportError, TransportFadeCompletion,
+    MAX_TIMED_TRANSPORT_COMMANDS, NoteChase, PlaybackAction, PlaybackActionError,
+    PlaybackActionRejection, PlaybackCommand, PlaybackHandoffError, PlaybackHandoffRejection,
+    SessionCapability, SessionCapabilityStatus, TimedTransportCommand, TimedTransportError,
+    TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};

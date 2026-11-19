@@ -547,6 +547,9 @@ pub struct SessionPlayback {
     anchor: Option<SessionClockAnchor>,
     /// Reset-and-chase frontier, retained until a successful nonempty render.
     interactive_start_frame: Option<u64>,
+    /// One interactive start's inclusive Arrangement onset floor. Only the
+    /// first loop pass uses it; later authored loop occurrences remain eligible.
+    interactive_onset_floor: Option<u64>,
     // One exact muted-onset chase, retained until a successful render.
     pending_shared_chase: Option<PendingSharedChase>,
     pending_shared_live: Option<PendingSharedLive>,
@@ -994,6 +997,7 @@ impl SessionPlayback {
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            interactive_onset_floor: _,
             pending_shared_chase: _,
             pending_shared_live: _,
             historical_floor: _,
@@ -1127,6 +1131,14 @@ impl SessionPlayback {
         {
             chain.set_metering(enabled);
         }
+    }
+
+    /// Preserve Some(0): a source-window gate clipped to frame zero differs
+    /// from an authored onset exactly there.
+    pub(super) fn interactive_note_onset_floor(&self) -> Option<u64> {
+        (self.arrangement_loop_pass == 0)
+            .then_some(self.interactive_onset_floor)
+            .flatten()
     }
 
     pub(super) fn historical_floor_for(&self, route_index: usize) -> Option<BeatTime> {
@@ -2282,6 +2294,7 @@ impl SessionPlayback {
             periodic_tempo,
             anchor: None,
             interactive_start_frame: None,
+            interactive_onset_floor: None,
             pending_shared_chase: None,
             pending_shared_live: None,
             historical_floor: None,
@@ -2532,7 +2545,7 @@ impl SessionPlayback {
             }
             let mut active = false;
             track
-                .for_each_active_midi_span(self.arrangement_frame, |_, _| active = true)
+                .for_each_active_midi_span(self.arrangement_frame, None, |_, _| active = true)
                 .is_ok()
                 && !active
         }) && self.releases.is_empty()
@@ -2559,7 +2572,7 @@ impl SessionPlayback {
             }
             let mut active = false;
             track
-                .for_each_active_midi_span(self.arrangement_frame, |_, _| active = true)
+                .for_each_active_midi_span(self.arrangement_frame, None, |_, _| active = true)
                 .is_err()
                 || active
         })
