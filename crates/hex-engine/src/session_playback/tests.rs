@@ -6,7 +6,7 @@ mod frozen_instrument_parameters;
 mod instrument_matrix_ramp;
 mod interactive_start;
 mod release_timeline;
-mod session_note_chase;
+pub(super) mod session_note_chase;
 mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
