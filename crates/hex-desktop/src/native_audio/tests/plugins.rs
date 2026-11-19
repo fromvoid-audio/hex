@@ -2276,6 +2276,8 @@ fn confirmed_vst3_insert_keeps_the_prepared_worker_and_output() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() {
+    use hex_session::device_gesture::{ParameterId, ParameterValue};
+
     let _native = native_fixture();
     let files = Files::new();
     let (reached, facts) = mpsc::sync_channel(1);
@@ -2325,8 +2327,8 @@ fn resident_vst3_insertion_keeps_an_eq_write_accepted_while_native_facts_wait() 
     let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     let edited = h.run(Request::SetDeviceParameter {
         device,
-        parameter: hex_lattice_contract::ParameterId::from_static(202),
-        value: hex_lattice_contract::ParameterValue::Float(0.5),
+        parameter: ParameterId::from_static(202),
+        value: ParameterValue::Float(0.5),
     });
     assert!(edited.plugin_effect_complete.is_empty());
     assert_eq!(edited.state.revision, before.state.revision + 1);
