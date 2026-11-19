@@ -468,8 +468,18 @@ pub(in crate::service) fn is_tempo_edit(command: &Command) -> bool {
 }
 
 pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<GraphEditOperation> {
+    catalog_graph_edit_operation(command, false)
+}
+
+fn catalog_graph_edit_operation(command: &Command, controlled: bool) -> Option<GraphEditOperation> {
     match command {
-        Command::InitializeDevice(initialization) => graph_edit_operation(initialization.command()),
+        Command::InitializeDevice(initialization) => {
+            catalog_graph_edit_operation(initialization.command(), controlled)
+        }
+        // The picker keeps the instrument's identity but uses the same exact
+        // install fence as an insertion. Ordinary state edits retain their
+        // existing publication and parameter semantics.
+        Command::ReplaceDeviceState { .. } if controlled => Some(GraphEditOperation::InsertDevice),
         Command::InsertDevice { .. }
         | Command::InsertInstrument { .. }
         | Command::LoadInstrument { .. }
@@ -520,7 +530,7 @@ pub(in crate::service) fn submit_browser_edit(
         editor_revision: state.revision,
     };
     if let Some(operation @ (GraphEditOperation::InsertDevice | GraphEditOperation::MoveDevice)) =
-        graph_edit_operation(&command)
+        catalog_graph_edit_operation(&command, proposal_control.is_some())
         && let Some(sink) = events.resident_audio()
     {
         match session.audio_mode() {
@@ -619,13 +629,15 @@ impl Session {
             Operation::Tempo
         } else {
             Operation::Device(
-                graph_edit_operation(&command)
+                catalog_graph_edit_operation(&command, proposal_control.is_some())
                     .ok_or(SessionError::Invalid("unsupported staged graph edit"))?,
             )
         };
         let edit = self.editor.stage_edit(command)?;
         let tempo_cut = matches!(operation, Operation::Tempo);
-        if (tempo_cut || operation.device() == Some(GraphEditOperation::MoveDevice))
+        if (tempo_cut
+            || operation.device() == Some(GraphEditOperation::MoveDevice)
+            || proposal_control.is_some())
             && edit.project() == self.project()
         {
             return Ok(None);
@@ -732,11 +744,13 @@ impl Session {
                 // The hosted browser also stages replacement of an instrument.
                 GraphEditOperation::InsertDevice
             } else {
-                graph_edit_operation(&command)
+                catalog_graph_edit_operation(&command, proposal_control.is_some())
                     .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
             };
             let edit = self.editor.stage_edit(command)?;
-            if operation == GraphEditOperation::MoveDevice && edit.project() == self.project() {
+            if (operation == GraphEditOperation::MoveDevice || proposal_control.is_some())
+                && edit.project() == self.project()
+            {
                 return Ok(None);
             }
             let installed = sink

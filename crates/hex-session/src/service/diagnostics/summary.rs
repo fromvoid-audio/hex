@@ -1647,6 +1647,15 @@ pub(super) fn request(value: &Request) -> Description {
             description.nested("destination", self::effect_bus_destination(destination));
             description
         }
+        Request::LoadTrackCatalogDevice {
+            project_generation,
+            revision,
+            track,
+            type_id,
+            ..
+        } => {
+            describe!("load_track_catalog_device"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "type_id" => type_id.as_str()]; omitted="class,placement")
+        }
         Request::DropBrowserDeviceOnArrangement {
             project_generation,
             revision,

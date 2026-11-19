@@ -401,16 +401,54 @@ fn catalog_proposal_keeps_selection_and_the_exact_terminal_for_each_entry_point(
         BrowserEnter,
         Bus,
         TrackRail,
+        TrackPicker,
+        ReplaceInstrument,
     }
-    for inbox in [Inbox::BrowserEnter, Inbox::Bus, Inbox::TrackRail] {
+    for inbox in [
+        Inbox::BrowserEnter,
+        Inbox::Bus,
+        Inbox::TrackRail,
+        Inbox::TrackPicker,
+        Inbox::ReplaceInstrument,
+    ] {
         let (service, fixture, _) = service();
         service
             .submit(Request::Edit(Command::AddTrack {
                 name: "existing".into(),
             }))
             .unwrap();
-        let original = receive(&service);
+        let mut original = receive(&service);
         let track = original.state.project.tracks()[0].id();
+        let prior_instrument = if matches!(inbox, Inbox::ReplaceInstrument) {
+            let state = hex_engine::default_native_device_state_for_class(
+                NativeDeviceClass::Instrument,
+                DeviceTypeId::from_static("hex.instrument.sine"),
+            )
+            .unwrap();
+            service
+                .submit(Request::Edit(Command::InsertInstrument { track, state }))
+                .unwrap();
+            let seeded = receive(&service);
+            assert!(!seeded.request_complete && seeded.error.is_none());
+            original = install_candidate(&service, &fixture);
+            assert!(
+                original.request_complete && original.error.is_none(),
+                "{:?}",
+                original.error
+            );
+            Some(
+                original
+                    .state
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .id(),
+            )
+        } else {
+            None
+        };
         let original_runtime = fixture.lock().unwrap().active;
         let insert = |control| match inbox {
             Inbox::BrowserEnter => Request::InsertBrowserInstrumentTrack {
@@ -442,7 +480,49 @@ fn catalog_proposal_keeps_selection_and_the_exact_terminal_for_each_entry_point(
                 replace: None,
                 control: Some(control),
             },
+            Inbox::TrackPicker | Inbox::ReplaceInstrument => {
+                let (placement, class, type_id) = match prior_instrument {
+                    Some(device) => (
+                        TrackCatalogPlacement::ReplaceInstrument(device),
+                        NativeDeviceClass::Instrument,
+                        DeviceTypeId::from_static("hex.instrument.operator"),
+                    ),
+                    None => (
+                        TrackCatalogPlacement::Insert { before: None },
+                        NativeDeviceClass::Effect,
+                        DeviceTypeId::from_static("hex.utility"),
+                    ),
+                };
+                Request::LoadTrackCatalogDevice {
+                    project_generation: 0,
+                    revision: original.state.revision,
+                    track,
+                    class,
+                    type_id,
+                    placement,
+                    control,
+                }
+            }
         };
+        if matches!(inbox, Inbox::TrackPicker | Inbox::ReplaceInstrument) {
+            let control = Arc::new(PluginEffectControl::default());
+            let mut stale = insert(Arc::clone(&control));
+            if let Request::LoadTrackCatalogDevice { revision, .. } = &mut stale {
+                *revision += 1;
+            }
+            service.submit(stale).unwrap();
+            let refused = service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
+            assert!(
+                refused.request_complete
+                    && refused.error.as_ref().unwrap().contains("project changed")
+            );
+            assert_eq!(refused.state.project, original.state.project);
+            let completion = refused.device_insert_proposal_complete.unwrap();
+            assert!(!completion.accepted && Arc::ptr_eq(&completion.control, &control));
+        }
         for cancel in [true, false] {
             let control = Arc::new(PluginEffectControl::default());
             service.submit(insert(Arc::clone(&control))).unwrap();
@@ -493,6 +573,29 @@ fn catalog_proposal_keeps_selection_and_the_exact_terminal_for_each_entry_point(
                         assert_eq!(
                             terminal.state.project.track(track).unwrap().devices().len(),
                             1
+                        );
+                        assert!(terminal.created.is_none());
+                    }
+                    Inbox::TrackPicker => {
+                        let track = terminal.state.project.track(track).unwrap();
+                        assert_eq!(track.devices().len(), 1);
+                        assert_eq!(
+                            terminal.created,
+                            Some(Created::Device(track.devices()[0].id()))
+                        );
+                    }
+                    Inbox::ReplaceInstrument => {
+                        let device = terminal
+                            .state
+                            .project
+                            .track(track)
+                            .unwrap()
+                            .instrument()
+                            .unwrap();
+                        assert_eq!(Some(device.id()), prior_instrument);
+                        assert_eq!(
+                            device.state().type_id(),
+                            DeviceTypeId::from_static("hex.instrument.operator")
                         );
                         assert!(terminal.created.is_none());
                     }

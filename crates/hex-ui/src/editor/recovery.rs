@@ -138,6 +138,9 @@ impl EditorView {
             } | Request::AddNativeDevice {
                 class: NativeDeviceClass::Effect,
                 ..
+            } | Request::LoadTrackCatalogDevice {
+                class: NativeDeviceClass::Effect,
+                ..
             }
         )
         .then_some(DeferredEditKind::NativeEffect)
@@ -194,6 +197,11 @@ impl EditorView {
                 ..
             }
             | Request::DropNativeDevice {
+                project_generation,
+                revision,
+                ..
+            }
+            | Request::LoadTrackCatalogDevice {
                 project_generation,
                 revision,
                 ..

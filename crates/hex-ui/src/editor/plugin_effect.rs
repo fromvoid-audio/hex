@@ -573,7 +573,9 @@ impl EditorView {
         use PluginEffectDestination as Destination;
         use hex_engine::NativeDeviceClass;
         use hex_project::TrackDeviceSlot;
-        use hex_session::service::{EffectBusDestination, NativeDeviceDropSource};
+        use hex_session::service::{
+            EffectBusDestination, NativeDeviceDropSource, TrackCatalogPlacement,
+        };
 
         let Some(state) = &self.state else {
             return self.enqueue_device_barrier(request);
@@ -594,6 +596,34 @@ impl EditorView {
                     Destination::ReplaceInstrument { track, instrument }
                 }),
         };
+        if let Request::LoadTrackCatalogDevice {
+            track,
+            class,
+            type_id,
+            placement,
+            control,
+            ..
+        } = &request
+        {
+            let (before, replace) = match *placement {
+                TrackCatalogPlacement::Insert { before } => (before, None),
+                TrackCatalogPlacement::ReplaceInstrument(device) => (None, Some(device)),
+            };
+            let (class, type_id, destination, control) = (
+                *class,
+                *type_id,
+                track_slot(*track, *class, replace),
+                Arc::clone(control),
+            );
+            return self.enqueue_builtin_proposal(
+                request,
+                control,
+                class,
+                type_id,
+                destination,
+                before,
+            );
+        }
         let (class, type_id, destination, before, slot_control) = match &mut request {
             Request::DropBrowserDeviceOnArrangement {
                 class,
@@ -656,6 +686,20 @@ impl EditorView {
             ),
             _ => return self.enqueue_device_barrier(request),
         };
+        let control = Arc::new(PluginEffectControl::default());
+        *slot_control = Some(Arc::clone(&control));
+        self.enqueue_builtin_proposal(request, control, class, type_id, destination, before)
+    }
+
+    fn enqueue_builtin_proposal(
+        &mut self,
+        request: Request,
+        control: Arc<PluginEffectControl>,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        destination: PluginEffectDestination,
+        before: Option<hex_project::DeviceId>,
+    ) -> bool {
         if self.pending_plugin_effect.is_some() {
             self.error = Some("wait for the pending device insertion".into());
             return false;
@@ -667,8 +711,6 @@ impl EditorView {
                 || type_id.as_str().unwrap_or("device").to_owned(),
                 |entry| entry.name,
             );
-        let control = Arc::new(PluginEffectControl::default());
-        *slot_control = Some(Arc::clone(&control));
         if !self.enqueue_device_barrier(request) {
             return false;
         }

@@ -2801,7 +2801,7 @@ impl EditorView {
             } else {
                 None
             };
-        self.observe_effect_bus_barrier(&event);
+        self.observe_catalog_barrier(&event);
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
         if !event.project_replaced {
@@ -3013,7 +3013,7 @@ impl EditorView {
             }
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
-            self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
+            self.refuse_catalog_barriers("device load canceled · project replaced");
             self.edit_cursor = None;
             self.clip_drop_cursor_epoch = None;
             self.locked_play_start = None;
@@ -3376,7 +3376,7 @@ impl EditorView {
             if let Some(snapshot) = self.device_gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
-            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was retired");
+            self.refuse_catalog_barriers("device load canceled · device edit was retired");
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,
@@ -3519,7 +3519,7 @@ impl EditorView {
                 self.error = Some(message.into());
             }
         }
-        if let Some(reason) = self.take_effect_bus_barrier_error() {
+        if let Some(reason) = self.take_catalog_barrier_error() {
             self.error = Some(reason.into());
         }
         self.finish_sampler_parameter(sampler_edit_complete);
@@ -3701,6 +3701,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::LoadTrackCatalogDevice { .. }
                 | Request::InsertPluginEffect(_)
                 | Request::CompareDevice { .. }
                 | Request::LoadDevicePreset { .. }
@@ -3934,6 +3935,24 @@ impl EditorView {
             self.last_enqueued_native_device_replace = Some((*device, *class, **type_id));
         }
         #[cfg(test)]
+        if let Request::LoadTrackCatalogDevice {
+            track,
+            class,
+            type_id,
+            placement,
+            ..
+        } = &request
+        {
+            match placement {
+                hex_session::service::TrackCatalogPlacement::Insert { .. } => {
+                    self.last_enqueued_native_device_add = Some((*track, *class, *type_id));
+                }
+                hex_session::service::TrackCatalogPlacement::ReplaceInstrument(device) => {
+                    self.last_enqueued_native_device_replace = Some((*device, *class, *type_id));
+                }
+            }
+        }
+        #[cfg(test)]
         if let Request::DropNativeDevice {
             project_generation,
             revision,
@@ -4059,6 +4078,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::LoadTrackCatalogDevice { .. }
                 | Request::InsertPluginEffect(_)
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }

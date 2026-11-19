@@ -1060,6 +1060,17 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: Box<hex_lattice_contract::DeviceTypeId>,
     },
+    /// A picker load follows the captured track/slot through catalog defaults,
+    /// preparation, and the exact callback install receipt.
+    LoadTrackCatalogDevice {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        placement: TrackCatalogPlacement,
+        control: Arc<PluginEffectControl>,
+    },
     CompareDevice {
         owner: preset::Owner,
         expected: hex_project::DeviceVariant,
@@ -1290,6 +1301,7 @@ impl Request {
                 control,
                 ..
             } => control.as_ref(),
+            Self::LoadTrackCatalogDevice { control, .. } => Some(control),
             _ => None,
         }
     }
@@ -1450,6 +1462,39 @@ impl Request {
 pub enum EffectBusDestination {
     Main,
     Return(hex_project::ReturnId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackCatalogPlacement {
+    Insert {
+        before: Option<hex_project::DeviceId>,
+    },
+    ReplaceInstrument(hex_project::DeviceId),
+}
+
+impl TrackCatalogPlacement {
+    /// Match the captured slot against canonical project state after a known
+    /// parameter gesture, or before worker-side catalog construction.
+    pub fn matches_track(
+        self,
+        class: hex_engine::NativeDeviceClass,
+        track: &hex_project::Track,
+    ) -> bool {
+        use hex_engine::NativeDeviceClass::{Effect, Instrument};
+        match (self, class) {
+            (Self::Insert { before }, Effect) => before.is_none_or(|anchor| {
+                track
+                    .instrument()
+                    .is_some_and(|device| device.id() == anchor)
+                    || track.devices().iter().any(|device| device.id() == anchor)
+            }),
+            (Self::Insert { before: None }, Instrument) => track.instrument().is_none(),
+            (Self::ReplaceInstrument(id), Instrument) => {
+                track.instrument().is_some_and(|device| device.id() == id)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3515,6 +3560,7 @@ fn run_worker(
                 || matches!(
                     &queued.request,
                     Request::MoveExistingClips { .. }
+                        | Request::LoadTrackCatalogDevice { .. }
                         | Request::Edit(
                             Command::SetLoopRegion { .. }
                                 | Command::ToggleLoopRegion
@@ -3605,6 +3651,14 @@ fn run_worker(
         let mut device_insert_proposal = None;
         let mut repeated_device_insert = false;
         let mut device_insert_proposal_accepted = false;
+        let loading_track_catalog = matches!(&request, Request::LoadTrackCatalogDevice { .. });
+        let replacing_catalog_instrument = matches!(
+            &request,
+            Request::LoadTrackCatalogDevice {
+                placement: TrackCatalogPlacement::ReplaceInstrument(_),
+                ..
+            }
+        );
         if let Some(control) = request.builtin_device_insert_control() {
             if control.claim() {
                 device_insert_proposal = Some(Arc::clone(control));
@@ -4862,6 +4916,31 @@ fn run_worker(
                     .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
                 },
             ),
+            Request::LoadTrackCatalogDevice {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                track,
+                class,
+                type_id,
+                placement,
+                ..
+            } => Some(
+                if *expected_generation != project_generation || *expected_revision != revision {
+                    Err("device picker load canceled · project changed".into())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active device edit before loading a device".into())
+                } else {
+                    device_defaults::track_picker_command(
+                        session.project(),
+                        *track,
+                        *class,
+                        *type_id,
+                        *placement,
+                        defaults_root,
+                    )
+                },
+            ),
             Request::ReplaceDeviceModulation {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -5428,8 +5507,8 @@ fn run_worker(
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
-        let sampler_refusal = private_sampler
-            && !events.resident_publication_enabled()
+        let sampler_without_resident = private_sampler && !events.resident_publication_enabled();
+        let sampler_refusal = sampler_without_resident
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
@@ -5498,7 +5577,7 @@ fn run_worker(
             status = Some("device insertion was cancelled".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
-        } else if sampler_refusal {
+        } else if sampler_refusal || (loading_track_catalog && sampler_without_resident) {
             error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; other history steps and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, other history steps and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
@@ -6516,6 +6595,9 @@ fn run_worker(
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
                 }
+                Request::LoadTrackCatalogDevice { .. } => {
+                    error = Some("device picker request was not prepared; select it again".into());
+                }
                 Request::PaintMidiClip(_) => {
                     error = Some("clip paint target was not resolved".into());
                 }
@@ -7221,7 +7303,7 @@ fn run_worker(
                     error = Some("vst3 recovery lost its resident publication path".into());
                 }
                 Request::Edit(command) if device_insert_proposal.is_some() => {
-                    // Browser Enter and effect-bus additions are resolved through
+                    // Catalog additions and picker replacements are resolved through
                     // their existing default/owner validation and gesture barrier.
                     // Keep their Created result after the exact install.
                     let result = resident_audio::device_insert::submit_browser_edit(
@@ -7247,19 +7329,36 @@ fn run_worker(
                     );
                     match result {
                         Ok(BrowserEdit::Pending(mut staged)) => {
+                            staged.publish_created = !replacing_catalog_instrument;
                             staged.proposal_control = device_insert_proposal.take();
                             pending_device_insert = Some(*staged);
                             request_complete = false;
                             status = Some("device edit pending · waiting for audio".into());
                         }
                         Ok(BrowserEdit::Applied(new, prepared)) => {
-                            created = Some(new);
-                            unsaved = true;
-                            replacement_revision = Some(prepared);
+                            if session.project() != state.project.as_ref() {
+                                if !replacing_catalog_instrument {
+                                    created = Some(new);
+                                }
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                            }
                             device_insert_proposal_accepted = true;
-                            status = Some("device inserted".into());
+                            status = Some(
+                                if replacing_catalog_instrument {
+                                    "device replaced"
+                                } else {
+                                    "device inserted"
+                                }
+                                .into(),
+                            );
                         }
-                        Ok(BrowserEdit::Unchanged) => status = Some("no change".into()),
+                        Ok(BrowserEdit::Unchanged) => {
+                            device_insert_proposal_accepted = device_insert_proposal
+                                .as_ref()
+                                .is_some_and(|control| control.begin_commit());
+                            status = Some("no change".into());
+                        }
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }

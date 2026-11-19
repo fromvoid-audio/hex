@@ -1,6 +1,6 @@
-mod effect_bus_barrier;
+mod catalog_barrier;
 use super::EditorView;
-pub(super) use effect_bus_barrier::EffectBusBarrierState;
+pub(super) use catalog_barrier::CatalogBarrierState;
 use hex_session::device_gesture::{
     GesturePhase, GestureTarget, ParameterPairValue, ParameterValue,
 };
@@ -187,7 +187,7 @@ impl EditorView {
             .iter()
             .find_map(|request| request.builtin_device_insert_control().cloned());
         self.device_gesture_barriers.clear();
-        self.effect_bus_barrier.custody = None;
+        self.catalog_barrier.custody = None;
         if let Some(control) = insertion {
             self.retire_plugin_effect(&control, false, Some(reason));
         }
@@ -257,8 +257,8 @@ impl EditorView {
         });
         let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
         if !matched {
-            self.refuse_effect_bus_barriers(
-                "effect insertion canceled · device acknowledgment did not match",
+            self.refuse_catalog_barriers(
+                "device load canceled · device acknowledgment did not match",
             );
             return false;
         }
@@ -272,7 +272,7 @@ impl EditorView {
             super::device_panel::vst3_parameters::refresh_after_gesture(self, committed_display);
         }
         if terminal {
-            self.settle_effect_bus_barriers(ack);
+            self.settle_catalog_barriers(ack);
             self.bind_tuning_library_device_terminal(ack.key, ack.accepted);
             if !ack.accepted {
                 self.refuse_deferred_tuning_writes();
@@ -309,7 +309,7 @@ impl EditorView {
                 );
             }
         } else if ack.phase == GesturePhase::Begin && !ack.accepted {
-            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was refused");
+            self.refuse_catalog_barriers("device load canceled · device edit was refused");
             // The worker refused to admit the draft, so release dependent
             // barriers in their accepted order without an edit to finalize.
             release_deferred(
@@ -342,7 +342,7 @@ impl EditorView {
             self.error = Some("device edit queue full · request was not applied".into());
             return false;
         }
-        let custody = match self.effect_bus_custody(&request) {
+        let custody = match self.catalog_custody(&request) {
             Ok(proof) => proof,
             Err(reason) => {
                 self.error = Some(reason.into());
@@ -371,7 +371,7 @@ impl EditorView {
             request,
         ) {
             if let Some(proof) = custody {
-                self.effect_bus_barrier.custody = Some(proof);
+                self.catalog_barrier.custody = Some(proof);
             }
             true
         } else {
@@ -390,7 +390,7 @@ impl EditorView {
         let Some(request) = request.take() else {
             return Some(false);
         };
-        let custody = match self.effect_bus_custody(&request) {
+        let custody = match self.catalog_custody(&request) {
             Ok(proof) => proof,
             Err(reason) => {
                 self.error = Some(reason.into());
@@ -403,7 +403,7 @@ impl EditorView {
             request,
         ) {
             if let Some(proof) = custody {
-                self.effect_bus_barrier.custody = Some(proof);
+                self.catalog_barrier.custody = Some(proof);
             }
             Some(true)
         } else {

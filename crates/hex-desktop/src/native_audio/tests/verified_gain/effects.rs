@@ -7,8 +7,18 @@ use hex_session::device_gesture::{
 
 #[test]
 fn verified_builtin_proposal_cancels_a_queued_graph_before_the_callback_installs_it() {
+    verified_builtin_proposal_cancels(false);
+}
+
+#[test]
+fn verified_track_picker_insert_cancels_the_exact_queued_graph() {
+    verified_builtin_proposal_cancels(true);
+}
+
+fn verified_builtin_proposal_cancels(use_picker: bool) {
     use hex_session::service::{
         ArrangementDeviceDestination, DeviceInsertOutcome, PluginEffectControl,
+        TrackCatalogPlacement,
     };
     let _native = native_fixture();
     let files = Files::new();
@@ -33,22 +43,33 @@ fn verified_builtin_proposal_cancels_a_queued_graph_before_the_callback_installs
         .unwrap();
     wait_for_audio(&h);
     let control = Arc::new(PluginEffectControl::default());
-    h.service
-        .as_ref()
-        .unwrap()
-        .submit(Request::DropBrowserDeviceOnArrangement {
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let type_id = hex_engine::DeviceTypeId::from_static("hex.utility");
+    let request = if use_picker {
+        Request::LoadTrackCatalogDevice {
             project_generation: predecessor.context.project_generation,
             revision: imported.state.revision,
-            class: hex_engine::NativeDeviceClass::Effect,
-            type_id: hex_engine::DeviceTypeId::from_static("hex.utility"),
+            track,
+            class,
+            type_id,
+            placement: TrackCatalogPlacement::Insert { before: None },
+            control: Arc::clone(&control),
+        }
+    } else {
+        Request::DropBrowserDeviceOnArrangement {
+            project_generation: predecessor.context.project_generation,
+            revision: imported.state.revision,
+            class,
+            type_id,
             destination: ArrangementDeviceDestination::ExistingTrack {
                 track,
                 instrument: None,
             },
             new_track_gain: None,
             control: Some(Arc::clone(&control)),
-        })
-        .unwrap();
+        }
+    };
+    h.service.as_ref().unwrap().submit(request).unwrap();
     let staged = h.next();
     assert!(!staged.request_complete && staged.error.is_none());
     assert_eq!(staged.state.project, imported.state.project);
