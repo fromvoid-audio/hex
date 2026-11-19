@@ -192,12 +192,23 @@ fn compensated_shared_analytic_receiver_has_no_callback_allocations() -> Result<
 #[test]
 fn shared_mutable_receiver_handoff_pause_and_live_off_allocate_and_free_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
-    shared_source_callback(false)
+    shared_source_callback(false, PlaybackCommand::Play)
 }
 #[test]
 fn shared_analytic_receiver_handoff_pause_and_live_off_allocate_and_free_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
-    shared_source_callback(true)
+    for note_chase in [hex_engine::NoteChase::On, hex_engine::NoteChase::Off] {
+        // Both gates really start at zero. Off must retain the same audible
+        // oracle while carrying Some(0) through handoff and Pause capture.
+        shared_source_callback(
+            true,
+            PlaybackCommand::PlayFromWithNoteChase {
+                frame: 0,
+                note_chase,
+            },
+        )?;
+    }
+    Ok(())
 }
 #[test]
 fn shared_source_live_pressure_refusal_allocates_and_frees_nothing_in_callback()
@@ -772,7 +783,7 @@ fn shared_source_authored_release_pressure_refuses_publication_without_callback_
     Ok(())
 }
 
-fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
+fn shared_source_callback(analytic: bool, start: PlaybackCommand) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 32)?;
     let Created::Track(a) = editor.execute(Command::InsertTrackWithDevice {
         name: "source".into(),
@@ -853,9 +864,7 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
     control
         .publish_with_policy_and_context_generation(initial, PublicationPolicy::InheritRuntime, 7)
         .map_err(|error| error.reason)?;
-    control
-        .command(PlaybackCommand::Play)
-        .map_err(|_| "command queue full")?;
+    control.command(start).map_err(|_| "command queue full")?;
     let mut output = [[0.0; 2]; 257];
     for step in 0..10 {
         let mut published = None;

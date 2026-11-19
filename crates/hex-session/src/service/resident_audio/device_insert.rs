@@ -185,6 +185,12 @@ impl VerifiedGraphEditAttempt {
         self.0.tempo_cut
     }
 
+    /// Latest apply decision for a verified device edit. Audio retains this
+    /// deadline with the receipt once control hands the candidate to it.
+    pub fn preparation_deadline(&self) -> Instant {
+        self.0.prepare_until
+    }
+
     /// Bind the caller's cancellation to the very receipt being queued.
     pub fn bind_proposal_receipt(
         &self,

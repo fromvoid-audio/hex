@@ -121,6 +121,7 @@ fn reversed_stream_matches_resident_pcm_and_page_demands_across_boundaries() {
             &[],
             None,
             None,
+            None,
         )
         .unwrap();
     assert_eq!(output, expected[..64]);

@@ -29,18 +29,28 @@ fn verified_device_insert_binds_cancellation_before_the_callback_can_install() {
     check_insert(Insert::CancelledAtEnqueue);
 }
 
+#[test]
+fn verified_device_insert_expires_at_the_preparation_deadline() {
+    check_insert(Insert::PreparationDeadline);
+}
+
 enum Insert {
     Seamless,
     Confirmed,
     StopAtFade,
     PageCapacity,
     CancelledAtEnqueue,
+    PreparationDeadline,
 }
 
 fn check_insert(insert: Insert) {
     let _serial = serial();
     let cancel = matches!(insert, Insert::CancelledAtEnqueue);
-    let needs_confirmation = !matches!(insert, Insert::Seamless | Insert::CancelledAtEnqueue);
+    let expire = matches!(insert, Insert::PreparationDeadline);
+    let needs_confirmation = !matches!(
+        insert,
+        Insert::Seamless | Insert::CancelledAtEnqueue | Insert::PreparationDeadline
+    );
     let stop = matches!(insert, Insert::StopAtFade);
     let small_cache = matches!(insert, Insert::PageCapacity);
     let device = if needs_confirmation {
@@ -143,18 +153,56 @@ fn check_insert(insert: Insert) {
         domain,
         active_context,
     );
+    if expire {
+        let late = control.stage_verified_device_insert(
+            token,
+            active_context,
+            predecessor,
+            None,
+            Instant::now(),
+            |_| panic!("expired preparation bound a receipt"),
+        );
+        assert_eq!(
+            late.err(),
+            Some("verified graph edit preparation timed out")
+        );
+        assert_eq!(control.submitted_revision(), predecessor.audio_revision);
+    }
+    let prepare_until = Instant::now()
+        + if expire {
+            Duration::from_millis(75)
+        } else {
+            Duration::from_secs(2)
+        };
     let (mut ticket, receipt) = control
-        .stage_verified_device_insert(token, active_context, predecessor, None, |receipt| {
-            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
-            if cancel {
-                assert_eq!(
-                    receipt.cancel(),
-                    crate::prepared::FreshRuntimeCancellationResult::Cancelled
-                );
-            }
-        })
+        .stage_verified_device_insert(
+            token,
+            active_context,
+            predecessor,
+            None,
+            prepare_until,
+            |receipt| {
+                assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+                if cancel {
+                    assert_eq!(
+                        receipt.cancel(),
+                        crate::prepared::FreshRuntimeCancellationResult::Cancelled
+                    );
+                }
+            },
+        )
         .unwrap();
-    if cancel {
+    if expire {
+        std::thread::sleep(prepare_until.saturating_duration_since(Instant::now()));
+        let position = control.status.position.load(Acquire);
+        assert_eq!(block(), [[0.25; 2]; 64]);
+        assert_eq!(control.status.position.load(Acquire), position + 64);
+        assert_eq!(receipt.state(), PublicationReceiptState::Expired);
+        assert_eq!(
+            recover(&mut control, &ticket).return_kind,
+            crate::AudioCandidateReturnKind::NeverInstalled
+        );
+    } else if cancel {
         assert_eq!(block(), [[0.25; 2]; 64]);
     } else {
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
@@ -195,7 +243,14 @@ fn check_insert(insert: Insert) {
             assert_eq!(control.status.position.load(Acquire), cut);
         }
         let approved = control
-            .stage_verified_device_insert(token, active_context, predecessor, Some(offer), |_| {})
+            .stage_verified_device_insert(
+                token,
+                active_context,
+                predecessor,
+                Some(offer),
+                Instant::now() + Duration::from_secs(2),
+                |_| {},
+            )
             .unwrap();
         ticket = approved.0;
         let receipt = approved.1;
@@ -239,7 +294,9 @@ fn check_insert(insert: Insert) {
     } else {
         receipt
     };
-    let (expected_state, expected_source) = if cancel {
+    let (expected_state, expected_source) = if expire {
+        (PublicationReceiptState::Expired, predecessor)
+    } else if cancel {
         (PublicationReceiptState::Cancelled, predecessor)
     } else if small_cache {
         (
@@ -276,7 +333,9 @@ fn check_insert(insert: Insert) {
     drop(errors);
     let _ = retirement.advance().unwrap();
     drop(recover(&mut control, &first_ticket));
-    drop(recover(&mut control, &ticket));
+    if !expire {
+        drop(recover(&mut control, &ticket));
+    }
     drop(control);
     finish(&mut retirement);
 }
