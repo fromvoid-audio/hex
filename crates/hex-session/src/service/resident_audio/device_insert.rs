@@ -104,6 +104,7 @@ pub(in crate::service) struct Pending {
     pub(in crate::service) cut_tracks: Option<Arc<hex_project::TrackClipboard>>,
     pub(in crate::service) document_intent: u64,
     pub(in crate::service) plugin: Option<plugin_effect::Pending>,
+    pub(in crate::service) publish_created: bool,
 }
 
 struct Resident {
@@ -446,6 +447,7 @@ pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<Grap
         Command::InitializeDevice(initialization) => graph_edit_operation(initialization.command()),
         Command::InsertDevice { .. }
         | Command::InsertInstrument { .. }
+        | Command::LoadInstrument { .. }
         | Command::InsertMainDevice { .. }
         | Command::InsertReturnDevice { .. }
         | Command::InsertTrackWithDevice { .. }
@@ -458,6 +460,84 @@ pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<Grap
         Command::RemoveTrack(_) | Command::RemoveTracks(_) => Some(GraphEditOperation::RemoveTrack),
         _ => None,
     }
+}
+
+pub(in crate::service) enum BrowserEdit {
+    Pending(Box<Pending>),
+    Applied(Created, Arc<PreparedRevision>),
+    Unchanged,
+}
+
+/// Browser requests that resolve to an insertion use the same install
+/// receipt as explicit graph commands. Non-inserting drops and offline
+/// callers continue through ordinary command preparation.
+#[allow(clippy::too_many_arguments)] // Exact request, editor and audio owners.
+pub(in crate::service) fn submit_browser_edit(
+    session: &mut Session,
+    command: Command,
+    state: &ViewState,
+    project_generation: u64,
+    previous: Option<&PreparedRevision>,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+    document_intent: u64,
+) -> Result<BrowserEdit, SessionError> {
+    let context = hex_engine::AudioSourceContext {
+        project_generation,
+        editor_revision: state.revision,
+    };
+    if graph_edit_operation(&command) == Some(GraphEditOperation::InsertDevice)
+        && let Some(sink) = events.resident_audio()
+    {
+        match session.audio_mode() {
+            DocumentAudioMode::Resident
+                if sink.resident_publication_enabled() && sink.confirms_device_inserts() =>
+            {
+                return session
+                    .stage_resident_device_insert(
+                        command,
+                        context,
+                        sink,
+                        admission,
+                        resident.as_ref(),
+                        None,
+                        document_intent,
+                    )
+                    .map(|pending| BrowserEdit::Pending(Box::new(pending)));
+            }
+            DocumentAudioMode::VerifiedStreaming if sink.confirms_verified_device_inserts() => {
+                return session
+                    .stage_verified_graph_edit(
+                        command,
+                        state,
+                        previous,
+                        sink,
+                        document_intent,
+                        None,
+                    )
+                    .map(|pending| {
+                        pending.map_or(BrowserEdit::Unchanged, |pending| {
+                            BrowserEdit::Pending(Box::new(pending))
+                        })
+                    });
+            }
+            _ => {}
+        }
+    }
+    let (created, prepared) = super::execute_command(
+        session,
+        command,
+        previous,
+        hex_engine::AudioSourceContext {
+            editor_revision: context.editor_revision.saturating_add(1),
+            ..context
+        },
+        events,
+        resident,
+        admission,
+    )?;
+    Ok(BrowserEdit::Applied(created, prepared))
 }
 
 impl Session {
@@ -571,6 +651,7 @@ impl Session {
             cut_tracks: None,
             document_intent,
             plugin: None,
+            publish_created: true,
         }))
     }
 
@@ -664,6 +745,7 @@ impl Session {
                 cut_tracks: None,
                 document_intent,
                 plugin: None,
+                publish_created: true,
             })
         })();
         if staged.is_err() {

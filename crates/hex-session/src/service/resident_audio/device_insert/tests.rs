@@ -275,6 +275,130 @@ impl Drop for SavedFile {
 }
 
 #[test]
+fn browser_device_insertions_wait_for_the_exact_install_receipt() {
+    let (service, fixture, _) = service();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "audio".into(),
+        }))
+        .unwrap();
+    let original = receive(&service);
+    let track = original.state.project.tracks()[0].id();
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.eq");
+
+    let drop_on_track = |revision| Request::DropNativeDevice {
+        project_generation: 0,
+        revision,
+        source: NativeDeviceDropSource::Browser { class, type_id },
+        track,
+        before: None,
+        replace: None,
+    };
+    service
+        .submit(drop_on_track(original.state.revision))
+        .unwrap();
+    let staged = receive(&service);
+    assert!(!staged.request_complete);
+    assert_eq!(staged.state.project, original.state.project);
+    assert_eq!(staged.state.revision, original.state.revision);
+
+    let (candidate, predecessor) = {
+        let fixture = fixture.lock().unwrap();
+        (fixture.candidate.clone().unwrap(), fixture.active)
+    };
+    candidate.state.store(REFUSED, Ordering::Release);
+    let refused = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
+    assert!(refused.request_complete);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, original.state.project);
+    assert_eq!(refused.state.revision, original.state.revision);
+    assert_eq!(fixture.lock().unwrap().active, predecessor);
+
+    let mut installed = refused;
+    let requests = [
+        drop_on_track(original.state.revision),
+        Request::AddNativeDevice {
+            track,
+            class,
+            type_id: Box::new(type_id),
+            before: None,
+        },
+        Request::DropBrowserDeviceOnArrangement {
+            project_generation: 0,
+            revision: original.state.revision + 2,
+            class,
+            type_id,
+            destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+            new_track_gain: None,
+        },
+    ];
+    for (index, request) in requests.into_iter().enumerate() {
+        service.submit(request).unwrap();
+        let staged = receive(&service);
+        assert!(!staged.request_complete);
+        assert_eq!(staged.state.project, installed.state.project);
+        assert_eq!(staged.state.revision, installed.state.revision);
+
+        let submission = {
+            let mut fixture = fixture.lock().unwrap();
+            let receipt = fixture.candidate.as_ref().unwrap();
+            let submission = receipt.submission;
+            assert_eq!(
+                receipt.state.compare_exchange(
+                    PENDING,
+                    INSTALLED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire
+                ),
+                Ok(PENDING)
+            );
+            fixture.active = Some(ResidentRuntimeLoop {
+                output_identity: submission.output_identity,
+                audio_revision: submission.audio_revision,
+                source_context: Some(submission.context),
+                source_origin: ResidentSourceOrigin::CanonicalCandidate,
+                section_loop: None,
+            });
+            submission
+        };
+        let prior = installed;
+        installed = receive(&service);
+        assert!(installed.request_complete);
+        assert_eq!(installed.state.revision, prior.state.revision + 1);
+        assert_eq!(
+            installed.device_insert_complete,
+            Some(DeviceInsertCompletion {
+                submission,
+                outcome: DeviceInsertOutcome::Installed
+            })
+        );
+        if index == 2 {
+            assert!(
+                installed.created.is_none(),
+                "arrangement drop keeps track focus"
+            );
+            let new_track = installed.state.project.tracks().last().unwrap();
+            assert_eq!(new_track.devices()[0].state().type_id(), type_id);
+        } else {
+            assert_eq!(
+                installed
+                    .state
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .devices()
+                    .len(),
+                index + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn native_insert_is_saved_and_undone_only_after_its_install_receipt() {
     let (service, fixture, initial) = service();
     let pending = insert_utility(&service);

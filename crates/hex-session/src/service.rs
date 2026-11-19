@@ -79,6 +79,7 @@ pub use clip_audition::{
 };
 mod publication_wait;
 mod resident_audio;
+use resident_audio::device_insert::BrowserEdit;
 mod resident_preview;
 mod resident_seek;
 mod stopped_arrangement;
@@ -6235,12 +6236,13 @@ fn run_worker(
                         let verified = pending.verified_attempt().cloned();
                         let was_offered = pending.awaiting_confirmation();
                         let plugin = pending.plugin.take();
-                        let publish_created = plugin.as_ref().is_none_or(|plugin| {
-                            !matches!(
-                                plugin.insertion.destination,
-                                PluginEffectDestination::NewTrack { .. }
-                            )
-                        });
+                        let publish_created = pending.publish_created
+                            && plugin.as_ref().is_none_or(|plugin| {
+                                !matches!(
+                                    plugin.insertion.destination,
+                                    PluginEffectDestination::NewTrack { .. }
+                                )
+                            });
                         request_complete = plugin.is_none();
                         let outcome = match terminal {
                             DeviceInsertAudioState::Installed => {
@@ -6513,14 +6515,12 @@ fn run_worker(
                         })
                     };
                     match command.and_then(|command| {
-                        resident_audio::execute_command(
+                        resident_audio::device_insert::submit_browser_edit(
                             &mut session,
                             command,
+                            &state,
+                            project_generation,
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            hex_engine::AudioSourceContext {
-                                project_generation,
-                                editor_revision: revision.saturating_add(1),
-                            },
                             &mut events,
                             &mut resident_snapshot,
                             export_lane.admission_with_resident_owners(
@@ -6533,17 +6533,25 @@ fn run_worker(
                                 resident_seek.as_ref(),
                                 resident_preview.as_ref(),
                             ),
+                            request_document_intent,
                         )
                         .map_err(|error| {
                             hex_storage::text::lowercase_outside_verbatim(&error.to_string())
                         })
                     }) {
-                        Ok((_, prepared)) => {
+                        Ok(BrowserEdit::Pending(mut staged)) => {
+                            staged.publish_created = false;
+                            pending_device_insert = Some(*staged);
+                            request_complete = false;
+                            status = Some("device edit pending · waiting for audio".into());
+                        }
+                        Ok(BrowserEdit::Applied(_, prepared)) => {
                             // No Created::Track focus response: this drop preserves prior selection.
                             unsaved = true;
                             replacement_revision = Some(prepared);
                             status = Some("device added to arrangement".into());
                         }
+                        Ok(BrowserEdit::Unchanged) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason),
                     }
                 }
@@ -6655,14 +6663,12 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match resident_audio::execute_command(
+                            match resident_audio::device_insert::submit_browser_edit(
                                 &mut session,
                                 command,
+                                &state,
+                                project_generation,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision.saturating_add(1),
-                                },
                                 &mut events,
                                 &mut resident_snapshot,
                                 export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
@@ -6671,8 +6677,15 @@ fn run_worker(
                                         prepared: Some(prepared),
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
+                                request_document_intent,
                             ) {
-                                Ok((_, prepared)) if session.project() != &before_project => {
+                                Ok(BrowserEdit::Pending(mut staged)) => {
+                                    staged.publish_created = false;
+                                    pending_device_insert = Some(*staged);
+                                    request_complete = false;
+                                    status = Some("device edit pending · waiting for audio".into());
+                                }
+                                Ok(BrowserEdit::Applied(_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     status = Some(match source {
@@ -6689,7 +6702,7 @@ fn run_worker(
                                         }
                                     });
                                 }
-                                Ok(_) => status = Some("no change".into()),
+                                Ok(BrowserEdit::Applied(..) | BrowserEdit::Unchanged) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
@@ -8127,14 +8140,12 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match resident_audio::execute_command(
+                            match resident_audio::device_insert::submit_browser_edit(
                                 &mut session,
                                 command,
+                                &state,
+                                project_generation,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision.saturating_add(1),
-                                },
                                 &mut events,
                                 &mut resident_snapshot,
                                 export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
@@ -8143,14 +8154,20 @@ fn run_worker(
                                         prepared: Some(prepared),
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
+                                request_document_intent,
                             ) {
-                                Ok((result, prepared)) if session.project() != &before_project => {
+                                Ok(BrowserEdit::Pending(staged)) => {
+                                    pending_device_insert = Some(*staged);
+                                    request_complete = false;
+                                    status = Some("device edit pending · waiting for audio".into());
+                                }
+                                Ok(BrowserEdit::Applied(result, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     created = Some(result);
                                     status = Some("device added".into());
                                 }
-                                Ok(_) => status = Some("no change".into()),
+                                Ok(BrowserEdit::Applied(..) | BrowserEdit::Unchanged) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
