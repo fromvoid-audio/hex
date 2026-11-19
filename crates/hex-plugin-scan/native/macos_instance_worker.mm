@@ -29,7 +29,8 @@ namespace {
 // and state control, startup, and teardown run with ordinary scheduling.
 class WorkerDeadline {
     thread_time_constraint_policy_data_t policy_{};
-    int idle_ms_=0;
+    std::chrono::milliseconds idle_{};
+    std::chrono::steady_clock::time_point live_until_{};
     bool active_=false;
 public:
     WorkerDeadline(const wire::Config& config,bool enabled) {
@@ -39,31 +40,43 @@ public:
         // the scheduler's minimum computation budget must fit this interval.
         if(period_ns<4e6 || period_ns>8e6) return;
         mach_timebase_info_data_t clock{};
-        if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer) return;
+        if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer || !clock.denom) return;
         const double ticks_per_ns=static_cast<double>(clock.denom)/clock.numer;
+        if(period_ns*ticks_per_ns>std::numeric_limits<uint32_t>::max() ||
+            300'000*ticks_per_ns<1) return;
         const auto ticks=[&](double ns) { return static_cast<uint32_t>(ns*ticks_per_ns); };
         policy_={ticks(period_ns),ticks(300'000),ticks(4'000'000),true};
-        idle_ms_=static_cast<int>(std::ceil(2*period_ns/1e6));
+        idle_=std::chrono::milliseconds(static_cast<int>(std::ceil(2*period_ns/1e6)));
     }
     WorkerDeadline(const WorkerDeadline&)=delete;
     WorkerDeadline& operator=(const WorkerDeadline&)=delete;
     ~WorkerDeadline() { leave(); }
 
     void enter() {
-        if(!idle_ms_ || active_) return;
+        if(idle_.count()==0 || active_) return;
         const auto thread=pthread_mach_thread_np(pthread_self());
         active_=thread_policy_set(thread,THREAD_TIME_CONSTRAINT_POLICY,
             reinterpret_cast<thread_policy_t>(&policy_),THREAD_TIME_CONSTRAINT_POLICY_COUNT)==KERN_SUCCESS;
-        if(!active_) idle_ms_=0;
+        if(!active_) idle_={};
     }
 
+    void pcm_replied() {
+        if(active_) live_until_=std::chrono::steady_clock::now()+idle_;
+    }
+
+    void end_stream() { live_until_={}; }
+
     bool before_read(int channel) {
+        if(idle_.count()==0) return true;
+        const auto remaining=live_until_-std::chrono::steady_clock::now();
+        if(remaining<=std::chrono::steady_clock::duration::zero()) return leave();
+        // Control packets run at ordinary priority. If one completes inside
+        // the current PCM interval, resume the remaining wait for audio.
+        enter();
         if(!active_) return true;
+        const auto wait=std::chrono::ceil<std::chrono::milliseconds>(remaining);
         pollfd input{channel,POLLIN,0};
-        const int ready=::poll(&input,1,idle_ms_);
-        // A timeout or interrupted wait returns the thread to standby before
-        // entering the existing blocking reader. That reader still owns EOF,
-        // packet validation, and all partial-frame rules.
+        const int ready=::poll(&input,1,static_cast<int>(wait.count()));
         return (ready>0 && (input.revents&POLLIN)) || leave();
     }
 
@@ -882,6 +895,7 @@ int main(int argc,char** argv) {
                         if(!deadline.before_read(channel)) {worker_failure.store(Processing);break;}
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(received!=1 && !deadline.leave()) {worker_failure.store(Processing);break;}
+                        if(received==2 || received==3) deadline.end_stream();
                         if(worker_failure.load()) break;
                         // A late End is not DSP work. Retire its pending
                         // custody even when the next request is save capture;
@@ -1202,6 +1216,7 @@ int main(int argc,char** argv) {
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
+                        deadline.pcm_replied();
                         ++blocks;frames+=packet.frames;
                         pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
@@ -1209,7 +1224,10 @@ int main(int argc,char** argv) {
                             if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
                         }
                     }
-                    if(!deadline.leave() && !worker_failure.load()) worker_failure.store(Processing);
+                    if(!deadline.leave()) {
+                        error(channel,&*config,Processing);
+                        std::_Exit(Processing);
+                    }
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     // Never stop/deactivate/unload beneath a main-lane capture,
                     // even on malformed PCM, EOF or a foreign processing fault.
