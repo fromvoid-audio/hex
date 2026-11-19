@@ -2437,6 +2437,39 @@ impl Playback {
             .map_err(PlaybackHandoffError::Session)
     }
 
+    /// Plan a stage-local removal before the stream owner proves its pages.
+    pub fn plan_native_removal_from(
+        &mut self,
+        previous: &Self,
+    ) -> Result<bool, PlaybackHandoffError> {
+        match (&mut self.session_runtime, &previous.session_runtime) {
+            (Some(next), Some(old)) => next
+                .plan_native_removal_from(old)
+                .map_err(PlaybackHandoffError::Session),
+            _ => Ok(false),
+        }
+    }
+
+    /// Advance a planned stage fade with the publication window protected.
+    pub fn advance_planned_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<crate::session_playback::NativeRemovalProgress, PlaybackHandoffError> {
+        match (&mut self.session_runtime, &mut previous.session_runtime) {
+            (Some(next), Some(old)) => next
+                .advance_planned_native_removal_from(old)
+                .map_err(PlaybackHandoffError::Session),
+            _ => Ok(crate::session_playback::NativeRemovalProgress::NotApplicable),
+        }
+    }
+
+    /// True once this candidate has mutated the predecessor’s stage mix.
+    pub fn native_removal_started(&self) -> bool {
+        self.session_runtime
+            .as_deref()
+            .is_some_and(crate::SessionPlayback::native_removal_started)
+    }
+
     /// Restore the original stage of an abandoned removal on its donor.
     pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {
         if let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)

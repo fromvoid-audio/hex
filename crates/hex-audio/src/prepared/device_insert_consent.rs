@@ -340,6 +340,22 @@ impl Callback {
 
     pub(super) fn abort_blocked_device_insert(&mut self) {
         self.release_device_insert_fade_pins();
+        // Stop and retirement backpressure can invalidate a file-backed local
+        // fade before the candidate can be returned. Restore the exact stage
+        // now and leave retirement in the ordinary queue's custody.
+        if let Some(mut next) = self
+            .deferred
+            .take_if(|next| next.streams.is_some() && next.playback.native_removal_started())
+        {
+            if let Some(streams) = next.streams.as_mut() {
+                streams.cancel_install(&mut self.domain_pages);
+            }
+            self.restore_refused_native_removal(&mut next);
+            if let Some(receipt) = next.fresh_runtime_cancellation.as_ref() {
+                receipt.returned(Some(PlaybackHandoffRejection::RuntimeFenceChanged));
+            }
+            self.deferred = Some(next);
+        }
         if let Some(next) = self.deferred.as_ref()
             && let Some(basis) = next.approved_device_insert()
             && self.recording_source() == Some(basis.predecessor)

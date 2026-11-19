@@ -4730,6 +4730,195 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
+    verified_file_native_removal(false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn verified_file_removal_yields_to_priority_stop_during_the_local_fade() {
+    verified_file_native_removal(true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn verified_file_native_removal(stop_during_fade: bool) {
+    use hex_audio::audio_diagnostics::{
+        AudioDiagnosticKind, AudioDiagnosticsFlags, PublicationWaitReason,
+    };
+    use hex_project::{Command, Created};
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_192);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            ))
+    );
+    let (applied, _) = h.applied(applied);
+    let native = |name| {
+        hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(name))
+            .unwrap()
+    };
+    let reverb = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: native("hex.reverb"),
+    }));
+    let Some(Created::Device(removed)) = reverb.created else {
+        panic!("reverb was not inserted");
+    };
+    let (applied, _) = h.applied(applied);
+    let delay = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: native("hex.delay"),
+    }));
+    let Some(Created::Device(surviving)) = delay.created else {
+        panic!("delay was not inserted");
+    };
+    h.applied(applied);
+
+    let status = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let previous = status(&h);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render().iter().flatten().all(|sample| *sample == 0.0) {
+        assert!(
+            Instant::now() < deadline,
+            "verified-file source never played"
+        );
+        std::thread::yield_now();
+    }
+    for _ in 0..24 {
+        h.render();
+    }
+    let cursor = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    h.audio
+        .as_ref()
+        .unwrap()
+        .control
+        .set_audio_diagnostics(AudioDiagnosticsFlags::ALL);
+    h.enable_confirmed_device_inserts();
+    h.service
+        .submit(Request::Edit(Command::RemoveDevice(removed)))
+        .unwrap();
+    let staged = h.next();
+    assert!(staged.error.is_none(), "{:?}", staged.error);
+    assert!(!staged.request_complete);
+    assert_eq!(staged.state.project, delay.state.project);
+    assert_eq!(status(&h), previous);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut saw_fade = false;
+    let result = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            break event;
+        }
+        if status(&h) != previous {
+            break h.next();
+        }
+        let pcm = h.render();
+        if saw_fade && !stop_during_fade {
+            assert!(
+                pcm.iter().flatten().any(|sample| *sample != 0.0),
+                "fitting removal interrupted the graph output"
+            );
+        }
+        let audio = h.audio.as_mut().unwrap();
+        while let Some(event) = audio.control.take_audio_diagnostic() {
+            if !saw_fade
+                && event.kind
+                    == (AudioDiagnosticKind::PublicationWaiting {
+                        reason: PublicationWaitReason::NativeRemovalFade,
+                    })
+            {
+                saw_fade = true;
+                assert_eq!(audio.status().unwrap().recording_source(), Some(previous));
+                if stop_during_fade {
+                    audio.control.stop();
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "removal did not terminate");
+        std::thread::yield_now();
+    };
+    assert!(
+        result.device_insert_confirmation.is_none(),
+        "fitting verified-file removal offered an interruption"
+    );
+    assert!(saw_fade, "the original filter must fade before retirement");
+    if stop_during_fade {
+        assert_eq!(result.state.project, delay.state.project);
+        assert_eq!(status(&h), previous);
+        assert_ne!(
+            result.device_insert_complete.unwrap().outcome,
+            DeviceInsertOutcome::Installed
+        );
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+        {
+            h.render();
+            assert!(Instant::now() < deadline, "priority Stop did not settle");
+        }
+        return;
+    }
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(
+        result.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    let installed = status(&h);
+    assert_eq!(installed.output_identity, previous.output_identity);
+    assert_eq!(installed.context.editor_revision, result.state.revision);
+    assert_ne!(installed.audio_revision, previous.audio_revision);
+    let devices = result.state.project.main_devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].id(), surviving);
+    let audio = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(audio.playing.load(Acquire));
+    assert!(audio.position.load(Acquire) > cursor);
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LimiterEdit {
     Insert,
