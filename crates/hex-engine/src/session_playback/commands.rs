@@ -10,8 +10,10 @@ impl SessionPlayback {
             && matches!(
                 command,
                 SessionPlaybackCommand::LaunchClip { .. }
+                    | SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                     | SessionPlaybackCommand::CueMidiClip { .. }
                     | SessionPlaybackCommand::LaunchScene { .. }
+                    | SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                     | SessionPlaybackCommand::StopTrack { .. }
                     | SessionPlaybackCommand::StopAllClips { .. }
                     | SessionPlaybackCommand::BackToArrangement { .. }
@@ -592,6 +594,11 @@ impl SessionPlayback {
         &mut self,
         command: SessionPlaybackCommand,
     ) -> Result<TransitionMoment, SessionPlaybackError> {
+        let note_chase = match command {
+            SessionPlaybackCommand::LaunchClipWithNoteChase { note_chase, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { note_chase, .. } => note_chase,
+            _ => crate::NoteChase::On,
+        };
         self.route_scratch.copy_from_slice(&self.routes);
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
@@ -607,7 +614,9 @@ impl SessionPlayback {
             .retain(|entry| entry.end_frame() > self.performance_frame);
         let (target_frame, target_beat) = match command {
             SessionPlaybackCommand::LaunchClip { quantization, .. }
+            | SessionPlaybackCommand::LaunchClipWithNoteChase { quantization, .. }
             | SessionPlaybackCommand::LaunchScene { quantization, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { quantization, .. }
             | SessionPlaybackCommand::StopTrack { quantization, .. }
             | SessionPlaybackCommand::StopAllClips { quantization }
             | SessionPlaybackCommand::BackToArrangement { quantization } => {
@@ -627,7 +636,8 @@ impl SessionPlayback {
             performance_frame: self.performance_frame,
         };
         match command {
-            SessionPlaybackCommand::LaunchClip { clip, .. } => {
+            SessionPlaybackCommand::LaunchClip { clip, .. }
+            | SessionPlaybackCommand::LaunchClipWithNoteChase { clip, .. } => {
                 let track = crate::session_inventory::EffectiveSessionMidi::new(
                     self.revision.session(),
                     self.midi_admission.as_ref(),
@@ -642,7 +652,7 @@ impl SessionPlayback {
                 })
                 .ok_or(SessionPlaybackError::UnknownClip)?;
                 let index = self.route_index(track)?;
-                self.set_route(index, RouteTarget::Session(clip), moment, None)?;
+                self.set_route(index, RouteTarget::Session(clip), moment, None, note_chase)?;
             }
             SessionPlaybackCommand::CueMidiClip {
                 track,
@@ -701,9 +711,11 @@ impl SessionPlayback {
                     RouteTarget::Session(clip),
                     moment,
                     Some(SessionMidiOrigin::new(target_beat, elapsed)),
+                    note_chase,
                 )?;
             }
-            SessionPlaybackCommand::LaunchScene { scene, .. } => {
+            SessionPlaybackCommand::LaunchScene { scene, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { scene, .. } => {
                 let (start, end) = self
                     .revision
                     .session()
@@ -746,21 +758,21 @@ impl SessionPlayback {
                         }
                     };
                     let index = self.route_index(cell.track)?;
-                    self.set_route(index, target, moment, None)?;
+                    self.set_route(index, target, moment, None, note_chase)?;
                 }
             }
             SessionPlaybackCommand::StopTrack { track, .. } => {
                 let index = self.route_index(track)?;
-                self.set_route(index, RouteTarget::Silence, moment, None)?;
+                self.set_route(index, RouteTarget::Silence, moment, None, note_chase)?;
             }
             SessionPlaybackCommand::StopAllClips { .. } => {
                 for index in 0..self.route_scratch.len() {
-                    self.set_route(index, RouteTarget::Silence, moment, None)?;
+                    self.set_route(index, RouteTarget::Silence, moment, None, note_chase)?;
                 }
             }
             SessionPlaybackCommand::BackToArrangement { .. } => {
                 for index in 0..self.route_scratch.len() {
-                    self.set_route(index, RouteTarget::Arrangement, moment, None)?;
+                    self.set_route(index, RouteTarget::Arrangement, moment, None, note_chase)?;
                 }
             }
             _ => return Err(SessionPlaybackError::InvalidCommand),
@@ -915,6 +927,7 @@ impl SessionPlayback {
         target: RouteTarget,
         moment: TransitionMoment,
         origin_override: Option<SessionMidiOrigin>,
+        note_chase: crate::NoteChase,
     ) -> Result<(), SessionPlaybackError> {
         let owner = self
             .route_scratch
@@ -926,14 +939,14 @@ impl SessionPlayback {
                 target,
                 moment.target_beat,
                 moment.performance_frame,
-                crate::NoteChase::On,
+                note_chase,
             )?,
             origin_override,
         ) {
             (RouteOwner::Session { clip, .. }, Some(origin)) => RouteOwner::Session {
                 clip,
                 origin,
-                note_chase: crate::NoteChase::On,
+                note_chase,
             },
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
@@ -1075,7 +1088,7 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             route.pending = Some(PendingRoute {
-                note_chase: crate::NoteChase::On,
+                note_chase,
                 frame: moment.target_frame,
                 beat: moment.target_beat,
                 target,

@@ -2541,7 +2541,7 @@ mod note_chase {
 #[test]
 fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_off() {
     use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
-    let run = |oracle, choice| {
+    let run = |oracle, choice, explicit_launch| {
         let (mut editor, identity) = fixture();
         let track = editor.project().tracks()[0].id();
         let Created::Scene(scene) = editor
@@ -2579,24 +2579,36 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
         let prepared = prepare(&editor, identity, true).unwrap();
         let clip = prepared.session().midi_clips()[0].id;
         let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
-        playback
-            .try_apply_action(PlaybackAction::Session(
-                SessionPlaybackCommand::LaunchClip {
-                    clip,
-                    quantization: LaunchQuantization::Immediate,
+        if explicit_launch {
+            playback
+                .try_apply_action(PlaybackAction::LaunchAndPlay(
+                    SessionPlaybackCommand::LaunchClipWithNoteChase {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                        note_chase: choice,
+                    },
+                ))
+                .unwrap();
+        } else {
+            playback
+                .try_apply_action(PlaybackAction::Session(
+                    SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                    },
+                ))
+                .unwrap();
+            let command = match choice {
+                crate::NoteChase::On => PlaybackCommand::PlayFrom(0),
+                crate::NoteChase::Off => PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 0,
+                    note_chase: choice,
                 },
-            ))
-            .unwrap();
-        let command = match choice {
-            crate::NoteChase::On => PlaybackCommand::PlayFrom(0),
-            crate::NoteChase::Off => PlaybackCommand::PlayFromWithNoteChase {
-                frame: 0,
-                note_chase: choice,
-            },
-        };
-        playback
-            .try_apply_action(PlaybackAction::Transport(command))
-            .unwrap();
+            };
+            playback
+                .try_apply_action(PlaybackAction::Transport(command))
+                .unwrap();
+        }
         let mut endpoint = NoteEndpoint::default();
         let mut events = Vec::new();
         let mut elapsed = 0;
@@ -2617,7 +2629,7 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
         }
         events
     };
-    let expected = run(true, crate::NoteChase::Off);
+    let expected = run(true, crate::NoteChase::Off, false);
     assert_eq!(
         expected.iter().map(|e| (e.0, e.1, e.2)).collect::<Vec<_>>(),
         vec![(0, true, 64), (375, false, 64), (3_000, true, 60)]
@@ -2627,11 +2639,16 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
         "real boundary gate retains its paired release"
     );
     assert_eq!(
-        run(false, crate::NoteChase::Off),
+        run(false, crate::NoteChase::Off, false),
         expected,
         "no clipped onset or orphan off, and later repeat stays eligible"
     );
-    let on = run(false, crate::NoteChase::On);
+    assert_eq!(
+        run(false, crate::NoteChase::Off, true),
+        expected,
+        "public captured launch has no orphan offs and retains later repeats"
+    );
+    let on = run(false, crate::NoteChase::On, false);
     assert!(
         on.iter().any(|e| e.0 == 0 && e.1 && e.2 == 60),
         "raw On admits the clipped intro"
