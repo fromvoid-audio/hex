@@ -667,4 +667,91 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn musical_repeat_shade_keeps_one_destination_envelope_through_tempo_and_reflection() {
+        use hex_project::{
+            AudioClipTiming, AudioViewProjection, AudioViewResizeOperation, BeatTime, Command,
+            Tempo,
+        };
+        let (mut editor, id) = repeated_fixture(19_174, 4);
+        editor
+            .execute(Command::SetClipFades {
+                clip: id,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ONE,
+                tempo: Tempo::new(72_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip: id,
+                enabled: true,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 82_000,
+                },
+            })
+            .unwrap();
+        let clip = editor.project().clip(id).unwrap();
+        let end = clip.start() + clip.duration();
+        let visible = (clip.start(), end);
+        let fade = ClipFade::new(clip.duration(), 0, 24_000, 19_000)
+            .unwrap()
+            .with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
+        let sample = |project: &hex_project::Project, preview| {
+            projected_fade_envelope_samples(
+                project.clip(id).unwrap(),
+                project.tempo_map(),
+                visible.0,
+                visible.1,
+                preview,
+            )
+            .unwrap()
+        };
+        let held = sample(editor.project(), Some((fade, true)));
+        assert_eq!(held.first(), Some(&(0.0, 0.0)));
+        assert_eq!(held.last(), Some(&(1.0, 0.0)));
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip: id, fade })
+            .unwrap();
+        assert_eq!(sample(editor.project(), None), held);
+
+        for command in [
+            Command::SetAudioClipMusical {
+                clip: id,
+                enabled: false,
+            },
+            Command::SetTempoPoint {
+                beat: BeatTime::ONE,
+                tempo: Tempo::new(180_000_000).unwrap(),
+            },
+            Command::ReverseClips(vec![id]),
+        ] {
+            editor.execute(command).unwrap();
+            assert_eq!(sample(editor.project(), None), held);
+        }
+        let project = editor.project();
+        let clip = project.clip(id).unwrap();
+        let edit = clip.audio_edit().unwrap();
+        assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
+        assert!(edit.content_view.unwrap().window.reversed);
+        let view = AudioViewProjection::new(clip, project.tempo_map()).unwrap();
+        let inside = view.occurrence(1).unwrap().destination_end;
+        assert!(
+            projected_fade_envelope_samples(clip, project.tempo_map(), inside, inside + 200, None)
+                .unwrap()
+                .is_empty(),
+            "an interior repeat boundary must have no clip-level shading"
+        );
+    }
 }
