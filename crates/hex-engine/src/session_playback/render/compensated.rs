@@ -691,6 +691,7 @@ impl SessionPlayback {
         let session = self.revision.session();
         let arrangement_beat = session.timing().frame_to_beat(arrangement_frame).ok();
         Ok(TransportStamp {
+            authored_clock_epoch: Some(self.authored_clock_epoch),
             tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
             performance_frame,
             transport_is_running: self.playing,
@@ -1152,7 +1153,7 @@ impl SessionPlayback {
                             .ok_or(SessionPlaybackError::DeviceRuntime)?;
                         if track.foreign_instrument.is_some() {
                             let clock = crate::signal_graph::OriginClock(
-                                compensation.delays.stamp_at_delay(0),
+                                compensation.delays.stamp_at_delay_ref(0),
                             );
                             let mut wet = [[0.0; 2]];
                             self.foreign_arrangement.render_frame(
@@ -1189,7 +1190,7 @@ impl SessionPlayback {
                         }
                         if self.source_effects.has_chain(index) {
                             let clock = crate::signal_graph::OriginClock(
-                                compensation.delays.stamp_at_delay(0),
+                                compensation.delays.stamp_at_delay_ref(0),
                             );
                             self.source_effects
                                 .process_with_live_input(

@@ -387,7 +387,7 @@ pub struct ProcessTiming {
     pub cycle_beats_raw: Option<(u64, u64)>,
 }
 
-pub const MAX_TIMING_CHANGES: usize = 7;
+pub use hex_lattice_contract::MAX_FOREIGN_TIMING_CHANGES as MAX_TIMING_CHANGES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TimingChange {
@@ -776,7 +776,8 @@ pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
     pub dense_parameter: Option<DenseParameterRequest>,
-    /// Program frozen at the accepted physical quantum opening.
+    /// Opening program, also the conservative frontier for retained history
+    /// when a later clock region changed programs inside the quantum.
     pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
     /// origin. The copied clock stays with the transport's in-flight request.
@@ -1112,11 +1113,11 @@ impl Callback {
             .as_ref()
             .is_some_and(|stage| stage.staged_frames == stage.expected_frames)
     }
-    /// An audible Pause can end inside the physical callback. The caller
-    /// proves the exact end of playback; a contiguous staged prefix ending
-    /// there may omit the unvisited, paused suffix. A fully staged monitoring
-    /// path keeps its original extent. Final host acceptance is still required.
-    pub fn end_staging_at_pause(&mut self, frame: usize) {
+    /// End at a proven transport hold, such as an audible Pause or a stream
+    /// waiting for pages. A contiguous stage ending exactly there may omit the
+    /// unvisited suffix. A fully staged monitoring path keeps its extent.
+    /// Final host acceptance is still required.
+    pub fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         if let Some(stage) = self.staged.as_mut()
             && frame != 0
             && stage.staged_frames == frame
@@ -1289,6 +1290,61 @@ impl Callback {
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
     ) -> Result<SegmentReply, Fault> {
+        let mut reply = SegmentReply {
+            events: Events::default(),
+            parameters: Parameters::default(),
+            concealed_output: None,
+        };
+        reply.concealed_output = self.stage_effect_segment_with_reply(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+            Some(&mut reply),
+        )?;
+        Ok(reply)
+    }
+
+    /// Stage native PCM for a consumer that observes reply metadata on control.
+    /// Validate the same output bounds without copying unused events and points.
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows as ordinary effect staging.
+    pub fn stage_effect_pcm_segment(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
+        self.stage_effect_segment_with_reply(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Borrowed windows share one staging transaction.
+    fn stage_effect_segment_with_reply(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+        reply: Option<&mut SegmentReply>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
         output.fill([0.0; 2]);
         let result = self.stage_segment_inner(
             frame_offset,
@@ -1298,6 +1354,7 @@ impl Callback {
             output,
             timing,
             origins,
+            reply,
         );
         if let Err(fault) = result {
             output.fill([0.0; 2]);
@@ -1316,7 +1373,8 @@ impl Callback {
         output: &mut [Frame],
         mut timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
-    ) -> Result<SegmentReply, Fault> {
+        mut reply: Option<&mut SegmentReply>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1367,6 +1425,9 @@ impl Callback {
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
+        let clock_epoch = authored
+            .as_ref()
+            .and_then(|segment| segment.program.authored_clock_epoch());
         if initial_offset != 0
             && self.authored_origins.program.is_some()
             && self.authored_origins.program != program
@@ -1380,12 +1441,10 @@ impl Callback {
                 return Err(Fault::InvalidParameters);
             }
         }
-        let mut result = SegmentReply {
-            events: Events::default(),
-            parameters: Parameters::default(),
-            concealed_output: (initial_offset != 0 && stage.state.output_gap)
-                .then_some((0, input.len().min(quantum_frames - initial_offset))),
-        };
+        let mut concealed_output = (initial_offset != 0 && stage.state.output_gap)
+            .then_some((0, input.len().min(quantum_frames - initial_offset)));
+        let mut output_events = 0;
+        let mut output_parameters = 0;
         let mut event_index = 0;
         let mut parameter_index = 0;
         let mut input_parameters = parameters.len();
@@ -1408,7 +1467,7 @@ impl Callback {
                     None
                 };
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
-                self.authored_origins.program = program;
+                self.authored_origins.open(program, clock_epoch);
                 stage.state.input.timing = (timing.at)(index);
                 if stage.state.input.timing.is_some_and(|origin| {
                     !origin.is_valid()
@@ -1433,9 +1492,8 @@ impl Callback {
                             reply_sequence: sequence - 2,
                             worker_phase: self.revoked.worker_phase(sequence - 2),
                         });
-                        let start = result.concealed_output.map_or(index, |span| span.0);
-                        result.concealed_output =
-                            Some((start, input.len().min(index + quantum_frames)));
+                        let start = concealed_output.map_or(index, |span| span.0);
+                        concealed_output = Some((start, input.len().min(index + quantum_frames)));
                     }
                     if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
@@ -1463,10 +1521,15 @@ impl Callback {
                         });
                     }
                 }
-            } else if origin.is_some() && self.authored_origins.frames[offset - 1].is_none() {
-                // Starting a new authored run after unavailable history needs
-                // an SDK call of its own. Otherwise the first parameter point
-                // interpolates backward from the previous call's held value.
+            } else if origin.is_some()
+                && (self
+                    .authored_origins
+                    .switch_clock(offset, program, clock_epoch)?
+                    || self.authored_origins.frames[offset - 1].is_none())
+            {
+                // A new clock region or resumed history gets its own SDK call.
+                // Its first parameter point must not interpolate backward into
+                // the preceding region.
                 let change = (timing.at)(index)
                     .filter(|origin| origin.playing)
                     .ok_or(Fault::Protocol)?;
@@ -1515,9 +1578,12 @@ impl Callback {
                     .iter()
                     .filter(|e| usize::from(e.frame) == offset)
                 {
-                    let mut event = *event;
-                    event.frame = index as u16;
-                    result.events.push(event)?;
+                    output_events += 1;
+                    if let Some(reply) = reply.as_deref_mut() {
+                        let mut event = *event;
+                        event.frame = index as u16;
+                        reply.events.push(event)?;
+                    }
                 }
                 for point in stage
                     .state
@@ -1528,10 +1594,13 @@ impl Callback {
                     .iter()
                     .filter(|point| usize::from(point.frame) == offset)
                 {
-                    result.parameters.push(ParameterPoint {
-                        frame: index as u16,
-                        ..*point
-                    })?;
+                    output_parameters += 1;
+                    if let Some(reply) = reply.as_deref_mut() {
+                        reply.parameters.push(ParameterPoint {
+                            frame: index as u16,
+                            ..*point
+                        })?;
+                    }
                 }
             }
             if authored.is_some() {
@@ -1565,19 +1634,19 @@ impl Callback {
                 });
             }
         }
-        if result.events.as_slice().len() > MAX_EVENTS - stage.output_events {
+        if output_events > MAX_EVENTS - stage.output_events {
             return Err(Fault::InvalidEvents);
         }
-        if result.parameters.as_slice().len() > MAX_PARAMETER_POINTS - stage.output_parameters {
+        if output_parameters > MAX_PARAMETER_POINTS - stage.output_parameters {
             return Err(Fault::InvalidParameters);
         }
         stage.input_events = input_event_count;
         stage.legacy_input_events = legacy_input_events;
-        stage.output_events += result.events.as_slice().len();
+        stage.output_events += output_events;
         stage.input_parameters += input_parameters;
-        stage.output_parameters += result.parameters.as_slice().len();
+        stage.output_parameters += output_parameters;
         stage.staged_frames = end;
-        Ok(result)
+        Ok(concealed_output)
     }
     /// Call only after final host-format validation. Refusal terminates this
     /// epoch; consumed replies and foreign DSP are never rolled back/replayed.

@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use super::{asbd_from_config, check_os_status, frames_to_duration, host_time_to_stream_instant};
+use super::{asbd_from_config, check_os_status, frames_to_duration, HostTimebase};
 
 use super::OSStatus;
 use crate::host::coreaudio::macos::loopback::LoopbackDevice;
@@ -380,6 +380,159 @@ mod test {
     fn write_silence<T: Sample>(data: &mut [T], _: &crate::OutputCallbackInfo) {
         for sample in data.iter_mut() {
             *sample = Sample::EQUILIBRIUM;
+        }
+    }
+}
+
+/// Current-thread time constraint for an auxiliary audio worker.
+///
+/// Construct on a dedicated, ordinarily scheduled worker. No call belongs on
+/// the device callback. The caller owns admission, deadlines and retirement.
+pub struct WorkerTimeConstraint {
+    thread: mach2::mach_types::thread_t,
+    policy: mach2::thread_policy::thread_time_constraint_policy_data_t,
+    active: bool,
+    _current_thread_only: std::marker::PhantomData<*mut ()>,
+}
+
+impl WorkerTimeConstraint {
+    /// Acquire the current thread and validate the time constraint without
+    /// changing its scheduling class. Existing real-time threads refuse.
+    pub fn for_current_thread(
+        period: std::time::Duration,
+        computation: std::time::Duration,
+        constraint: std::time::Duration,
+    ) -> Result<Self, BackendSpecificError> {
+        use mach2::{mach_init::mach_thread_self, port::MACH_PORT_NULL, thread_policy::*};
+
+        let refused = || BackendSpecificError {
+            description: "invalid auxiliary audio worker time constraint".into(),
+        };
+        if computation.is_zero() || computation > constraint / 2 || constraint > period {
+            return Err(refused());
+        }
+        let ratio = super::read_host_timebase()?;
+        let ticks = |duration: std::time::Duration| {
+            let numerator = duration.as_nanos().checked_mul(u128::from(ratio.denom))?;
+            u32::try_from(numerator.checked_div(u128::from(ratio.numer))?)
+                .ok()
+                .filter(|value| *value != 0)
+        };
+        let policy = thread_time_constraint_policy_data_t {
+            period: ticks(period).ok_or_else(refused)?,
+            computation: ticks(computation).ok_or_else(refused)?,
+            constraint: ticks(constraint).ok_or_else(refused)?,
+            preemptible: 1,
+        };
+        // SAFETY: this returns a send right for the calling thread. The
+        // non-Send owner deallocates it even when the policy check fails.
+        let thread = unsafe { mach_thread_self() };
+        if thread == MACH_PORT_NULL {
+            return Err(refused());
+        }
+        let owner = Self {
+            thread,
+            policy,
+            active: false,
+            _current_thread_only: std::marker::PhantomData,
+        };
+        if !owner.is_ordinary()? {
+            return Err(refused());
+        }
+        Ok(owner)
+    }
+
+    /// Apply the configured time constraint to the current worker.
+    pub fn enter(&mut self) -> Result<(), BackendSpecificError> {
+        use mach2::thread_policy::*;
+        if !self.active {
+            // SAFETY: the native record matches the flavor and count and the
+            // current worker still owns the acquired thread right.
+            let status = unsafe {
+                thread_policy_set(
+                    self.thread,
+                    THREAD_TIME_CONSTRAINT_POLICY,
+                    (&mut self.policy as *mut thread_time_constraint_policy_data_t).cast(),
+                    THREAD_TIME_CONSTRAINT_POLICY_COUNT,
+                )
+            };
+            super::check_os_status(status)?;
+            self.active = true;
+        }
+        Ok(())
+    }
+
+    /// Return to ordinary scheduling. The caller may reapply its own QoS.
+    pub fn leave(&mut self) -> Result<(), BackendSpecificError> {
+        use mach2::thread_policy::*;
+        if self.active {
+            // SAFETY: the standard-policy flavor takes a zero-word argument.
+            let status = unsafe {
+                thread_policy_set(
+                    self.thread,
+                    THREAD_STANDARD_POLICY,
+                    std::ptr::null_mut(),
+                    THREAD_STANDARD_POLICY_COUNT,
+                )
+            };
+            super::check_os_status(status)?;
+            self.active = false;
+        }
+        Ok(())
+    }
+
+    fn is_ordinary(&self) -> Result<bool, BackendSpecificError> {
+        use mach2::thread_policy::*;
+        let mut policy = self.policy;
+        let mut count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+        let mut default = 0;
+        // SAFETY: the native getter writes into initialized storage for this
+        // flavor, count and status flag.
+        let status = unsafe {
+            thread_policy_get(
+                self.thread,
+                THREAD_TIME_CONSTRAINT_POLICY,
+                (&mut policy as *mut thread_time_constraint_policy_data_t).cast(),
+                &mut count,
+                &mut default,
+            )
+        };
+        super::check_os_status(status)?;
+        Ok(default != 0)
+    }
+}
+
+impl Drop for WorkerTimeConstraint {
+    fn drop(&mut self) {
+        let _ = self.leave();
+        // SAFETY: release exactly the owned current-thread send right.
+        unsafe {
+            mach2::mach_port::mach_port_deallocate(mach2::traps::mach_task_self(), self.thread);
+        }
+    }
+}
+
+#[cfg(test)]
+mod worker_time_constraint_regression {
+    use super::WorkerTimeConstraint;
+    use std::time::Duration;
+
+    #[test]
+    fn current_thread_repeatedly_enters_and_releases_time_constraint() {
+        let period = Duration::from_nanos(5_804_988);
+        let computation = Duration::from_micros(300);
+        let constraint = Duration::from_millis(4);
+        let mut worker =
+            WorkerTimeConstraint::for_current_thread(period, computation, constraint).unwrap();
+        assert!(worker.is_ordinary().unwrap());
+        for _ in 0..2 {
+            worker.enter().unwrap();
+            assert!(!worker.is_ordinary().unwrap());
+            assert!(
+                WorkerTimeConstraint::for_current_thread(period, computation, constraint).is_err()
+            );
+            worker.leave().unwrap();
+            assert!(worker.is_ordinary().unwrap());
         }
     }
 }

@@ -773,6 +773,13 @@ impl NumericControl {
         self.set_availability(crate::ControlAvailability::for_edit(enabled, false), cx);
     }
 
+    /// Suspend input for a transient operation while retaining the current palette.
+    pub fn suspend_input(&mut self, cx: &mut Context<Self>) {
+        let availability =
+            crate::ControlAvailability::for_edit(self.availability.painted_enabled(), true);
+        self.set_availability(availability, cx);
+    }
+
     /// Update input admission without making transient worker activity dim the
     /// control. Busy cancels unsubmitted drafts; it does not commit owner state.
     pub fn set_availability(

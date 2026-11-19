@@ -27,7 +27,7 @@ pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
-    StreamInstall, StreamOutcome, StreamProgress,
+    StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow,
 };
 pub use eligible::{
     AudioCandidateCancellationResult, AudioCandidateDomainPreparationFailure,
@@ -539,6 +539,15 @@ impl CandidateRoot {
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
+    pub(crate) fn prepare_tempo_cut(
+        &self,
+        token: AudioCandidatePreparationToken,
+        observation: crate::prepared::TransportObservation,
+        cut: u64,
+    ) -> Result<hex_engine::session_playback::PreparedTempoAnchor, &'static str> {
+        self.0.eligible.prepare_tempo_cut(token, observation, cut)
+    }
+
     pub(crate) fn stage_runtime_preparation(
         &self,
         token: AudioCandidatePreparationToken,

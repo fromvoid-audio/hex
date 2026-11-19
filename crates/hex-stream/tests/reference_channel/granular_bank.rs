@@ -234,6 +234,10 @@ fn source_fixture_using(
 
 #[test]
 fn dispatch_preserves_distinct_pcm_and_each_sources_history() {
+    with_granular_control_stack(run_dispatch_preserves_distinct_pcm_and_each_sources_history);
+}
+
+fn run_dispatch_preserves_distinct_pcm_and_each_sources_history() {
     let (_tones_wav, tones, tones_pcm) = source(WarpMode::Tones { grain_ms: 32 });
     let (_texture_wav, texture, texture_pcm) = source(WarpMode::Texture {
         grain_ms: 32,
@@ -344,6 +348,10 @@ fn dispatch_preserves_distinct_pcm_and_each_sources_history() {
 
 #[test]
 fn invalid_banks_return_all_sources_before_worker_start() {
+    with_granular_control_stack(run_invalid_banks_return_all_sources_before_worker_start);
+}
+
+fn run_invalid_banks_return_all_sources_before_worker_start() {
     let (_wav_a, a, _) = source(WarpMode::Tones { grain_ms: 32 });
     let (_wav_b, b, _) = source(WarpMode::Tones { grain_ms: 32 });
     assert_eq!(a.metadata().key(), b.metadata().key());
@@ -373,6 +381,13 @@ fn invalid_banks_return_all_sources_before_worker_start() {
 #[cfg(feature = "test-support")]
 #[test]
 fn stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
+    with_granular_control_stack(
+        run_stop_reclaims_active_second_source_and_keeps_the_next_request_queued,
+    );
+}
+
+#[cfg(feature = "test-support")]
+fn run_stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
     let (_tones_wav, tones, _) = source(WarpMode::Tones { grain_ms: 32 });
     let (_texture_wav, texture, _) = source(WarpMode::Texture {
         grain_ms: 32,
@@ -445,6 +460,10 @@ fn stop_reclaims_active_second_source_and_keeps_the_next_request_queued() {
 
 #[test]
 fn aggregate_admission_includes_reader_kernel_and_processing_data() {
+    with_granular_control_stack(run_aggregate_admission_includes_reader_kernel_and_processing_data);
+}
+
+fn run_aggregate_admission_includes_reader_kernel_and_processing_data() {
     let (_wav_a, a, _) = source(WarpMode::Tones { grain_ms: 32 });
     let (_wav_b, b, _) = source_at_rate(
         WarpMode::Texture {
@@ -666,6 +685,10 @@ fn control_fences_already_queued_pcm_then_completes_current_demand() {
 
 #[test]
 fn control_shutdown_conserves_every_buffer_with_full_queues() {
+    with_granular_control_stack(run_control_shutdown_conserves_every_buffer_with_full_queues);
+}
+
+fn run_control_shutdown_conserves_every_buffer_with_full_queues() {
     let (_wav_a, a, _) = source(WarpMode::Tones { grain_ms: 32 });
     let (_wav_b, b, _) = source(WarpMode::Texture {
         grain_ms: 32,
@@ -798,6 +821,12 @@ fn raw_definition() -> (Wav, hex_stream::SourceDefinition, Vec<[f32; 2]>) {
 
 #[test]
 fn runtime_routes_mixed_raw_tones_and_texture_pages_and_admits_native_custody() {
+    with_granular_control_stack(
+        run_runtime_routes_mixed_raw_tones_and_texture_pages_and_admits_native_custody,
+    );
+}
+
+fn run_runtime_routes_mixed_raw_tones_and_texture_pages_and_admits_native_custody() {
     use hex_stream::{ConstructorStreamDomain, StreamConfig, StreamRuntime};
     let (_raw_wav, raw, raw_pcm) = raw_definition();
     let raw_key = raw.metadata.key();
@@ -1119,6 +1148,12 @@ fn pending_allowance(
 }
 #[test]
 fn pending_exact_mixed_granular_allowance_seals_and_reclaims_the_original_pool() {
+    with_granular_control_stack(
+        run_pending_exact_mixed_granular_allowance_seals_and_reclaims_the_original_pool,
+    );
+}
+
+fn run_pending_exact_mixed_granular_allowance_seals_and_reclaims_the_original_pool() {
     use hex_stream::{PendingStreamDomain, StreamConfig, StreamReadinessReservation};
     let (_files, definitions, bank) = pending_fixture();
     let metadata = bank.metadata().cloned().collect::<Vec<_>>();
@@ -1198,6 +1233,12 @@ fn pending_exact_mixed_granular_allowance_seals_and_reclaims_the_original_pool()
 }
 #[test]
 fn pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_start() {
+    with_granular_control_stack(
+        run_pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_start,
+    );
+}
+
+fn run_pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_start() {
     use hex_stream::{
         PendingStreamDomain, StreamConfig, StreamReadinessReservation, StreamRuntimeError,
     };
@@ -1250,6 +1291,12 @@ fn pending_granular_short_resource_allowances_and_invalid_inputs_refuse_before_s
 }
 #[test]
 fn pending_granular_cancellation_before_and_after_catalog_returns_every_page() {
+    with_granular_control_stack(
+        run_pending_granular_cancellation_before_and_after_catalog_returns_every_page,
+    );
+}
+
+fn run_pending_granular_cancellation_before_and_after_catalog_returns_every_page() {
     use hex_stream::{PendingStreamDomain, StreamConfig};
     for wait in [false, true] {
         let (_files, definitions, bank) = pending_fixture();
@@ -1297,6 +1344,12 @@ fn pending_granular_cancellation_before_and_after_catalog_returns_every_page() {
 
 #[test]
 fn allocated_scratch_matches_manual_owner_and_exact_processing_limit() {
+    with_granular_control_stack(
+        run_allocated_scratch_matches_manual_owner_and_exact_processing_limit,
+    );
+}
+
+fn run_allocated_scratch_matches_manual_owner_and_exact_processing_limit() {
     for mode in [
         WarpMode::Tones { grain_ms: 32 },
         WarpMode::Texture {

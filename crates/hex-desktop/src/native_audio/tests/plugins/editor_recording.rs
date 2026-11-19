@@ -2,7 +2,8 @@
 use super::*;
 use crate::native_audio::tests::resident_preview::EditorRecordingProbe;
 use hex_project::{
-    AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+    AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue, BeatTime,
+    DeviceAutomation, DeviceAutomationReplacement, DeviceAutomationTarget,
 };
 use hex_session::device_gesture::GestureKey;
 use hex_session::service::{
@@ -145,33 +146,63 @@ fn original_instrument_editor_joins_actual_main_take_and_late_restoration() {
         .id();
     let class = selection().cid;
     applied = h.applied(applied).0;
-    let mut before = Arc::clone(&inserted.state.project);
-    let lanes: &[(u32, f32)] = if grouped {
-        &[(0, 0.25), (11, 0.25), (23, 0.25)]
-    } else {
-        &[(7, 0.25), (11, 0.5)]
+    let point = |value| AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(value).unwrap(),
+        outgoing: AutomationInterpolation::Step,
     };
-    for &(parameter, value) in lanes {
-        let context = h.submitted.unwrap().1.context;
-        let edited = automation::edit_with_running_callback(
-            &mut h,
-            Request::DeviceAutomation {
-                project_generation: context.project_generation,
-                revision: context.editor_revision,
-                device: instrument,
+    let before = if grouped {
+        // Install the complete starting inventory in one native publication.
+        // Lane 23 is outside the take and must survive both adoption and history.
+        let project = &inserted.state.project;
+        let device = project.device(instrument).unwrap();
+        let rows = [0, 11, 23]
+            .map(|parameter| DeviceAutomation {
+                read_selection: AutomationReadSelection::Authored,
                 target: DeviceAutomationTarget::Vst3 { parameter },
                 vst3_class: Some(class),
-                points: vec![AutomationPoint {
-                    beat: BeatTime::ZERO,
-                    value: AutomationValue::new(value).unwrap(),
-                    outgoing: AutomationInterpolation::Step,
-                }],
-            },
+                points: vec![point(0.25)],
+                touch: Vec::new(),
+            })
+            .to_vec();
+        let edited = automation::edit_with_running_callback(
+            &mut h,
+            Request::Edit(Command::ReplaceDeviceStateWithIdentityReservation {
+                automation: Some(
+                    DeviceAutomationReplacement::new(device.automation().to_vec(), rows).unwrap(),
+                ),
+                device: instrument,
+                expected_state: device.state().clone(),
+                expected_variant: device.active_variant(),
+                state: device.state().clone(),
+                expected_next_id: project.next_identity(),
+                reserved_ids: 0,
+            }),
         );
         assert!(edited.error.is_none(), "{:?}", edited.error);
-        before = Arc::clone(&edited.state.project);
         applied = h.applied(applied).0;
-    }
+        Arc::clone(&edited.state.project)
+    } else {
+        let mut before = Arc::clone(&inserted.state.project);
+        for (parameter, value) in [(7, 0.25), (11, 0.5)] {
+            let context = h.submitted.unwrap().1.context;
+            let edited = automation::edit_with_running_callback(
+                &mut h,
+                Request::DeviceAutomation {
+                    project_generation: context.project_generation,
+                    revision: context.editor_revision,
+                    device: instrument,
+                    target: DeviceAutomationTarget::Vst3 { parameter },
+                    vst3_class: Some(class),
+                    points: vec![point(value)],
+                },
+            );
+            assert!(edited.error.is_none(), "{:?}", edited.error);
+            before = Arc::clone(&edited.state.project);
+            applied = h.applied(applied).0;
+        }
+        before
+    };
     let context = h.submitted.unwrap().1.context;
     let key = GestureKey {
         generation: context.project_generation,
@@ -823,13 +854,40 @@ fn verify_group_recording(
     );
     assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
     let oracle = directory.join("group-delivered-steps.hex");
-    hex_storage::save_new(&oracle, reference.project()).unwrap();
-    let blocks = usize::try_from(restore_second.clock.content_frame / 256 + 8).unwrap();
+    // The reference is a private test input. Its production-format encoding
+    // and reopen matter here. The captured take above exercises durable Save.
+    std::fs::write(&oracle, hex_storage::encode(reference.project()).unwrap()).unwrap();
+    let last_restore = restore_first
+        .clock
+        .content_frame
+        .max(restore_second.clock.content_frame);
+    // Include the SDK bridge's two 256-frame blocks and one full audible
+    // block after both restores have reached Main.
+    let blocks = usize::try_from((last_restore + 512).div_ceil(256) + 1).unwrap();
     assert!(blocks < 128);
-    let expected = instruments::replay_reopened_instrument(h, &oracle, device, blocks);
-    let actual = instruments::replay_reopened_instrument(h, &path, device, blocks);
+    // Capture and release have finished. Steady replay still waits on each
+    // original SDK block, and there are no live editor receipts to poll.
+    let expected = instruments::replay_reopened_instrument_using(
+        h,
+        &oracle,
+        device,
+        blocks,
+        instruments::render_replay_block,
+    );
+    let actual = instruments::replay_reopened_instrument_using(
+        h,
+        &path,
+        device,
+        blocks,
+        instruments::render_replay_block,
+    );
     assert_eq!(expected.len(), actual.len());
     assert!(actual.iter().any(|frame| frame[0] > 5.9 * baseline));
+    assert!(
+        actual[actual.len() - 256..]
+            .iter()
+            .all(|frame| (frame[0] - baseline).abs() < 1.0e-6)
+    );
     assert!(
         expected
             .iter()

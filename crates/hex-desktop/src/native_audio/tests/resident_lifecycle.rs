@@ -1397,11 +1397,16 @@ fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
 #[test]
 fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
     use std::io::{Seek, SeekFrom, Write};
+    // Mono PCM8 has one byte per source frame. Keep the second audible window
+    // entirely beyond the resident limit, with room for the 2x Re-Pitch read.
+    const SOURCE_FRAMES: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 8_192;
+    const FAR_SOURCE_FRAME: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 512;
+    const FAR_ARRANGEMENT_FRAME: u64 = FAR_SOURCE_FRAME / 2;
     let _native = native_fixture();
     let files = Files::new();
     let path = files.0.join("long-repitch.wav");
     let mut file = fs::File::create(&path).unwrap();
-    let data_bytes = 20_000_000u32;
+    let data_bytes = u32::try_from(SOURCE_FRAMES).unwrap();
     file.write_all(b"RIFF").unwrap();
     file.write_all(&(36 + data_bytes).to_le_bytes()).unwrap();
     file.write_all(b"WAVEfmt ").unwrap();
@@ -1416,8 +1421,8 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
     file.write_all(&data_bytes.to_le_bytes()).unwrap();
     file.write_all(&[160u8; 8192]).unwrap();
     file.set_len(44 + u64::from(data_bytes)).unwrap();
-    file.seek(SeekFrom::Start(44 + 19_000_000)).unwrap();
-    file.write_all(&[160u8; 8192]).unwrap();
+    file.seek(SeekFrom::Start(44 + FAR_SOURCE_FRAME)).unwrap();
+    file.write_all(&[160u8; 512]).unwrap();
     drop(file);
 
     let mut h = ResidentHarness::with_frame_limit(16_000);
@@ -1428,6 +1433,16 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         before_track: None,
         start: 0,
     });
+    assert_eq!(
+        imported
+            .state
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .source_frames(),
+        SOURCE_FRAMES
+    );
     let original_waveform = imported.state.waveforms.values().next().unwrap().clone();
     (applied, _) = h.applied(applied);
     let clip = imported.state.project.tracks()[0].clips()[0].id();
@@ -1454,7 +1469,7 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
     (applied, _) = h.applied(applied);
     assert_eq!(
         stretched.state.project.clip(clip).unwrap().duration(),
-        10_000_000
+        SOURCE_FRAMES / 2
     );
     let undo_tempo = h.run(Request::Undo);
     assert_eq!(
@@ -1511,7 +1526,7 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         .applied_revision
         .load(Acquire);
     let mut intent = h.seek_intent(91, redo_tempo.state.revision, None, None);
-    intent.destination_frame = 9_500_000;
+    intent.destination_frame = FAR_ARRANGEMENT_FRAME;
     h.service.submit_resident_arrangement_seek(intent).unwrap();
     let admitted = h.next();
     assert!(admitted.error.is_none(), "{:?}", admitted.error);
@@ -1542,5 +1557,5 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
         stretched.state.project.snapshot()
     );
     finish_replacement(&mut h, &reopened, output);
-    audible(&mut h, 9_500_000);
+    audible(&mut h, FAR_ARRANGEMENT_FRAME);
 }

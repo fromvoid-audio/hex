@@ -25,7 +25,7 @@ enum CandidateRole {
     Publication,
     LaunchPrewarm { ticket: u64, due: u64 },
 }
-pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress};
+pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow};
 struct PendingAction {
     prepared: hex_engine::PreparedStreamAction,
     ticket: u64,
@@ -178,10 +178,19 @@ impl Custody {
                 bank.accounted_base(true)?,
             )
         };
+        // One receipt can accompany each retained constructor State, plus
+        // the last attempted receipt retained by its control publisher.
+        let receipt_bytes = count
+            .checked_add(1)
+            .and_then(|n| {
+                n.checked_mul(crate::prepared::CancellablePublicationReceipt::payload_bytes())
+            })
+            .ok_or("stream receipt storage overflow")?;
         let requested = count
             .checked_mul(4)
             .and_then(|n| n.checked_mul(limit))
             .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
+            .and_then(|n| n.checked_add(receipt_bytes))
             .ok_or("stream demand storage overflow")?;
         let temporary = count
             .checked_mul(std::mem::size_of::<Workspace>())
@@ -205,7 +214,7 @@ impl Custody {
         }
         let actual = workspaces
             .iter()
-            .try_fold(0usize, |bytes, rows| {
+            .try_fold(receipt_bytes, |bytes, rows| {
                 rows.backing_bytes()?.checked_add(bytes)
             })
             .ok_or("stream demand storage overflow")?;

@@ -565,7 +565,7 @@ fn clip_loop_compact_row_option_edge_repeats_and_keeps_first_boundary(cx: &mut T
         // option on it repeats.
         assert!(f.visual.debug_bounds(selector(&f, "outer")).is_none());
         let edge = f.visual.debug_bounds(right_edge(&f)).unwrap();
-        assert_eq!(edge.size.height, px(23.0));
+        assert_eq!(edge.size.height, px(22.0));
         f.visual
             .simulate_mouse_move(edge.center(), None, Modifiers::default());
         f.visual.run_until_parked();

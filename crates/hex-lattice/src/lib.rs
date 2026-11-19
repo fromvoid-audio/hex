@@ -1016,6 +1016,11 @@ impl NativeInstrumentClock for OffsetClock<'_> {
             .arrangement_frame_at_offset(self.offset.checked_add(offset)?)
     }
 
+    fn authored_clock_epoch_at_offset(&self, offset: usize) -> Option<std::num::NonZeroU64> {
+        self.clock
+            .authored_clock_epoch_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock
             .authored_arrangement_frame_at_offset(self.offset.checked_add(offset)?)
@@ -3625,7 +3630,14 @@ impl NativeRuntimeChain {
                 automation: entry
                     .automation
                     .foreign()
-                    .map(PreparedForeignAutomation::borrow),
+                    .map(|program| {
+                        program.borrow_for_effect_clock(if entry.automation_frozen {
+                            None
+                        } else {
+                            clock.and_then(|clock| clock.authored_clock_epoch_at_offset(0))
+                        })
+                    })
+                    .transpose()?,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
                 output_gain: if entry.automation_frozen {

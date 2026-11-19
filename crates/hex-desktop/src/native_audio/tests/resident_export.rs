@@ -3,7 +3,7 @@ use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_project::{BeatTime, Command, Created};
 use hex_session::service::{ExportControl, ExportSignal, Stem};
-fn completed(h: &mut ResidentHarness) -> hex_session::service::ExportEvent {
+pub(super) fn completed(h: &mut ResidentHarness) -> hex_session::service::ExportEvent {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();

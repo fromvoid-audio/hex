@@ -156,9 +156,9 @@ impl EditorView {
                 self.control_icon(
                     "mon",
                     if self.audio_recorder.software_monitor {
-                        "software monitoring during recording · click for hardware"
+                        "software monitor for armed input · click for hardware"
                     } else {
-                        "hardware monitoring during recording · click for software"
+                        "hardware monitoring · click for software"
                     },
                     |view, _, cx| {
                         view.toggle_software_monitor();

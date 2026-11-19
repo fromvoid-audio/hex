@@ -57,6 +57,11 @@ mod tests {
         }
     }
 }
+pub(crate) enum TempoStreamWindow<'a> {
+    Forecast(&'a hex_engine::session_playback::PreparedTempoAnchor),
+    Exact(&'a hex_engine::session_playback::PreparedTempoAnchor),
+}
+
 pub(crate) struct StreamInstall<'a> {
     pub(crate) domains: &'a mut [Option<DomainEnvelope>; 2],
     pub(crate) pending_play: bool,
@@ -64,6 +69,8 @@ pub(crate) struct StreamInstall<'a> {
     pub(crate) frames: usize,
     pub(crate) fenced_restart: bool,
     pub(crate) foreign_continuation: bool,
+    pub(crate) confirmed_fade: Option<u32>,
+    pub(crate) tempo_cut: Option<TempoStreamWindow<'a>>,
 }
 pub(super) fn envelope(
     domains: &mut [Option<DomainEnvelope>; 2],
@@ -136,6 +143,11 @@ impl StateView<'_> {
         role: ProtectionRole,
         due: Option<u64>,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
+        if request.tempo_cut.is_some() && (previous.is_none() || due.is_some()) {
+            return Err(hex_engine::Invalid(
+                "tempo cut requires its exact stream predecessor",
+            ));
+        }
         let refs = self.domain_refs;
         let workspace = self
             .streaming
@@ -214,7 +226,18 @@ impl StateView<'_> {
                     .runtime
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?;
-                let preview = if request.fenced_restart {
+                let preview = if let Some(fade_remaining) = request.confirmed_fade {
+                    runtime.preview_device_insert(previous, fade_remaining, frames, &mut visit)
+                } else if let Some(cut) = &request.tempo_cut {
+                    match cut {
+                        TempoStreamWindow::Forecast(anchor) => {
+                            runtime.forecast_tempo_cut(previous, frames, &mut visit, anchor)
+                        }
+                        TempoStreamWindow::Exact(anchor) => {
+                            runtime.preview_tempo_cut(previous, frames, &mut visit, anchor)
+                        }
+                    }
+                } else if request.fenced_restart {
                     runtime.preview_ordinary_fenced_restart(
                         previous,
                         frames,
@@ -255,6 +278,7 @@ impl StateView<'_> {
                         // deferred carrier and let the predecessor drain before
                         // replanning; this is not a page-readiness rejection.
                         workspace.cancel_pending(refs, request.domains);
+                        workspace.handoff_diagnostic = Some(error);
                         return Ok(None);
                     }
                     Err(error) => {
@@ -605,6 +629,8 @@ impl ActiveView<'_> {
             frames: output.len(),
             fenced_restart: false,
             foreign_continuation: false,
+            confirmed_fade: None,
+            tempo_cut: None,
         };
         let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
             super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
@@ -642,6 +668,8 @@ impl ActiveView<'_> {
                 frames: output.len() - committed,
                 fenced_restart: false,
                 foreign_continuation: false,
+                confirmed_fade: None,
+                tempo_cut: None,
             };
             let mut planned =
                 self.state

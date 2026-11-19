@@ -3,9 +3,11 @@
 //! device/window is opened and no scalar ACK or owner is fabricated.
 use super::EditorView;
 use crate::editor_backend::EditorAudio;
-use gpui::{AppContext, Entity, TestAppContext};
+use gpui::{App, AppContext, AsyncApp, Entity, TestAppContext};
 use hex_session::service::{Event, Request, Service};
 use std::{
+    io::Write,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, MutexGuard, atomic::AtomicBool, mpsc::sync_channel},
     time::{Duration, Instant},
 };
@@ -15,23 +17,35 @@ pub(super) struct WorkerUiFixture {
     pub editor: Entity<EditorView>,
     pub backend: hex_audio::worker_fixture::HeadlessBackend,
     consume_next_inherited_candidate: Arc<AtomicBool>,
+    cleanup_app: Option<AsyncApp>,
     _serial: MutexGuard<'static, ()>,
 }
 
 fn receive(service: &Service, backend: &mut hex_audio::worker_fixture::HeadlessBackend) -> Event {
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
+    let event = loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
-            return event;
+            break event;
         }
         assert!(
             Instant::now() < deadline,
             "fixture canonical event unavailable"
         );
         std::thread::yield_now();
+    };
+    // The worker can send its canonical event after the most recent render.
+    // Drain any admitted graph before submitting the next fixture edit.
+    while backend.ordinary_publication_idle_on_control() != Some(true) {
+        assert!(
+            Instant::now() < deadline,
+            "fixture publication did not finish"
+        );
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        std::thread::yield_now();
     }
+    event
 }
 
 /// Open with authoritative canonical state and an acknowledged ordinary graph.
@@ -67,6 +81,32 @@ pub(super) fn open_with_section_and_recovery(
     audition_ready: bool,
     section_fixture: bool,
     recovery: Option<std::path::PathBuf>,
+) -> WorkerUiFixture {
+    open_worker(
+        cx,
+        commands,
+        audition_ready,
+        section_fixture,
+        recovery,
+        false,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn open_for_paused_monitor(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+) -> WorkerUiFixture {
+    open_worker(cx, commands, false, true, None, true)
+}
+
+fn open_worker(
+    cx: &mut TestAppContext,
+    commands: Vec<hex_project::Command>,
+    audition_ready: bool,
+    section_fixture: bool,
+    recovery: Option<std::path::PathBuf>,
+    paused_monitor_enabled: bool,
 ) -> WorkerUiFixture {
     let serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
@@ -104,6 +144,7 @@ pub(super) fn open_with_section_and_recovery(
             audition_ready,
             Arc::clone(&consume_next_inherited_candidate),
             section_fixture,
+            paused_monitor_enabled,
         ),
         reservation,
     )
@@ -127,7 +168,15 @@ pub(super) fn open_with_section_and_recovery(
         current.project.as_ref().clone(),
         current.midi_preview.clone(),
     );
-    editor.update(cx, |view, cx| {
+    let mut fixture = WorkerUiFixture {
+        handle,
+        editor,
+        backend,
+        consume_next_inherited_candidate,
+        cleanup_app: Some(cx.to_async()),
+        _serial: serial,
+    };
+    fixture.editor.update(cx, |view, cx| {
         view.service = service;
         view.state = Some(current);
         view.project_generation = 0;
@@ -146,8 +195,8 @@ pub(super) fn open_with_section_and_recovery(
     });
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let ready = editor.update(cx, |view, cx| {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let ready = fixture.editor.update(cx, |view, cx| {
             view.tick(cx);
             view.state
                 .as_ref()
@@ -170,19 +219,18 @@ pub(super) fn open_with_section_and_recovery(
         );
         std::thread::yield_now();
     }
-    WorkerUiFixture {
-        handle,
-        editor,
-        backend,
-        consume_next_inherited_candidate,
-        _serial: serial,
-    }
+    fixture
 }
 
 impl WorkerUiFixture {
     /// Quiesce callback before joining its canonical control owner. Removing the
     /// disposable test window never invokes the user's real close/save workflow.
     pub fn finish(mut self, cx: &mut TestAppContext) {
+        self.cleanup_app = None;
+        cx.update(|cx| self.retire(cx)).unwrap();
+    }
+
+    fn retire(&mut self, cx: &mut App) -> gpui::Result<()> {
         self.editor.update(cx, |view, _| {
             if let Some(audio) = view.audio.as_mut() {
                 audio.control.close();
@@ -190,11 +238,27 @@ impl WorkerUiFixture {
             view.audio = None;
         });
         self.backend.close();
-        self.editor.update(cx, |view, _| {
-            view.service.shutdown(Duration::from_secs(2)).unwrap()
-        });
-        cx.update_window(self.handle, |_, window, _| window.remove_window())
-            .unwrap();
+        let shutdown = self
+            .editor
+            .update(cx, |view, _| view.service.shutdown(Duration::from_secs(2)));
+        let removed = cx.update_window(self.handle, |_, window, _| window.remove_window());
+        shutdown?;
+        removed
+    }
+}
+
+impl Drop for WorkerUiFixture {
+    fn drop(&mut self) {
+        let Some(app) = self.cleanup_app.take() else {
+            return;
+        };
+        // A failed test can leave the editor alive in GPUI. Retire it before
+        // releasing the fixture lock. A second GPUI panic must leave the
+        // original failure observable.
+        let cleanup = catch_unwind(AssertUnwindSafe(|| app.update(|cx| self.retire(cx))?));
+        if let Ok(Err(error)) = cleanup {
+            let _ = writeln!(std::io::stderr(), "worker ui fixture cleanup: {error}");
+        }
     }
 }
 
@@ -205,6 +269,26 @@ mod tests {
     use gpui::{Modifiers, MouseButton, VisualTestContext};
     use hex_project::{BeatTime, Command, ElementColor, LoopRegion};
     use std::sync::atomic::Ordering::{Acquire, Release};
+
+    #[gpui::test]
+    fn worker_fixture_unwind_retires_output_before_next_open(cx: &mut TestAppContext) {
+        let cx = &mut cx.new_app();
+        let fixture = open(cx, Vec::new());
+        let failure = catch_unwind(AssertUnwindSafe(move || {
+            let _fixture = fixture;
+            panic!("fixture test assertion");
+        }))
+        .unwrap_err();
+        assert_eq!(
+            failure.downcast_ref::<&str>().copied(),
+            Some("fixture test assertion")
+        );
+        assert!(
+            cx.windows().is_empty(),
+            "fixture left its editor window alive after unwinding"
+        );
+        open(cx, Vec::new()).finish(cx);
+    }
 
     #[gpui::test]
     fn section_button_plays_through_and_l_click_uses_the_visible_loop(cx: &mut TestAppContext) {

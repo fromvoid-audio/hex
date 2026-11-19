@@ -665,16 +665,23 @@ fn native_concealment_covers_adjacent_gaps_across_a_partial_callback() {
     }
     for (frames, expected) in [(4, (0, 4)), (8, (0, 8)), (4, (0, 4))] {
         callback.begin_physical_callback(frames).unwrap();
-        let reply = callback
-            .stage_segment_with_parameters(
+        let mut output = [[-1.0; 2]; 8];
+        let concealed = callback
+            .stage_effect_pcm_segment(
                 0,
                 &[[1.0; 2]; 8][..frames],
                 &[],
                 &[],
-                &mut [[0.0; 2]; 8][..frames],
+                &mut output[..frames],
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
             )
             .unwrap();
-        assert_eq!(reply.concealed_output, Some(expected));
+        assert_eq!(concealed, Some(expected));
+        assert_eq!(output[..frames], [[0.0; 2]; 8][..frames]);
         callback.finish(true).unwrap();
     }
 }
@@ -1163,7 +1170,7 @@ fn pause_accepts_only_the_exact_staged_prefix_and_keeps_partial_input() {
         callback
             .stage_segment(0, &[[0.25; 2]; 4], &[], &mut [[0.0; 2]; 4])
             .unwrap();
-        callback.end_staging_at_pause(pause_cut);
+        callback.end_staging_at_rendered_prefix(pause_cut);
         if pause_cut != 4 {
             assert_eq!(callback.finish(true), Err(Fault::Protocol));
             assert!(control.is_revoked());

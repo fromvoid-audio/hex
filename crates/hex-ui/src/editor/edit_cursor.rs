@@ -268,7 +268,7 @@ impl EditorView {
     /// A held or released drag only paints a point. Commit its placement in
     /// the same receive as the canonical destination, so refusal or Escape
     /// naturally restores the original cursor. A later choice or lock wins.
-    pub(super) fn install_drop_cursor(&mut self, cursor: DropCursor) {
+    pub(super) fn install_drop_cursor(&mut self, cursor: DropCursor, moved_clip: Option<ClipId>) {
         if self.mode != EditorMode::Arrangement
             || self.opening_project
             || self.close_prompt_open
@@ -282,6 +282,11 @@ impl EditorView {
             return;
         }
         self.advance_selection_intent();
+        if let Some(clip) = moved_clip
+            && !self.clip_is_selected(clip)
+        {
+            self.select_arrangement_clip(cursor.track, clip);
+        }
         self.edit_cursor = Some(EditCursor::new(
             Some(cursor.track),
             cursor.frame,
@@ -592,6 +597,15 @@ impl EditorView {
                         gpui::MouseButton::Left,
                         cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
                             if event.modifiers == gpui::Modifiers::default() {
+                                let point =
+                                    (f32::from(event.position.x), f32::from(event.position.y));
+                                // Arrangement capture saw this press before the marker.
+                                // Discard its pending tail drag so the marker can claim it.
+                                if view.time_selection_gesture.as_ref().is_some_and(|gesture| {
+                                    !gesture.moved && gesture.tail_press == Some(point)
+                                }) {
+                                    view.time_selection_gesture = None;
+                                }
                                 view.toggle_play_start_lock(cx);
                                 cx.stop_propagation();
                             }

@@ -619,6 +619,7 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
         self.reconcile_truncated_import_offer(window, cx);
+        self.reconcile_device_insert_confirmation(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -643,6 +644,7 @@ impl Render for EditorView {
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
+        self.reconcile_gain_audition();
         if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;

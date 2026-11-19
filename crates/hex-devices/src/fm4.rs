@@ -668,7 +668,15 @@ fn sample_fm4_note(
 }
 
 fn phase_from_turns(turns: f64) -> u64 {
-    (turns.rem_euclid(1.0) * PHASE_SCALE).round() as u64
+    // Modulo one removes only the integral part. Truncation uses the native
+    // rounding instruction and keeps the same Euclidean wrap for negative FM.
+    let fraction = turns - turns.trunc();
+    let wrapped = if fraction < 0.0 {
+        fraction + 1.0
+    } else {
+        fraction
+    };
+    (wrapped * PHASE_SCALE).round() as u64
 }
 
 #[cfg(test)]

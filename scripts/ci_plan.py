@@ -580,8 +580,12 @@ UI_DEFAULT_STANDALONE_TESTS = (
 UI_EXTRA_TEST_TARGETS = {"editor::arrangement_focus::": "track_group_focus",
                          "editor::track_hierarchy_indent::": "track_group_focus",
                          "editor::track_reorder::subtree::": "track_group_focus",
-                         "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary"}
-UI_EXTRA_TEST_FEATURES = {"midi_pressure_boundary": "ui-test-support"}
+                         "editor::midi_recording::pressure_fixture::": "midi_pressure_boundary",
+                         "editor::sample_recorder::": "sample_recorder_layout"}
+UI_EXTRA_TEST_FEATURES = {
+    "midi_pressure_boundary": "ui-test-support",
+    "sample_recorder_layout": "ui-test-support",
+}
 # Reviewed tests for owners whose direct coverage lives in sibling modules.
 UI_MODULE_TEST_DEPENDENCIES = {
     "editor_backend::": (
@@ -1089,6 +1093,9 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                 continue
             if file == directory / "tests" / "midi_pressure_boundary.rs" and file.is_file():
                 filters.setdefault(owner, set()).add("editor::midi_recording::")
+                continue
+            if file == directory / "tests" / "sample_recorder_layout.rs" and file.is_file():
+                filters.setdefault(owner, set()).add("editor::sample_recorder::")
                 continue
             relative_path = file.relative_to(directory).as_posix()
             harness_target = UI_UNIT_HARNESS_FILES.get(relative_path)

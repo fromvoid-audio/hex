@@ -504,7 +504,7 @@ impl WorkerAudioSink for DispatchSink {
     ) -> Result<Option<ResidentFileMetadata>, String> {
         CatalogSink { reject: false }.prepare_resident_file_metadata(input)
     }
-    fn publish_resident_with_files(
+    fn publish_resident_transition(
         &mut self,
         playback: hex_engine::playback::Playback,
         resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
@@ -515,7 +515,7 @@ impl WorkerAudioSink for DispatchSink {
         admit: &mut dyn FnMut(
             &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
         ) -> Result<(), String>,
-        files: Option<ResidentFilePublication<'_>>,
+        inputs: crate::service::ResidentPublicationInputs<'_>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         assert_eq!(metadata.context, self.expected);
@@ -525,7 +525,7 @@ impl WorkerAudioSink for DispatchSink {
         ));
         assert!(playback.contains_streamed_sources());
         assert!(resources.is_some_and(|resources| resources.metadata_bytes().unwrap() > 0));
-        let files = files.unwrap().sources;
+        let files = inputs.files.unwrap().sources;
         assert_eq!(files.context(), self.expected);
         assert_eq!(files.metadata().catalog_generation(), 7);
         assert_eq!(files.files().len(), 1);

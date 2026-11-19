@@ -150,9 +150,12 @@ impl OverrangeCache {
         mapping: &WaveformMapping,
         layout: WaveformLayout,
     ) -> WaveformOverrange {
+        // The cached peaks repaint for every gain value. Exact sample checks
+        // use the committed gain so a drag cannot flood the worker.
         let WaveformMapping::Clip {
             clip,
             timeline_origin,
+            gain: None,
             fade: Some(fade),
         } = mapping
         else {
@@ -386,7 +389,7 @@ enum WaveformMappingKey {
     },
     GainedSource {
         timeline_origin: u64,
-        gain: i32,
+        gain: u32,
         detail: bool,
     },
     Clip {
@@ -399,7 +402,7 @@ enum WaveformMappingKey {
         source_phase: u64,
         looping: bool,
         timeline_origin: u64,
-        gain: i32,
+        gain: u32,
         fade: Option<hex_project::ClipFade>,
     },
     Source {
@@ -703,12 +706,14 @@ pub(super) enum WaveformMapping {
     },
     GainedSource {
         timeline_origin: u64,
-        gain: hex_project::ClipGain,
+        gain: f32,
         detail: bool,
     },
     Clip {
         clip: Clip,
         timeline_origin: u64,
+        /// Held or pending display gain. The source peaks are unchanged.
+        gain: Option<f32>,
         /// Arrangement fade to display, including a held or pending preview.
         /// Source-editing waveforms may omit this independent clip envelope.
         fade: Option<hex_project::ClipFade>,
@@ -952,17 +957,18 @@ fn waveform_geometry_key(
             detail,
         } => WaveformMappingKey::GainedSource {
             timeline_origin: *timeline_origin,
-            gain: gain.millidb(),
+            gain: gain.to_bits(),
             detail: *detail,
         },
         WaveformMapping::Clip {
             clip,
             timeline_origin,
+            gain,
             fade,
         } => WaveformMappingKey::Clip {
             id: Some(clip.id().value()),
             transformed: clip.audio_edit().is_some(),
-            gain: clip.gain().millidb(),
+            gain: gain.unwrap_or_else(|| clip.gain().linear()).to_bits(),
             start: clip.start(),
             duration: clip.duration(),
             source_offset: clip.source_offset(),
@@ -1070,10 +1076,9 @@ fn build_waveform_geometry(
         WaveformMapping::MusicalEvent(projection) => projection.gain().linear(),
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Loop(projection) => projection.gain().linear(),
-        WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
-        WaveformMapping::GainedSource { gain, .. } | WaveformMapping::Prepared { gain, .. } => {
-            gain.linear()
-        }
+        WaveformMapping::Clip { clip, gain, .. } => gain.unwrap_or_else(|| clip.gain().linear()),
+        WaveformMapping::GainedSource { gain, .. } => *gain,
+        WaveformMapping::Prepared { gain, .. } => gain.linear(),
         WaveformMapping::Source { .. } => 1.0,
     };
     let clip_fade = match mapping {
@@ -1354,6 +1359,7 @@ mod tests {
         );
         let mapping = WaveformMapping::Clip {
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
             clip: clip.clone(),
         };
@@ -1423,6 +1429,7 @@ mod tests {
         );
         let mapping = WaveformMapping::Clip {
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
             clip,
         };
@@ -1514,6 +1521,7 @@ mod tests {
         );
         let mapping = WaveformMapping::Clip {
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
             clip,
         };
@@ -1600,11 +1608,13 @@ mod tests {
         let canonical = WaveformMapping::Clip {
             clip: clip.clone(),
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
         };
         let preview = WaveformMapping::Clip {
             clip,
             timeline_origin: 0,
+            gain: None,
             fade: Some(fade),
         };
         let source = |sample| {
@@ -1785,11 +1795,13 @@ mod tests {
         let clip = editor.project().clip(clip).unwrap().clone();
         let old = WaveformMapping::Clip {
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
             clip: clip.clone(),
         };
         let current = WaveformMapping::Clip {
             timeline_origin: 0,
+            gain: None,
             fade: Some(hex_project::ClipFade::new(8, 0, 8, 0).unwrap()),
             clip,
         };
@@ -1916,11 +1928,13 @@ mod tests {
         let mapping = |clip: &Clip| WaveformMapping::Clip {
             clip: clip.clone(),
             timeline_origin: 0,
+            gain: None,
             fade: Some(clip.retained_fade()),
         };
         let held = WaveformMapping::Clip {
             clip: neutral.clone(),
             timeline_origin: 0,
+            gain: None,
             fade: Some(faded.retained_fade()),
         };
         let cache = RefCell::new(WaveformGeometryCache::default());
@@ -2193,6 +2207,7 @@ mod tests {
             &WaveformMapping::Clip {
                 clip: editor.project().clip(id).unwrap().clone(),
                 timeline_origin: 0,
+                gain: None,
                 fade: None,
             },
             0,
@@ -2233,7 +2248,7 @@ mod tests {
                 &waveform,
                 &WaveformMapping::GainedSource {
                     timeline_origin: 0,
-                    gain: hex_project::ClipGain::UNITY,
+                    gain: hex_project::ClipGain::UNITY.linear(),
                     detail: true,
                 },
                 start,
@@ -2264,7 +2279,7 @@ mod tests {
             &long_waveform,
             &WaveformMapping::GainedSource {
                 timeline_origin: 0,
-                gain: hex_project::ClipGain::UNITY,
+                gain: hex_project::ClipGain::UNITY.linear(),
                 detail: true,
             },
             0,
@@ -2568,6 +2583,7 @@ mod tests {
             let mapping = WaveformMapping::Clip {
                 clip: editor.project().clip(id).unwrap().clone(),
                 timeline_origin,
+                gain: None,
                 fade: None,
             };
             cached_waveform_geometry(
@@ -2627,6 +2643,7 @@ mod tests {
         let mapping = WaveformMapping::Clip {
             clip: editor.project().clip(clip).unwrap().clone(),
             timeline_origin: 40_000,
+            gain: None,
             fade: None,
         };
         let source = waveform();
@@ -2918,6 +2935,7 @@ mod tests {
                     &WaveformMapping::Clip {
                         clip: clip.clone(),
                         timeline_origin: start,
+                        gain: None,
                         fade: Some(clip.retained_fade()),
                     },
                     start,
@@ -3095,17 +3113,17 @@ mod tests {
         let cache = RefCell::new(WaveformGeometryCache::default());
         let neutral = WaveformMapping::GainedSource {
             timeline_origin: 0,
-            gain: hex_project::ClipGain::UNITY,
+            gain: hex_project::ClipGain::UNITY.linear(),
             detail: false,
         };
         let quiet = WaveformMapping::GainedSource {
             timeline_origin: 0,
-            gain: hex_project::ClipGain::new(-6_000).unwrap(),
+            gain: hex_project::ClipGain::new(-6_000).unwrap().linear(),
             detail: false,
         };
         let detailed = WaveformMapping::GainedSource {
             timeline_origin: 0,
-            gain: hex_project::ClipGain::UNITY,
+            gain: hex_project::ClipGain::UNITY.linear(),
             detail: true,
         };
         let geometry = |mapping| {

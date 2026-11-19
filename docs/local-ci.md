@@ -190,21 +190,31 @@ harnesses runs the owning unit targets and keeps the reviewed feature Clippy
 checks. Changes to product source still select its unit and rendered support
 coverage.
 
-The windowed library and standalone MIDI pressure test use
-`ui-test-support` in separate invocations:
+The windowed library and the standalone MIDI pressure and recorder layout tests
+use `ui-test-support` in separate invocations:
 
 ```sh
 cargo test -p hex-ui --features ui-test-support --lib --locked
 cargo test -p hex-ui --features ui-test-support --test midi_pressure_boundary --locked
+cargo test -p hex-ui --features ui-test-support --test sample_recorder_layout --locked
 ```
 
 Run `cargo test -p hex-ui --tests --locked` for the default library and
 default standalone unit targets. The six `ui-unit-tier` targets above complete
-the unit tier. The two `ui-test-support` invocations form the integration tier,
+the unit tier. These `ui-test-support` invocations form the integration tier,
 including rendered focus and shortcuts, pending-edit receipts, delayed
 acknowledgement repaint, and open/save flows. For each tier, time the combined
 setup and test execution with compilation measured separately. The unit limit
 is 30 seconds and the integration limit is three minutes.
+
+For focused recorder layout timing on macOS arm64, build
+`sample_recorder_layout` with `--release --no-run --message-format=json`.
+Copy Cargo's reported test executable to a local artifact directory and prepare
+that copy with `xcrun strip -S -x`, `codesign --force --sign -`, and
+`codesign --verify --strict`. Time a fresh APFS copy of the prepared executable
+and run `recorder_header_fits_the_button_labels_and_hit_targets` with
+`--exact --test-threads=1`. Repeat on the same executable for warm timing and
+report compilation and one-time signature preparation separately.
 
 Plans containing self-tests run the existing changelog, architecture, dependency,
 UI/layout and formatting checks first, once each, before Python self-tests and
@@ -268,14 +278,18 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
-comprehensive discovery. Merge checks without explicit native acceptance inputs
+comprehensive discovery. Ordinary unscoped full audits and comprehensive merge
+checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
 eight workers and batches of up to eight ordinary cases from the same
 module or package. When Git on the
 original PATH is Apple's `/usr/bin/git` launcher, sharded runs resolve the
 selected Git once with `xcrun` and put only that executable ahead of the
-original PATH for its child processes. Comprehensive full, release and health runs
-remain serial. Owner selections run through `scripts/python_shards.py`:
+original PATH for its child processes. Full audits with explicit native
+acceptance inputs, scoped full plans, and the release and health profiles
+retain serial comprehensive discovery. Unscoped full reports record sharded
+discovery explicitly. Reports predating that marker retain their serial
+configuration for certificate validation. Owner selections run through `scripts/python_shards.py`:
 ordinary cases from the same module are batched up to eight per process in a
 shared work queue with a default cap of 12 workers.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
@@ -664,6 +678,54 @@ inputs change. This controlled helper test does not establish installed plug-in,
 native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
+
+### Signed VST3 editor regression timing
+
+Use the optimized desktop test target to time the signed regression that
+checks whether a late editor value reaches the original worker across graph
+publication. Use the verified fixture receipts from the commands above.
+
+```sh
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test --locked --release -p hex-desktop --features allocation-probe --bin hex-desktop \
+  -- --ignored --exact --test-threads=1 \
+  native_audio::tests::plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
+```
+
+Measure first and repeated invocations separately and record both process wall
+time and the test harness duration. Report compilation separately. A fresh
+copy of the desktop executable can spend measurable time before libtest
+produces its first output, including on a listing-only run.
+
+### Long Re-Pitch regression timing
+
+The verified-worker Re-Pitch regression imports a file past the resident limit,
+applies history, seeks to audio beyond that limit, and saves and reopens the
+project. Use the compact macOS arm64 test build for focused first-launch timing.
+
+```sh
+cargo --config 'profile.release.package.hex-desktop.opt-level="z"' \
+  --config 'profile.release.package.hex-desktop.strip="symbols"' \
+  --config 'profile.release.package.hex-ui.opt-level="z"' \
+  --config 'profile.release.package.gpui.opt-level="z"' \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  test --release --locked -p hex-desktop --features allocation-probe \
+  --bin hex-desktop --no-run --message-format=json
+```
+
+Use the executable from Cargo's `hex-desktop` test artifact. Prepare a local
+APFS copy, sign that copy with `codesign --force --sign -` and verify it with
+`codesign --verify --strict`. Run the following exact test with
+`--exact --test-threads=1` on a fresh APFS copy of the signed executable, then
+repeat on the same executable for warm timing.
+
+`native_audio::tests::resident_lifecycle::ordinary_long_repitch_plays_and_reopens_through_verified_workers`
+
+Record executable copy setup, process wall time and harness time. Report the
+compilation and one-time signature preparation separately. The fresh copy tests
+a new executable identity on the current filesystem cache.
 
 ### Dense playback baseline
 

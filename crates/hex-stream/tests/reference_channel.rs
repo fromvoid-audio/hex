@@ -2394,8 +2394,26 @@ fn distant_short_texture_page_matches_resident() {
     });
 }
 
+// These fixtures retain prepared WAV readers and their inline page scratch
+// across multiple control-side preparation and ownership checks.
+fn with_granular_control_stack(test: impl FnOnce() + Send + 'static) {
+    let thread = std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(test)
+        .expect("start granular control fixture");
+    if let Err(payload) = thread.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 #[test]
 fn canonical_granular_projection_drives_verified_page_matching_resident() {
+    with_granular_control_stack(
+        run_canonical_granular_projection_drives_verified_page_matching_resident,
+    );
+}
+
+fn run_canonical_granular_projection_drives_verified_page_matching_resident() {
     use hex_engine::{STREAM_PAGE_FRAMES, audio_transform::streamed_granular_root};
     use hex_project::{SourceGainPoint, WarpMode, default_audio_warp};
     use hex_stream::{

@@ -9,45 +9,13 @@ use hex_session::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const TIMELINE_FRAMES: u64 = 384_000;
+use super::rendered_test_fixture::{TIMELINE_FRAMES, editor_window_with_timeline};
+pub(super) use super::rendered_test_fixture::{audio_project, editor_window};
 
 /// Edge-trim grab point in the clip-name band. A hovered clip shows its
 /// corner fade handles over the rest of the edge, and those take precedence.
 pub(super) fn trim_grab_point(bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
     gpui::point(bounds.center().x, bounds.top() + bounds.size.height / 6.0)
-}
-
-pub(super) fn audio_project() -> (
-    Project,
-    hex_project::TrackId,
-    hex_project::TrackId,
-    hex_project::ClipId,
-) {
-    let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
-    let Created::Imported {
-        track: source,
-        clip,
-        ..
-    } = editor
-        .execute(Command::ImportAudioTrack {
-            name: "audio source".into(),
-            path: "missing.wav".into(),
-            sample_rate: 48_000,
-            frames: 96_000,
-        })
-        .expect("import")
-    else {
-        panic!("import result")
-    };
-    let Created::Track(target) = editor
-        .execute(Command::AddTrack {
-            name: "target".into(),
-        })
-        .expect("target track")
-    else {
-        panic!("track result")
-    };
-    (editor.project().clone(), source, target, clip)
 }
 
 pub(super) fn midi_project() -> (
@@ -94,57 +62,6 @@ pub(super) fn midi_project() -> (
         })
         .expect("add note");
     (editor.project().clone(), source, target, clip)
-}
-
-pub(super) fn editor_window(
-    cx: &mut TestAppContext,
-    project: Project,
-    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
-) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
-    editor_window_with_timeline(cx, project, midi_preview, TIMELINE_FRAMES)
-}
-
-fn editor_window_with_timeline(
-    cx: &mut TestAppContext,
-    project: Project,
-    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
-    timeline_frames: u64,
-) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
-    let bootstrap = cx.add_window(|_, _| Empty);
-    let handle = *bootstrap;
-    let editor = cx
-        .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 32, 8_000_000).expect("disposable test service");
-            let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new(window, cx, service, Err("offline ui test".into()))
-            });
-            install_close_guard(window, cx, editor.downgrade());
-            editor.update(cx, |view, cx| {
-                // Geometry fixtures use a fixed frame span, independent of the
-                // application's default trailing navigation allowance.
-                view.viewport = Some(super::viewport::Viewport::fit(timeline_frames));
-                view.state = Some(Arc::new(ViewState {
-                    canonical_audio_source: None,
-                    comparison_audio: None,
-                    project: Arc::new(project),
-                    waveforms: Default::default(),
-                    source_overviews: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview,
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                    timeline_frames,
-                    can_undo: false,
-                    can_redo: false,
-                    revision: 1,
-                    unsaved: false,
-                    document_path: None,
-                }));
-                cx.notify();
-            });
-            editor
-        })
-        .expect("editor window");
-    (handle, editor)
 }
 
 fn drag_source_to_target(
@@ -635,6 +552,10 @@ fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut
                         );
                         let destination = &view.state.as_ref().unwrap().project.tracks()[1];
                         assert_eq!(destination.gain(), 0.5);
+                        if !copy {
+                            assert_eq!(view.selected_clip(), Some(clip));
+                            assert_eq!(view.selected_track(), Some(destination.id()));
+                        }
                         let cursor = view.edit_cursor.unwrap();
                         assert_eq!(
                             (cursor.track, cursor.frame),
@@ -1310,6 +1231,17 @@ pub(super) fn upper_rail_owned_fixture(
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
 ) {
+    upper_rail_fixture_with_service(cx, Service::new(48_000, 32, 8_000_000).unwrap())
+}
+
+pub(super) fn upper_rail_fixture_with_service(
+    cx: &mut TestAppContext,
+    service: Service,
+) -> (
+    Arc<super::test_environment::Environment>,
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+) {
     use hex_session::service::Request;
     cx.update(super::bind_editor_keys);
     let files = super::test_environment::Environment::new().unwrap();
@@ -1337,7 +1269,6 @@ pub(super) fn upper_rail_owned_fixture(
     }
     std::fs::write(&wav, bytes).unwrap();
     std::fs::create_dir(files.root().join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
     upper_rail_next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let imported = upper_rail_next(&service);
@@ -3199,6 +3130,13 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 project.clone(),
             )
         });
+        editor.update(&mut visual, |view, cx| {
+            // Exercise dragging a clip whose header has never selected it.
+            view.selected_clip = None;
+            view.reconcile_clip_selection();
+            cx.notify();
+        });
+        visual.run_until_parked();
         let source = visual
             .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
             .unwrap();
@@ -3254,6 +3192,7 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
         });
         pump_move(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_clip_ids(), vec![clip]);
             let project = &v.state.as_ref().unwrap().project;
             assert_ne!(project.snapshot(), before.snapshot());
             match destination {
@@ -3265,6 +3204,12 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 }
             }
         });
+        let selected_edge = selector(format!(
+            "{}clip-selected-trailing-{}",
+            if midi { "midi-" } else { "" },
+            clip.value()
+        ));
+        assert!(visual.debug_bounds(selected_edge).is_some());
         let moved = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_keystrokes("cmd-z");
         pump_move(&editor, &mut visual);

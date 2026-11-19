@@ -301,10 +301,14 @@ mod tests {
         let (mut writer, mut recording, monitor, shared) = monitored_channel(1);
         let mut stream = MonitorStream::new_on_control(monitor, 48_000).ok().unwrap();
         writer.submit(&[0.5; 256], stamp);
-        writer
-            .monitor
-            .as_mut()
-            .unwrap()
+        let super::super::WriterOutput::Recording {
+            monitor: Some(monitor),
+            ..
+        } = &mut writer.output
+        else {
+            panic!("expected dual feed fixture");
+        };
+        monitor
             .output
             .push(super::super::Block {
                 stamp,

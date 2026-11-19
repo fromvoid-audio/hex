@@ -20,6 +20,74 @@ pub(super) enum ScalarOriginHistory<'a> {
 }
 
 impl SessionPlayback {
+    /// Plan the first running chunk after a confirmed insert. A nonzero
+    /// offset speculates at the end of the fade, with no scheduled route
+    /// changes allowed. The callback must repeat this at the actual held cut
+    /// because DSP history can evolve during the fade.
+    pub(crate) fn preview_stream_device_insert(
+        &mut self,
+        previous: &mut Self,
+        fade_remaining: u32,
+        maximum_frames: usize,
+        ordinary: bool,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        if self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+            || self.midi_capture_active()
+            || previous.midi_capture_active()
+            || (!ordinary
+                && (!self.supports_closed_stream_demand()
+                    || !previous.supports_closed_stream_demand()))
+            || previous.playing != (fade_remaining != 0)
+            || previous.routes.iter().any(|route| route.pending.is_some())
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        let performance = previous
+            .performance_frame
+            .checked_add(u64::from(fade_remaining))
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let (arrangement, pass) = previous
+            .project_stream_arrangement(performance)
+            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        // Only scalar coordinates are projected. The shared planner's demand
+        // branch may use scratch but commits no render history or route.
+        let checkpoint = (
+            previous.performance_frame,
+            previous.arrangement_frame,
+            previous.arrangement_loop_pass,
+            previous.playing,
+        );
+        (
+            previous.performance_frame,
+            previous.arrangement_frame,
+            previous.arrangement_loop_pass,
+            previous.playing,
+        ) = (performance, arrangement, pass, false);
+        let mut demand = HandoffDemand {
+            ordinary,
+            maximum_frames,
+            playing: Some(true),
+            visit,
+            window: None,
+        };
+        let plan = self.inherit_state_at_device_insert_cut(previous, None, Some(&mut demand));
+        (
+            previous.performance_frame,
+            previous.arrangement_frame,
+            previous.arrangement_loop_pass,
+            previous.playing,
+        ) = checkpoint;
+        plan?;
+        demand
+            .window
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+    }
+
     /// This is derived from the retained runtime graph, not a caller-declared
     /// readiness mode. Serial Main-only latency reads the ordinary source
     /// frontier for Arrangement and Session audio. Flat audio-only tracks and
@@ -176,6 +244,52 @@ impl SessionPlayback {
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
+        self.preview_stream_handoff_plan(
+            previous,
+            maximum_frames,
+            playing,
+            visit,
+            ordinary,
+            fenced_restart,
+            continuation,
+            None,
+        )
+    }
+
+    pub(crate) fn preview_tempo_cut(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &handoff::PreparedTempoAnchor,
+        claimed: Option<handoff::ClaimedTempoPair>,
+    ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        self.validate_tempo_cut(previous, anchor, claimed)?;
+        self.preview_stream_handoff_plan(
+            previous,
+            maximum_frames,
+            None,
+            visit,
+            claimed.is_none(),
+            false,
+            None,
+            Some(anchor),
+        )
+        .map(|(window, _)| window)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Stream demand and the exact handoff proof have separate inputs.
+    fn preview_stream_handoff_plan(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+        fenced_restart: bool,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        anchor: Option<&handoff::PreparedTempoAnchor>,
+    ) -> Result<(StreamChunkWindow, SessionHandoffReport), SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
@@ -192,14 +306,28 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        let report = self.inherit_state_planned(
-            previous,
-            None,
-            Some(&mut demand),
-            true,
-            fenced_restart,
-            continuation,
-        )?;
+        let report = self
+            .inherit_state_planned_with_anchor(
+                previous,
+                None,
+                Some(&mut demand),
+                true,
+                fenced_restart,
+                continuation,
+                anchor,
+                false,
+            )
+            .map_err(|error| {
+                // Keep a draining endpoint retryable. A frozen predecessor
+                // cannot clear ownership without a new transport action.
+                if error == SessionPlaybackError::ForeignTailSourceBusy
+                    && previous.renders_no_device_chains()
+                {
+                    SessionPlaybackError::ForeignTailSourcePaused
+                } else {
+                    error
+                }
+            })?;
         let window = demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;

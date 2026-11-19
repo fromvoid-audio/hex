@@ -81,6 +81,12 @@ pub enum EditorAudioEvent {
     },
     /// A plain Space press reserved by the focused native VST3 editor.
     PluginTransportToggle { project_generation: u64 },
+    /// Current logical VST3 editor windows on this output and document.
+    PluginEditorWindows {
+        project_generation: u64,
+        output_identity: u64,
+        devices: Vec<u64>,
+    },
     /// Latest native editor touch observed on an exact retained source. This
     /// carries an optional SDK-confirmed Perform value for immediate display.
     /// Controller pages still own metadata and edit authority.
@@ -142,6 +148,12 @@ pub enum EditorPublicationState {
         audio_revision: u64,
         identity: hex_session::service::DevicePreviewIdentity,
     },
+    /// A temporary gain audition with unchanged Arrangement geometry.
+    VerifiedArrangementGainSubmitted {
+        audio_revision: u64,
+    },
+    /// The running canonical source remains usable after a preview refusal.
+    VerifiedArrangementGainRefused(String),
     /// Exact submission correlation and bounded resource-free observation endpoints. Application
     /// still needs the output/revision callback ACK; no graph or native resource owner crosses.
     ResidentSubmitted {

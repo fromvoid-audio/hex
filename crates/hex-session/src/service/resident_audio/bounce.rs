@@ -237,7 +237,7 @@ pub(in crate::service) fn bounce_arrangement(
             .files;
             Ok((isolated, files, offline))
         },
-        |path, (isolated, files, mut offline), item, tails, control| {
+        |path, (isolated, files, mut offline), _, item, tails, control| {
             crate::arrangement_bounce::streamed::render(
                 path,
                 crate::arrangement_bounce::streamed::BounceRevision {
@@ -245,6 +245,7 @@ pub(in crate::service) fn bounce_arrangement(
                     files,
                     file_sources: isolated.file_sources,
                 },
+                None,
                 Some(&isolated.resources),
                 item.start,
                 item.end - item.start,

@@ -710,6 +710,7 @@ pub struct DeviceResourceAdmission<'a> {
     playback: Option<&'a crate::playback::Playback>,
     playback_resources: Option<&'a PreparedDeviceResources>,
     batch: Option<&'a DeviceResourcePublicationBatch>,
+    paused_monitor: Option<&'a crate::PausedMonitorStorageHold>,
     repitch_requirements: Option<&'a crate::audio_transform::StreamedRepitchRequirements>,
     granular_requirements: Option<&'a crate::audio_transform::StreamedGranularRequirements>,
 }
@@ -728,6 +729,7 @@ impl<'a> DeviceResourceAdmission<'a> {
             playback: None,
             playback_resources: None,
             batch: None,
+            paused_monitor: None,
             repitch_requirements: None,
             granular_requirements: None,
         }
@@ -749,6 +751,12 @@ impl<'a> DeviceResourceAdmission<'a> {
     /// both current/export aliases. Ordinary non-resource factory contracts remain unchanged.
     pub fn with_prepared_revisions(mut self, revisions: &'a [&'a crate::PreparedRevision]) -> Self {
         self.revisions = revisions;
+        self
+    }
+    /// Retain a paused monitor's actual prepared PCM and bounded private
+    /// storage. The monitor creates no original-source lease.
+    pub fn with_paused_monitor(mut self, hold: &'a crate::PausedMonitorStorageHold) -> Self {
+        self.paused_monitor = Some(hold);
         self
     }
     /// Include a control-owned requirement set in the same native storage ledger.
@@ -786,6 +794,7 @@ impl<'a> DeviceResourceAdmission<'a> {
             .iter()
             .copied()
             .chain(self.revision)
+            .chain(self.paused_monitor.map(|hold| hold.revision.as_ref()))
             .flat_map(|revision| {
                 revision
                     .arrangement()
@@ -824,6 +833,14 @@ impl<'a> DeviceResourceAdmission<'a> {
         }
         if let Some(requirements) = self.granular_requirements {
             requirements.visit(ledger)?;
+        }
+        if let Some(hold) = self.paused_monitor {
+            ledger.root(hold, crate::AudioStorageRole::Caller)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(hold),
+                crate::audio_storage::Location("paused-monitor-storage", 0),
+                hold.allowance_bytes,
+            )?;
         }
         for set in self.sets.iter().copied().chain(self.set) {
             frames = frames

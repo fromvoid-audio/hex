@@ -66,6 +66,43 @@ impl ClaimedAudioCandidateRuntime {
     pub fn session_route_status(&self, index: usize) -> Option<crate::SessionRouteStatus> {
         self.current_playback()?.session_route_status(index)
     }
+    /// Classify this insert under the same continuity law at preview and commit.
+    pub fn require_continuous_device_insert(&mut self) -> bool {
+        let Some(runtime) = self.device_insert_runtime() else {
+            return false;
+        };
+        runtime.require_continuous_device_insert();
+        true
+    }
+    /// Start the fade on this current graph after the host validates consent
+    /// and protects the predecessor's pages and the projected successor.
+    pub fn begin_device_insert_cut(&mut self) -> bool {
+        self.device_insert_runtime()
+            .is_some_and(Playback::begin_device_insert_cut)
+    }
+    /// Restore this graph after aborting a confirmed cut.
+    pub fn release_device_insert_cut(&mut self) {
+        if let Some(runtime) = self.device_insert_runtime() {
+            runtime.release_device_insert_cut();
+        }
+    }
+    pub fn device_insert_cut_pending(&self) -> bool {
+        self.current_playback()
+            .is_some_and(Playback::device_insert_cut_pending)
+    }
+    pub fn device_insert_held(&self) -> bool {
+        self.current_playback()
+            .is_some_and(Playback::device_insert_held)
+    }
+    pub fn device_insert_fade_frames(&self) -> Option<u32> {
+        self.current_playback()
+            .map(Playback::device_insert_fade_frames)
+    }
+    fn device_insert_runtime(&mut self) -> Option<&mut Playback> {
+        self.current_runtime_mut()
+            .filter(|runtime| runtime.sampler_sources.is_none())
+            .map(|runtime| &mut runtime.playback)
+    }
     pub fn render_with_post_node_observer(
         &mut self,
         output: &mut [crate::Frame],

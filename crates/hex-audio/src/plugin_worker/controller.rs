@@ -310,12 +310,17 @@ impl State {
     // Three existing control observations share one reader. Rotation bounds
     // service to at most four eligible iterations even when PCM exchanges
     // take longer than the one-millisecond polling interval.
-    pub(super) fn advance_native_control(&mut self, signal: &Signal) -> Result<(), Error> {
+    pub(super) fn advance_native_control(
+        &mut self,
+        signal: &Signal,
+        before_control: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for offset in 0..4 {
             match (self.control_turn + offset) % 4 {
                 0 if (signal.capture_requested.load(Acquire) || self.capture.is_in_flight())
                     && !self.capture.between_polls() =>
                 {
+                    before_control()?;
                     self.control_turn = 1;
                     return self.advance_capture(signal);
                 }
@@ -323,14 +328,17 @@ impl State {
                     || self.controller.is_in_flight())
                     && !self.controller.between_polls() =>
                 {
+                    before_control()?;
                     self.control_turn = 2;
                     return self.advance_controller(signal);
                 }
                 2 if signal.edits_requested.load(Acquire) => {
+                    before_control()?;
                     self.control_turn = 3;
                     return self.advance_parameter_edits(signal);
                 }
                 3 if signal.parameter_change_requested.load(Acquire) => {
+                    before_control()?;
                     self.control_turn = 0;
                     return self.advance_idle_parameter_change(signal);
                 }

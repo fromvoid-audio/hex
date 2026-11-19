@@ -1853,6 +1853,8 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        device_insert_confirmation: None,
+        device_insert_complete: None,
         plugin_parameter_observation: false,
         plugin_parameters: None,
         plugin_parameter_conversion: None,
@@ -3264,7 +3266,12 @@ fn locked_point_moves_on_click_but_not_range_or_loop_and_invalidates_on_replacem
     visual.simulate_click(at(0.125), Modifiers::default());
     visual.run_until_parked();
     let bottom = visual.debug_bounds("time-marker-bottom-start").unwrap();
-    visual.simulate_click(bottom.center(), Modifiers::default());
+    visual.simulate_mouse_down(bottom.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.valid_locked_play_start().is_some());
+        assert!(v.time_selection_gesture.is_none());
+    });
+    visual.simulate_mouse_up(bottom.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let original = editor.read_with(&visual, |v, _| v.valid_locked_play_start().unwrap().frame);
     visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
