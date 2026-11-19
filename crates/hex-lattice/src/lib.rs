@@ -1454,16 +1454,16 @@ impl NativeRuntimeChain {
                         PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
                         PreparedProcessorFactory::Foreign(_) => false,
                     });
-            let supports_power_off = supports_smoothed_bypass
-                && latency == Some(0)
-                && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
-                    if value.supports_power_off());
             let reserved_frames = instance
                 .definition
                 .as_ref()
                 .map(PreparedProcessorFactory::reserved_bypass_frames)
                 .transpose()?
                 .flatten();
+            let supports_power_off = (reserved_frames.is_some()
+                || (supports_smoothed_bypass && latency == Some(0)))
+                && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
+                        if value.supports_power_off());
             let (committed_aligned_dry, scratch_aligned_dry) = if let Some(frames) = reserved_frames
             {
                 (
@@ -2838,12 +2838,20 @@ impl NativeRuntimeChain {
                             _ => false,
                         } =>
                 {
-                    bypass_ramp::BypassRamp::inherited(
+                    let ramp = bypass_ramp::BypassRamp::inherited(
                         old.committed_bypass_ramp,
                         old.bypassed,
                         entry.bypassed,
                         entry.sample_rate,
-                    )
+                    );
+                    if entry.supports_power_off
+                        && !entry.bypassed
+                        && old.powered_off(old.committed_bypass_ramp)
+                    {
+                        ramp.with_dry_lead(entry.algorithmic_latency_frames.unwrap_or(0))
+                    } else {
+                        ramp
+                    }
                 }
                 _ => bypass_ramp::BypassRamp::INACTIVE,
             };
@@ -3651,9 +3659,12 @@ impl NativeRuntimeChain {
         external: Option<NativeExternalAutomation<'_>>,
     ) -> Result<(), DeviceContractError> {
         let aligned = entry.scratch_aligned_dry.is_some();
-        let aligned_bypass = aligned && entry.bypassed;
+        let aligned_bypass =
+            aligned && entry.bypassed && (!entry.supports_power_off || entry.removal_bypassing);
         if !entry.scratch_bypass_ramp.is_active() && !aligned_bypass {
-            if let Some(history) = &mut entry.scratch_aligned_dry {
+            if !entry.powered_off(entry.scratch_bypass_ramp)
+                && let Some(history) = &mut entry.scratch_aligned_dry
+            {
                 for &frame in frames.iter() {
                     history.advance(frame);
                 }
@@ -3674,7 +3685,7 @@ impl NativeRuntimeChain {
         while (aligned_bypass || entry.scratch_bypass_ramp.is_active()) && offset < frames.len() {
             const CHUNK: usize = 64;
             let mut count = (frames.len() - offset).min(CHUNK);
-            if !aligned {
+            if !aligned || entry.supports_power_off && !aligned_bypass {
                 count = count.min(entry.scratch_bypass_ramp.remaining());
             }
             let end = offset + count;
@@ -3733,7 +3744,9 @@ impl NativeRuntimeChain {
         if offset == frames.len() {
             return Ok(());
         }
-        if let Some(history) = &mut entry.scratch_aligned_dry {
+        if !entry.powered_off(entry.scratch_bypass_ramp)
+            && let Some(history) = &mut entry.scratch_aligned_dry
+        {
             for &frame in &frames[offset..] {
                 history.advance(frame);
             }
@@ -3806,6 +3819,13 @@ impl NativeRuntimeChain {
         if entry.powered_off(entry.scratch_bypass_ramp) {
             if entry.metering {
                 entry.meter.observe_input(frames);
+            }
+            if let Some(history) = &mut entry.scratch_aligned_dry {
+                for frame in frames.iter_mut() {
+                    *frame = history.advance(*frame);
+                }
+            }
+            if entry.metering {
                 entry.meter.observe_output(frames);
             }
             return Ok(());
