@@ -165,9 +165,20 @@ mod tests {
                 assert_eq!(sample, expected, "i{i} block{block}");
             }
         }
+        let mut canonical = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Asset(asset) = canonical
+            .execute(Command::AddAsset {
+                path: "streamed.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
         let source = std::sync::Arc::new(
             crate::StreamedSourceMetadata::new(
-                crate::StreamSourceKey::new(11, hex_project::AssetId::new(1).unwrap()),
+                crate::StreamSourceKey::new(11, asset),
                 48_000,
                 48_000,
                 8,
