@@ -115,6 +115,53 @@ pub(in crate::editor) fn double_down(
         first_mouse: false,
     });
 }
+
+#[gpui::test]
+fn fractional_edge_keys_agree_with_note_creation_and_exact_capture_identity(
+    cx: &mut TestAppContext,
+) {
+    for (low, span, edge) in [(0.25, 11.5, 0), (115.25, 12.5, 127)] {
+        let cx = &mut cx.new_app();
+        let (mut visual, editor, _environment, clip) = fixture(cx);
+        let viewport = crate::editor::PitchViewport::new(low, span).unwrap();
+        editor.update(&mut visual, |view, cx| {
+            view.piano_pitch = viewport;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let key_id = format!("midi-piano-key-{edge}");
+        let roll = visual.debug_bounds("midi-note-roll").unwrap();
+        let key = visual.debug_bounds(&key_id).unwrap();
+        let down = point(roll.center().x, key.center().y);
+        double_down(&mut visual, down, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.midi_creation.is_some()));
+
+        let shifted = crate::editor::PitchViewport::new(low + 1.0 / 4096.0, span).unwrap();
+        assert_eq!(shifted.coverage(), viewport.coverage());
+        editor.update(&mut visual, |view, cx| {
+            view.piano_pitch = shifted;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.midi_creation.is_none());
+            assert!(view.midi_clip().unwrap().notes().is_empty());
+        });
+
+        double_down(&mut visual, down, Modifiers::default());
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let notes = project.midi_source(clip).unwrap().notes();
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].pitch(), edge);
+        });
+    }
+}
+
 #[gpui::test]
 fn double_click_hold_resizes_one_snapped_note_and_one_history_step(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);

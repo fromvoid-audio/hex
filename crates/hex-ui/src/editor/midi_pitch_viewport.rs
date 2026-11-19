@@ -11,6 +11,11 @@ pub(super) struct PitchViewport {
     span: u32,
 }
 impl PitchViewport {
+    pub(super) const DEFAULT: Self = Self {
+        low: 48 * UNITS_PER_PITCH,
+        span: 24 * UNITS_PER_PITCH,
+    };
+
     pub(super) fn from_rows(low: u8, rows: u8) -> Option<Self> {
         Self::new(f64::from(low), f64::from(rows))
     }
@@ -33,6 +38,19 @@ impl PitchViewport {
     pub(super) fn high(self) -> f64 {
         self.low() + self.span()
     }
+    /// Translate by whole semitones while retaining fractional endpoints.
+    /// Return whether the MIDI extent clamped the requested move.
+    pub(super) fn scroll_rows(self, rows: i16) -> (Self, bool) {
+        let target = i64::from(self.low) + i64::from(rows) * i64::from(UNITS_PER_PITCH);
+        let low = target.clamp(0, i64::from(MIDI_UNITS - self.span));
+        (
+            Self {
+                low: low as u32,
+                ..self
+            },
+            low != target,
+        )
+    }
     /// Integer note cells intersecting the viewport; only for bounded iteration.
     pub(super) fn coverage(self) -> Range<u8> {
         (self.low / UNITS_PER_PITCH) as u8..(self.low + self.span).div_ceil(UNITS_PER_PITCH) as u8
@@ -54,6 +72,11 @@ impl PitchViewport {
         let pixels = height / self.span() as f32;
         (height.is_finite() && height > 0.0 && pixels.is_finite() && pixels > 0.0).then_some(pixels)
     }
+    /// Visible normalized row bounds, including clipped edge cells.
+    pub(super) fn visible_row(self, pitch: u8) -> Option<(f32, f32)> {
+        let top = self.note_top(pitch)?;
+        Some((top.max(0.0), (top + 1.0 / self.span() as f32).min(1.0)))
+    }
     pub(super) fn pitch_at(self, fraction: f64) -> Option<u8> {
         if !(0.0..1.0).contains(&fraction) {
             return None;
@@ -62,9 +85,33 @@ impl PitchViewport {
         // A fraction just below one can subtract back to an integer low by
         // floating-point rounding; in-viewport hits stay in visible coverage.
         Some(
-            ((self.high() - fraction * self.span()).ceil() - 1.0)
+            self.floor_pitch(fraction)
                 .clamp(f64::from(coverage.start), f64::from(coverage.end - 1)) as u8,
         )
+    }
+    /// Hit only the half-open visible canvas.
+    pub(super) fn pitch_at_y(self, y: f32, height: f32) -> Option<u8> {
+        if !height.is_finite() || height <= 0.0 || !(0.0..height).contains(&y) {
+            return None;
+        }
+        self.pitch_at(f64::from(y) / f64::from(height))
+    }
+    /// A held drag may continue outside the canvas up to the MIDI edges.
+    pub(super) fn drag_pitch_at(self, fraction: f64) -> u8 {
+        self.pitch_at(fraction)
+            .unwrap_or_else(|| self.floor_pitch(fraction).clamp(0.0, 127.0) as u8)
+    }
+    fn floor_pitch(self, fraction: f64) -> f64 {
+        (self.high() - fraction * self.span()).ceil() - 1.0
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn first_test_pitch(self) -> u8 {
+        self.coverage().start
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_row_count(self) -> u8 {
+        self.coverage().len() as u8
     }
 }
 
@@ -113,16 +160,22 @@ mod tests {
         ] {
             let view = PitchViewport::new(low, span).unwrap();
             for pitch in view.coverage() {
-                let top = f64::from(view.note_top(pitch).unwrap());
-                let bottom = top + f64::from(view.row_height_pixels(1.0).unwrap());
-                let middle = (top.max(0.0) + bottom.min(1.0)) / 2.0;
-                assert_eq!(view.pitch_at(middle), Some(pitch), "{view:?} pitch={pitch}");
+                let (top, bottom) = view.visible_row(pitch).unwrap();
+                let y = (top + bottom) * 120.0;
+                assert_eq!(
+                    view.pitch_at_y(y, 240.0),
+                    Some(pitch),
+                    "{view:?} pitch={pitch}"
+                );
+                assert_eq!(view.drag_pitch_at(f64::from(y) / 240.0), pitch);
             }
             assert_eq!(view.pitch_at(0.0), Some(view.coverage().end - 1));
             assert_eq!(view.pitch_at(1.0 - 1e-7), Some(view.coverage().start));
             assert_eq!(view.pitch_at(-0.01), None);
             assert_eq!(view.pitch_at(1.0), None);
             assert_eq!(view.pitch_at(f64::NAN), None);
+            assert_eq!(view.pitch_at_y(240.0, 240.0), None);
+            assert_eq!(view.pitch_at_y(f32::NAN, 240.0), None);
         }
     }
     #[test]
@@ -134,6 +187,28 @@ mod tests {
             assert_eq!(view.pitch_at(1.0), None);
         }
     }
+
+    #[test]
+    fn whole_row_pan_preserves_fractional_span_until_midi_edges() {
+        let view = PitchViewport::new(59.25, 12.5).unwrap();
+        assert_eq!(
+            view.scroll_rows(6),
+            (PitchViewport::new(65.25, 12.5).unwrap(), false)
+        );
+        assert_eq!(
+            view.scroll_rows(-128),
+            (PitchViewport::new(0.0, 12.5).unwrap(), true)
+        );
+        assert_eq!(
+            view.scroll_rows(128),
+            (PitchViewport::new(115.5, 12.5).unwrap(), true)
+        );
+        assert_eq!(
+            PitchViewport::DEFAULT.scroll_rows(-12).0,
+            PitchViewport::from_rows(36, 24).unwrap()
+        );
+    }
+
     #[test]
     fn integer_inputs_preserve_row_and_hit_mapping() {
         for low in 0..128_u8 {

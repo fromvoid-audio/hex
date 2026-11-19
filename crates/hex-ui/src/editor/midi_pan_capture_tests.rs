@@ -75,8 +75,8 @@ fn viewport(editor: &Entity<EditorView>, visual: &VisualTestContext) -> (i128, B
         (
             v.piano_beat_start,
             v.piano_beat_span,
-            v.piano_pitch_low,
-            v.piano_pitch_rows,
+            v.piano_pitch.first_test_pitch(),
+            v.piano_pitch.test_row_count(),
         )
     })
 }

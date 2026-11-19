@@ -14,8 +14,7 @@ pub(super) enum Target {
 struct PianoView {
     start: i128,
     span: BeatTime,
-    low: u8,
-    rows: u8,
+    pitch: super::PitchViewport,
 }
 fn bounded_piano_view(prior: PianoView, length: u64) -> PianoView {
     let minimum = (BeatTime::ONE.raw() / 16).max(1).min(length.max(1));
@@ -91,8 +90,7 @@ impl EditorView {
             return Some(PianoView {
                 start: 0,
                 span: BeatTime::from_raw(length.max(1)),
-                low: 54,
-                rows: 12,
+                pitch: super::PitchViewport::from_rows(54, 12)?,
             });
         };
         // Keep short notes readable and leave a modest margin around longer
@@ -112,8 +110,7 @@ impl EditorView {
         Some(PianoView {
             start: i128::from(time.start),
             span: BeatTime::from_raw(time.length),
-            low,
-            rows,
+            pitch: super::PitchViewport::from_rows(low, rows)?,
         })
     }
     fn remember_midi_fit(&mut self) {
@@ -123,8 +120,7 @@ impl EditorView {
         let current = PianoView {
             start: self.piano_beat_start,
             span: self.piano_beat_span,
-            low: self.piano_pitch_low,
-            rows: self.piano_pitch_rows,
+            pitch: self.piano_pitch,
         };
         self.zoom_fit.midi = Some(((self.project_generation, clip), current));
     }
@@ -253,9 +249,8 @@ impl EditorView {
                 if (
                     self.piano_beat_start,
                     self.piano_beat_span,
-                    self.piano_pitch_low,
-                    self.piano_pitch_rows,
-                ) == (next.start, next.span, next.low, next.rows)
+                    self.piano_pitch,
+                ) == (next.start, next.span, next.pitch)
                 {
                     return false;
                 }
@@ -266,8 +261,7 @@ impl EditorView {
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_beat_start = next.start;
             self.piano_beat_span = next.span;
-            self.piano_pitch_low = next.low;
-            self.piano_pitch_rows = next.rows;
+            self.piano_pitch = next.pitch;
             return true;
         }
         let Some(state) = self.state.as_ref() else {

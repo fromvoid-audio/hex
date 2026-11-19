@@ -755,7 +755,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
         "baseline and both intersected stems must preview together"
     );
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
-    let rows = editor.read_with(&visual, |v, _| v.piano_pitch_rows);
+    let rows = editor.read_with(&visual, |v, _| v.piano_pitch.test_row_count());
     let height = ((f32::from(roll.size.height) - 2.0) / f32::from(rows) - 2.0).max(1.0);
     assert!(
         visual
