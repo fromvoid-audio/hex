@@ -20,6 +20,8 @@ gpui::actions!(
         CutDevices,
         PasteDevices,
         DuplicateDevices,
+        CollapseSelectedDevices,
+        ExpandSelectedDevices,
         SelectPreviousDevice,
         SelectNextDevice
     ]
@@ -94,6 +96,16 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
         KeyBinding::new(
             "d",
             DuplicateDevices,
+            Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
+        ),
+        KeyBinding::new(
+            "-",
+            CollapseSelectedDevices,
+            Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
+        ),
+        KeyBinding::new(
+            "+",
+            ExpandSelectedDevices,
             Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
         ),
         // Deeper than the editor's clip/session arrows; nested controls that
@@ -702,7 +714,31 @@ pub(super) fn card(
     let painted = ChainStamp::current(view);
     let previous_focus = focus.clone();
     let next_focus = focus.clone();
+    let collapse_focus = focus.clone();
+    let expand_focus = focus.clone();
     card.key_context("hex_device_selection")
+        .on_action(
+            cx.trace(move |view, _: &CollapseSelectedDevices, window, cx| {
+                if collapse_focus.is_focused(window) {
+                    if generation == view.project_generation && owner == view.device_panel.owner {
+                        fold::set_selected(view, device, true, cx);
+                    }
+                } else {
+                    cx.propagate();
+                }
+            }),
+        )
+        .on_action(
+            cx.trace(move |view, _: &ExpandSelectedDevices, window, cx| {
+                if expand_focus.is_focused(window) {
+                    if generation == view.project_generation && owner == view.device_panel.owner {
+                        fold::set_selected(view, device, false, cx);
+                    }
+                } else {
+                    cx.propagate();
+                }
+            }),
+        )
         .on_action(cx.trace(move |view, _: &SelectPreviousDevice, window, cx| {
             if previous_focus.is_focused(window) {
                 step(view, false, window, cx);
