@@ -6,6 +6,109 @@ use hex_session::device_gesture::{
 };
 
 #[test]
+fn verified_builtin_proposal_cancels_a_queued_graph_before_the_callback_installs_it() {
+    verified_builtin_proposal_cancels(false);
+}
+
+#[test]
+fn verified_track_picker_insert_cancels_the_exact_queued_graph() {
+    verified_builtin_proposal_cancels(true);
+}
+
+fn verified_builtin_proposal_cancels(use_picker: bool) {
+    use hex_session::service::{
+        ArrangementDeviceDestination, DeviceInsertOutcome, PluginEffectControl,
+        TrackCatalogPlacement,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.wait = Duration::from_secs(2);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let predecessor = h.applied(h.context.unwrap());
+    let track = imported.state.project.tracks()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    wait_for_audio(&h);
+    let control = Arc::new(PluginEffectControl::default());
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let type_id = hex_engine::DeviceTypeId::from_static("hex.utility");
+    let request = if use_picker {
+        Request::LoadTrackCatalogDevice {
+            project_generation: predecessor.context.project_generation,
+            revision: imported.state.revision,
+            track,
+            class,
+            type_id,
+            placement: TrackCatalogPlacement::Insert { before: None },
+            control: Arc::clone(&control),
+        }
+    } else {
+        Request::DropBrowserDeviceOnArrangement {
+            project_generation: predecessor.context.project_generation,
+            revision: imported.state.revision,
+            class,
+            type_id,
+            destination: ArrangementDeviceDestination::ExistingTrack {
+                track,
+                instrument: None,
+            },
+            new_track_gain: None,
+            control: Some(Arc::clone(&control)),
+        }
+    };
+    h.service.as_ref().unwrap().submit(request).unwrap();
+    let staged = h.next();
+    assert!(!staged.request_complete && staged.error.is_none());
+    assert_eq!(staged.state.project, imported.state.project);
+    let queued = Instant::now() + h.wait;
+    loop {
+        if h.observation
+            .lock()
+            .unwrap()
+            .command_ready
+            .is_some_and(|(_, revision)| revision > predecessor.audio_revision)
+        {
+            break;
+        }
+        assert!(Instant::now() < queued, "tracked graph never queued");
+        std::thread::yield_now();
+    }
+    assert!(control.cancel());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let terminal = h.next_with_audio();
+    let proposal = terminal.device_insert_proposal_complete.unwrap();
+    assert!(Arc::ptr_eq(&proposal.control, &control));
+    assert!(!proposal.accepted);
+    assert_eq!(
+        terminal.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(terminal.state.project, imported.state.project);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source(),
+        Some(predecessor)
+    );
+}
+
+#[test]
 fn verified_editor_insert_commits_only_the_confirmed_graph_and_one_undo() {
     use hex_session::service::DeviceInsertOutcome;
     let _native = native_fixture();

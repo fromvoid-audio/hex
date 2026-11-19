@@ -95,14 +95,15 @@ pub(super) use send_controls::return_send_numeric_control;
 
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
-const DEVICE_CHAIN_PADDING: f32 = 3.0;
+pub(super) const DEVICE_CHAIN_PADDING: f32 = 3.0;
 pub(super) const DEVICE_PANEL_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT
     + DEVICE_PANEL_BORDER_WIDTH
     + DEVICE_PANEL_HEADER_HEIGHT
     + DEVICE_CHAIN_PADDING * 2.0;
 const DEVICE_FRAME_WIDTH: f32 = crate::device_composition::GENERIC_FRAME_WIDTH;
 pub(super) const UTILITY_FRAME_WIDTH: f32 = crate::device_composition::UTILITY_FRAME_WIDTH;
-const DEVICE_FRAME_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT;
+pub(super) const DEVICE_FRAME_HEIGHT: f32 = crate::device_composition::FRAME_HEIGHT;
+pub(super) const PROPOSED_SLOT_WIDTH: f32 = 200.0;
 const DEVICE_FRAME_BODY_HEIGHT: f32 = crate::device_composition::BODY_HEIGHT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1470,7 +1471,11 @@ fn render_track(
             (device.id(), width)
         })
         .collect();
-    view.device_panel.chain_window.prepare(&geometry);
+    let proposed = view.proposed_plugin_slot_index(
+        DevicePanelOwner::Track(track_id),
+        geometry.iter().map(|&(id, _)| id),
+    );
+    view.device_panel.chain_window.prepare(&geometry, proposed);
     let spectrum_identities: Vec<_> = nodes
         .iter()
         .filter_map(|node| {
@@ -1497,7 +1502,13 @@ fn render_track(
     });
     let mut local_index = 0;
     let mut source_housing: Option<Div> = None;
-    for node in nodes {
+    for (physical_index, node) in nodes.into_iter().enumerate() {
+        if proposed == Some(physical_index) {
+            if let Some(group) = source_housing.take() {
+                chain = chain.children([finish_source_housing(group)]);
+            }
+            chain = chain.children([view.proposed_plugin_slot_card(cx)]);
+        }
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
                 (device, NativeDeviceClass::Instrument)
@@ -1577,6 +1588,9 @@ fn render_track(
     if let Some(group) = source_housing {
         let group = finish_source_housing(group);
         chain = chain.child(group);
+    }
+    if proposed == Some(geometry.len()) {
+        chain = chain.children([view.proposed_plugin_slot_card(cx)]);
     }
     let mut panel = render_device_end_target(
         view,
@@ -2899,7 +2913,7 @@ impl EditorView {
         self.clear_native_device_drag(drag);
         match request {
             Ok(request) => {
-                if self.enqueue_device_barrier(request) {
+                if self.enqueue_catalog_device(request) {
                     self.error = None;
                     self.device_panel.message = None;
                     self.status = "updating effects".into();
@@ -3123,9 +3137,10 @@ impl EditorView {
             track,
             before,
             replace: drop_target.replace,
+            control: None,
         };
         self.clear_native_device_drag(drag);
-        if self.enqueue_device_barrier(request) {
+        if self.enqueue_catalog_device(request) {
             self.error = None;
             self.device_panel.message = None;
             self.status = match source {

@@ -126,7 +126,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
     }
 
     #[allow(clippy::result_large_err)]
-    fn publish_resident(
+    fn publish_resident_transition(
         &mut self,
         playback: Playback,
         resources: Option<&PreparedDeviceResources>,
@@ -135,6 +135,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         policy: ResidentPublicationPolicy,
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        inputs: ResidentPublicationInputs<'_>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         let result = (|| {
             let captured = resources
@@ -176,7 +177,7 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         };
         if let ResidentPublicationPolicy::DeviceInsert { predecessor, .. } = policy {
             assert_eq!(Some(predecessor), fixture.active);
-            fixture.candidate = Some(Arc::new(FixtureReceipt {
+            let receipt = Arc::new(FixtureReceipt {
                 submission: ResidentGraphSubmission {
                     output_identity: observation.output_identity,
                     audio_revision: observation.audio_revision,
@@ -184,7 +185,11 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
                 },
                 state: AtomicU8::new(PENDING),
                 deadline: Instant::now() + Duration::from_millis(250),
-            }));
+            });
+            if let Some(control) = inputs.device_insert_control {
+                control.bind_device_insert_receipt(Box::new(Arc::clone(&receipt)));
+            }
+            fixture.candidate = Some(receipt);
         } else {
             fixture.active = Some(observation);
         }
@@ -314,6 +319,293 @@ impl Drop for SavedFile {
 }
 
 #[test]
+fn builtin_browser_proposal_cancel_fences_the_callback_and_completes_exactly_once() {
+    let (service, fixture, initial) = service();
+    let initial_runtime = fixture.lock().unwrap().active;
+    let insert = |control| Request::DropBrowserDeviceOnArrangement {
+        project_generation: 0,
+        revision: initial.state.revision,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
+        destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+        new_track_gain: None,
+        control: Some(control),
+    };
+    let control = Arc::new(PluginEffectControl::default());
+    service.submit(insert(Arc::clone(&control))).unwrap();
+    let staged = receive(&service);
+    assert!(staged.error.is_none(), "{:?}", staged.error);
+    assert!(!staged.request_complete);
+    assert!(staged.device_insert_proposal_complete.is_none());
+    assert_eq!(staged.state.project, initial.state.project);
+    let exact = fixture.lock().unwrap().candidate.clone().unwrap();
+    assert!(control.cancel());
+    // The callback tries immediately after Cancel, before Session polling.
+    assert!(
+        exact
+            .state
+            .compare_exchange(PENDING, INSTALLED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    );
+    let refused = receive(&service);
+    let terminal = refused.device_insert_proposal_complete.unwrap();
+    assert!(Arc::ptr_eq(&terminal.control, &control));
+    assert!(!terminal.accepted);
+    assert_eq!(
+        refused.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(refused.state.project, initial.state.project);
+    assert_eq!(fixture.lock().unwrap().active, initial_runtime);
+
+    service.submit(insert(control)).unwrap();
+    let replayed = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
+    assert!(replayed.error.unwrap().contains("already submitted"));
+    assert!(replayed.device_insert_proposal_complete.is_none());
+    assert_eq!(replayed.state.project, initial.state.project);
+
+    let committed = Arc::new(PluginEffectControl::default());
+    service.submit(insert(Arc::clone(&committed))).unwrap();
+    assert!(!receive(&service).request_complete);
+    let receipt = fixture.lock().unwrap().candidate.clone().unwrap();
+    assert_eq!(
+        receipt
+            .state
+            .compare_exchange(PENDING, INSTALLED, Ordering::AcqRel, Ordering::Acquire),
+        Ok(PENDING)
+    );
+    assert!(!committed.cancel());
+    let accepted = receive(&service);
+    let terminal = accepted.device_insert_proposal_complete.unwrap();
+    assert!(Arc::ptr_eq(&terminal.control, &committed));
+    assert!(terminal.accepted);
+    assert_eq!(
+        accepted.device_insert_complete.unwrap().submission,
+        receipt.submission
+    );
+    assert_eq!(
+        accepted.state.project.tracks().len(),
+        initial.state.project.tracks().len() + 1
+    );
+}
+
+#[test]
+fn catalog_proposal_keeps_selection_and_the_exact_terminal_for_each_entry_point() {
+    use hex_engine::NativeDeviceClass;
+    use hex_lattice_contract::DeviceTypeId;
+
+    enum Inbox {
+        BrowserEnter,
+        Bus,
+        TrackRail,
+        TrackPicker,
+        ReplaceInstrument,
+    }
+    for inbox in [
+        Inbox::BrowserEnter,
+        Inbox::Bus,
+        Inbox::TrackRail,
+        Inbox::TrackPicker,
+        Inbox::ReplaceInstrument,
+    ] {
+        let (service, fixture, _) = service();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "existing".into(),
+            }))
+            .unwrap();
+        let mut original = receive(&service);
+        let track = original.state.project.tracks()[0].id();
+        let prior_instrument = if matches!(inbox, Inbox::ReplaceInstrument) {
+            let state = hex_engine::default_native_device_state_for_class(
+                NativeDeviceClass::Instrument,
+                DeviceTypeId::from_static("hex.instrument.sine"),
+            )
+            .unwrap();
+            service
+                .submit(Request::Edit(Command::InsertInstrument { track, state }))
+                .unwrap();
+            let seeded = receive(&service);
+            assert!(!seeded.request_complete && seeded.error.is_none());
+            original = install_candidate(&service, &fixture);
+            assert!(
+                original.request_complete && original.error.is_none(),
+                "{:?}",
+                original.error
+            );
+            Some(
+                original
+                    .state
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .id(),
+            )
+        } else {
+            None
+        };
+        let original_runtime = fixture.lock().unwrap().active;
+        let insert = |control| match inbox {
+            Inbox::BrowserEnter => Request::InsertBrowserInstrumentTrack {
+                project_generation: 0,
+                revision: original.state.revision,
+                class: NativeDeviceClass::Instrument,
+                type_id: DeviceTypeId::from_static("hex.instrument.operator"),
+                new_track_gain: Some(0.5),
+                control: Some(control),
+            },
+            Inbox::Bus => Request::InsertEffectBusDevice {
+                project_generation: 0,
+                revision: original.state.revision,
+                destination: EffectBusDestination::Main,
+                class: NativeDeviceClass::Effect,
+                type_id: DeviceTypeId::from_static("hex.utility"),
+                before: None,
+                control: Some(control),
+            },
+            Inbox::TrackRail => Request::DropNativeDevice {
+                project_generation: 0,
+                revision: original.state.revision,
+                source: NativeDeviceDropSource::Browser {
+                    class: NativeDeviceClass::Effect,
+                    type_id: DeviceTypeId::from_static("hex.utility"),
+                },
+                track,
+                before: None,
+                replace: None,
+                control: Some(control),
+            },
+            Inbox::TrackPicker | Inbox::ReplaceInstrument => {
+                let (placement, class, type_id) = match prior_instrument {
+                    Some(device) => (
+                        TrackCatalogPlacement::ReplaceInstrument(device),
+                        NativeDeviceClass::Instrument,
+                        DeviceTypeId::from_static("hex.instrument.operator"),
+                    ),
+                    None => (
+                        TrackCatalogPlacement::Insert { before: None },
+                        NativeDeviceClass::Effect,
+                        DeviceTypeId::from_static("hex.utility"),
+                    ),
+                };
+                Request::LoadTrackCatalogDevice {
+                    project_generation: 0,
+                    revision: original.state.revision,
+                    track,
+                    class,
+                    type_id,
+                    placement,
+                    control,
+                }
+            }
+        };
+        if matches!(inbox, Inbox::TrackPicker | Inbox::ReplaceInstrument) {
+            let control = Arc::new(PluginEffectControl::default());
+            let mut stale = insert(Arc::clone(&control));
+            if let Request::LoadTrackCatalogDevice { revision, .. } = &mut stale {
+                *revision += 1;
+            }
+            service.submit(stale).unwrap();
+            let refused = service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
+            assert!(
+                refused.request_complete
+                    && refused.error.as_ref().unwrap().contains("project changed")
+            );
+            assert_eq!(refused.state.project, original.state.project);
+            let completion = refused.device_insert_proposal_complete.unwrap();
+            assert!(!completion.accepted && Arc::ptr_eq(&completion.control, &control));
+        }
+        for cancel in [true, false] {
+            let control = Arc::new(PluginEffectControl::default());
+            service.submit(insert(Arc::clone(&control))).unwrap();
+            let staged = receive(&service);
+            assert!(!staged.request_complete);
+            assert!(staged.created.is_none() && staged.device_insert_proposal_complete.is_none());
+            assert_eq!(staged.state.project, original.state.project);
+            let receipt = fixture.lock().unwrap().candidate.clone().unwrap();
+            if cancel {
+                assert!(control.cancel());
+                assert_eq!(receipt.state(), DeviceInsertAudioState::Cancelled);
+            } else {
+                assert_eq!(
+                    receipt.state.compare_exchange(
+                        PENDING,
+                        INSTALLED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire
+                    ),
+                    Ok(PENDING)
+                );
+                assert!(!control.cancel());
+            }
+            let terminal = receive(&service);
+            let proposal = terminal.device_insert_proposal_complete.unwrap();
+            assert!(Arc::ptr_eq(&proposal.control, &control));
+            assert_eq!(proposal.accepted, !cancel);
+            assert_eq!(
+                terminal.device_insert_complete.unwrap().submission,
+                receipt.submission
+            );
+            if cancel {
+                assert_eq!(terminal.state.project, original.state.project);
+                assert_eq!(fixture.lock().unwrap().active, original_runtime);
+            } else {
+                match inbox {
+                    Inbox::BrowserEnter => {
+                        let Created::Track(id) = terminal.created.unwrap() else {
+                            panic!("created track")
+                        };
+                        assert_eq!(terminal.state.project.track(id).unwrap().gain(), 0.5);
+                    }
+                    Inbox::Bus => {
+                        assert_eq!(terminal.state.project.main_devices().len(), 1);
+                        assert!(matches!(terminal.created, Some(Created::Device(_))));
+                    }
+                    Inbox::TrackRail => {
+                        assert_eq!(
+                            terminal.state.project.track(track).unwrap().devices().len(),
+                            1
+                        );
+                        assert!(terminal.created.is_none());
+                    }
+                    Inbox::TrackPicker => {
+                        let track = terminal.state.project.track(track).unwrap();
+                        assert_eq!(track.devices().len(), 1);
+                        assert_eq!(
+                            terminal.created,
+                            Some(Created::Device(track.devices()[0].id()))
+                        );
+                    }
+                    Inbox::ReplaceInstrument => {
+                        let device = terminal
+                            .state
+                            .project
+                            .track(track)
+                            .unwrap()
+                            .instrument()
+                            .unwrap();
+                        assert_eq!(Some(device.id()), prior_instrument);
+                        assert_eq!(
+                            device.state().type_id(),
+                            DeviceTypeId::from_static("hex.instrument.operator")
+                        );
+                        assert!(terminal.created.is_none());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn browser_device_insertions_wait_for_the_exact_install_receipt() {
     let (service, fixture, _) = service();
     service
@@ -333,6 +625,7 @@ fn browser_device_insertions_wait_for_the_exact_install_receipt() {
         track,
         before: None,
         replace: None,
+        control: None,
     };
     service
         .submit(drop_on_track(original.state.revision))
@@ -373,6 +666,7 @@ fn browser_device_insertions_wait_for_the_exact_install_receipt() {
             type_id,
             destination: ArrangementDeviceDestination::NewTrack { before_track: None },
             new_track_gain: None,
+            control: None,
         },
     ];
     for (index, request) in requests.into_iter().enumerate() {
@@ -538,6 +832,7 @@ fn native_moves_wait_for_the_exact_audio_receipt_and_preserve_noops() {
         track: source,
         before: None,
         replace: None,
+        control: None,
     });
     assert!(!pending.request_complete);
     assert_eq!(pending.state.project, moved.project);

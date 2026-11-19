@@ -61,6 +61,7 @@ impl EffectBusOwner {
             class: NativeDeviceClass::Effect,
             type_id,
             before,
+            control: None,
         }
     }
     pub(super) fn reorder(self, device: DeviceId, before: Option<DeviceId>) -> Command {

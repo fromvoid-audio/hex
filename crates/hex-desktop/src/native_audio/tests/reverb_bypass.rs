@@ -48,6 +48,7 @@ fn check(location: usize) {
                 class: hex_engine::NativeDeviceClass::Effect,
                 type_id,
                 before: None,
+                control: None,
             })
         }
         _ => h.run(Request::InsertEffectBusDevice {
@@ -57,6 +58,7 @@ fn check(location: usize) {
             class: hex_engine::NativeDeviceClass::Effect,
             type_id,
             before: None,
+            control: None,
         }),
     };
     let device = match location {

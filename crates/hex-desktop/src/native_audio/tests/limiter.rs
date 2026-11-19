@@ -76,6 +76,7 @@ fn loop_edit_after_pausing_a_track_limiter_publishes_current_audio() {
         class: hex_engine::NativeDeviceClass::Effect,
         type_id: hex_engine::DeviceTypeId::from_static("hex.limiter"),
         before: None,
+        control: None,
     });
     assert!(added.error.is_none(), "{:?}", added.error);
     let device = added.state.project.main_devices()[0].id();
@@ -138,6 +139,7 @@ fn main_limiter_added_after_sounding_track_limiter_applies_to_audio() {
         class: hex_engine::NativeDeviceClass::Effect,
         type_id: hex_engine::DeviceTypeId::from_static("hex.limiter"),
         before: None,
+        control: None,
     });
     assert!(added.error.is_none(), "{:?}", added.error);
     let device = added.state.project.main_devices()[0].id();
@@ -175,6 +177,7 @@ fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
         class: hex_engine::NativeDeviceClass::Effect,
         type_id: hex_engine::DeviceTypeId::from_static("hex.limiter"),
         before: None,
+        control: None,
     });
     let device = added.state.project.main_devices()[0].id();
     (applied, _) = h.applied(applied);

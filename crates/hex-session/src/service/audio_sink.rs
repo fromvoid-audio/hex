@@ -632,6 +632,8 @@ pub enum ResidentTempoEditOutcome {
 pub struct ResidentPublicationInputs<'a> {
     pub files: Option<ResidentFilePublication<'a>>,
     pub tempo_edit: Option<ResidentTempoEdit<'a>>,
+    /// Control-only built-in insertion intent, bound before callback admission.
+    pub device_insert_control: Option<&'a super::PluginEffectControl>,
 }
 /// Reason category for a refused resident publication. The unavailable
 /// category describes source custody only; it does not imply a deadline fault.
@@ -1128,8 +1130,15 @@ pub trait WorkerAudioSink: Send {
         admit: &mut dyn FnMut(
             &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
         ) -> Result<(), String>,
-        _inputs: ResidentPublicationInputs<'_>,
+        inputs: ResidentPublicationInputs<'_>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if inputs.device_insert_control.is_some() {
+            return Err(ResidentPublicationRefusal {
+                kind: ResidentPublicationFailure::Other,
+                playback,
+                error: "cancellable device insertion is unavailable for this output".into(),
+            });
+        }
         if playback.contains_streamed_sources() {
             return Err(ResidentPublicationRefusal {
                 kind: crate::service::ResidentPublicationFailure::Other,

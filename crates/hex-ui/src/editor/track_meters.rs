@@ -153,7 +153,7 @@ impl EditorView {
             } else {
                 let viewport = self.track_scroll.list.viewport_bounds();
                 let start = self.track_scroll.list.logical_scroll_top().item_ix;
-                for row in start..self.arrangement_track_indices().len() {
+                for row in start..self.track_scroll.list.item_count() {
                     let Some(bounds) = self.track_scroll.list.bounds_for_item(row) else {
                         break;
                     };
@@ -161,7 +161,7 @@ impl EditorView {
                         break;
                     }
                     let Some(track) = self
-                        .arrangement_track_index(row)
+                        .arrangement_list_track_index(row)
                         .and_then(|index| project.tracks().get(index))
                     else {
                         continue;

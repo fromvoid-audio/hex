@@ -153,6 +153,7 @@ impl Sender {
                 | Request::ReplaceNativeDevice { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::LoadTrackCatalogDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::DropNativeDevice {
                     source: NativeDeviceDropSource::Browser { .. },

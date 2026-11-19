@@ -88,7 +88,10 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
             .unwrap()
             .center();
         visual.simulate_click(add, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("device-chain-loading-slot").is_some());
         pump(&editor, &mut visual);
+        assert!(visual.debug_bounds("device-chain-loading-slot").is_none());
         let menu_project = editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
             let state = view.state.as_ref().unwrap();
@@ -163,7 +166,10 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
             assert!(view.active_native_device_drag.is_some());
         });
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("device-chain-loading-slot").is_some());
         pump(&editor, &mut visual);
+        assert!(visual.debug_bounds("device-chain-loading-slot").is_none());
         let dropped = editor.read_with(&visual, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
             assert!(view.active_native_device_drag.is_none());

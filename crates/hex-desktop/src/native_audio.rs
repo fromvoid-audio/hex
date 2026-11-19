@@ -2132,6 +2132,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 admit,
                 inputs.files.as_ref().map(|files| files.sources),
                 inputs.tempo_edit,
+                inputs.device_insert_control,
             ),
             Err(error) => Err(hex_session::service::ResidentPublicationRefusal {
                 kind: hex_session::service::ResidentPublicationFailure::Other,

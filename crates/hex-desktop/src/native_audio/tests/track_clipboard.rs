@@ -34,6 +34,7 @@ fn track_clipboard_native_cut_refusal_preserves_clipboard_pcm_output_and_history
             revision: original.state.revision,
             class: hex_engine::NativeDeviceClass::Instrument,
             type_id: hex_engine::DeviceTypeId::from_static("hex.instrument.sine"),
+            control: None,
         },
     );
     let instrument = second.state.project.tracks()[1].id();

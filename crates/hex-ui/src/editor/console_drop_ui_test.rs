@@ -1269,7 +1269,7 @@ fn console_column_browser_devices_create_only_explicit_device_and_one_atomic_tra
     cx: &mut TestAppContext,
 ) {
     for effect in [false, true] {
-        let (handle, editor, track, _, _) = fixture(cx);
+        let (handle, editor, track, scene, _) = fixture(cx);
         editor.update(cx, |view, cx| {
             view.browser.section = BrowserSection::Instruments;
             cx.notify();
@@ -1300,10 +1300,41 @@ fn console_column_browser_devices_create_only_explicit_device_and_one_atomic_tra
         };
         let at = bounds(&mut visual, target).center();
         release(&mut visual, at);
+        visual.run_until_parked();
+        let proposed = visual
+            .debug_bounds("session-pending-device-track")
+            .expect("paint the dropped device before receiving the worker result");
+        let original = bounds(&mut visual, format!("session-track-{}", track.value()));
+        let cell = bounds(
+            &mut visual,
+            format!("console-cell-{}-{}", track.value(), scene.value()),
+        );
+        let mixer = bounds(
+            &mut visual,
+            format!("console-mixer-column-{}", track.value()),
+        );
+        assert_eq!(cell.left(), original.left());
+        assert_eq!(mixer.left(), original.left());
+        if effect {
+            assert_eq!(original.right(), proposed.left());
+        } else {
+            assert_eq!(proposed.right(), original.left());
+        }
+        let cancel = visual
+            .debug_bounds("session-pending-device-cancel")
+            .unwrap();
+        assert!(proposed.contains(&cancel.center()));
         editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, before);
             assert!(view.active_native_device_drag.is_none())
         });
         receive_worker(&editor, cx);
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("session-pending-device-track")
+                .is_none()
+        );
         let after = project(&editor, cx);
         assert_eq!(after.tracks().len(), 2);
         assert_eq!(
@@ -1312,6 +1343,11 @@ fn console_column_browser_devices_create_only_explicit_device_and_one_atomic_tra
             "device creates no clips or scenes"
         );
         let born = &after.tracks()[usize::from(effect)];
+        assert_eq!(
+            bounds(&mut visual, format!("session-track-{}", born.id().value())).left(),
+            proposed.left(),
+            "the canonical column replaces the proposal in place"
+        );
         assert!((born.gain() - 0.251_188_64).abs() < 1e-7);
         if effect {
             assert!(born.instrument().is_none());

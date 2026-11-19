@@ -24,16 +24,23 @@ fn verified_device_insert_refuses_an_outgoing_fade_larger_than_the_cache() {
     check_insert(Insert::PageCapacity);
 }
 
+#[test]
+fn verified_device_insert_binds_cancellation_before_the_callback_can_install() {
+    check_insert(Insert::CancelledAtEnqueue);
+}
+
 enum Insert {
     Seamless,
     Confirmed,
     StopAtFade,
     PageCapacity,
+    CancelledAtEnqueue,
 }
 
 fn check_insert(insert: Insert) {
     let _serial = serial();
-    let needs_confirmation = !matches!(insert, Insert::Seamless);
+    let cancel = matches!(insert, Insert::CancelledAtEnqueue);
+    let needs_confirmation = !matches!(insert, Insert::Seamless | Insert::CancelledAtEnqueue);
     let stop = matches!(insert, Insert::StopAtFade);
     let small_cache = matches!(insert, Insert::PageCapacity);
     let device = if needs_confirmation {
@@ -137,9 +144,21 @@ fn check_insert(insert: Insert) {
         active_context,
     );
     let (mut ticket, receipt) = control
-        .stage_verified_device_insert(token, active_context, predecessor, None)
+        .stage_verified_device_insert(token, active_context, predecessor, None, |receipt| {
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+            if cancel {
+                assert_eq!(
+                    receipt.cancel(),
+                    crate::prepared::FreshRuntimeCancellationResult::Cancelled
+                );
+            }
+        })
         .unwrap();
-    assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    if cancel {
+        assert_eq!(block(), [[0.25; 2]; 64]);
+    } else {
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+    }
     let deadline = Instant::now() + Duration::from_secs(2);
     while receipt.state() == PublicationReceiptState::Pending {
         assert_eq!(block(), [[0.25; 2]; 64]);
@@ -176,7 +195,7 @@ fn check_insert(insert: Insert) {
             assert_eq!(control.status.position.load(Acquire), cut);
         }
         let approved = control
-            .stage_verified_device_insert(token, active_context, predecessor, Some(offer))
+            .stage_verified_device_insert(token, active_context, predecessor, Some(offer), |_| {})
             .unwrap();
         ticket = approved.0;
         let receipt = approved.1;
@@ -220,7 +239,9 @@ fn check_insert(insert: Insert) {
     } else {
         receipt
     };
-    let (expected_state, expected_source) = if small_cache {
+    let (expected_state, expected_source) = if cancel {
+        (PublicationReceiptState::Cancelled, predecessor)
+    } else if small_cache {
         (
             PublicationReceiptState::Refused(PlaybackHandoffRejection::StreamedPageCapacity),
             predecessor,

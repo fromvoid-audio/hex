@@ -169,6 +169,7 @@ struct Inputs<'a> {
     shutdown: &'a AtomicBool,
     cancel: Option<&'a AtomicBool>,
     plugin_effect: Option<&'a PluginEffectControl>,
+    device_insert_control: Option<&'a PluginEffectControl>,
     restoring_plugin_state: bool,
     preparing_edit: bool,
     stopped_history: bool,
@@ -1124,6 +1125,7 @@ impl Inputs<'_> {
                         cancel: self.cancel,
                     }),
                 tempo_edit,
+                device_insert_control: self.device_insert_control,
             },
         )
         .map_err(|refused| match refused.kind {
@@ -1515,6 +1517,7 @@ pub(super) fn prepare_import_playback(
     let inputs = Inputs {
         native_parameter_input: None,
         plugin_effect: None,
+        device_insert_control: None,
         restoring_plugin_state: false,
         preparing_edit: false,
         stopped_history: false,
@@ -1860,6 +1863,7 @@ impl Session {
                 let inputs = Inputs {
                     native_parameter_input: None,
                     plugin_effect: None,
+                    device_insert_control: None,
                     restoring_plugin_state: false,
                     preparing_edit: false,
                     stopped_history: false,
@@ -1890,6 +1894,7 @@ impl Session {
                 let inputs = Inputs {
                     native_parameter_input: None,
                     plugin_effect: None,
+                    device_insert_control: None,
                     restoring_plugin_state: false,
                     preparing_edit: false,
                     stopped_history: false,
@@ -2214,6 +2219,7 @@ impl Session {
         Ok(Inputs {
             native_parameter_input: None,
             plugin_effect: None,
+            device_insert_control: None,
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_history: false,
@@ -2292,6 +2298,7 @@ impl Session {
         Ok(Inputs {
             native_parameter_input: None,
             plugin_effect: None,
+            device_insert_control: None,
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_history: false,
@@ -2323,6 +2330,7 @@ impl Session {
         let inputs = Inputs {
             native_parameter_input: None,
             plugin_effect: None,
+            device_insert_control: None,
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_history: false,
@@ -2634,6 +2642,7 @@ impl Session {
         let inputs = Inputs {
             native_parameter_input: None,
             plugin_effect: None,
+            device_insert_control: None,
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_history: false,
@@ -2861,6 +2870,7 @@ impl Session {
         let inputs = Inputs {
             native_parameter_input: None,
             plugin_effect: None,
+            device_insert_control: None,
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_history: false,
@@ -2979,6 +2989,7 @@ impl Session {
         let inputs = Inputs {
             native_parameter_input,
             plugin_effect: plugin_control.as_deref(),
+            device_insert_control: None,
             restoring_plugin_state: false,
             preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
             stopped_history: matches!(&transition, Transition::History { .. })

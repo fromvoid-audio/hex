@@ -4379,6 +4379,123 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
 }
 
 #[test]
+fn empty_track_creation_preserves_playing_resident_pcm() {
+    use hex_project::{Command, Created};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    h.next();
+    let (initial, _) = h.applied(0);
+    let before = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (playing_source, _) = h.applied(initial);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let added = h.run(Request::Edit(Command::InsertDefaultTrackWithGain {
+        before_track: None,
+        gain: 0.25,
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("created empty track");
+    };
+    let track = added.state.project.track(track).unwrap();
+    assert_eq!(track.gain(), 0.25);
+    assert!(track.devices().is_empty() && track.instrument().is_none());
+    assert!(track.clips().is_empty() && track.midi_clips().is_empty());
+    assert_eq!(
+        added.state.project.session(),
+        before.state.project.session()
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        h.pump();
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        if status.applied_revision.load(Acquire) > playing_source {
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+            break;
+        }
+        assert!(Instant::now() < deadline, "empty track never installed");
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn resident_picker_replacement_cancels_the_exact_queued_graph() {
+    use hex_engine::{DeviceTypeId, NativeDeviceClass};
+    use hex_project::Command;
+    use hex_session::service::{DeviceInsertOutcome, PluginEffectControl, TrackCatalogPlacement};
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    h.next();
+    let (initial, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "instrument".into(),
+    }));
+    let (without_instrument, _) = h.applied(initial);
+    let track = added.state.project.tracks()[0].id();
+    let class = NativeDeviceClass::Instrument;
+    let state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.instrument.sine"),
+    )
+    .unwrap();
+    let seeded = h.run(Request::Edit(Command::InsertInstrument { track, state }));
+    let (prior_revision, metadata) = h.applied(without_instrument);
+    let instrument = seeded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    h.enable_confirmed_device_inserts();
+
+    let control = Arc::new(PluginEffectControl::default());
+    let staged = h.run(Request::LoadTrackCatalogDevice {
+        project_generation: metadata.context.project_generation,
+        revision: seeded.state.revision,
+        track,
+        class,
+        type_id: DeviceTypeId::from_static("hex.instrument.fm4"),
+        placement: TrackCatalogPlacement::ReplaceInstrument(instrument),
+        control: Arc::clone(&control),
+    });
+    assert!(!staged.request_complete);
+    assert_eq!(staged.state.project, seeded.state.project);
+    assert!(control.cancel());
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    let terminal = h.next();
+    assert_eq!(terminal.state.project, seeded.state.project);
+    let proposal = terminal.device_insert_proposal_complete.unwrap();
+    assert!(!proposal.accepted && Arc::ptr_eq(&proposal.control, &control));
+    assert_eq!(
+        terminal.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        prior_revision
+    );
+}
+
+#[test]
 fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() {
     use hex_session::service::DeviceInsertOutcome;
 

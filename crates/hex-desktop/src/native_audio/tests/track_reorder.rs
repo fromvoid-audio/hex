@@ -38,6 +38,7 @@ fn add_instrument(h: &mut ResidentHarness, applied: &mut u64, prior: &Event) -> 
             revision: prior.state.revision,
             class: NativeDeviceClass::Instrument,
             type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+            control: None,
         },
     )
 }

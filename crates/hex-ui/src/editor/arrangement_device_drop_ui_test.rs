@@ -80,6 +80,7 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                 assert!(view.last_enqueued_arrangement_device_drop.is_none());
             });
             visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 let expected = match destination {
                     0 => ArrangementDeviceDestination::ExistingTrack {
@@ -110,7 +111,24 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                     if destination == 2 { None } else { Some(first) }
                 );
                 assert!(view.arrangement_device_preview.is_none());
+                assert!(view.pending_plugin_effect.is_some());
+                assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
             });
+            if destination == 0 {
+                editor.update(&mut visual, |view, cx| {
+                    view.selected_track = Some(target);
+                    view.device_panel_active = true;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("device-chain-loading-slot").is_some());
+            } else {
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-pending-device-track")
+                        .is_some()
+                );
+            }
         }
     }
 }

@@ -22,6 +22,7 @@ fn main_delay_bypass_publishes_without_a_pcm_step() {
         class: hex_engine::NativeDeviceClass::Effect,
         type_id: hex_engine::DeviceTypeId::from_static("hex.delay"),
         before: None,
+        control: None,
     });
     let device = added.state.project.main_devices()[0].id();
     (applied, _) = h.applied(applied);

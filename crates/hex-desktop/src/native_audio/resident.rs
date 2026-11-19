@@ -872,6 +872,7 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
         tempo_edit: Option<ResidentTempoEdit<'_>>,
+        device_insert_control: Option<&hex_session::service::PluginEffectControl>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         let tempo_edit =
             tempo_edit.filter(|_| matches!(policy, ResidentPublicationPolicy::InheritRuntimeAt(_)));
@@ -1388,7 +1389,8 @@ impl NativeAudioSink {
                 }
                 let bind_insert_receipt =
                     |receipt: &hex_audio::prepared::CancellablePublicationReceipt| {
-                        if let Some(operation) = hosted_insert.as_ref() {
+                        if let Some(operation) = hosted_insert.as_deref().or(device_insert_control)
+                        {
                             operation.bind_device_insert_receipt(Box::new(InsertReceipt {
                                 submission: ResidentGraphSubmission {
                                     output_identity: receipt.output_identity(),
@@ -1693,6 +1695,7 @@ impl NativeAudioSink {
             0,
             &mut with_capture,
             file_sources.as_ref(),
+            None,
             None,
         ) {
             self.resident.pending = Some(Pending {
