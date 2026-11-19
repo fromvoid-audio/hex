@@ -1138,6 +1138,67 @@ fn all_search_keeps_within_kind_order_and_single_kind_queries(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn pending_vst_new_track_paints_a_loading_row_before_worker_outcome(cx: &mut TestAppContext) {
+    use hex_project::TrackDeviceSlot;
+    use hex_session::service::PluginEffectDestination;
+
+    let (handle, editor, tracks, directory, _) =
+        browser_drag_fixture_with_tracks(cx, &["original"]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+    let mut catalog = original_plugin_catalog(module.clone());
+    let class = &mut catalog.entries[0]
+        .last_good
+        .as_mut()
+        .unwrap()
+        .discovery
+        .as_mut()
+        .unwrap()
+        .classes[0];
+    class.class_flags = Some(0);
+    class.subcategories = Some("Fx".into());
+    class.class_vendor = Some("Original Vendor".into());
+    class.class_version = Some("1".into());
+    class.class_sdk_version = Some("3.8".into());
+    let selection = catalog.select_effect(&module, [1; 16]).unwrap();
+
+    editor.update(&mut visual, |view, cx| {
+        let before = view.state.as_ref().unwrap().project.next_identity();
+        view.selected_track = Some(tracks[0]);
+        view.insert_plugin_effect(
+            &selection,
+            PluginEffectDestination::NewTrack {
+                before_track: Some(tracks[0]),
+                slot: TrackDeviceSlot::Effect,
+                gain: 1.0,
+                track_identity: before,
+            },
+            None,
+            cx,
+        );
+        assert!(view.pending_plugin_effect.is_some());
+        cx.notify();
+    });
+    // Paint without advancing the editor's worker-receive timer.
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.pending_plugin_effect.is_some(),
+            "pending load must reach repaint"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
+        assert_eq!(view.selected_track, Some(tracks[0]));
+    });
+    let row = visual.debug_bounds("arrangement-pending-device-track");
+    let cancel = visual.debug_bounds("arrangement-pending-device-cancel");
+    assert!(
+        row.is_some() && cancel.is_some(),
+        "pending track and cancel must paint together"
+    );
+}
+
+#[gpui::test]
 fn vst_browser_drag_captures_the_header_lane_or_new_track(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     use hex_project::TrackDeviceSlot;
