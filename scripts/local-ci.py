@@ -2012,6 +2012,11 @@ class LocalCiRunner:
                 for package in dependency_inputs["packages"]:
                     if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
                         cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
+                if self._has_external_build_helpers():
+                    raise TargetCacheError(
+                        "selective cleanup cannot account for external Cargo build scripts or proc macros; "
+                        "use a fresh target with --fresh-target"
+                    )
 
             self.summary["target_cache"] = {
                 "action": ownership_action,
@@ -2168,6 +2173,21 @@ class LocalCiRunner:
             if sum(p["name"] == package["name"] for p in metadata["packages"]) != 1:
                 raise TargetCacheError("path dependency cleanup has an ambiguous package name")
         return sorted(packages, key=lambda p: p["name"])
+
+    def _has_external_build_helpers(self) -> bool:
+        # A non-member helper can read changed workspace inputs without a
+        # Cargo watch. Package fingerprints cannot bound its actual reads.
+        metadata = self._release_metadata
+        members = set(metadata["workspace_members"])
+        return any(
+            package["id"] not in members and (
+                not package.get("targets") or any(
+                    {"custom-build", "proc-macro"}.intersection(target.get("kind", ()))
+                    for target in package["targets"]
+                )
+            )
+            for package in metadata["packages"]
+        )
 
     def _cache_provenance(self, *, checked=False) -> dict | None:
         if self._compiler_inputs is None:

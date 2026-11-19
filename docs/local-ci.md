@@ -644,6 +644,14 @@ runner versions may still display stale holder information from that file.
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
+If a development cache handoff needs cleanup and any dependency outside the
+workspace runs a Cargo build script or procedural macro, the runner requires an
+empty target. Use a separate existing empty directory with `--fresh-target`.
+The first build recompiles dependencies. The old cache and its owner remain
+available for their original inputs. Cargo can only track declared inputs and
+the runner's recorded witnesses, so arbitrary reads outside them remain
+nonhermetic.
+
 Development and release ownership use separate markers. Packaging needs an empty
 target or a release owner that records an empty origin and matches the current
 checkout, exact source and build inputs. Explicit recovery can resume a matching

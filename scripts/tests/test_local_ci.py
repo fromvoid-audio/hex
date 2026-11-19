@@ -3650,6 +3650,36 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(calls.count("cargo clean"), 0)
         self.assertEqual(self.summary("same-b")["target_cache"]["action"], "reuse")
 
+    def test_legacy_adoption_refuses_before_cleaning_with_registry_proc_macro(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        retained = target / "debug/deps/registry-macro.rlib"
+        retained.parent.mkdir(parents=True)
+        retained.write_bytes(b"retained cache")
+        runner = self.runner("registry-macro-adopt", adopt_target=True)
+        release_scope = runner._release_scope
+
+        def scope_with_registry_macro():
+            scope = release_scope()
+            runner._release_metadata["packages"].append({
+                "name": "registry-macro",
+                "version": "1.0.0",
+                "id": "registry+https://example.invalid/index#registry-macro@1.0.0",
+                "source": "registry+https://example.invalid/index",
+                "manifest_path": str(self.base / "registry-macro/Cargo.toml"),
+                "targets": [{"kind": ["proc-macro"]}],
+            })
+            return scope
+
+        with patch.object(runner, "_release_scope", side_effect=scope_with_registry_macro):
+            self.assertEqual(runner.run(), 1)
+        self.assertIn("proc macros", runner.summary["target_cache_error"])
+        _, owner = local_ci.target_state_paths(target, self.target_state_dir)
+        self.assertFalse(owner.exists())
+        self.assertEqual(retained.read_bytes(), b"retained cache")
+        calls = self.call_log.read_text()
+        self.assertNotIn("cargo clean", calls)
+        self.assertNotIn("cargo build", calls)
+
     def test_worktree_handoff_cleans_every_workspace_member(self) -> None:
         self.assertEqual(self.runner("handoff-a").run(), 0)
         worktree_b = self.base / "repo-worktree-b"
