@@ -127,6 +127,13 @@ pub fn exercise_midi_receipt_pressure(
     editor::midi_pressure_fixture(cx, root, reservation, output, render)
 }
 
+/// Exercise the real recorder header with native text shaping and a private fixture root.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_sample_recorder_layout(cx: &mut gpui::TestAppContext, root: std::path::PathBuf) {
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    editor::sample_recorder_layout_fixture(cx, root);
+}
+
 /// Read-only browser insertion evidence. Neither the view nor this query owns
 /// a native endpoint, and a pending request alone grants no applied source.
 #[cfg(feature = "ui-test-support")]

@@ -229,9 +229,10 @@ UI_UNIT_STEPS = tuple(
 UI_UNIT_STEP_IDS = frozenset(step.step_id for step in UI_UNIT_STEPS)
 
 UI_FEATURE_TARGET_STEPS = (
-    Step("ui-midi-pressure-boundary-tests",
-         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
-          "--test", "midi_pressure_boundary", "--locked"), requires_tests=True),
+    *(Step(f"ui-{target.replace('_', '-')}-tests",
+           ("cargo", "test", "-p", "hex-ui", "--features", feature,
+            "--test", target, "--locked"), requires_tests=True)
+      for target, feature in ci_plan.UI_EXTRA_TEST_FEATURES.items()),
     Step("ui-feature-doctests",
          ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--doc", "--locked")),
 )
