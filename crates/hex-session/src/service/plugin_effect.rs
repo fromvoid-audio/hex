@@ -416,10 +416,6 @@ impl Pending {
         self.canonical_context == context
     }
 
-    pub fn was_rebased(&self) -> bool {
-        self.canonical_context != self.insertion.context
-    }
-
     pub fn validate(
         &self,
         context: hex_engine::AudioSourceContext,
@@ -431,9 +427,37 @@ impl Pending {
         self.insertion.validate(self.insertion.context, project)
     }
 
-    /// Call only after the worker commits one ordinary EQ parameter write.
-    /// This edit can change parameter read selection but cannot change the
-    /// destination, the insertion anchor or the reserved device identity.
+    /// Existing scalar, paired and grouped EQ parameter gestures can publish
+    /// an overlay while the same native effect endpoint prepares. Node creation
+    /// retains the ordinary topology conflict rule.
+    pub fn independent_eq_gesture(
+        &self,
+        project: &Project,
+        target: crate::device_gesture::GestureTarget,
+    ) -> Option<hex_project::DeviceId> {
+        use crate::device_gesture::GestureTarget;
+        let device = match target {
+            GestureTarget::DeviceParameter { device, .. }
+            | GestureTarget::DeviceParameterPair { device, .. }
+            | GestureTarget::DeviceParameterSnapshot { device, .. } => device,
+            _ => return None,
+        };
+        self.independent_eq_device(project, device)
+            .then_some(device)
+    }
+
+    fn independent_eq_device(&self, project: &Project, device: hex_project::DeviceId) -> bool {
+        self.insertion.destination.devices(project).is_ok()
+            && project.next_identity() == self.next_identity
+            && project.device(device).is_some_and(|device| {
+                device.state().type_id()
+                    == hex_lattice_contract::DeviceTypeId::from_static("hex.eq")
+            })
+    }
+
+    /// Call only after the worker commits an existing EQ parameter edit.
+    /// Parameter read selection can change without changing the destination,
+    /// insertion anchor or reserved device identity.
     pub fn rebase_after_accepted_eq_write(
         &mut self,
         predecessor: hex_engine::AudioSourceContext,
@@ -441,12 +465,7 @@ impl Pending {
         device: hex_project::DeviceId,
     ) {
         if self.validate(predecessor, project).is_ok()
-            && self.insertion.destination.devices(project).is_ok()
-            && project.next_identity() == self.next_identity
-            && project.device(device).is_some_and(|device| {
-                device.state().type_id()
-                    == hex_lattice_contract::DeviceTypeId::from_static("hex.eq")
-            })
+            && self.independent_eq_device(project, device)
             && let Some(editor_revision) = predecessor.editor_revision.checked_add(1)
         {
             self.canonical_context = hex_engine::AudioSourceContext {

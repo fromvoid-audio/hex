@@ -358,3 +358,97 @@ fn accepted_eq_write_survives_pending_vst3_failure_or_cancel() {
         assert_eq!(undone.state.project.main_devices()[0].state(), &eq);
     }
 }
+
+#[test]
+fn ready_vst3_preparation_waits_for_the_independent_eq_gesture_terminal() {
+    use crate::device_gesture::{
+        GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
+    };
+
+    for cancelled in [false, true] {
+        let (service, observed, _) = service();
+        let eq = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.eq"),
+        )
+        .unwrap();
+        let submit = |request| {
+            service.submit(request).unwrap();
+            receive(&service)
+        };
+        let before = submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: eq.clone(),
+        }));
+        assert!(before.error.is_none(), "{:?}", before.error);
+        let device = before.state.project.main_devices()[0].id();
+        let plugin = insertion(&before.state);
+        let preparing = submit(Request::InsertPluginEffect(plugin.clone()));
+        assert!(preparing.error.is_none(), "{:?}", preparing.error);
+        assert!(preparing.plugin_effect_complete.is_empty());
+        let key = GestureKey {
+            generation: 0,
+            token: 1,
+        };
+        let value = ParameterValue::Float(0.5);
+        let begin = submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter {
+                device,
+                parameter: ParameterId::from_static(202),
+            },
+        }));
+        assert!(begin.gesture_ack.unwrap().accepted);
+        assert!(
+            begin.plugin_effect_complete.is_empty(),
+            "beginning the independent EQ gesture cancelled preparation"
+        );
+        let changed = submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value,
+        }));
+        assert!(changed.gesture_ack.unwrap().accepted);
+        assert_eq!(changed.state.project, before.state.project);
+        assert!(changed.plugin_effect_complete.is_empty());
+
+        observed.plugin_ready.store(true, Ordering::Release);
+        let during = submit(Request::QueryDeviceAutomationCloseSafety { request_id: 3 });
+        assert!(during.device_automation_take_complete.is_some());
+        assert_eq!(during.active_device_gesture.unwrap().key, key);
+        assert!(during.plugin_effect_complete.is_empty());
+        assert_eq!(observed.plugin_preparations.load(Ordering::Acquire), 1);
+
+        let terminal = submit(Request::DeviceGesture(if cancelled {
+            GestureRequest::Cancel { key }
+        } else {
+            GestureRequest::Commit {
+                key,
+                sequence: 2,
+                manual_edit: true,
+                value,
+            }
+        }));
+        assert!(terminal.gesture_ack.unwrap().accepted);
+        assert!(terminal.active_device_gesture.is_none());
+        assert!(terminal.plugin_effect_complete.is_empty());
+        assert_eq!(
+            terminal.state.revision,
+            before.state.revision + u64::from(!cancelled)
+        );
+        assert_eq!(
+            terminal.state.project.main_devices()[0].state() == &eq,
+            cancelled
+        );
+        let plugin_terminal = receive(&service);
+        assert!(
+            plugin_terminal
+                .error
+                .unwrap()
+                .contains("different device provider")
+        );
+        assert_eq!(plugin_terminal.plugin_effect_complete.len(), 1);
+        assert!(!plugin_terminal.plugin_effect_complete[0].accepted);
+        assert_eq!(plugin_terminal.state.project, terminal.state.project);
+    }
+}

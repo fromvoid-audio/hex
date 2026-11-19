@@ -3306,6 +3306,7 @@ fn run_worker(
         &mut recording_barrier,
         session.native_reservation.is_some() || pending_recovery_outcome.is_some(),
         pending_plugin_effect.as_ref(),
+        device_gesture.snapshot().is_some(),
         pending_device_insert.as_ref(),
         pending_stopped_restore,
         hex_engine::AudioSourceContext {
@@ -3557,7 +3558,10 @@ fn run_worker(
             && (clip_audition_release
                 || (matches!(&queued.request, Request::ContinuePluginEffect)
                     && pending_plugin_effect.as_ref().is_some_and(|pending| {
-                        pending.was_rebased() && !pending.insertion.control.is_cancelled()
+                        pending.matches_context(hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        }) && !pending.insertion.control.is_cancelled()
                     }))
                 || matches!(
                     &queued.request,
@@ -5837,6 +5841,14 @@ fn run_worker(
                     }
                 }
                 Request::DeviceGesture(gesture) => {
+                    let independent_plugin_eq = device_gesture
+                        .snapshot()
+                        .filter(|active| active.key == gesture.key())
+                        .and_then(|active| {
+                            pending_plugin_effect
+                                .as_ref()?
+                                .independent_eq_gesture(session.project(), active.target)
+                        });
                     gesture_request = true;
                     gesture_protocol_ack = true;
                     let mut deferred = false;
@@ -5966,6 +5978,20 @@ fn run_worker(
                             crate::device_gesture::GesturePhase::Commit
                                 | crate::device_gesture::GesturePhase::Cancel
                         );
+                    if native_terminal_accepted
+                        && outcome.canonical_changed
+                        && let Some(device) = independent_plugin_eq
+                        && let Some(pending) = pending_plugin_effect.as_mut()
+                    {
+                        pending.rebase_after_accepted_eq_write(
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            session.project(),
+                            device,
+                        );
+                    }
                     if deferred {
                         request_complete = false;
                         plugin_recording.defer(gesture);
@@ -11117,7 +11143,11 @@ fn run_worker(
                 editor_revision: revision,
             }) || pending.insertion.control.is_cancelled()
                 || pending_sampler_parameter.is_some()
-                || device_gesture.snapshot().is_some()
+                || device_gesture.snapshot().is_some_and(|gesture| {
+                    pending
+                        .independent_eq_gesture(session.project(), gesture.target)
+                        .is_none()
+                })
                 || tuning_gesture.snapshot().is_some()
         }) && let Some(pending) = pending_plugin_effect.take()
         {
