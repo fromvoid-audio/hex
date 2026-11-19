@@ -681,19 +681,19 @@ class RecreatedTargetTests(ReleaseFixture):
                 'os.execv("/bin/sh",["/bin/sh",str(Path(__file__).with_name("cargo-original")),*sys.argv[1:]])\n')
         (cargo.with_name('cargo-original')).write_text(original.replace('tool=${0##*/}', 'tool=cargo'));cargo.write_text(prefix)
 
-    def test_packaging_artifact_helper_forwards_authority_into_real_guard(self):
-        authority=self.inspect();inactive=Mock()
-        self.install_fixture_cargo()
-        with delivery.optimized_artifact(self.runner,adopt=True,
-                expected_owner_sha256=authority['owner_sha256'],
-                expected_recreated_target_identity=authority['target_identity'],
-                recovery_inactive_check=inactive) as (binary,report):
-            self.assertEqual(binary.read_bytes(),b'fresh packaged fixture')
-            self.assertEqual(report['explicit_recreated_target'],authority)
-            self.assertIsNotNone(self.runner.target_lock)
-        inactive.assert_called_once_with()
-        self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
-        self.assertIsNone(self.runner.target_lock)
+    def test_packaging_refuses_recreated_target_without_release_cache_proof(self):
+        authority = self.inspect()
+        inactive = Mock()
+        raw, calls = self.owner.read_bytes(), self.f.call_log.read_text()
+        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError, 'release cache does not prove an empty origin'):
+            with delivery.optimized_artifact(self.runner, adopt=True,
+                    expected_owner_sha256=authority['owner_sha256'],
+                    expected_recreated_target_identity=authority['target_identity'],
+                    recovery_inactive_check=inactive):
+                self.fail('unproven recreated target reached packaging')
+        inactive.assert_not_called()
+        self.assertNotIn('cargo build', self.f.call_log.read_text()[len(calls):])
+        self.assert_preserved(raw, calls)
 
     def test_missing_plain_configured_app_parent_is_created_before_inspection_lock(self):
         app=self.f.repo.resolve()/'new-output'/'nested'/'hex.app'
@@ -706,7 +706,7 @@ class RecreatedTargetTests(ReleaseFixture):
         self.assertEqual(self.owner.read_bytes(),raw);controller.assert_not_called()
         self.assertIsNone(self.runner.target_lock)
 
-    def test_failed_explicit_build_consumer_pending_retries_same_target_with_fresh_artifact(self):
+    def test_packaging_uses_fresh_target_after_unproven_pending_owner_refusal(self):
         authority=self.inspect();first_raw=self.owner.read_bytes()
         with self.assertRaisesRegex(RuntimeError,'fixture consumer failed'):
             with self.guard(authority):raise RuntimeError('fixture consumer failed')
@@ -715,20 +715,28 @@ class RecreatedTargetTests(ReleaseFixture):
         self.assertEqual(pending['target_identity'],authority['target_identity'])
         self.assertNotEqual(self.owner.read_bytes(),first_raw)
         self.assertIsNone(self.runner.target_lock)
-        # This is now an unchanged target, but exactly owned PENDING, not READY.
-        retry=self.inspect()
-        self.assertEqual(retry['owner_sha256'],hashlib.sha256(self.owner.read_bytes()).hexdigest())
+        # Exact pending ownership still lacks the guarded release cache proof.
+        retry = self.inspect()
+        raw, calls = self.owner.read_bytes(), self.f.call_log.read_text()
+        self.assertEqual(retry['owner_sha256'], hashlib.sha256(raw).hexdigest())
+        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError, 'release cache does not prove an empty origin'):
+            with delivery.optimized_artifact(self.runner, adopt=True,
+                    expected_owner_sha256=retry['owner_sha256'],
+                    expected_recreated_target_identity=retry['target_identity'], recovery_inactive_check=Mock()):
+                self.fail('unproven pending target reached packaging')
+        self.assertNotIn('cargo build', self.f.call_log.read_text()[len(calls):])
+        self.assert_preserved(raw, calls)
+
         self.install_fixture_cargo()
-        with delivery.optimized_artifact(self.runner,adopt=True,
-                expected_owner_sha256=retry['owner_sha256'],
-                expected_recreated_target_identity=retry['target_identity'],recovery_inactive_check=Mock()) as (binary,report):
-            self.assertEqual(binary.read_bytes(),b'fresh packaged fixture')
-            self.assertEqual(report['previous_owner'],pending)
-        self.assertEqual(json.loads(self.owner.read_bytes())['state'],'ready')
-        self.assertEqual(self.keep.read_bytes(),b'preserve external data')
-        self.assertEqual((self.retained/'old-artifact').read_bytes(),b'never qualify or erase old build')
-        with self.assertRaises(fixtures.local_ci.TargetCacheError):self.inspect() # unchanged READY still refuses
-        self.assertIsNone(self.runner.target_lock)
+        fresh = self.target.with_name('fresh-release-target')
+        fresh.mkdir()
+        runner = self.f.runner('fresh-release', env={**self.runner.env, 'CARGO_TARGET_DIR': str(fresh),
+                                                      'FAKE_METADATA_TARGET': str(fresh)})
+        with delivery.optimized_artifact(runner) as (binary, report):
+            self.assertEqual(binary.read_bytes(), b'fresh packaged fixture')
+            self.assertEqual(report['build_cache_origin'], 'empty-target-v1')
+        self.assertEqual(json.loads(Path(report['owner_path']).read_bytes())['state'], 'ready')
+        self.assert_preserved(raw, calls)
 
     def test_missing_parent_refuses_symlink_and_nondirectory_without_marker_changes(self):
         raw=self.owner.read_bytes();foreign=self.f.base/'foreign-parent';foreign.mkdir()

@@ -2477,7 +2477,8 @@ with Path(__file__).with_name("local-ci.py").open("ab") as runner:
             "packages": [
                 {"id": "fixture 0.1.0", "name": "fixture", "version": "0.1.0", "manifest_path": str(root / "Cargo.toml")},
                 {"id": "other 0.1.0", "name": "other", "version": "0.1.0", "manifest_path": str(root / "other/Cargo.toml")},
-                {"id": "helper 1.0.0", "name": "helper", "version": "1.0.0", "source": None, "manifest_path": str(dependency / "Cargo.toml")},
+                {"id": "helper 1.0.0", "name": "helper", "version": "1.0.0", "source": None,
+                 "manifest_path": str(dependency / "Cargo.toml"), "targets": [{"kind": ["lib"]}]},
             ],
         }
         script = "\n".join(
