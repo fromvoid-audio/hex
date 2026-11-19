@@ -3,7 +3,7 @@
 //! receipt, retained in the slot, then aliased to the exact graph destination.
 use super::*;
 use crate::{
-    audio_transform::{GroupSource, sparse_group_plan},
+    audio_transform::{GroupSource, materializes_musical_outer_fade, sparse_group_plan},
     compile::PreparedAudioSourceRef,
 };
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
@@ -271,9 +271,16 @@ fn clip_quote(
             edit.domain.clock.length()
         };
         for root in clip.retained_audio_roots() {
+            let duration = root.clip.duration();
+            let source = root_work(&root.clip, &root.tempo)?;
+            let materialized = root
+                .clip
+                .audio_edit()
+                .is_some_and(materializes_musical_outer_fade);
             work = work
-                .checked_add(root_work(&root.clip, &root.tempo)?)
-                .and_then(|n| n.checked_add(root.clip.duration()))
+                .checked_add(source)
+                .and_then(|n| n.checked_add(duration))
+                .and_then(|n| n.checked_add(if materialized { duration } else { 0 }))
                 .filter(|frames| *frames <= MAX_AUDIO_DOMAIN_FRAMES)
                 .ok_or(AudioStorageError::Capacity)?;
         }
@@ -288,6 +295,7 @@ fn clip_quote(
             })
             .ok_or(AudioStorageError::Overflow)?
     };
+    let (frames, work) = quote_outer_fade_output(edit, clip.duration(), frames, work)?;
     if work > MAX_AUDIO_DOMAIN_FRAMES * 2 {
         return Err(AudioStorageError::Capacity);
     }
@@ -297,6 +305,25 @@ fn clip_quote(
         0
     };
     Ok((frames, work, layout_bytes))
+}
+
+fn quote_outer_fade_output(
+    edit: &hex_project::AudioClipEdit,
+    duration: u64,
+    frames: u64,
+    work: u64,
+) -> Result<(u64, u64), AudioStorageError> {
+    if !materializes_musical_outer_fade(edit) {
+        return Ok((frames, work));
+    }
+    if duration == 0 || duration > MAX_AUDIO_DOMAIN_FRAMES {
+        return Err(AudioStorageError::Capacity);
+    }
+    Ok((
+        duration,
+        work.checked_add(duration)
+            .ok_or(AudioStorageError::Overflow)?,
+    ))
 }
 
 pub(crate) fn prepared_pcm_frames(
