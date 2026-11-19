@@ -4,6 +4,11 @@ use std::ops::Range;
 
 const UNITS_PER_PITCH: u32 = 4096;
 const MIDI_UNITS: u32 = 128 * UNITS_PER_PITCH;
+const DEFAULT_ROW_HEIGHT: f64 = 16.0;
+const MIN_ROW_HEIGHT: f64 = 10.0;
+const MAX_ROW_HEIGHT: f64 = 48.0;
+const MIN_VISIBLE_ROWS: f64 = 3.0;
+const ZOOM_DOUBLING_PIXELS: f64 = 120.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct PitchViewport {
@@ -15,6 +20,48 @@ impl PitchViewport {
         low: 48 * UNITS_PER_PITCH,
         span: 24 * UNITS_PER_PITCH,
     };
+
+    /// First usable view of a clip, centered on the default pitch range.
+    pub(super) fn default_for_height(height: f32) -> Self {
+        Self::DEFAULT
+            .resize_around(height, f64::from(height) / DEFAULT_ROW_HEIGHT, 0.5)
+            .unwrap_or(Self::DEFAULT)
+    }
+
+    /// Apply the manual bounds after the grid changes size. Note fit deliberately
+    /// owns its wider view until manual zoom resumes.
+    pub(super) fn constrain_to_height(self, height: f32) -> Self {
+        self.resize_around(height, self.span(), 0.5).unwrap_or(self)
+    }
+
+    /// Continuous zoom anchored in the note grid. Positive input increases
+    /// the height of each row. Gesture callers pass displacement from capture.
+    pub(super) fn zoom_at(self, height: f32, fraction: f64, delta: f32) -> Option<Self> {
+        if !delta.is_finite() || !(0.0..=1.0).contains(&fraction) {
+            return None;
+        }
+        if delta == 0.0 {
+            return Some(self);
+        }
+        let log_scale = (-f64::from(delta) / ZOOM_DOUBLING_PIXELS).clamp(-16.0, 16.0);
+        self.resize_around(height, self.span() * log_scale.exp2(), fraction)
+    }
+
+    fn resize_around(self, height: f32, requested: f64, fraction: f64) -> Option<Self> {
+        if !height.is_finite() || height <= 0.0 {
+            return None;
+        }
+        let height = f64::from(height);
+        let min_span = (height / MAX_ROW_HEIGHT).clamp(MIN_VISIBLE_ROWS, 128.0);
+        let max_span = (height / MIN_ROW_HEIGHT).clamp(min_span, 128.0);
+        let units = f64::from(UNITS_PER_PITCH);
+        let span = (requested.clamp(min_span, max_span) * units).round() as u32;
+        let anchor = f64::from(self.low) + (1.0 - fraction) * f64::from(self.span);
+        let low = (anchor - (1.0 - fraction) * f64::from(span))
+            .round()
+            .clamp(0.0, f64::from(MIDI_UNITS - span)) as u32;
+        Some(Self { low, span })
+    }
 
     pub(super) fn from_rows(low: u8, rows: u8) -> Option<Self> {
         Self::new(f64::from(low), f64::from(rows))
@@ -198,6 +245,34 @@ mod tests {
             PitchViewport::DEFAULT.scroll_rows(-12).0,
             PitchViewport::from_rows(36, 24).unwrap()
         );
+    }
+
+    #[test]
+    fn continuous_zoom_anchors_fractional_pitch_and_scales_with_grid_height() {
+        for height in [56.0, 155.0, 420.0] {
+            let view = PitchViewport::default_for_height(height);
+            assert!((f64::from(height) / view.span() - 16.0).abs() < 0.01);
+            for fraction in [0.0, 0.3, 0.5, 1.0] {
+                let zoomed = view.zoom_at(height, fraction, 0.5).unwrap();
+                assert!((0.0..1.0).contains(&(view.span() - zoomed.span())));
+                let anchor = |pitch: PitchViewport| pitch.low() + (1.0 - fraction) * pitch.span();
+                assert!((anchor(view) - anchor(zoomed)).abs() < 1.0 / 4096.0);
+            }
+            assert_eq!(view.zoom_at(height, 0.5, 0.0), Some(view));
+            let closest = view.zoom_at(height, 0.5, f32::MAX).unwrap();
+            let widest = view.zoom_at(height, 0.5, -f32::MAX).unwrap();
+            assert!(closest.span() >= 3.0);
+            assert!(f64::from(height) / closest.span() <= 48.01);
+            assert!((f64::from(height) / widest.span() - 10.0).abs() < 0.01);
+        }
+        let full = PitchViewport::from_rows(0, 128).unwrap();
+        assert_eq!(full.zoom_at(155.0, 0.5, 0.0), Some(full));
+        assert_eq!(full.zoom_at(155.0, 0.5, f32::NAN), None);
+        assert_eq!(full.zoom_at(155.0, -0.1, 2.0), None);
+        assert_eq!(full.zoom_at(f32::INFINITY, 0.5, 2.0), None);
+        let clamped = full.constrain_to_height(90.0);
+        assert_eq!(clamped.span(), 9.0);
+        assert_eq!(clamped.low() + clamped.span() / 2.0, 64.0);
     }
 
     #[test]

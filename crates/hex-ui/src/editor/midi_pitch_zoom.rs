@@ -9,9 +9,9 @@ pub(super) struct Zoom {
     gesture: SplitterGesture,
     scene: SceneKey,
     applied_pitch: super::PitchViewport,
+    note_fit: bool,
     viewport: Size<Pixels>,
-    detail_height: f32,
-    velocity_height: f32,
+    grid_height: f32,
 }
 impl EditorView {
     pub(super) fn reconcile_piano_pitch_zoom(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -31,8 +31,7 @@ impl EditorView {
                 || !self.midi_focus.is_focused(window)
                 || !z.gesture.matches_window(window)
                 || window.viewport_size() != z.viewport
-                || self.clip_detail_body_height != z.detail_height
-                || self.midi_velocity.visible_height() != z.velocity_height
+                || self.piano_grid_height() != z.grid_height
         });
         if invalid {
             self.piano_pitch_zoom = None;
@@ -77,9 +76,9 @@ impl EditorView {
                         pitch,
                     },
                     applied_pitch: pitch,
+                    note_fit: self.piano_pitch_note_fit,
                     viewport: window.viewport_size(),
-                    detail_height: self.clip_detail_body_height,
-                    velocity_height: self.midi_velocity.visible_height(),
+                    grid_height: self.piano_grid_height(),
                 });
                 cx.notify();
                 true
@@ -94,22 +93,17 @@ impl EditorView {
                     cx.notify();
                     return true;
                 }
-                let rows = (z.scene.pitch.span() as f32 * (delta / 120.).clamp(-8., 8.).exp2())
-                    .round()
-                    .clamp(1., 128.) as u8;
-                let low = (z.scene.pitch.low()
-                    + ((z.scene.pitch.span() - f64::from(rows)) / 2.0).trunc())
-                .clamp(0.0, f64::from(128 - rows));
-                let Some(pitch) = super::PitchViewport::new(low, f64::from(rows)) else {
+                let Some(pitch) = z.scene.pitch.zoom_at(z.grid_height, 0.5, delta) else {
                     return false;
                 };
-                // Preserve the original integer-row redraw threshold. The
-                // window lease still consumes a sub-row move exclusively.
                 if matches!(event, SplitterEvent::Change(_)) && self.piano_pitch == pitch {
                     return false;
                 }
-                self.piano_pitch = pitch;
-                z.applied_pitch = pitch;
+                if self.piano_pitch != pitch {
+                    self.piano_pitch = pitch;
+                    self.piano_pitch_note_fit = z.note_fit && pitch == z.scene.pitch;
+                    z.applied_pitch = pitch;
+                }
                 if matches!(event, SplitterEvent::Commit(_)) {
                     self.piano_pitch_zoom = None;
                 }

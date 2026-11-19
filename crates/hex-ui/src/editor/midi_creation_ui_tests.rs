@@ -30,6 +30,25 @@ pub(in crate::editor) fn fixture(
     Arc<Environment>,
     hex_project::ClipId,
 ) {
+    let (mut visual, editor, environment, clip) = first_open_fixture(cx);
+    // Editing fixtures explicitly include the old 48–71 range. Tests of the
+    // actual first viewport use first_open_fixture.
+    editor.update(&mut visual, |view, cx| {
+        view.piano_pitch = crate::editor::PitchViewport::DEFAULT;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    (visual, editor, environment, clip)
+}
+
+pub(in crate::editor) fn first_open_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    VisualTestContext,
+    Entity<EditorView>,
+    Arc<Environment>,
+    hex_project::ClipId,
+) {
     cx.update(super::super::bind_editor_keys);
     let environment = Environment::new().unwrap();
     std::fs::create_dir(environment.root().join("samples")).unwrap();
