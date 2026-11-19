@@ -97,6 +97,9 @@ fn loading_start_is_cancelled_by_second_toggle_stop_history_and_raw_action(
                 _ => view.queue_audio_command(PlaybackCommand::Seek(0)),
             }
             assert!(view.playback_settings.pending.is_none());
+            if cancel == "toggle" {
+                assert_eq!(view.status.as_str(), "playback start cancelled");
+            }
             view.last_transport_command = None;
         });
         finish_load(&editor, cx);
@@ -681,6 +684,39 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
         assert!(view.playback_settings.pending.is_none());
         assert_eq!(view.last_transport_command, None);
         assert!(view.pending_audio_commands.is_empty());
+    });
+    fixture.finish(cx);
+}
+
+#[gpui::test]
+fn toggle_during_loading_cancels_the_future_seek_and_pauses_active_audio(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    let mut fixture = super::super::worker_ui_fixture::open(cx, Vec::new());
+    let editor = fixture.editor.clone();
+    editor.update(cx, |view, cx| {
+        view.queue_audio_command(PlaybackCommand::Play);
+        view.tick(cx);
+    });
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(cx, |view, cx| {
+        view.tick(cx);
+        assert!(view.audio_status().unwrap().playing.load(Acquire));
+        reload_off(view, cx);
+        view.request_prepared_seek(512, true);
+        assert!(view.playback_settings.pending.is_some());
+        view.toggle_play();
+        assert!(view.playback_settings.pending.is_none());
+        assert_eq!(view.last_transport_command, Some(PlaybackCommand::Pause));
+    });
+    finish_load(&editor, cx);
+    for _ in 0..8 {
+        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(cx, |view, cx| view.tick(cx));
+    }
+    editor.read_with(cx, |view, _| {
+        assert!(!view.audio_status().unwrap().playing.load(Acquire));
+        assert!(view.prepared_seek.is_none());
+        assert!(view.latched_seek_intent.is_none());
     });
     fixture.finish(cx);
 }
