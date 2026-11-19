@@ -117,6 +117,8 @@ struct Borrowed {
     cursor: usize,
     next_offset: usize,
     initial_unstamped_frames: usize,
+    batch_independent_tracks: bool,
+    largest_segment: usize,
     processed: usize,
     fail_at: Option<usize>,
     revoked: bool,
@@ -131,6 +133,8 @@ impl Borrowed {
             cursor: 0,
             next_offset: 0,
             initial_unstamped_frames: 0,
+            batch_independent_tracks: false,
+            largest_segment: 0,
             processed: 0,
             fail_at: None,
             revoked: false,
@@ -139,6 +143,10 @@ impl Borrowed {
     }
 }
 impl ForeignProcessors for Borrowed {
+    fn supports_independent_track_batching(&self) -> bool {
+        self.batch_independent_tracks
+    }
+
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
@@ -157,17 +165,23 @@ impl ForeignProcessors for Borrowed {
             offset, self.next_offset,
             "physical callback segments stay contiguous"
         );
-        assert_eq!(
-            frames.len(),
-            1,
-            "the existing content-origin path remains authoritative"
-        );
-        assert_eq!(
-            clock
-                .and_then(|clock| clock.performance_frame_at_offset(0))
-                .is_some(),
-            self.processed >= self.initial_unstamped_frames
-        );
+        if self.batch_independent_tracks {
+            for index in 0..frames.len() {
+                let clock = clock.unwrap();
+                let expected = Some((self.processed + index) as u64);
+                assert_eq!(clock.performance_frame_at_offset(index), expected);
+                assert_eq!(clock.arrangement_frame_at_offset(index), expected);
+            }
+        } else {
+            assert_eq!(frames.len(), 1, "a scalar endpoint receives single frames");
+            assert_eq!(
+                clock
+                    .and_then(|clock| clock.performance_frame_at_offset(0))
+                    .is_some(),
+                self.processed >= self.initial_unstamped_frames
+            );
+        }
+        self.largest_segment = self.largest_segment.max(frames.len());
         self.next_offset += frames.len();
         self.processed += frames.len();
         for frame in frames {
@@ -601,6 +615,39 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
             }
         }
     }
+}
+
+#[test]
+fn independent_foreign_track_batches_after_priming_with_exact_origins_and_pcm() {
+    let (revision, mut batched, samples) = prepared_with_latency(0, false, 3, Some(1));
+    let mut scalar = Borrowed::new(batched.owner, batched.device);
+    batched.batch_independent_tracks = true;
+    for (runtime, endpoint) in [
+        (
+            SessionPlayback::new(Arc::clone(&revision)).unwrap(),
+            &mut scalar,
+        ),
+        (SessionPlayback::new(revision).unwrap(), &mut batched),
+    ] {
+        let mut runtime = runtime;
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 88];
+        for block in output.chunks_mut(5) {
+            endpoint.next_offset = 0;
+            runtime
+                .render_with_foreign_processors(block, None, None, None, endpoint)
+                .unwrap();
+            assert_eq!(endpoint.next_offset, block.len());
+        }
+        let mut expected = [[0.0; 2]; 88];
+        for (index, sample) in samples.iter().enumerate() {
+            expected[index + 19] = sample.map(|value| value * 0.25);
+        }
+        assert_eq!(output, expected);
+        assert_eq!(endpoint.rejections, 0);
+    }
+    assert_eq!(scalar.largest_segment, 1);
+    assert_eq!(batched.largest_segment, 5);
 }
 
 #[test]
