@@ -289,7 +289,7 @@ fn append_track(
                 return Err(error);
             }
         }
-        RouteOwner::Session { clip, origin } => {
+        RouteOwner::Session { clip, origin, .. } => {
             let clip = crate::session_inventory::EffectiveSessionMidi::new(
                 previous.revision.session(),
                 previous.midi_admission.as_ref(),
@@ -310,10 +310,22 @@ fn append_track(
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(floor) = previous.historical_floor_for(index) {
                 clip.instrument_template()
-                    .query_after_onset_with_origin(origin, &clock, frame, end, spans, floor)
+                    .query_after_onset_with_origin_and_note_chase(
+                        origin,
+                        &clock,
+                        (frame, end),
+                        spans,
+                        floor,
+                        route.owner.note_chase(),
+                    )
             } else {
-                clip.instrument_template()
-                    .query_with_origin(origin, &clock, frame, end, spans)
+                clip.instrument_template().query_with_origin_and_note_chase(
+                    origin,
+                    &clock,
+                    (frame, end),
+                    spans,
+                    route.owner.note_chase(),
+                )
             }
             .map_err(SessionPlaybackError::Midi)?;
             for span in spans.spans() {

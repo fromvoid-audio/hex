@@ -255,11 +255,13 @@ impl SessionPlayback {
             route.current_first_frame = false;
             route.audio_release = None;
             changed |= route.pending.take().is_some();
-            if let RouteOwner::Session { clip, origin } = route.owner {
+            changed |= route.owner.note_chase() != crate::NoteChase::On;
+            if let RouteOwner::Session { clip, origin, .. } = route.owner {
                 changed |= origin != SessionMidiOrigin::launch(BeatTime::ZERO);
                 route.owner = RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(BeatTime::ZERO),
+                    note_chase: crate::NoteChase::On,
                 };
             }
             if let RouteOwner::SessionAudio { clip, launch_frame } = route.owner {
@@ -356,6 +358,14 @@ impl SessionPlayback {
         };
         let generation = self.route_state_generation;
         self.install_seek(frame, beat);
+        for route in &mut self.routes {
+            if let RouteOwner::Session {
+                note_chase: policy, ..
+            } = &mut route.owner
+            {
+                *policy = note_chase;
+            }
+        }
         if self.route_state_generation == generation {
             self.advance_route_state_generation();
         }
@@ -409,6 +419,7 @@ impl SessionPlayback {
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
             changed |= route.pending.is_some();
+            changed |= route.owner.note_chase() != crate::NoteChase::On;
             if let RouteOwner::Session { origin, .. } = route.owner {
                 changed |= origin != SessionMidiOrigin::launch(beat);
             }
@@ -433,6 +444,7 @@ impl SessionPlayback {
                 route.owner = RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(beat),
+                    note_chase: crate::NoteChase::On,
                 };
             }
             if let RouteOwner::SessionAudio { clip, .. } = route.owner {
@@ -522,7 +534,7 @@ impl SessionPlayback {
                     .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
                 Ok(active)
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                     self.revision.session(),
                     self.midi_admission.as_ref(),
@@ -541,7 +553,13 @@ impl SessionPlayback {
                 );
                 prepared
                     .instrument_template()
-                    .query_with_origin(origin, &timing, frame, end, &mut self.spans)
+                    .query_with_origin_and_note_chase(
+                        origin,
+                        &timing,
+                        (frame, end),
+                        &mut self.spans,
+                        owner.note_chase(),
+                    )
                     .map_err(SessionPlaybackError::Midi)?;
                 Ok(self
                     .spans
@@ -904,12 +922,19 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::UnknownTrack)?
             .owner;
         let next_owner = match (
-            self.owner_for_target(target, moment.target_beat, moment.performance_frame)?,
+            self.owner_for_target(
+                target,
+                moment.target_beat,
+                moment.performance_frame,
+                crate::NoteChase::On,
+            )?,
             origin_override,
         ) {
-            (RouteOwner::Session { clip, .. }, Some(origin)) => {
-                RouteOwner::Session { clip, origin }
-            }
+            (RouteOwner::Session { clip, .. }, Some(origin)) => RouteOwner::Session {
+                clip,
+                origin,
+                note_chase: crate::NoteChase::On,
+            },
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
@@ -1050,6 +1075,7 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             route.pending = Some(PendingRoute {
+                note_chase: crate::NoteChase::On,
                 frame: moment.target_frame,
                 beat: moment.target_beat,
                 target,
@@ -1219,7 +1245,7 @@ impl SessionPlayback {
                     return Err(error);
                 }
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 // A prior handoff may have copied active held voices into the
                 // shared release bank. Cut those copies in-place in scratch
                 // before querying the current template so they are neither
@@ -1257,18 +1283,24 @@ impl SessionPlayback {
                 let template = prepared.instrument_template();
                 if let Some(floor) = self.historical_floor_for(index) {
                     template
-                        .query_after_onset_with_origin(
+                        .query_after_onset_with_origin_and_note_chase(
                             origin,
                             &timing,
-                            performance_frame,
-                            end,
+                            (performance_frame, end),
                             &mut self.spans,
                             floor,
+                            owner.note_chase(),
                         )
                         .map_err(SessionPlaybackError::Midi)?;
                 } else {
                     template
-                        .query_with_origin(origin, &timing, performance_frame, end, &mut self.spans)
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            &timing,
+                            (performance_frame, end),
+                            &mut self.spans,
+                            owner.note_chase(),
+                        )
                         .map_err(SessionPlaybackError::Midi)?;
                 }
                 for span in self.spans.spans() {

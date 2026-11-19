@@ -2537,3 +2537,107 @@ mod note_chase {
         }
     }
 }
+
+#[test]
+fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_off() {
+    use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
+    let run = |oracle, choice| {
+        let (mut editor, identity) = fixture();
+        let track = editor.project().tracks()[0].id();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "session".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "window".into(),
+                source_length: BeatTime::ONE,
+            })
+            .unwrap();
+        let window = super::super::tests::session_note_chase::fixture(oracle).snapshot();
+        let hex_project::SessionCellContentSnapshot::Midi(window) =
+            &window.session.cells[0].content
+        else {
+            panic!("window");
+        };
+        let mut snapshot = editor.project().snapshot();
+        let hex_project::SessionCellContentSnapshot::Midi(clip) =
+            &mut snapshot.session.cells[0].content
+        else {
+            panic!("session clip");
+        };
+        clip.source = window.source.clone();
+        clip.playback_offset_raw = window.playback_offset_raw;
+        snapshot.next_id = snapshot.next_id.max(1_000_003);
+        let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+        let prepared = prepare(&editor, identity, true).unwrap();
+        let clip = prepared.session().midi_clips()[0].id;
+        let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+        playback
+            .try_apply_action(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let command = match choice {
+            crate::NoteChase::On => PlaybackCommand::PlayFrom(0),
+            crate::NoteChase::Off => PlaybackCommand::PlayFromWithNoteChase {
+                frame: 0,
+                note_chase: choice,
+            },
+        };
+        playback
+            .try_apply_action(PlaybackAction::Transport(command))
+            .unwrap();
+        let mut endpoint = NoteEndpoint::default();
+        let mut events = Vec::new();
+        let mut elapsed = 0;
+        let mut output = [[0.0; 2]; 3_256];
+        for frames in output.chunks_mut(17) {
+            endpoint.next_offset = 0;
+            endpoint.notes.clear();
+            playback
+                .render_with_foreign_processors(frames, None, None, None, &mut endpoint)
+                .unwrap();
+            events.extend(
+                endpoint
+                    .notes
+                    .iter()
+                    .map(|(offset, note)| (elapsed + offset, note.on, note.pitch, note.note_id)),
+            );
+            elapsed += frames.len();
+        }
+        events
+    };
+    let expected = run(true, crate::NoteChase::Off);
+    assert_eq!(
+        expected.iter().map(|e| (e.0, e.1, e.2)).collect::<Vec<_>>(),
+        vec![(0, true, 64), (375, false, 64), (3_000, true, 60)]
+    );
+    assert_eq!(
+        expected[0].3, expected[1].3,
+        "real boundary gate retains its paired release"
+    );
+    assert_eq!(
+        run(false, crate::NoteChase::Off),
+        expected,
+        "no clipped onset or orphan off, and later repeat stays eligible"
+    );
+    let on = run(false, crate::NoteChase::On);
+    assert!(
+        on.iter().any(|e| e.0 == 0 && e.1 && e.2 == 60),
+        "raw On admits the clipped intro"
+    );
+    assert!(
+        on.iter().any(|e| e.0 == 1_500 && !e.1 && e.2 == 60),
+        "raw On retains its authored remaining gate"
+    );
+}
