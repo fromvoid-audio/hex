@@ -1288,9 +1288,10 @@ fn edit_requires_resident_source(clip: &hex_project::Clip, edit: &AudioClipEdit)
         || edit.domain.pitch_cents != 0
         || edit.domain.warp_enabled
         || !edit.domain.source_gain.is_empty()
-        || materializes_musical_outer_fade(edit)
-        || (edit.domain.fade_clock == hex_project::AudioClipFadeClock::LegacyRoot
-            && !edit.domain.fade.is_neutral())
+        // Native raw slots have a direct fade route for ordinary clips and
+        // verified plain reversal. Other retained raw edits with a shaped
+        // fade need resident preparation. Pitched sources match separately.
+        || (!edit.domain.fade.is_neutral() && edit.plain_reversed_source(clip).is_none())
 }
 
 /// A root's processing origin only enters its render through tempo points
