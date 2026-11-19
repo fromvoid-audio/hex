@@ -93,7 +93,7 @@ fn trim_retained_outer(
     edit.processing_projection = None;
     edit.placement_start_offset = 0;
     edit.placement_end_offset = 0;
-    let mut result = trim_view(&source, edge, frame, &projection.tempo)?;
+    let mut result = trim_view_source(&source, edge, frame, &projection.tempo)?;
     let start = if edge == TrimEdge::Left {
         frame
     } else {
@@ -130,6 +130,17 @@ fn trim_retained_outer(
 }
 
 pub(crate) fn trim_view(
+    clip: &Clip,
+    edge: TrimEdge,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<Clip, Invalid> {
+    let mut result = trim_view_source(clip, edge, frame, tempo)?;
+    super::outer_fade::retain_crop_context(clip, &mut result, tempo)?;
+    Ok(result)
+}
+
+fn trim_view_source(
     clip: &Clip,
     edge: TrimEdge,
     frame: u64,
