@@ -33,7 +33,10 @@ impl DirectedFadeClock {
         occurrence: AudioViewOccurrence,
     ) -> Result<Range<u64>, Invalid> {
         let frame = |elapsed| -> Result<u64, Invalid> {
-            let age = (i128::from(elapsed) - self.consumed).clamp(0, self.length) as u64;
+            let age = i128::from(elapsed)
+                .checked_sub(self.consumed)
+                .ok_or(Invalid("directed fade clock overflow"))?
+                .clamp(0, self.length) as u64;
             Ok(projection
                 .frame_at_elapsed(age)?
                 .clamp(self.bounds.0, self.bounds.1))
@@ -47,9 +50,11 @@ impl DirectedFadeClock {
         occurrence: AudioViewOccurrence,
         frame: u64,
     ) -> Result<u64, Invalid> {
-        let elapsed =
-            u64::try_from(self.consumed + i128::from(projection.elapsed_at_frame(frame)?))
-                .map_err(|_| Invalid("directed fade clock overflow"))?;
+        let elapsed = self
+            .consumed
+            .checked_add(i128::from(projection.elapsed_at_frame(frame)?))
+            .and_then(|elapsed| u64::try_from(elapsed).ok())
+            .ok_or(Invalid("directed fade clock overflow"))?;
         let base = projection.base_frame_at_elapsed(elapsed)?;
         let sample = occurrence
             .root_start
