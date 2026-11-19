@@ -372,3 +372,417 @@ mod onset_provenance {
         }
     }
 }
+
+mod note_chase {
+    use super::*;
+    use crate::{MidiInstrumentRenderContext, NoteChase, PreparedTrackMix};
+
+    fn source_fixture() -> (PreparedMidiSourceTemplate, PreparedTempoMap, NoteId, NoteId) {
+        let (mut editor, track, clip, crossing) = fixture(true);
+        let Created::Note(boundary) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: b(3),
+                duration: BeatTime::from_ratio(1, 4).unwrap(),
+                pitch: 64,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("boundary note");
+        };
+        let timing =
+            PreparedTempoMap::prepare(editor.project().tempo_map().clone(), 8_000).unwrap();
+        let source = PreparedMidiSourceTemplate::prepare_source_window(
+            track,
+            clip,
+            editor.project().midi_clip(clip).unwrap().source(),
+            b(3),
+            &timing,
+        )
+        .unwrap();
+        (source, timing, crossing, boundary)
+    }
+
+    struct RejectClippedGate<'a> {
+        timing: &'a PreparedTempoMap,
+        sample_rate: u32,
+    }
+    impl MidiTiming for RejectClippedGate<'_> {
+        fn sample_rate(&self) -> u32 {
+            self.sample_rate
+        }
+        fn max_micro_bpm(&self) -> u64 {
+            u64::from(self.timing.max_micro_bpm())
+        }
+        fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, crate::PreparedTempoError> {
+            if beat == b(1) {
+                return Err(crate::PreparedTempoError::BeatToFrame(
+                    "clipped gate conversion",
+                ));
+            }
+            self.timing.beat_to_frame(beat)
+        }
+        fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, crate::PreparedTempoError> {
+            self.timing.frame_to_beat(frame)
+        }
+        fn beat_lower_bound_for_frame(
+            &self,
+            frame: u64,
+        ) -> Result<u128, crate::PreparedTempoError> {
+            self.timing.beat_lower_bound_for_frame(frame)
+        }
+    }
+
+    #[test]
+    fn skipped_occurrences_do_not_convert_but_query_validation_still_applies() {
+        let (source, timing, _, boundary) = source_fixture();
+        let instrument =
+            PreparedMidiInstrumentTemplate::prepare(&source, &hex_devices::SineTable::new())
+                .unwrap();
+        let gates = instrument.capture_gate_template().unwrap();
+        let origin = SessionMidiOrigin::launch(b(0));
+        let mut timing = RejectClippedGate {
+            timing: &timing,
+            sample_rate: 8_000,
+        };
+        let mut edges = MidiEdgeBuffer::default();
+        let mut spans = MidiSpanBuffer::default();
+        for choice in [NoteChase::On, NoteChase::Off] {
+            let expected = if choice == NoteChase::On {
+                Err(MidiTemplateError::TempoConversion)
+            } else {
+                Ok(())
+            };
+            assert_eq!(
+                source.query_with_origin_and_note_chase(
+                    origin,
+                    &timing,
+                    (4_000, 4_001),
+                    &mut edges,
+                    choice
+                ),
+                expected
+            );
+            assert_eq!(edges.events().count(), 0, "skipped gate has no orphan off");
+            assert_eq!(
+                instrument.query_with_origin_and_note_chase(
+                    origin,
+                    &timing,
+                    (0, 1),
+                    &mut spans,
+                    choice
+                ),
+                expected
+            );
+            assert_eq!(
+                spans.spans().map(|s| s.note).collect::<Vec<_>>(),
+                if choice == NoteChase::Off {
+                    vec![boundary]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(
+                gates.query_with_origin_and_note_chase(origin, &timing, (0, 1), &mut spans, choice),
+                expected
+            );
+            assert_eq!(
+                spans.spans().map(|s| s.note).collect::<Vec<_>>(),
+                if choice == NoteChase::Off {
+                    vec![boundary]
+                } else {
+                    vec![]
+                }
+            );
+        }
+        timing.sample_rate = 8_001;
+        for choice in [NoteChase::On, NoteChase::Off] {
+            assert_eq!(
+                source.query_with_origin_and_note_chase(
+                    origin,
+                    &timing,
+                    (0, 1),
+                    &mut edges,
+                    choice
+                ),
+                Err(MidiTemplateError::TempoRateMismatch)
+            );
+            assert_eq!(
+                instrument.query_with_origin_and_note_chase(
+                    origin,
+                    &timing,
+                    (0, 1),
+                    &mut spans,
+                    choice
+                ),
+                Err(MidiTemplateError::TempoRateMismatch)
+            );
+            assert_eq!(spans.spans().count(), 0);
+        }
+    }
+
+    #[test]
+    fn queries_skip_only_the_clipped_intro_and_its_paired_off_across_partitions() {
+        let (source, timing, crossing, boundary) = source_fixture();
+        let table = hex_devices::SineTable::new();
+        let instrument = PreparedMidiInstrumentTemplate::prepare(&source, &table).unwrap();
+        let gates = instrument.capture_gate_template().unwrap();
+        for choice in [NoteChase::On, NoteChase::Off] {
+            for width in [1, 17, 256] {
+                let mut edges = MidiEdgeBuffer::default();
+                let mut spans = MidiSpanBuffer::default();
+                let mut gate_spans = MidiSpanBuffer::default();
+                let mut events = Vec::new();
+                let mut saw_repeat = false;
+                for start in (0..8_256).step_by(width) {
+                    let end = (start + width as u64).min(8_256);
+                    let origin = SessionMidiOrigin::launch(b(0));
+                    source
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            &timing,
+                            (start, end),
+                            &mut edges,
+                            choice,
+                        )
+                        .unwrap();
+                    if start == 0 {
+                        assert_eq!(edges.onsets, if choice == NoteChase::On { 2 } else { 1 });
+                    }
+                    events.extend(
+                        edges
+                            .events()
+                            .map(|e| (e.frame, e.kind, e.note, e.iteration)),
+                    );
+                    instrument
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            &timing,
+                            (start, end),
+                            &mut spans,
+                            choice,
+                        )
+                        .unwrap();
+                    gates
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            &timing,
+                            (start, end),
+                            &mut gate_spans,
+                            choice,
+                        )
+                        .unwrap();
+                    let identity = |s: &crate::MidiRenderSpan| {
+                        (s.note, s.iteration, s.start_frame, s.gate_end_frame)
+                    };
+                    assert_eq!(
+                        spans.spans().map(identity).collect::<Vec<_>>(),
+                        gate_spans.spans().map(identity).collect::<Vec<_>>()
+                    );
+                    for span in spans.spans() {
+                        assert!(
+                            choice == NoteChase::On || span.note != crossing || span.iteration != 0
+                        );
+                        saw_repeat |= span.note == crossing && span.iteration == 1;
+                    }
+                }
+                let mut expected = vec![
+                    (0, MidiEventKind::NoteOn, boundary, 0),
+                    (1_000, MidiEventKind::NoteOff, boundary, 0),
+                    (8_000, MidiEventKind::NoteOn, crossing, 1),
+                ];
+                if choice == NoteChase::On {
+                    expected.insert(0, (0, MidiEventKind::NoteOn, crossing, 0));
+                    expected.insert(3, (4_000, MidiEventKind::NoteOff, crossing, 0));
+                }
+                assert_eq!(events, expected, "choice={choice:?}, width={width}");
+                assert!(saw_repeat);
+            }
+        }
+        let origin = SessionMidiOrigin::launch(b(0));
+        let mut raw = MidiEdgeBuffer::default();
+        let mut explicit = MidiEdgeBuffer::default();
+        source
+            .query_with_origin(origin, &timing, 0, 1, &mut raw)
+            .unwrap();
+        source
+            .query_with_origin_and_note_chase(origin, &timing, (0, 1), &mut explicit, NoteChase::On)
+            .unwrap();
+        let identity =
+            |e: &crate::midi_compile::CompiledMidiEvent| (e.frame, e.kind, e.note, e.iteration);
+        assert_eq!(
+            raw.events().map(identity).collect::<Vec<_>>(),
+            explicit.events().map(identity).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            source.max_query_onsets(),
+            2,
+            "density admission remains conservative"
+        );
+        for choice in [NoteChase::On, NoteChase::Off] {
+            assert_eq!(
+                source.query_with_origin_and_note_chase(
+                    origin,
+                    &timing,
+                    (0, 257),
+                    &mut explicit,
+                    choice
+                ),
+                Err(MidiTemplateError::QueryTooWide)
+            );
+            assert_eq!(explicit.events().count(), 0);
+            let mut spans = MidiSpanBuffer::default();
+            instrument
+                .query_with_origin(origin, &timing, 0, 1, &mut spans)
+                .unwrap();
+            assert_eq!(
+                instrument.query_with_origin_and_note_chase(
+                    origin,
+                    &timing,
+                    (0, 257),
+                    &mut spans,
+                    choice
+                ),
+                Err(MidiTemplateError::QueryTooWide)
+            );
+            assert_eq!(spans.spans().count(), 0);
+        }
+    }
+
+    #[test]
+    fn analytic_pcm_matches_removed_intro_oracle_and_keeps_cue_and_handoff_floors() {
+        let (mut source, timing, crossing, boundary) = source_fixture();
+        let table = hex_devices::SineTable::new();
+        let instrument = PreparedMidiInstrumentTemplate::prepare(&source, &table).unwrap();
+        // Remove this specific initial occurrence, retaining the crossing note's
+        // authored repeats. The oracle does not inspect the clipping metadata.
+        source.intro.retain(|e| e.note != crossing);
+        source.intro_spans.retain(|s| s.note != crossing);
+        let oracle = PreparedMidiInstrumentTemplate::prepare(&source, &table).unwrap();
+        let render = |template: &PreparedMidiInstrumentTemplate, choice, widths: &[usize]| {
+            let mut output = vec![[0.0; 2]; 8_256];
+            let mut spans = MidiSpanBuffer::default();
+            let mut start = 0;
+            let mut block = 0;
+            while start < output.len() {
+                let end = (start + widths[block % widths.len()]).min(output.len());
+                template
+                    .render_additive(
+                        MidiInstrumentRenderContext::new(b(0), &timing, &table)
+                            .with_note_chase(choice),
+                        PreparedTrackMix::identity(),
+                        start as u64,
+                        &mut output[start..end],
+                        &mut spans,
+                    )
+                    .unwrap();
+                start = end;
+                block += 1;
+            }
+            output
+        };
+        let expected = render(&oracle, NoteChase::On, &[256]);
+        assert!(
+            expected[..1_000].iter().flatten().any(|s| *s != 0.0),
+            "genuine boundary note remains audible"
+        );
+        assert!(
+            expected[8_000..].iter().flatten().any(|s| *s != 0.0),
+            "later repeat remains audible"
+        );
+        for widths in [&[1, 7, 193][..], &[256][..]] {
+            assert_eq!(render(&instrument, NoteChase::Off, widths), expected);
+        }
+        assert_ne!(render(&instrument, NoteChase::On, &[256]), expected);
+        let mut spans = MidiSpanBuffer::default();
+        for choice in [NoteChase::On, NoteChase::Off] {
+            let origin = SessionMidiOrigin::new(b(0), b(2));
+            instrument
+                .query_with_origin_and_note_chase(origin, &timing, (0, 1), &mut spans, choice)
+                .unwrap();
+            assert_eq!(
+                spans
+                    .spans()
+                    .map(|s| (s.note, s.iteration))
+                    .collect::<Vec<_>>(),
+                vec![(crossing, 1)],
+                "cue floor includes equality and excludes both old intro gates"
+            );
+            instrument
+                .query_after_onset_with_origin_and_note_chase(
+                    SessionMidiOrigin::launch(b(0)),
+                    &timing,
+                    (0, 1),
+                    &mut spans,
+                    b(1),
+                    choice,
+                )
+                .unwrap();
+            assert_eq!(
+                spans.spans().count(),
+                0,
+                "historical floor remains independent"
+            );
+        }
+        instrument
+            .query_with_origin(SessionMidiOrigin::launch(b(0)), &timing, 0, 1, &mut spans)
+            .unwrap();
+        assert_eq!(
+            spans.spans().map(|s| s.note).collect::<Vec<_>>(),
+            vec![crossing, boundary],
+            "raw queries retain default on"
+        );
+    }
+}
+
+#[test]
+#[ignore = "optimized timing evidence; run with --release and --ignored"]
+fn profile_default_source_window_queries() -> Result<(), &'static str> {
+    use std::{hint::black_box, time::Instant};
+    if cfg!(debug_assertions) {
+        return Err("use --release");
+    }
+    let (editor, track, clip, _) = fixture(true);
+    let timing = PreparedTempoMap::prepare(editor.project().tempo_map().clone(), 8_000).unwrap();
+    let source = PreparedMidiSourceTemplate::prepare_source_window(
+        track,
+        clip,
+        editor.project().midi_clip(clip).unwrap().source(),
+        b(3),
+        &timing,
+    )
+    .unwrap();
+    let instrument =
+        PreparedMidiInstrumentTemplate::prepare(&source, &hex_devices::SineTable::new()).unwrap();
+    let gates = instrument.capture_gate_template().unwrap();
+    let origin = SessionMidiOrigin::launch(b(0));
+    let mut edges = MidiEdgeBuffer::default();
+    let mut spans = MidiSpanBuffer::default();
+    for sample in 0..4 {
+        let start = Instant::now();
+        for iteration in 0..20_000 {
+            let frame = [0, 3_800, 7_800, 8_000][iteration % 4];
+            source
+                .query_with_origin(origin, black_box(&timing), frame, frame + 256, &mut edges)
+                .unwrap();
+            black_box(edges.events().count());
+            instrument
+                .query_with_origin(origin, black_box(&timing), frame, frame + 256, &mut spans)
+                .unwrap();
+            black_box(spans.spans().count());
+            gates
+                .query_with_origin(origin, black_box(&timing), frame, frame + 256, &mut spans)
+                .unwrap();
+            black_box(spans.spans().count());
+        }
+        if sample != 0 {
+            eprintln!(
+                "default source-window query sample={sample} rate=8000 tempo=120 block=256 queries-per-sample=60000 warmup-samples=1 elapsed={:?}; prepared scratch, intro and repeat; headless query timing only",
+                start.elapsed()
+            );
+        }
+    }
+    Ok(())
+}

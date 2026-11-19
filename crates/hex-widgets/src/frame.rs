@@ -219,7 +219,41 @@ pub fn device_frame_with_modulators(
     body: impl IntoElement,
     modulator_panel: Option<AnyElement>,
 ) -> Div {
-    let style = style.into();
+    device_frame_inner(
+        title,
+        style.into(),
+        leading_control,
+        header_actions,
+        Some(body.into_any_element()),
+        modulator_panel,
+    )
+}
+
+/// Compose a collapsed device using the same header and housing state as its expanded frame.
+pub fn device_frame_header_only(
+    title: impl IntoElement,
+    style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
+    header_actions: impl IntoElement,
+) -> Div {
+    device_frame_inner(
+        title,
+        style.into(),
+        leading_control,
+        header_actions,
+        None,
+        None,
+    )
+}
+
+fn device_frame_inner(
+    title: impl IntoElement,
+    style: DeviceFrameStyle,
+    leading_control: impl IntoElement,
+    header_actions: impl IntoElement,
+    body: Option<AnyElement>,
+    modulator_panel: Option<AnyElement>,
+) -> Div {
     let radius = DEVICE_CORNER_RADIUS;
     div()
         .flex()
@@ -232,7 +266,7 @@ pub fn device_frame_with_modulators(
         .rounded(px(radius))
         .overflow_hidden()
         .child(crate::device_housing::Housing {
-            body: body.into_any_element(),
+            body,
             modulator_panel,
             title: title.into_any_element(),
             leading: leading_control.into_any_element(),

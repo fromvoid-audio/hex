@@ -66,6 +66,7 @@ pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
 mod device_meter;
+mod fold;
 mod gate_panel;
 mod keyboard;
 mod navigation;
@@ -153,6 +154,7 @@ pub(super) struct DevicePanelState {
     generation: u64,
     pub(super) selected_device: Option<DeviceId>,
     selected_others: HashSet<DeviceId>,
+    collapsed: HashSet<DeviceId>,
     selection_anchor: Option<DeviceId>,
     /// View-only chain gap chosen for paste; exclusive with device selection.
     insertion: Option<InsertionPoint>,
@@ -707,6 +709,7 @@ pub(super) fn view(
             let _ = audio.control.audition_cancel();
         }
         view.device_panel.chain_window = Default::default();
+        view.device_panel.collapsed.clear();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
         view.device_panel.drag_selection = None;
@@ -729,6 +732,9 @@ pub(super) fn view(
             inventory.generation == view.project_generation && inventory.revision == state.revision
         });
     if !inventory_is_current {
+        view.device_panel
+            .collapsed
+            .retain(|device| state.project.device(*device).is_some());
         let devices = state
             .project
             .native_sources()
@@ -1484,6 +1490,7 @@ fn render_track(
                 return None;
             };
             (!is_source_effect(device.id())
+                && !view.device_panel.collapsed.contains(&device.id())
                 && eq_panel::is_spectrum_eq(device.state().type_id())
                 && chain_window::must_mount(view, device.id(), window, cx))
             .then(|| {
@@ -1815,6 +1822,9 @@ fn device_card_width(
     class: NativeDeviceClass,
     device: &hex_project::Device,
 ) -> f32 {
+    if view.device_panel.collapsed.contains(&device.id()) {
+        return fold::CARD_WIDTH;
+    }
     let type_id = device.state().type_id();
     let frame_width = match (class, type_id.as_str().ok()) {
         (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
@@ -2169,6 +2179,7 @@ fn device_drag_title(
 ) -> Stateful<Div> {
     let id = device.id();
     let generation = view.project_generation;
+    let owner = view.device_panel.owner;
     let payload = drag::NativeDeviceDrag {
         project_generation: view.project_generation,
         revision: view.state.as_ref().map_or(0, |state| state.revision),
@@ -2182,9 +2193,9 @@ fn device_drag_title(
     };
     let entity = cx.entity();
     let help = theme::text(if class == NativeDeviceClass::Effect {
-        format!("{title} · drag to reorder device · duplicate · d")
+        format!("{title} · double-click to collapse or expand · drag to reorder · duplicate · d")
     } else {
-        format!("{title} · drag to reorder device")
+        format!("{title} · double-click to collapse or expand · drag to reorder")
     });
     div()
         .id(("device-drag-title", id.value()))
@@ -2214,6 +2225,15 @@ fn device_drag_title(
                 }
             }),
         )
+        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+            if event.click_count() == 2
+                && event.modifiers() == gpui::Modifiers::default()
+                && view.project_generation == generation
+                && view.device_panel.owner == owner
+            {
+                fold::toggle_header(view, id, cx);
+            }
+        }))
         .on_drag(payload, move |payload, _, window, cx| {
             cx.set_active_drag_cursor_style(
                 if window.modifiers().alt {
@@ -2287,6 +2307,12 @@ fn device_selection_listener(
         if event.button != MouseButton::Left
             || view.project_generation != generation
             || view.device_panel.owner != owner
+        {
+            return;
+        }
+        if event.click_count == 2
+            && event.modifiers == gpui::Modifiers::default()
+            && fold::header_selection(view, device).is_some()
         {
             return;
         }
@@ -2528,6 +2554,15 @@ fn render_effect(
     let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
+        _ if view.device_panel.collapsed.contains(&device_id) => fold::frame(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Effect,
+            device_view.as_ref().ok(),
+            leading,
+            header_actions,
+        ),
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
             hex_widgets::device_frame_with_modulators(
@@ -3222,7 +3257,17 @@ fn render_instrument(
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if device.state().type_id().as_str() == Ok("hex.vst3") {
+    let rendered = if view.device_panel.collapsed.contains(&device_id) {
+        fold::frame(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::Instrument,
+            device_view.as_ref().ok(),
+            leading,
+            header_actions,
+        )
+    } else if device.state().type_id().as_str() == Ok("hex.vst3") {
         device_frame(
             device_drag_title(
                 view,
