@@ -513,6 +513,32 @@ pub(super) fn root_loop(
     tiled_window(clip, projection, edit.view_start, edit.view_end)
 }
 
+/// Source phase the Frame placement compiler can hand to the native slot.
+/// A crop within one window or a materialized placement uses a zero phase.
+pub(crate) fn prepared_frame_repeat_phase(
+    clip: &hex_project::Clip,
+    tempo: &hex_project::TempoMap,
+) -> Result<Option<std::num::NonZeroU64>, Invalid> {
+    let Some(edit) = clip.audio_edit().filter(|edit| {
+        matches!(edit.domain.clock, AudioDomainClock::Frames(_))
+            && edit.content_view.is_none()
+            && edit.placement.is_some_and(|placement| {
+                placement.mode == hex_project::AudioViewMode::Repeat && placement.cycle_phase != 0
+            })
+    }) else {
+        return Ok(None);
+    };
+    let projection = AudioViewProjection::new(clip, tempo)?;
+    if projection.occurrence_count() > MAX_VIEW_OCCURRENCES {
+        return Err(Invalid(
+            "audio placement exceeds bounded preparation occurrences",
+        ));
+    }
+    Ok(root_loop(clip, edit, &projection)?
+        .filter(|shape| clip.duration() > shape.period - shape.phase)
+        .and_then(|shape| std::num::NonZeroU64::new(shape.phase)))
+}
+
 /// Musical occurrences carry their own projected window. When every occurrence
 /// already resolved to one shared root, the window is read from the first two
 /// occurrences (a lone occurrence is a crop) and verified like a frame window.

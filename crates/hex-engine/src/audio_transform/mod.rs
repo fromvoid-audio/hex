@@ -47,6 +47,7 @@ use std::{
     },
 };
 pub use view::AudioPreviewRoot;
+pub(crate) use view::prepared_frame_repeat_phase;
 fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     Ok(if domain.warp_enabled {
         match domain
