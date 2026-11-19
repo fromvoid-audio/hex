@@ -4967,7 +4967,7 @@ fn browser_limiter_insertion_waits_for_consent_and_installs_on_the_same_output(
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, main: bool) {
-    use gpui::{Modifiers, MouseButton};
+    use gpui::{Modifiers, MouseButton, point, px};
     use hex_session::service::PluginEffectDestination;
 
     let _native = native_fixture();
@@ -5076,22 +5076,39 @@ fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, ma
         .debug_bounds("browser-device-effect-hex.limiter")
         .expect("the built-in Limiter search result")
         .center();
-    for count in [1, 2] {
-        visual.simulate_event(gpui::MouseDownEvent {
-            position: row,
-            button: MouseButton::Left,
-            click_count: count,
-            first_mouse: false,
-            modifiers: Modifiers::default(),
-        });
-        visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+    if main {
+        visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            row + point(px(12.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let target = visual
+            .debug_bounds("main-device-drop-end")
+            .expect("the Main device chain")
+            .center();
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    } else {
+        for count in [1, 2] {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: row,
+                button: MouseButton::Left,
+                click_count: count,
+                first_mouse: false,
+                modifiers: Modifiers::default(),
+            });
+            visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     while !cx.has_pending_prompt() {
         assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
         assert!(
             Instant::now() < deadline,
-            "browser Limiter did not prompt: {:?}",
+            "browser Limiter did not prompt for {owner:?} at frame limit {frame_limit}: {:?}",
             read(cx).error
         );
     }
