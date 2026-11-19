@@ -1519,12 +1519,16 @@ impl SessionPlayback {
                     .map(FreshHistory::RemovedTrack)
                 })
                 .or_else(|| {
-                    candidate
-                        .graph
-                        .has_one_more_node_than(&old.graph)
-                        .then(|| muted_isolated_latency_addition(self, previous))
-                        .flatten()
-                        .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
+                    let approved_cut = confirmed_insert && !force_restart;
+                    (candidate.graph.has_one_more_node_than(&old.graph)
+                        || old.graph.has_one_more_node_than(&candidate.graph))
+                    .then(|| isolated_single_latency_edit(self, previous, approved_cut))
+                    .flatten()
+                    .map(|(track, device)| FreshHistory::ChangedTrack {
+                        track,
+                        device,
+                        cut_predecessor_pcm: approved_cut,
+                    })
                 })
                 .or_else(|| {
                     candidate
@@ -6900,15 +6904,16 @@ fn fresh_added_audio_track(
     if next_retained.is_some() { None } else { added }
 }
 
-/// Exactly one already-muted resident audio track gains a native latency processor.
+/// Exactly one resident audio track gains or loses its only native latency processor.
 /// Unchanged native Arrangement instruments use the ordinary voice handoff.
-/// Graph preflight independently proves isolation, equal maximum latency and
-/// silent discarded rings before any runtime state is moved.
-fn muted_isolated_latency_addition(
+/// Graph preflight proves isolation and equal maximum latency. A continuous
+/// edit needs silent local rings; the approved held cut may retire donor PCM.
+fn isolated_single_latency_edit(
     candidate: &SessionPlayback,
     previous: &SessionPlayback,
+    approved_cut: bool,
 ) -> Option<(TrackId, u64)> {
-    if !previous.playing
+    if !(previous.playing || approved_cut)
         || candidate.revision.contains_streamed_sources()
         || previous.revision.contains_streamed_sources()
         || candidate.loop_region().is_some()
@@ -7025,16 +7030,14 @@ fn muted_isolated_latency_addition(
         {
             continue;
         }
-        let [device] = after.device_chain.as_ref() else {
-            return None;
+        let device = match (before.device_chain.as_ref(), after.device_chain.as_ref()) {
+            ([], [device]) | ([device], []) => device,
+            _ => return None,
         };
         if changed.is_some()
-            || !before.device_chain.is_empty()
             || before.instrument_id.is_some()
             || before.source_id.is_some()
             || before.midi_source_index.is_some()
-            || !before.mix.muted()
-            || !after.mix.muted()
             || device.bypassed
             || !device.automation.is_empty()
             || device.modulation.is_some()
