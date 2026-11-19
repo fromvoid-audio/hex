@@ -4,14 +4,183 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
+/// Intentional host facade for the provider-owned closed scalar contract.
+pub use hex_devices::sampler::control::SamplerParameter;
+
+pub fn sampler_parameter_value_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+) -> Result<f64, Invalid> {
+    hex_devices::sampler::control::sampler_parameter_value_on_control(parameter, state)
+        .map_err(sampler_control_error)
+}
+
+/// Values remain readable when inactive; this never converts a gate mode.
+pub fn sampler_parameter_active_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+) -> Result<bool, Invalid> {
+    hex_devices::sampler::control::sampler_parameter_active_on_control(parameter, state)
+        .map_err(sampler_control_error)
+}
+
+pub fn patch_sampler_parameter_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+    value: f64,
+) -> Result<NativeDeviceState, Invalid> {
+    hex_devices::sampler::control::patch_sampler_parameter_on_control(parameter, state, value)
+        .map_err(sampler_control_error)
+}
+
+fn sampler_control_error(error: hex_devices::sampler::control::ControlError) -> Invalid {
+    use hex_devices::sampler::control::ControlError;
+    Invalid(match error {
+        ControlError::State(error) => return sampler_state_error(error),
+        ControlError::InvalidValue(parameter) => match parameter {
+            SamplerParameter::AttackMs
+            | SamplerParameter::DecayMs
+            | SamplerParameter::ReleaseMs => {
+                "sampler envelope time must be between zero and 60000 ms"
+            }
+            SamplerParameter::SustainPercent => {
+                "sampler sustain must be between zero and 100 percent"
+            }
+            SamplerParameter::Gain => "sampler gain must be between zero and four",
+            SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
+            SamplerParameter::LoopEnabled => "sampler loop must be off or on",
+            SamplerParameter::LoopCrossfadeMs => {
+                "sampler loop crossfade must be between zero and 10000 ms"
+            }
+            SamplerParameter::StartFrame
+            | SamplerParameter::EndFrame
+            | SamplerParameter::LoopStartFrame
+            | SamplerParameter::LoopEndFrame => {
+                "sampler region endpoints must be bounded whole source frames"
+            }
+        },
+        ControlError::RequiresClassic => "loop controls require classic mode",
+        ControlError::InvalidRegion => {
+            "sampler region must be nonempty and preserve loop and slice bounds"
+        }
+        ControlError::InvalidSetting => "sampler setting is invalid",
+    })
+}
+
+/// Exact asset-free catalog state; all other sampler states require source validation.
+pub fn is_empty_sampler_state_on_control(state: &NativeDeviceState) -> bool {
+    hex_devices::sampler::state::is_empty_state(state)
+}
+
+/// Refuse unsupported modes before the host decodes any replacement media.
+pub fn validate_sampler_replacement_on_control(state: &NativeDeviceState) -> Result<(), Invalid> {
+    if is_empty_sampler_state_on_control(state) {
+        return Ok(());
+    }
+    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
+        .map_err(sampler_state_error)?;
+    if matches!(
+        authored.mode,
+        hex_devices::sampler::state::AuthoredMode::Classic { .. }
+    ) {
+        Ok(())
+    } else {
+        Err(Invalid(
+            "sample replacement currently requires classic mode",
+        ))
+    }
+}
+/// Preserve every non-source setting and host envelope; reset only source bounds
+/// and Classic loop points. The project transaction binds the new asset identity.
+pub fn sampler_replacement_template_on_control(
+    state: &NativeDeviceState,
+    frames: usize,
+) -> Result<(NativeDeviceState, hex_lattice_contract::DeviceAssetSlot), Invalid> {
+    validate_sampler_replacement_on_control(state)?;
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut authored = if is_empty_sampler_state_on_control(state) {
+        SamplerState::for_source_frames(frames).map_err(sampler_state_error)?
+    } else {
+        SamplerState::from_native(state).map_err(sampler_state_error)?
+    };
+    let whole = SamplerState::for_source_frames(frames)
+        .map_err(sampler_state_error)?
+        .region;
+    authored.region = whole;
+    authored.mode = AuthoredMode::Classic {
+        loop_enabled: false,
+        loop_region: whole,
+    };
+    Ok((
+        if is_empty_sampler_state_on_control(state) {
+            authored
+                .to_native()
+                .and_then(|s| s.with_host_metadata_from(state))
+                .map_err(sampler_state_error)?
+        } else {
+            authored.replace_in(state).map_err(sampler_state_error)?
+        },
+        hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
+            .map_err(sampler_state_error)?,
+    ))
+}
+
+/// Classify the closed set of panel configuration fields while preserving every
+/// other codec/host field and the exact source binding. Control thread only.
+pub fn is_sampler_configuration_history_on_control(
+    current: &NativeDeviceState,
+    target: &NativeDeviceState,
+) -> Result<bool, Invalid> {
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut allowed = SamplerState::from_native(current).map_err(sampler_state_error)?;
+    let next = SamplerState::from_native(target).map_err(sampler_state_error)?;
+    allowed.region = next.region;
+    allowed.gain = next.gain;
+    allowed.transpose_semitones = next.transpose_semitones;
+    let hex_devices::sampler::Envelope {
+        attack_seconds,
+        decay_seconds,
+        sustain,
+        release_seconds,
+    } = next.envelope;
+    allowed.envelope.attack_seconds = attack_seconds;
+    allowed.envelope.decay_seconds = decay_seconds;
+    allowed.envelope.sustain = sustain;
+    allowed.envelope.release_seconds = release_seconds;
+    if let (
+        AuthoredMode::Classic {
+            loop_enabled,
+            loop_region,
+        },
+        AuthoredMode::Classic {
+            loop_enabled: next_enabled,
+            loop_region: next_region,
+        },
+    ) = (&mut allowed.mode, &next.mode)
+    {
+        *loop_enabled = *next_enabled;
+        *loop_region = *next_region;
+    }
+    Ok(allowed.replace_in(current).map_err(sampler_state_error)? == *target)
+}
+
+fn sampler_state_error(error: hex_lattice_contract::DeviceContractError) -> Invalid {
+    Invalid(match error {
+        hex_lattice_contract::DeviceContractError::InvalidStateVersion => {
+            "sampler state version is unsupported"
+        }
+        _ => "sampler state is invalid",
+    })
+}
+
 /// Reserved host parameter. Device codecs never own this identifier.
 pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
     hex_lattice_contract::ParameterDescriptor {
         id: hex_lattice_contract::ParameterId::from_static(u32::MAX),
         label: "output gain",
         kind: hex_lattice_contract::ParameterKind::Float {
-            min: -60.0,
-            max: 24.0,
+            min: hex_lattice_contract::HostGain::MIN_DB,
+            max: hex_lattice_contract::HostGain::MAX_DB,
             unit: Some("db"),
         },
         default: ParameterValue::Float(0.0),
@@ -23,8 +192,8 @@ pub const DEVICE_INPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
         id: hex_lattice_contract::ParameterId::from_static(u32::MAX - 1),
         label: "input gain",
         kind: hex_lattice_contract::ParameterKind::Float {
-            min: -60.0,
-            max: 24.0,
+            min: hex_lattice_contract::HostGain::MIN_DB,
+            max: hex_lattice_contract::HostGain::MAX_DB,
             unit: Some("db"),
         },
         default: ParameterValue::Float(0.0),
@@ -179,47 +348,24 @@ pub fn native_effect_frequency_response(
     sample_rate: u32,
     frequencies_hz: &[f32],
 ) -> Result<Option<Vec<[f32; 2]>>, Invalid> {
-    if frequencies_hz.is_empty()
-        || frequencies_hz.len() > 256
-        || frequencies_hz.iter().any(|frequency| {
-            !frequency.is_finite() || *frequency <= 0.0 || *frequency >= sample_rate as f32 * 0.5
-        })
-        || frequencies_hz.windows(2).any(|pair| pair[0] >= pair[1])
-    {
-        return Err(Invalid("invalid native response frequency range"));
-    }
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
-    let Some(processor) = registry
-        .prepare_processor(
-            state,
-            &hex_lattice::DevicePreparationContext {
-                sample_rate,
-                tuning: &hex_lattice::TuningTable::default(),
-                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-            },
-        )
-        .map_err(|_| Invalid("native device response is unavailable"))?
-    else {
-        return Ok(None);
-    };
-    let mut response = Vec::new();
-    response
-        .try_reserve_exact(frequencies_hz.len())
-        .map_err(|_| Invalid("native device response allocation failed"))?;
-    for frequency in frequencies_hz {
-        let Some(magnitude) = processor.frequency_response_at_hz(*frequency) else {
-            return Ok(None);
-        };
-        if magnitude
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err(Invalid("native device response is invalid"));
-        }
-        response.push(magnitude);
-    }
-    Ok(Some(response))
+    hex_devices::native_effect_frequency_response(state, sample_rate, frequencies_hz)
+        .map_err(|error| Invalid(error.message()))
+}
+
+/// Authored Vector carrier-filter response from the provider's prepared law.
+/// Excludes oscillator/decimator transfer, live modulation and smoothing.
+/// Read-only control-side preparation; never call from an audio callback.
+pub fn native_operator_filter_frequency_response(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    frequencies_hz: &[f32],
+) -> Result<Vec<f32>, Invalid> {
+    hex_devices::operator_state::operator_filter_frequency_response(
+        state,
+        sample_rate,
+        frequencies_hz,
+    )
+    .map_err(|error| Invalid(error.message()))
 }
 
 /// Look up descriptors only in the explicitly selected class registry.
@@ -323,9 +469,31 @@ mod tests {
     use hex_lattice_contract::ParameterKind;
 
     #[test]
+    fn operator_filter_response_facade_uses_validated_instrument_state() {
+        let definition = &hex_devices::operator_state::OPERATOR_METADATA;
+        let state = definition.default_state().unwrap();
+        assert_eq!(
+            native_operator_filter_frequency_response(&state, 48_000, &[100.0, 1000.0]).unwrap(),
+            [1.0; 2]
+        );
+        let state = definition
+            .patch_parameter(
+                &state,
+                hex_lattice_contract::ParameterId::from_static(20_001),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let response =
+            native_operator_filter_frequency_response(&state, 48_000, &[100.0, 1000.0, 10_000.0])
+                .unwrap();
+        assert!(response[0] > response[1] && response[1] > response[2]);
+        assert!(native_operator_filter_frequency_response(&state, 48_000, &[0.0]).is_err());
+    }
+
+    #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 6);
+        assert_eq!(catalog.len(), 11);
         let utility = catalog
             .iter()
             .find(|entry| entry.name == "utility")
@@ -361,6 +529,21 @@ mod tests {
             .expect("registered Gate appears in the generic effect catalog");
         let state = crate::default_native_device_state(gate.type_id).unwrap();
         assert_eq!(native_device_view(&state).unwrap().name, "gate");
+        let reverb = catalog
+            .iter()
+            .find(|entry| entry.name == "reverb")
+            .expect("registered reverb in browser catalog");
+        assert_eq!(reverb.parameters.len(), 33);
+        let state = crate::default_native_device_state(reverb.type_id).unwrap();
+        assert_eq!(native_device_view(&state).unwrap().name, "reverb");
+        let overdrive = catalog
+            .iter()
+            .find(|entry| entry.name == "overdrive")
+            .expect("registered overdrive");
+        let state = crate::default_native_device_state(overdrive.type_id).unwrap();
+        let view = native_device_view(&state).unwrap();
+        assert_eq!(view.name, "overdrive");
+        assert_eq!(view.parameters.len(), 6);
         let auto_pan = catalog
             .iter()
             .find(|entry| entry.name == "auto pan")
@@ -455,7 +638,12 @@ mod tests {
                 .expect("eq8 response");
         assert!(response[1][0] > 1.9);
         assert!((response[1][1] - 1.0).abs() < 1e-6);
-        assert!(native_effect_frequency_response(&changed, 48_000, &[0.0]).is_err());
+        assert_eq!(
+            native_effect_frequency_response(&changed, 48_000, &[0.0])
+                .unwrap_err()
+                .0,
+            "invalid native response frequency range"
+        );
     }
 
     #[test]
@@ -476,14 +664,20 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 6);
+        assert_eq!(effects.len(), 11);
+        assert!(effects.iter().any(|entry| entry.name == "rattle"));
         assert!(effects.iter().any(|entry| entry.name == "utility"));
         assert!(effects.iter().any(|entry| entry.name == "eq"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));
         assert!(effects.iter().any(|entry| entry.name == "auto pan"));
-        assert_eq!(instruments.len(), 3);
+        assert!(effects.iter().any(|entry| entry.name == "reverb"));
+        assert!(effects.iter().any(|entry| entry.name == "overdrive"));
+        assert!(effects.iter().any(|entry| entry.name == "delay"));
+        assert!(effects.iter().any(|entry| entry.name == "limiter"));
+        assert_eq!(instruments.len(), 4);
+        assert!(instruments.iter().any(|entry| entry.name == "sampler"));
         let sine = instruments
             .iter()
             .find(|entry| entry.name == "sine")
@@ -556,7 +750,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 424);
+        assert_eq!(operator_view.parameters.len(), 432);
         let enables: Vec<_> = operator_view
             .parameters
             .iter()

@@ -1,5 +1,5 @@
 //! Shared presentation codecs for native-device numeric controls.
-use hex_widgets::NumericSpec;
+use hex_widgets::{NumericScale, NumericSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NumericDisplayCodec {
@@ -8,6 +8,7 @@ pub(super) enum NumericDisplayCodec {
     Pan,
     MidSide,
     Hertz,
+    HertzOffset,
     Ratio,
     AmplitudeDb,
     Seconds,
@@ -16,14 +17,38 @@ pub(super) enum NumericDisplayCodec {
 
 impl NumericDisplayCodec {
     pub(super) fn apply(self, spec: NumericSpec) -> NumericSpec {
-        spec.with_codec(
+        // Keep keyboard increments in the same unit the codec actually shows.
+        // This is a view adapter; NumericSpec still validates/clamps the result.
+        let spec = match self {
+            Self::Percent | Self::Balance | Self::MidSide => {
+                spec.with_keyboard_stepper(|value, delta| Some(value + delta / 100.0))
+            }
+            Self::HertzOffset => spec.with_keyboard_stepper(|value, delta| Some(value + delta)),
+            Self::Seconds => spec.with_keyboard_stepper(|value, delta| {
+                Some(value + delta / if value < 1.0 { 1000.0 } else { 1.0 })
+            }),
+            Self::AmplitudeDb if spec.scale() != NumericScale::LinearAmplitudeDecibels => {
+                let silence = spec.clone();
+                spec.with_keyboard_stepper(move |value, delta| {
+                    if value > 0.0 {
+                        Some(value * 10.0_f64.powf(delta / 20.0))
+                    } else if delta > 0.0 {
+                        silence.adjust(value, delta / 100.0).ok()
+                    } else {
+                        Some(value)
+                    }
+                })
+            }
+            _ => spec,
+        };
+        spec.with_contextual_codec(
             move |value| match self {
                 Self::Percent => format!("{}%", format_number(value * 100.0, 2)),
                 Self::Balance => format_side(value, "l", "r"),
                 Self::Pan => format_side(value / 100.0, "l", "r"),
                 Self::MidSide if value == 0.0 => "0".to_owned(),
                 Self::MidSide => format_side(value, "m", "s"),
-                Self::Hertz => format!("{} hz", format_number(value, 2)),
+                Self::Hertz | Self::HertzOffset => format!("{} hz", format_number(value, 2)),
                 Self::Number => format_number(value, 2),
                 Self::AmplitudeDb if value == 0.0 => "-inf db".to_owned(),
                 Self::AmplitudeDb => format!("{:.1} db", 20.0 * value.log10()),
@@ -31,7 +56,7 @@ impl NumericDisplayCodec {
                 Self::Seconds => format!("{} s", format_number(value, 2)),
                 Self::Ratio => format!("{}:1", format_number(value, 2)),
             },
-            move |text| match self {
+            move |text, current| match self {
                 Self::Number => text
                     .trim()
                     .strip_suffix('x')
@@ -58,8 +83,14 @@ impl NumericDisplayCodec {
                     let text = text.trim();
                     let (number, factor) = if let Some(ms) = text.strip_suffix("ms") {
                         (ms, 0.001)
+                    } else if let Some(seconds) = text.strip_suffix('s') {
+                        (seconds, 1.0)
+                    } else if current.is_some_and(|value| value < 1.0) {
+                        // A bare number follows the readout: "250 ms" shows
+                        // milliseconds, so typing 300 means 300 ms.
+                        (text, 0.001)
                     } else {
-                        (text.strip_suffix('s').unwrap_or(text), 1.0)
+                        (text, 1.0)
                     };
                     number
                         .trim()
@@ -100,13 +131,15 @@ impl NumericDisplayCodec {
                     .trim()
                     .parse::<f64>()
                     .ok(),
-                Self::Hertz => text
-                    .trim()
-                    .strip_suffix("hz")
-                    .unwrap_or(text.trim())
-                    .trim()
-                    .parse::<f64>()
-                    .ok(),
+                Self::Hertz | Self::HertzOffset => {
+                    let text = text.trim().to_ascii_lowercase();
+                    let number = text.strip_suffix("hz").unwrap_or(&text).trim();
+                    let (number, factor) = match number.strip_suffix('k') {
+                        Some(number) => (number.trim(), 1_000.0),
+                        None => (number, 1.0),
+                    };
+                    number.parse::<f64>().ok().map(|value| value * factor)
+                }
             },
         )
     }
@@ -157,13 +190,53 @@ fn parse_side(text: &str, negative: &str, positive: &str) -> Option<f64> {
                 .map(|value| sign * value / 100.0);
         }
     }
-    text.parse::<f64>().ok()
+    text.parse::<f64>().ok().map(|value| value / 100.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::NumericDisplayCodec;
     use hex_widgets::{NumericScale, NumericSpec};
+
+    #[test]
+    fn keyboard_steps_follow_actual_percentage_time_and_decibel_readout_units() {
+        let raw = NumericSpec::new(0.0, 4.0, 1.0, NumericScale::Linear, 2, None::<&str>).unwrap();
+        for codec in [
+            NumericDisplayCodec::Percent,
+            NumericDisplayCodec::Balance,
+            NumericDisplayCodec::MidSide,
+        ] {
+            let spec = codec.apply(raw.clone());
+            assert_eq!(spec.step(0.5, 1.0, false), Ok(0.51));
+            assert_eq!(spec.step(0.5, -1.0, true), Ok(0.499));
+        }
+        let seconds = NumericDisplayCodec::Seconds.apply(raw.clone());
+        assert_eq!(
+            seconds
+                .format(seconds.step(0.08, 1.0, false).unwrap())
+                .unwrap(),
+            "81 ms"
+        );
+        assert_eq!(
+            seconds
+                .format(seconds.step(0.08, -1.0, true).unwrap())
+                .unwrap(),
+            "79.9 ms"
+        );
+        assert_eq!(seconds.step(2.0, 1.0, false), Ok(3.0));
+        assert_eq!(seconds.step(2.0, -1.0, true), Ok(1.9));
+        let db = NumericDisplayCodec::AmplitudeDb.apply(raw);
+        assert_eq!(
+            db.format(db.step(1.0, 1.0, false).unwrap()).unwrap(),
+            "1.0 db"
+        );
+        assert_eq!(
+            db.format(db.step(1.0, -1.0, true).unwrap()).unwrap(),
+            "-0.1 db"
+        );
+        assert_eq!(db.step(0.0, -1.0, true), Ok(0.0));
+        assert!(db.step(0.0, 1.0, true).unwrap() > 0.0);
+    }
 
     #[test]
     fn pan_points_show_center_and_accept_typed_sides_without_rescaling_bare_values() {
@@ -213,6 +286,11 @@ mod tests {
         assert_eq!(time.parse("80 ms").unwrap(), 0.08);
         assert_eq!(time.parse("2 s").unwrap(), 2.0);
         assert!(time.parse("121 s").is_err());
+        // A bare number follows the unit the readout currently shows.
+        assert_eq!(time.parse_with_current("300", Some(0.25)).unwrap(), 0.3);
+        assert_eq!(time.parse_with_current("3", Some(2.0)).unwrap(), 3.0);
+        assert_eq!(time.parse_with_current("2 s", Some(0.25)).unwrap(), 2.0);
+        assert!(time.parse_with_current("abc", Some(0.25)).is_err());
     }
 
     #[test]
@@ -273,6 +351,14 @@ mod tests {
         assert_eq!(mid_side.format(0.0).expect("neutral"), "0");
         assert_eq!(mid_side.format(1.0).expect("side endpoint"), "100 s");
         assert_eq!(mid_side.parse("100 m").expect("typed mid"), -1.0);
+        assert_eq!(mid_side.parse("20").unwrap(), 0.2);
+        assert_eq!(mid_side.parse("-20").unwrap(), -0.2);
+        assert!(mid_side.parse("101").is_err());
+        let balance = NumericDisplayCodec::Balance.apply(
+            NumericSpec::new(-1.0, 1.0, 0.0, NumericScale::Bipolar, 2, None::<&str>).unwrap(),
+        );
+        assert_eq!(balance.parse("20").unwrap(), 0.2);
+        assert_eq!(balance.parse("-20").unwrap(), -0.2);
 
         let hertz = NumericDisplayCodec::Hertz.apply(
             NumericSpec::new(
@@ -288,5 +374,19 @@ mod tests {
         assert_eq!(hertz.format(50.0).expect("low cutoff"), "50 hz");
         assert_eq!(hertz.parse("500 hz").expect("high cutoff"), 500.0);
         assert!(hertz.parse("NaN hz").is_err());
+        let wide_hertz = NumericDisplayCodec::Hertz.apply(
+            NumericSpec::new(
+                20.0,
+                20_000.0,
+                1_000.0,
+                NumericScale::Linear,
+                2,
+                None::<&str>,
+            )
+            .unwrap(),
+        );
+        assert_eq!(wide_hertz.parse("1k").unwrap(), 1_000.0);
+        assert_eq!(wide_hertz.parse("1 khz").unwrap(), 1_000.0);
+        assert!(wide_hertz.parse("nan khz").is_err());
     }
 }

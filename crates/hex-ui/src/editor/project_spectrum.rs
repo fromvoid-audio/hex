@@ -2,12 +2,12 @@
 //! audio owns real capture, freshness, worker storage and retirement.
 use super::EditorView;
 use crate::theme;
-use gpui::{
-    Context, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Window, div, prelude::*, px, rgb,
-};
+use gpui::{Context, IntoElement, Pixels, Window, div, prelude::*, px};
 use hex_audio::spectrum_worker::PublishedProjectSpectrum;
-use hex_widgets::{SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot};
+use hex_widgets::{
+    SpectrumPlotLayer, SpectrumPlotLayers, SplitterAxis, SplitterEvent, SplitterGesture,
+    SplitterHandleConfig, SplitterInput, layered_spectrum_plot,
+};
 
 pub(super) struct ProjectSpectrumState {
     pub(super) expanded: bool,
@@ -50,14 +50,20 @@ struct PlotCache {
     layers: SpectrumPlotLayers,
 }
 struct Resize {
-    y: f32,
+    gesture: SplitterGesture,
+    preferred: f32,
     original: f32,
     generation: u64,
 }
-fn bounded_height(requested: f32, viewport: f32) -> f32 {
+fn bounded_height(requested: f32, viewport: gpui::Size<Pixels>) -> f32 {
     // Supported minimum editor is540px. Reserve toolbar/status, detail/mixer/
-    // routing rows and usable workspace; the graph itself retains46px or more.
-    let max = (viewport - 420.0).clamp(72.0, 300.0);
+    // routing rows and usable workspace; the graph itself retains72px or more.
+    let extra_toolbar =
+        super::header::toolbar_height(f32::from(viewport.width)) - super::header::TOOLBAR_HEIGHT;
+    let panel_chrome =
+        2.0 * (2.0 * hex_widgets::PANEL_FRAME_INSET + super::workspace_view::PANEL_GUTTER);
+    let max =
+        (f32::from(viewport.height) - 394.0 - panel_chrome - extra_toolbar).clamp(72.0, 300.0);
     if requested.is_finite() {
         requested.clamp(72.0, max)
     } else {
@@ -65,20 +71,28 @@ fn bounded_height(requested: f32, viewport: f32) -> f32 {
     }
 }
 impl EditorView {
-    fn project_spectrum_chrome(&self) -> f32 {
+    fn project_spectrum_chrome(&self, window: &Window) -> f32 {
         let returns = self
             .state
             .as_ref()
             .map_or(0, |s| s.project.return_tracks().len());
-        // Title22, transport26, status22, overview24, arrangement header42,
-        // main track44, mixer26 and detail tabs22. Routing owns its own height.
-        228.0 + super::return_tracks::section_height(returns)
+        // Responsive transport, status22, arrangement header42,
+        // main track44 and mixer26. Routing owns its own height.
+        134.0
+            + super::header::toolbar_height(f32::from(window.viewport_size().width))
+            + self.workspace_panel_chrome()
+            + if self.clip_view_open && !self.device_panel_active {
+                4.0
+            } else {
+                0.0
+            }
+            + super::return_tracks::section_height(returns)
     }
     fn project_spectrum_compact(&self, window: &Window) -> bool {
         self.project_spectrum.expanded
             && self.project_spectrum.detail_height.is_some_and(|detail| {
                 f32::from(window.viewport_size().height)
-                    - self.project_spectrum_chrome()
+                    - self.project_spectrum_chrome(window)
                     - detail
                     - 60.0
                     < 72.0
@@ -86,23 +100,25 @@ impl EditorView {
     }
     fn project_spectrum_height(&self, window: &Window) -> f32 {
         if !self.project_spectrum.expanded || self.project_spectrum_compact(window) {
-            return 22.0;
+            return 22.0 + 2.0 * hex_widgets::PANEL_FRAME_INSET;
         }
         let viewport = f32::from(window.viewport_size().height);
-        let desired = bounded_height(self.project_spectrum.height, viewport);
+        let desired = bounded_height(self.project_spectrum.height, window.viewport_size());
         // Keep complete populated details whenever a useful graph fits. At the
         // minimum window, the detail viewport scrolls instead of crushing tracks.
         self.project_spectrum
             .detail_height
             .map_or(desired, |detail| {
-                desired.min((viewport - self.project_spectrum_chrome() - detail - 60.0).max(72.0))
+                desired.min(
+                    (viewport - self.project_spectrum_chrome(window) - detail - 60.0).max(72.0),
+                )
             })
     }
     /// Empty space yields to the timeline; real controls remain scrollable.
     pub(super) fn project_spectrum_detail_height(&self, window: &Window, preferred: f32) -> f32 {
         let viewport = f32::from(window.viewport_size().height);
         let workspace = if self.project_spectrum.detail_height.is_some()
-            && self.project_spectrum_height(window) == 22.0
+            && (!self.project_spectrum.expanded || self.project_spectrum_compact(window))
         {
             44.0
         } else {
@@ -110,7 +126,7 @@ impl EditorView {
         };
         preferred.min(
             (viewport
-                - self.project_spectrum_chrome()
+                - self.project_spectrum_chrome(window)
                 - self.project_spectrum_height(window)
                 - workspace)
                 .max(48.0),
@@ -132,7 +148,9 @@ impl EditorView {
             self.audio_admission
                 .published_audio_revision(generation, state.revision)
         });
-        let expanded = self.project_spectrum.expanded && !self.opening_project;
+        let expanded = self.project_spectrum.expanded
+            && !self.opening_project
+            && !self.sample_recorder.visible;
         let mut result = None;
         let mut output_identity = None;
         if let Some(audio) = self.audio.as_mut() {
@@ -196,7 +214,7 @@ impl EditorView {
     }
     pub(super) fn cancel_project_spectrum_resize(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(resize) = self.project_spectrum.resize.take() {
-            self.project_spectrum.height = resize.original;
+            self.project_spectrum.height = resize.preferred;
             cx.notify();
             true
         } else {
@@ -205,71 +223,73 @@ impl EditorView {
     }
     fn resize_project_spectrum(
         &mut self,
-        position: Point<Pixels>,
+        delta: f32,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(resize) = self.project_spectrum.resize.as_ref() else {
             return false;
         };
-        if resize.generation != self.project_generation || !self.focus.is_focused(window) {
+        if resize.generation != self.project_generation
+            || !resize.gesture.matches_window(window)
+            || !self.focus.is_focused(window)
+        {
             return self.cancel_project_spectrum_resize(cx);
         }
-        self.project_spectrum.height = bounded_height(
-            resize.original + f32::from(position.y) - resize.y,
-            f32::from(window.viewport_size().height),
-        );
+        self.project_spectrum.height =
+            bounded_height(resize.original + delta, window.viewport_size());
         cx.notify();
         true
+    }
+    pub(super) fn project_spectrum_splitter_input(
+        &self,
+        cx: &Context<Self>,
+    ) -> SplitterInput<Self> {
+        SplitterInput::new(
+            cx.entity(),
+            |view| view.project_spectrum.resize.as_ref().map(|r| r.gesture),
+            Self::project_spectrum_splitter_event,
+        )
+    }
+    pub(super) fn project_spectrum_splitter_event(
+        &mut self,
+        event: SplitterEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match event {
+            SplitterEvent::Begin(gesture) => {
+                self.cancel_clip_detail_resize(cx);
+                window.focus(&self.focus);
+                self.project_spectrum.resize = Some(Resize {
+                    gesture,
+                    // Restore the preference even when responsive layout clamps paint.
+                    preferred: self.project_spectrum.height,
+                    original: bounded_height(self.project_spectrum.height, window.viewport_size()),
+                    generation: self.project_generation,
+                });
+                cx.notify();
+                true
+            }
+            SplitterEvent::Change(delta) | SplitterEvent::Commit(delta) => {
+                if self.project_spectrum.resize.is_none() {
+                    return false;
+                }
+                self.resize_project_spectrum(delta, window, cx);
+                if matches!(event, SplitterEvent::Commit(_)) {
+                    self.project_spectrum.resize = None;
+                    cx.notify();
+                }
+                true
+            }
+            SplitterEvent::Cancel(_) => self.cancel_project_spectrum_resize(cx),
+        }
     }
     pub(super) fn project_spectrum_pointer_events(
         &self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let entity = cx.entity();
-        gpui::canvas(
-            |_, _, _| (),
-            move |_, _, window, _| {
-                let moved = entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if !phase.capture() {
-                        return;
-                    }
-                    let handled = moved.update(cx, |view, cx| {
-                        if event.pressed_button != Some(MouseButton::Left) {
-                            view.cancel_project_spectrum_resize(cx)
-                        } else {
-                            view.resize_project_spectrum(event.position, window, cx)
-                        }
-                    });
-                    if handled {
-                        cx.stop_propagation();
-                        window.refresh();
-                    }
-                });
-                let released = entity.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.capture() || event.button != MouseButton::Left {
-                        return;
-                    }
-                    let handled = released.update(cx, |view, cx| {
-                        if view.project_spectrum.resize.is_none() {
-                            return false;
-                        }
-                        view.resize_project_spectrum(event.position, window, cx);
-                        view.project_spectrum.resize = None;
-                        cx.notify();
-                        true
-                    });
-                    if handled {
-                        cx.stop_propagation();
-                        window.refresh();
-                    }
-                });
-            },
-        )
-        .absolute()
-        .inset_0()
+        self.project_spectrum_splitter_input(cx).pointer_layer()
     }
     fn project_spectrum_layers(&mut self, now: std::time::Instant) -> SpectrumPlotLayers {
         if self.project_spectrum.output_identity
@@ -338,33 +358,25 @@ impl EditorView {
             cache.theme = palette;
             return cache.layers.clone();
         }
-        let points = |frame: &hex_audio::spectrum::SpectrumFrame| {
+        let curves = |frame: &hex_audio::spectrum::SpectrumFrame| {
             let upper = 20_000.0_f32.min(frame.sample_rate_hz as f32 / 2.0);
             let span = (upper / 20.0).ln();
-            frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .filter_map(|(index, db)| {
-                    let (low, high) =
-                        hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)?;
-                    Some([
-                        (((low * high).sqrt() / 20.0).ln() / span).clamp(0.0, 1.0),
-                        super::device_panel::spectrum_display::level(*db),
-                    ])
-                })
-                .collect()
+            super::device_panel::spectrum_display::curves(frame, |hz| (hz / 20.0).ln() / span)
         };
         let mut layers = Vec::with_capacity(result.selection.layer_count());
         for (index, color) in colors[..ids.len()].iter().enumerate() {
             layers.push(SpectrumPlotLayer {
-                points: points(&result.frames()[index + 1]),
+                points: curves(&result.frames()[index + 1]).level,
+                peak: None,
                 color: *color,
             });
         }
-        // Real master stays contrasting and above every independent track layer.
+        // Real master stays contrasting and above every independent track
+        // layer, and alone carries a held-peak line to keep dense views legible.
+        let master = curves(&result.frames()[0]);
         layers.push(SpectrumPlotLayer {
-            points: points(&result.frames()[0]),
+            points: master.level,
+            peak: Some(master.peak),
             color: theme::device_analyzer_style().output,
         });
         let layers = SpectrumPlotLayers::new(layers).unwrap_or_default();
@@ -383,31 +395,27 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         if self.project_spectrum.resize.as_ref().is_some_and(|r| {
-            r.generation != self.project_generation || !self.focus.is_focused(window)
+            r.generation != self.project_generation
+                || !r.gesture.matches_window(window)
+                || !self.focus.is_focused(window)
         }) {
             self.cancel_project_spectrum_resize(cx);
         }
         let expanded = self.project_spectrum.expanded;
         let height = self.project_spectrum_height(window);
+        if self.sample_recorder.visible {
+            return self.sample_recorder_panel(height, cx);
+        }
         let style = theme::device_style(theme::DeviceStyleRole::Display);
-        let available = self
-            .audio
-            .as_ref()
-            .is_some_and(|audio| audio.control.project_spectrum_available());
-        let summary = if available {
-            format!("master · {} tracks", self.selected_track_ids().len())
-        } else {
-            "unavailable".into()
-        };
         let compact = self.project_spectrum_compact(window);
         let mut header = div()
+            .debug_selector(|| "project-spectrum-controls".into())
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(2.0))
             .px_1()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(
                 div()
                     .id("project-spectrum-toggle")
@@ -421,6 +429,7 @@ impl EditorView {
                     .child(theme::text(if expanded { "−" } else { "+" }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: if expanded {
                                 "collapse spectrum".into()
                             } else {
@@ -431,12 +440,7 @@ impl EditorView {
                     })
                     .on_click(cx.listener(|view, _, _, cx| view.toggle_project_spectrum(cx))),
             )
-            .child(theme::text("spectrum"))
-            .child(
-                div()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(summary)),
-            );
+            .child(self.sample_recorder_mode_button(cx));
         if compact {
             let plot = layered_spectrum_plot(
                 self.project_spectrum_layers(std::time::Instant::now()),
@@ -450,20 +454,19 @@ impl EditorView {
             );
         }
         let mut panel = div()
-            .id("project-spectrum")
-            .debug_selector(|| "project-spectrum".into())
-            .h(px(height))
-            .flex_shrink_0()
+            .relative()
+            .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .text_xs()
-            .border_b_1()
-            .border_color(rgb(style.border))
-            .child(header);
+            .text_xs();
         if expanded && !compact {
             let layers = self.project_spectrum_layers(std::time::Instant::now());
             let plot = layered_spectrum_plot(layers, style);
+            // Analyzer controls float over the quiet upper-right plot area;
+            // they do not reserve a permanent title row above the data.
+            let header = header.absolute().top_0().right_0();
             panel = panel
                 .child(
                     plot.id("project-spectrum-plot")
@@ -471,33 +474,19 @@ impl EditorView {
                         .flex_1()
                         .min_h_0(),
                 )
-                .child(
-                    div()
-                        .id("project-spectrum-resize")
-                        .debug_selector(|| "project-spectrum-resize".into())
-                        .h(px(4.0))
-                        .flex_shrink_0()
-                        .bg(rgb(style.border))
-                        .cursor(gpui::CursorStyle::ResizeUpDown)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|view, event: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                window.focus(&view.focus);
-                                view.project_spectrum.resize = Some(Resize {
-                                    y: f32::from(event.position.y),
-                                    original: bounded_height(
-                                        view.project_spectrum.height,
-                                        f32::from(window.viewport_size().height),
-                                    ),
-                                    generation: view.project_generation,
-                                });
-                                cx.notify();
-                            }),
-                        ),
-                );
+                .child(self.project_spectrum_splitter_input(cx).handle(
+                    "project-spectrum-resize".into(),
+                    SplitterHandleConfig::thin(SplitterAxis::Vertical, style.border),
+                ))
+                .child(header);
+        } else {
+            panel = panel.child(header);
         }
-        panel
+        hex_widgets::panel_frame(theme::workspace_panel_style(), panel)
+            .id("project-spectrum")
+            .debug_selector(|| "project-spectrum".into())
+            .h(px(height))
+            .flex_shrink_0()
     }
 }
 

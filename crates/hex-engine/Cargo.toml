@@ -12,7 +12,7 @@ instrument-test-support = []
 workspace = true
 
 [dependencies]
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 hex-warp = { path = "../hex-warp" }
 hex-project = { path = "../hex-project" }
 hex-devices = { path = "../hex-devices" }
@@ -25,6 +25,10 @@ required-features = ["instrument-test-support"]
 
 [[example]]
 name = "playback_stack"
+required-features = ["instrument-test-support"]
+
+[[example]]
+name = "profile_stateful_tails"
 required-features = ["instrument-test-support"]
 
 [dev-dependencies]

@@ -2,25 +2,24 @@
 use crate::ControlStyle;
 use gpui::{Div, PathBuilder, canvas, div, point, prelude::*, px, rgb};
 
-/// Draws a bounded set of normalized points as a lightweight curve preview.
-///
-/// The caller owns the musical meaning of each point. Invalid, unordered or
+/// Grid presentation for the shared normalized curve plot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurvePlotGrid {
+    /// Horizontal quarter divisions for waveform/envelope previews.
+    Horizontal,
+    /// Quarter divisions on both axes with emphasized center lines.
+    Centered,
+}
+
+/// Draws a bounded normalized curve with a caller-selected grid.
+/// The caller owns the musical meaning and axis ranges. Invalid, unordered or
 /// non-finite coordinates are refused instead of producing malformed geometry.
-pub fn curve_plot<const N: usize>(points: [[f32; 2]; N], style: ControlStyle) -> Option<Div> {
-    plot(points, style, false)
-}
-
-/// Read-only normalized transfer curve with centered input/output axes.
-/// The caller supplies the data and owns the axis ranges and musical meaning.
-pub fn transfer_plot<const N: usize>(points: [[f32; 2]; N], style: ControlStyle) -> Option<Div> {
-    plot(points, style, true)
-}
-
-fn plot<const N: usize>(
+pub fn curve_plot<const N: usize>(
     points: [[f32; 2]; N],
     style: ControlStyle,
-    centered_axes: bool,
+    grid: CurvePlotGrid,
 ) -> Option<Div> {
+    let centered_axes = grid == CurvePlotGrid::Centered;
     if !(2..=256).contains(&N)
         || points.iter().any(|[x, y]| {
             !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(x) || !(0.0..=1.0).contains(y)
@@ -95,7 +94,7 @@ fn plot<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{curve_plot, transfer_plot};
+    use super::{CurvePlotGrid, curve_plot};
     use crate::ControlStyle;
 
     const STYLE: ControlStyle = ControlStyle {
@@ -107,14 +106,22 @@ mod tests {
         text: 0xe0e0e0,
         muted: 0xaaaaaa,
         accent: 0x55ddee,
+        accent_text: 0x202020,
+        numeric_fill: 0x31515a,
+        hover_text: 0xe0e0e0,
         focus_marker: 0xaaaaaa,
         dial_rail: 0x000000,
         hover: 0x404040,
+        selection: 0x3350a0,
+        invalid: 0xff554c,
         font_size: 8.0,
         text_case: crate::TextCase::Preserve,
     };
 
-    struct CurveFixture(std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>);
+    struct CurveFixture(
+        std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+        CurvePlotGrid,
+    );
     impl gpui::Render for CurveFixture {
         fn render(
             &mut self,
@@ -124,7 +131,7 @@ mod tests {
             use gpui::prelude::*;
             let bounds = self.0.clone();
             gpui::div().w(gpui::px(64.0)).h(gpui::px(14.0)).child(
-                curve_plot([[0.0, 0.5], [0.5, 1.0], [1.0, 0.5]], STYLE)
+                curve_plot([[0.0, 0.5], [0.5, 1.0], [1.0, 0.5]], STYLE, self.1)
                     .unwrap()
                     .on_children_prepainted(move |children, _, _| *bounds.borrow_mut() = children),
             )
@@ -133,29 +140,46 @@ mod tests {
 
     #[gpui::test]
     fn compact_curve_canvas_fills_its_display(cx: &mut gpui::TestAppContext) {
-        let bounds = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let window = cx.add_window(|_, _| CurveFixture(bounds.clone()));
-        let visual = gpui::VisualTestContext::from_window(*window, cx);
-        visual.run_until_parked();
-        let bounds = bounds.borrow();
-        assert_eq!(bounds.len(), 1);
-        assert!(bounds[0].size.width >= gpui::px(60.0));
-        assert!(
-            bounds[0].size.height >= gpui::px(10.0),
-            "curve canvas must have height to paint its waveform"
-        );
+        for grid in [CurvePlotGrid::Horizontal, CurvePlotGrid::Centered] {
+            let bounds = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let window = cx.add_window(|_, _| CurveFixture(bounds.clone(), grid));
+            let visual = gpui::VisualTestContext::from_window(*window, cx);
+            visual.run_until_parked();
+            let bounds = bounds.borrow();
+            assert_eq!(bounds.len(), 1);
+            assert!(bounds[0].size.width >= gpui::px(60.0));
+            assert!(
+                bounds[0].size.height >= gpui::px(10.0),
+                "curve canvas must have height to paint its waveform"
+            );
+        }
     }
 
     #[test]
     fn curve_plot_accepts_normalized_ordered_points_and_refuses_invalid_data() {
-        assert!(transfer_plot([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]], STYLE).is_some());
-        assert!(transfer_plot([[0.0, 0.0], [1.0, f32::INFINITY]], STYLE).is_none());
-        assert!(curve_plot([[0.0, 0.0]], STYLE).is_none());
-        assert!(curve_plot([[0.5, 0.5]; 257], STYLE).is_none());
+        assert!(
+            curve_plot(
+                [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]],
+                STYLE,
+                CurvePlotGrid::Horizontal
+            )
+            .is_some()
+        );
+        assert!(
+            curve_plot(
+                [[0.0, 0.0], [1.0, f32::INFINITY]],
+                STYLE,
+                CurvePlotGrid::Horizontal
+            )
+            .is_none()
+        );
+        assert!(curve_plot([[0.0, 0.0]], STYLE, CurvePlotGrid::Horizontal).is_none());
+        assert!(curve_plot([[0.5, 0.5]; 257], STYLE, CurvePlotGrid::Horizontal).is_none());
         assert!(
             curve_plot(
                 [[0.0, 0.0], [0.2, 1.0], [0.5, 0.7], [0.8, 0.7], [1.0, 0.0]],
-                STYLE
+                STYLE,
+                CurvePlotGrid::Horizontal
             )
             .is_some()
         );
@@ -168,14 +192,16 @@ mod tests {
                     [0.8, 0.7],
                     [1.0, 0.0]
                 ],
-                STYLE
+                STYLE,
+                CurvePlotGrid::Horizontal
             )
             .is_none()
         );
         assert!(
             curve_plot(
                 [[0.0, 0.0], [0.6, 1.0], [0.5, 0.7], [0.8, 0.7], [1.0, 0.0]],
-                STYLE
+                STYLE,
+                CurvePlotGrid::Horizontal
             )
             .is_none()
         );

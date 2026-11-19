@@ -13,18 +13,21 @@ use std::{
 };
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -36,11 +39,14 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     Arc<Environment>,
@@ -167,10 +173,10 @@ fn fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history(
         assert_eq!(preview.start().raw()+preview.length().raw(), original.start().raw()+original.length().raw());
         let project = &v.state.as_ref().unwrap().project;
         let unchanged = original.preview_edge_trim(hex_project::TrimEdge::Left, original.start()).unwrap();
-        let shapes = super::super::tracks::midi_trim_note_shapes(project, &original, unchanged, 0, 384_000);
+        let shapes = super::super::tracks::midi_trim_note_shapes(project, &original, unchanged, 0, 384_000, 0);
         assert_eq!(shapes.len(), 1);
         assert_eq!(
-            super::super::tracks::midi_trim_note_shapes(project, &original, preview, 0, 384_000), shapes,
+            super::super::tracks::midi_trim_note_shapes(project, &original, preview, 0, 384_000, 0), shapes,
             "the actual paint projection keeps the note at its old musical position",
         );
         preview
@@ -311,7 +317,6 @@ fn fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_cand
     assert_eq!(snapped.start().raw() % BeatTime::ONE.raw(), 0);
     let free = Modifiers {
         platform: true,
-        shift: true,
         ..Modifiers::default()
     };
     visual.simulate_modifiers_change(free);
@@ -327,7 +332,7 @@ fn fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_cand
     assert_ne!(
         desired.start(),
         snapped.start(),
-        "command modifier recomputes free MIDI edge; Shift does not turn MIDI into audio warp"
+        "command modifier recomputes free ordinary MIDI trim edge"
     );
     visual.simulate_mouse_up(target, MouseButton::Left, free);
     pump(&editor, &mut visual);
@@ -358,9 +363,12 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
                     .unwrap()
                     .preview
                     .borrow()
-                    .unwrap()
-                    .source_prefix()
-                    > BeatTime::ZERO
+                    .and_then(|preview| match preview {
+                        super::MidiEdgePreview::Trim(trim) => Some(trim.source_prefix()),
+                        super::MidiEdgePreview::Stretch(_) | super::MidiEdgePreview::Loop(_) =>
+                            None,
+                    })
+                    .is_some_and(|prefix| prefix > BeatTime::ZERO)
             )
         });
         editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);

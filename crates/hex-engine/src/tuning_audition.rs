@@ -11,6 +11,8 @@ use std::sync::{
 };
 
 pub const KEY_SLOTS: usize = 17;
+/// Existing fixed monitor ceiling, reserved by control before attachment.
+pub const MAX_TUNING_AUDITION_STORAGE_BYTES: usize = 8192;
 
 /// One project-generation-scoped activation. Cancellation bypasses the worker
 /// queue and is terminal; a new editor activation needs a fresh input owner.
@@ -116,6 +118,15 @@ impl Runtime {
     }
     pub(crate) fn shares_live_lease(&self, old: &Self) -> bool {
         !old.detached && !self.input.is_cancelled() && Arc::ptr_eq(&self.input, &old.input)
+    }
+    pub(crate) fn can_rebind_input_from(&self, old: &Self) -> bool {
+        self.shares_live_lease(old)
+            && !self.detached
+            && self.synth.active_voices() == 0
+            && self.desired.iter().all(|word| *word == 0)
+    }
+    pub(crate) fn detach_rebound_input(&mut self) {
+        self.detached = true;
     }
     pub(crate) fn continued_synth(&self, old: &Self) -> Result<Synth, Invalid> {
         let mut scratch = self.synth;

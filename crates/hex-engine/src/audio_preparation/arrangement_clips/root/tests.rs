@@ -38,6 +38,7 @@ pub(super) fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs
     snapshot.tracks[0].balance = -0.25;
     snapshot.tracks[0].soloed = true;
     snapshot.tracks[0].gain_envelope = vec![hex_project::GainPoint {
+        incoming_gain: None,
         beat: hex_project::BeatTime::ZERO,
         gain: 0.5,
         outgoing: hex_project::GainInterpolation::Step,
@@ -146,7 +147,7 @@ fn actual_resident_and_streamed_root_matches_legacy_pcm_and_preserves_context_ha
         assert_eq!(report.root.installed_returns, 2);
         assert!(report.root.track_container_bytes >= mem::size_of::<Track>());
         assert_eq!(report.tracks.independent_handle_obligations, 2);
-        assert_eq!(report.returns.independent_handle_obligations, 2);
+        assert_eq!(report.returns.independent_handle_obligations, 4);
         assert_eq!(
             custody
                 .capacity_report()

@@ -293,10 +293,20 @@ fn full_return_queue_holds_actual_candidate_and_shutdown_ack_is_not_disposal() {
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
+                    explicit_control_context: false,
+                    source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
+                    scheduled_cut_frame: None,
+                    streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_continuation: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(legacy()),
                 }))
                 .ok()
@@ -424,10 +434,20 @@ fn candidate_rejection_held_return_and_guard_release_have_zero_total_and_net_cal
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
+                    explicit_control_context: false,
+                    source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
+                    scheduled_cut_frame: None,
+                    streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_continuation: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(legacy()),
                 }))
                 .ok()
@@ -484,6 +504,24 @@ fn candidate_rejection_held_return_and_guard_release_have_zero_total_and_net_cal
     finish(&mut retirement);
 }
 
+pub(crate) fn wait_for_abandoned_cleanup(
+    root: &crate::candidate_custody::CandidateRoot,
+    deadline: std::time::Instant,
+) -> std::thread::ThreadId {
+    loop {
+        // Vacancy and the nonblocking thread witness use separate locks. Capture
+        // the witness here; a later try_lock can contend even after vacancy.
+        if let (0, Some(thread)) = (root.report().occupied_slots, root.cleanup_thread()) {
+            return thread;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "abandoned cleanup required UI polling"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn live_control_abandonment_finishes_busy_multiphase_cleanup_without_another_ui_poll() {
     let _serial = serial();
@@ -508,14 +546,7 @@ fn live_control_abandonment_finishes_busy_multiphase_cleanup_without_another_ui_
     assert!(!retirement.advance().unwrap()); // both backend guards still exist
     drop(extra);
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while root.report().occupied_slots != 0 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "abandoned cleanup required UI polling"
-        );
-        std::thread::yield_now();
-    }
-    let cleanup_thread = root.cleanup_thread().unwrap();
+    let cleanup_thread = wait_for_abandoned_cleanup(&root, deadline);
     assert_ne!(cleanup_thread, std::thread::current().id());
     drop(data);
     drop(errors);

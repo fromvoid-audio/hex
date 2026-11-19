@@ -407,6 +407,11 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
         .try_reserve_exact(MAX_CLIPS)
         .expect("test fixture capacity");
     clips.push(MidiClipSnapshot {
+        content_view: None,
+        active: true,
+        playback_offset_raw: 0,
+        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+        volume: hex_project::MidiClipVolume::default(),
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         id: 5,
@@ -421,10 +426,15 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
     });
     for id in 6..(MAX_CLIPS as u64 + 5) {
         clips.push(MidiClipSnapshot {
+            content_view: None,
+            active: true,
+            playback_offset_raw: 0,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id,
-            start_raw: quarter(10).raw(),
+            start_raw: quarter(10 + id - 6).raw(),
             length_raw: quarter(1).raw(),
             source_length_raw: quarter(1).raw(),
             source_start_raw: 0,

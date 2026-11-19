@@ -13,20 +13,13 @@ impl Gallery {
             ))
         };
         let body = body.debug_selector(|| "fixture-body".into());
-        let actions = hex_widgets::device_action(
-            theme::text(if self.bypassed { "⊘" } else { "●" }),
-            theme::device_header_action_style(
-                self.selected,
-                if self.bypassed {
-                    theme::DeviceActionRole::Muted
-                } else {
-                    theme::DeviceActionRole::Normal
-                },
-            ),
+        let (on_color, off_color) = theme::device_enable_colors();
+        let actions = hex_widgets::device_state_indicator(
+            "fixture-header-bypass".into(),
+            !self.bypassed,
+            on_color,
+            off_color,
         )
-        .id("fixture-header-bypass")
-        .debug_selector(|| "fixture-header-bypass".into())
-        .cursor_pointer()
         .on_click(cx.listener(|view, _, _, cx| {
             if !view.disabled {
                 view.bypassed = !view.bypassed;
@@ -34,19 +27,21 @@ impl Gallery {
             }
         }));
         hex_widgets::device_frame(
-            theme::text(format!("{} · fixture", self.entry.label())),
+            hex_widgets::vertical_device_name(theme::text(self.entry.label())),
             theme::device_frame_style(self.selected),
             actions,
             div(),
             body,
         )
-        .id("catalog-card")
+        .id(gpui::ElementId::Name(
+            format!("catalog-card-{}", self.entry.key()).into(),
+        ))
         .debug_selector(|| "catalog-card".into())
         .track_focus(&self.header_focus)
-        .w(px(self.entry.width()))
-        .h(px(device_composition::BODY_HEIGHT
-            + hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
-            + 2.0))
+        .w(px(
+            self.entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+        ))
+        .h(px(device_composition::FRAME_HEIGHT))
         .flex_shrink_0()
         .capture_any_mouse_down(cx.listener(
             |view, event: &gpui::MouseDownEvent, _, cx| {
@@ -302,7 +297,11 @@ impl Gallery {
             );
         device_composition::three_pane(
             shell,
-            device_composition::tabbed_detail(detail, tabs),
+            device_composition::tabbed_detail(
+                detail,
+                tabs,
+                device_composition::VECTOR_DETAIL_WIDTH,
+            ),
             preview,
         )
     }

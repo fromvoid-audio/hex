@@ -4,6 +4,7 @@ use crate::session_inventory::audio_assembly::{AudioTarget, ClipPlan};
 impl SessionSourceConstruction {
     pub(crate) fn assembly_plans(&self) -> impl Iterator<Item = ClipPlan> + '_ {
         self.cells.iter().enumerate().map(|(index, row)| ClipPlan {
+            active: row.active,
             source_row: index,
             bank_source: self.cache[row.cache].source,
             handle: row.handle,
@@ -13,6 +14,7 @@ impl SessionSourceConstruction {
             asset: row.asset,
             start: row.start,
             end: row.end,
+            loop_range: row.loop_range,
             gain: row.gain,
         })
     }
@@ -40,12 +42,14 @@ impl SessionSourceConstruction {
         if row.disposal != Disposal::Unstarted
             || row.handle != plan.handle
             || owner.handle != plan.handle
+            || row.active != plan.active
             || row.clip != plan.clip
             || row.track != plan.track
             || row.scene != plan.scene
             || row.asset != plan.asset
             || row.start != plan.start
             || row.end != plan.end
+            || row.loop_range != plan.loop_range
             || row.gain != plan.gain
             || *asset != plan.asset
             || cache.source != plan.bank_source

@@ -116,14 +116,15 @@ impl SessionPlayback {
                 previous
                     .revision
                     .mutable_track_retarget_topology_matches(candidate, old_route.id)
-                    && previous
-                        .revision
-                        .session()
-                        .midi_clip_for_track(clip, old_route.id)
-                        .zip(candidate.session().midi_clip_for_track(clip, old_route.id))
-                        .is_some_and(|(old, new)| {
-                            old.source_content_matches(new) && old.track == new.track
-                        })
+                    && crate::session_inventory::EffectiveSessionMidi::new(
+                        previous.revision.session(),
+                        previous.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, old_route.id)
+                    .zip(candidate.session().midi_clip_for_track(clip, old_route.id))
+                    .is_some_and(|(old, new)| {
+                        old.source_content_matches(new) && old.track == new.track
+                    })
             }
             _ => false,
         };
@@ -187,6 +188,14 @@ impl SessionPlayback {
                 age_frames: age,
                 gate_frame: (gate <= cut).then_some(gate.saturating_sub(start)),
             };
+            let (gain, gain_frozen) = super::clip_gain::at_cut(
+                previous,
+                old_index,
+                old_route.owner,
+                signature.key().clip,
+                previous.arrangement_frame,
+                previous.performance_frame,
+            )?;
             plan.proofs[plan.len] = Some(MutableOccurrence {
                 signature,
                 id,
@@ -202,7 +211,11 @@ impl SessionPlayback {
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
                     )
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                quiet_deadline_age: None,
                 note_off_sent: gate <= cut,
+                gain_at_end_bits: gain.to_bits(),
+                gain_frozen,
+                contributor_fade: None,
             });
             plan.len += 1;
             Ok(())
@@ -223,15 +236,9 @@ impl SessionPlayback {
                             return;
                         }
                         if previous.arrangement_loop_pass > 0
-                            && previous
-                                .revision
-                                .arrangement()
-                                .loop_region()
-                                .is_some_and(|r| {
-                                    r.enabled()
-                                        && span.start < r.start()
-                                        && span.gate_end <= r.start()
-                                })
+                            && previous.loop_region().is_some_and(|r| {
+                                r.enabled() && span.start < r.start() && span.gate_end <= r.start()
+                            })
                         {
                             return;
                         }
@@ -260,28 +267,31 @@ impl SessionPlayback {
                     return Err(e);
                 }
             }
-            RouteOwner::Session { clip, launch } => {
-                let prepared = previous
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, old_route.id)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+            RouteOwner::Session { clip, origin } => {
+                let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                    previous.revision.session(),
+                    previous.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, old_route.id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 let end = previous
                     .performance_frame
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                 if let Some(floor) = previous.historical_floor_for(old_index) {
-                    prepared.instrument_template().query_after_onset(
-                        launch,
-                        clock,
-                        previous.performance_frame,
-                        end,
-                        spans,
-                        floor,
-                    )
+                    prepared
+                        .instrument_template()
+                        .query_after_onset_with_origin(
+                            origin,
+                            clock,
+                            previous.performance_frame,
+                            end,
+                            spans,
+                            floor,
+                        )
                 } else {
-                    prepared.instrument_template().query(
-                        launch,
+                    prepared.instrument_template().query_with_origin(
+                        origin,
                         clock,
                         previous.performance_frame,
                         end,

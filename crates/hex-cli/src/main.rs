@@ -1,3 +1,13 @@
+//! # Purpose
+//! Compose canonical headless project, import, recovery and WAV-export commands.
+//!
+//! # Dependencies
+//! Uses hex-project for edits, hex-engine for preparation, and hex-media, hex-storage and
+//! hex-export for file workflows.
+//!
+//! # Does not own
+//! Does not own a second project model, desktop UI, native device lifecycle or a separate export
+//! codec.
 use hex_engine::{Audio, Frame, Tempo, compile};
 mod import;
 mod projects;
@@ -9,7 +19,8 @@ use std::{error::Error, path::Path};
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{}", error.to_string().to_lowercase());
+        // Error text carries case-sensitive paths; never lowercase it.
+        eprintln!("{}", hex_storage::text::plain(&error.to_string()));
         std::process::exit(1);
     }
 }
@@ -93,7 +104,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             source_length: beat / 2,
         })?;
         editor.execute(Command::Gain { track, gain: 0.5 })?;
-        if !editor.undo() || !editor.redo() {
+        if !editor.try_undo()? || !editor.try_redo()? {
             return Err("edit history could not restore the gain change".into());
         }
     }

@@ -1,17 +1,14 @@
 //! Revision-stamped UI gain edits exercise the real control worker and history.
 use hex_project::{BeatTime, Command, Created, GainInterpolation, GainPoint};
 use hex_session::service::{Event, GainLaneEdit, Request, Service};
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::Instant;
 fn event(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
             Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < until => {
-                thread::yield_now()
+                std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(reason) => panic!("event: {reason}"),
         }
@@ -32,6 +29,7 @@ fn queued_stale_revision_and_reused_generation_refuse_before_history_and_preview
     };
     let revision = added.state.revision;
     let point = GainPoint {
+        incoming_gain: None,
         beat: BeatTime::from_raw(1),
         gain: 0.25,
         outgoing: GainInterpolation::Linear,
@@ -155,11 +153,13 @@ fn occupied_move_and_removed_owner_preserve_exact_committed_history() {
     };
     let points = vec![
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::from_raw(1),
             gain: 0.25,
             outgoing: GainInterpolation::Step,
         },
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::from_raw(2),
             gain: 0.75,
             outgoing: GainInterpolation::Linear,

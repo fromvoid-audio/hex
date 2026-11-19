@@ -1,4 +1,10 @@
-//! Pre-reserved, exact-pair control disposal. No native quiescence/admission.
+//! Pre-reserved exact-pair disposal on control, separate from native quiescence.
+//!
+//! The actual control/pages pair enters persistent storage only after preflight. External catalog
+//! leases yield Busy before destructive progress. The real worker handle leaves its mutex before
+//! join, and every fixed page must be recovered in owned worker/endpoint storage before physical
+//! completion. Pending, first panic and remaining endpoints persist on failure; mismatches never
+//! manufacture a successful pool report or release a host's independent native output lease.
 use super::*;
 use std::{
     any::Any,
@@ -28,7 +34,7 @@ pub struct PreparedStreamDisposal {
     pair: Arc<()>,
     control: Option<StreamControl>,
     pages: Option<StreamCallbackPages>,
-    worker: Option<JoinHandle<Vec<Box<PageBuffer>>>>,
+    worker: Option<JoinHandle<crate::worker::WorkerExit>>,
     worker_pages: Option<Vec<Box<PageBuffer>>>,
     endpoint_pages: Vec<Box<PageBuffer>>,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -191,7 +197,11 @@ impl PreparedStreamDisposal {
                 return Err(StreamDisposalError::Incomplete);
             };
             match catch_unwind(AssertUnwindSafe(|| worker.join())) {
-                Ok(Ok(pages)) => self.worker_pages = Some(pages),
+                Ok(Ok(Ok(pages))) => self.worker_pages = Some(pages),
+                Ok(Ok(Err(_))) => {
+                    self.phase = StreamDisposalPhase::FailedIncomplete;
+                    return Err(StreamDisposalError::Incomplete);
+                }
                 Ok(Err(payload)) | Err(payload) => {
                     self.first_panic = Some(payload);
                     self.phase = StreamDisposalPhase::FailedIncomplete;
@@ -224,9 +234,16 @@ impl PreparedStreamDisposal {
             return Err(StreamDisposalError::Incomplete);
         }
         let bytes = self
-            .expected_pages
-            .checked_mul(hex_engine::STREAM_PAGE_FRAMES)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
+            .control
+            .as_ref()
+            .map(|control| &control.owner.transport_data)
+            .and_then(|data| {
+                crate::footprint::sum([
+                    data.pcm_boxes,
+                    data.scalar_boxes,
+                    data.scalar_coverage_boxes,
+                ])
+            })
             .ok_or(StreamDisposalError::Capacity)?;
         self.phase = StreamDisposalPhase::Destroying;
         let result = catch_unwind(AssertUnwindSafe(|| {
@@ -270,6 +287,41 @@ mod tests {
         let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(4), vec![]).unwrap();
         runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
         runtime.split().ok().unwrap()
+    }
+    #[test]
+    fn reported_worker_failure_refuses_both_shutdown_completion_paths() {
+        for prepared in [false, true] {
+            let (control, pages) = pair();
+            control.owner.stop.store(true, Ordering::Release);
+            control.wake_worker();
+            let worker = lock_unpoisoned(&control.owner.worker).take().unwrap();
+            drop(worker.join().unwrap().unwrap());
+            // Model the parent returning a child-join failure with no live
+            // pool loan. This must never become a successful completion.
+            *lock_unpoisoned(&control.owner.worker) = Some(std::thread::spawn(|| {
+                Err(StreamRuntimeError::WorkerJoinFailed)
+            }));
+            if prepared {
+                let mut disposal =
+                    PreparedStreamDisposal::try_prepare_on_control(&control, &pages).unwrap();
+                let mut input = Some((control, pages));
+                disposal.begin_on_control(&mut input).unwrap();
+                assert_eq!(
+                    disposal.advance_on_control(),
+                    Err(StreamDisposalError::Incomplete)
+                );
+                assert_eq!(disposal.phase(), StreamDisposalPhase::FailedIncomplete);
+                assert_eq!(
+                    disposal.advance_on_control(),
+                    Err(StreamDisposalError::Incomplete)
+                );
+            } else {
+                assert!(matches!(
+                    control.shutdown(pages),
+                    Err(ShutdownError::Runtime(StreamRuntimeError::WorkerJoinFailed))
+                ));
+            }
+        }
     }
     #[test]
     fn real_pair_busy_is_nonmutating_then_normal_conservation_and_completion_are_once_only() {

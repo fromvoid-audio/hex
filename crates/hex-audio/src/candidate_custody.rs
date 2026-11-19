@@ -1,5 +1,13 @@
-//! Bounded custody only. Queue acceptance, no-install closure and normal physical
-//! disposal are different facts. No state here grants render/admission authority.
+//! Bounded candidate custody with exact root/slot/incarnation/runtime identity.
+//!
+//! Reservation, queue acceptance, installation, source readiness, terminal return and normal
+//! physical disposal are separate transitions. Synchronous refusal preserves the original
+//! owner/container; accepted tickets and scalar acknowledgments grant no cleanup authority. Full
+//! return queues retain the actual owner in persistent held storage. Never-installed and
+//! final-active returns retain distinct physical paths. Control/lifecycle execution records
+//! Pending before destructive takes, retains the first failed payload and remaining owners, and
+//! never reuses occupancy after an incomplete destructor, worker join or page-pool conservation
+//! check.
 use crate::candidate_catalog::{CandidateDomain, CatalogCustody};
 use hex_engine::{
     AudioCandidateDisposed, AudioCandidateIdentity, AudioCandidateOwner, OwnedAudioInputs,
@@ -14,10 +22,12 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
-    StreamInstall, StreamOutcome, StreamProgress,
+    StreamInstall, StreamOutcome, StreamProgress, TempoStreamWindow,
 };
 pub use eligible::{
     AudioCandidateCancellationResult, AudioCandidateDomainPreparationFailure,
@@ -27,6 +37,12 @@ pub use eligible::{
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
+};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::{EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use eligible::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
@@ -40,6 +56,14 @@ pub(crate) struct Stamp {
 /// Nonowning token. Abandonment cannot release a slot, owner or charge.
 pub struct AudioCandidateTicket {
     stamp: Stamp,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) struct NativeEpochTarget(Stamp);
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl AudioCandidateTicket {
+    pub(crate) fn native_epoch_target(&self, root: u64) -> Option<NativeEpochTarget> {
+        (self.stamp.root == root).then_some(NativeEpochTarget(self.stamp))
+    }
 }
 pub struct AudioCandidateStageRefusal {
     pub reason: &'static str,
@@ -58,6 +82,10 @@ pub enum AudioCandidateReturnKind {
     NeverInstalled,
     FinalActive,
     Replaced,
+    /// Exact callback-observed native Stop, before successor construction.
+    /// This has no replacement manifest and is not terminal backend shutdown.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    StoppedForNativeEpoch,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -219,6 +247,20 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value.lock().unwrap_or_else(PoisonError::into_inner)
 }
 impl CandidateRoot {
+    pub(crate) fn actual_control_backing_bytes(&self) -> Option<usize> {
+        self.0.eligible.actual_control_backing_bytes()
+    }
+    pub(crate) fn worker_control_storage_quote(
+        reservation: AudioCandidatePublicationReservation,
+    ) -> Option<usize> {
+        std::mem::size_of::<Inner>()
+            .checked_add(crate::prepared::RETIRED.checked_mul(std::mem::size_of::<Slot>())?)?
+            .checked_add(eligible::pages::signal_data_bytes()?)?
+            .checked_add(crate::prepared::worker_publication_queue_storage_quote()?)?
+            .checked_add(eligible::publication::publication_backing_quote(
+                reservation,
+            )?)
+    }
     pub(crate) fn new(capacity: usize) -> Result<Self, &'static str> {
         let root = NEXT_ROOT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
@@ -435,6 +477,45 @@ impl CandidateRoot {
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
+    pub(crate) fn reserve_runtime_adoption(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring {
+            return Err(AudioCandidatePreparationRefusal {
+                reason: "candidate Root is closing",
+                domains: Vec::new(),
+            });
+        }
+        drop(bank);
+        let result = self.0.eligible.reserve_runtime_adoption(reservation);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn check_current_sampler_preparation_context(
+        &self,
+        token: AudioCandidatePreparationToken,
+        expected: hex_engine::AudioSourceContext,
+    ) -> Result<(), &'static str> {
+        self.0
+            .eligible
+            .check_current_sampler_preparation_context(token, expected)
+    }
+    pub(crate) fn adopt_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        rate: u32,
+        cell: &mut Option<hex_engine::AudioCandidatePreparation>,
+    ) -> Result<(), &'static str> {
+        let result = self
+            .0
+            .eligible
+            .adopt_runtime_preparation(self, token, context, rate, cell);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
     pub(crate) fn bind_runtime_preparation_domains(
         &self,
         token: AudioCandidatePreparationToken,
@@ -458,11 +539,21 @@ impl CandidateRoot {
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
+    pub(crate) fn prepare_tempo_cut(
+        &self,
+        token: AudioCandidatePreparationToken,
+        observation: crate::prepared::TransportObservation,
+        cut: u64,
+    ) -> Result<hex_engine::session_playback::PreparedTempoAnchor, &'static str> {
+        self.0.eligible.prepare_tempo_cut(token, observation, cut)
+    }
+
     pub(crate) fn stage_runtime_preparation(
         &self,
         token: AudioCandidatePreparationToken,
         rate: u32,
         header: (u64, u64, crate::prepared::PublicationPolicy),
+        expected_context: Option<hex_engine::AudioSourceContext>,
         enqueue: impl FnOnce(QueuedEligibleCandidate),
     ) -> Result<AudioCandidateTicket, &'static str> {
         let result = self.0.eligible.stage_runtime_preparation(
@@ -474,6 +565,7 @@ impl CandidateRoot {
                 policy: header.2,
             },
             rate,
+            expected_context,
             enqueue,
         );
         crate::lifecycle::request_candidate_cleanup(self);
@@ -586,6 +678,49 @@ impl CandidateRoot {
         definitions: Vec<hex_stream::SourceDefinition>,
         readiness: hex_stream::StreamReadinessReservation,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_domain_preparation_inner(
+            config,
+            definitions,
+            None,
+            readiness,
+            #[cfg(feature = "stream-test-support")]
+            None,
+        )
+    }
+    #[cfg(feature = "stream-test-support")]
+    pub(crate) fn begin_domain_preparation_with_gate(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_domain_preparation_inner(config, definitions, None, readiness, Some(gate))
+    }
+    pub(crate) fn begin_granular_domain_preparation(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        granular: hex_stream::GranularWorkerBank,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_domain_preparation_inner(
+            config,
+            definitions,
+            Some(granular),
+            readiness,
+            #[cfg(feature = "stream-test-support")]
+            None,
+        )
+    }
+    fn begin_domain_preparation_inner(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        granular: Option<hex_stream::GranularWorkerBank>,
+        readiness: hex_stream::StreamReadinessReservation,
+        #[cfg(feature = "stream-test-support")] gate: Option<hex_stream::test_support::PageGate>,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
         {
             let bank = lock(&self.0.bank);
             if bank.closing || bank.retiring {
@@ -594,10 +729,31 @@ impl CandidateRoot {
                 ));
             }
         }
-        let result = self
-            .0
-            .eligible
-            .begin_preparation(config, definitions, readiness);
+        let result = if let Some(granular) = granular {
+            self.0
+                .eligible
+                .begin_granular_preparation(config, definitions, granular, readiness)
+        } else {
+            #[cfg(feature = "stream-test-support")]
+            let raw_result = match gate {
+                Some(gate) => self.0.eligible.begin_preparation_with_gate(
+                    config,
+                    definitions,
+                    readiness,
+                    gate,
+                ),
+                None => self
+                    .0
+                    .eligible
+                    .begin_preparation(config, definitions, readiness),
+            };
+            #[cfg(not(feature = "stream-test-support"))]
+            let raw_result = self
+                .0
+                .eligible
+                .begin_preparation(config, definitions, readiness);
+            raw_result
+        };
         // The eligible bank itself retains successful late construction. Its
         // Starting cell was already occupied when terminal closure could win.
         crate::lifecycle::request_candidate_cleanup(self);
@@ -623,6 +779,12 @@ impl CandidateRoot {
     }
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)
+    }
+    pub(crate) fn domain_endpoint_installed(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.endpoint_installed(token)
+    }
+    pub(crate) fn domain_has_no_graph_users(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.domain_has_no_graph_users(token)
     }
     pub(crate) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
         self.0.eligible.domain_is_sealed(token)
@@ -665,9 +827,11 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        drop(returns);
+        // Native source cancellation may perform control-side descriptor I/O;
+        // it must not run under the ordinary return/terminal lock.
         self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
-        drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
     }
     fn drain_abandoned_on_control(&self) -> bool {
@@ -686,6 +850,13 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                crate::prepared::ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.ingest_native_endpoint(endpoint) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Native(endpoint));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.ingest_pages(pages) {
                         returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));
@@ -705,7 +876,8 @@ impl CandidateRoot {
                         return false;
                     }
                 }
-                crate::prepared::ReturnedPublication::Legacy(value) => {
+                crate::prepared::ReturnedPublication::Legacy(mut value) => {
+                    value.release_streams_on_control(self);
                     returns.pending = true;
                     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
                         returns.first_panic = Some(payload);
@@ -837,12 +1009,13 @@ impl CandidateRoot {
                 Ok(()) => work.bank_drop_pending = false,
             }
             let mut bank = lock(&self.0.bank);
-            if let Some(slot) = bank.slots.get_mut(stamp.slot) {
-                if slot.incarnation == stamp.incarnation && slot.identity == Some(stamp.owner) {
-                    slot.phase = Phase::Vacant;
-                    slot.identity = None;
-                    slot.domain_count = 0;
-                }
+            if let Some(slot) = bank.slots.get_mut(stamp.slot)
+                && slot.incarnation == stamp.incarnation
+                && slot.identity == Some(stamp.owner)
+            {
+                slot.phase = Phase::Vacant;
+                slot.identity = None;
+                slot.domain_count = 0;
             }
             return;
         }
@@ -929,13 +1102,12 @@ impl CandidateRoot {
             Ok(()) => work.metadata_drop_pending = false,
         }
         let mut bank = lock(&self.0.bank);
-        if let Some(slot) = bank.slots.get_mut(stamp.slot) {
-            if slot.incarnation == stamp.incarnation
-                && slot.identity == Some(stamp.owner)
-                && slot.ready.is_some()
-            {
-                slot.phase = Phase::Complete;
-            }
+        if let Some(slot) = bank.slots.get_mut(stamp.slot)
+            && slot.incarnation == stamp.incarnation
+            && slot.identity == Some(stamp.owner)
+            && slot.ready.is_some()
+        {
+            slot.phase = Phase::Complete;
         }
     }
     pub(crate) fn root_id(&self) -> u64 {
@@ -1018,6 +1190,21 @@ impl CandidateRoot {
                     && matches!(slot.phase, Phase::Accepted | Phase::Complete))
             })
     }
+    /// Lifecycle-only observation after advancement; pending takes are not
+    /// failures. Existing custody retains every failed owner and unwind payload.
+    pub(crate) fn cleanup_failed(&self) -> bool {
+        if self.0.eligible.cleanup_failed() {
+            return true;
+        }
+        if lock(&self.0.returns)
+            .as_ref()
+            .is_some_and(|r| r.first_panic.is_some())
+        {
+            return true;
+        }
+        let work = lock(&self.0.execution);
+        work.first_panic.is_some() || work.current.as_ref().is_some_and(|c| c.failed)
+    }
     /// Idle decision and flag clearing share the ingest/scheduling lock.
     pub(crate) fn job_idle(&self) -> bool {
         let mut bank = lock(&self.0.bank);
@@ -1044,6 +1231,12 @@ impl CandidateRoot {
     #[cfg(test)]
     pub(crate) fn cleanup_scheduled(&self) -> bool {
         lock(&self.0.bank).scheduled
+    }
+    /// Run `f` while holding the eligible domain bank, as a lifecycle cleanup
+    /// pass does, so tests can reproduce contended nonblocking observations.
+    #[cfg(test)]
+    pub(crate) fn with_domain_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.0.eligible.with_bank_held(f)
     }
     #[cfg(test)]
     pub(crate) fn test_status(&self) -> String {
@@ -1113,9 +1306,94 @@ pub struct AudioCandidateCustodyReport {
     pub runtime_and_shared_overhead_unknown: bool,
 }
 
+impl CandidateRoot {
+    pub(crate) fn configure_ordinary_streams(
+        &self,
+        reservation: AudioCandidateDomainReservation,
+        extents: usize,
+        metadata_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let ordinary = eligible::OrdinaryReservation {
+            extents,
+            metadata_bytes,
+        }
+        .validate_requested()?;
+        self.configure_domains(reservation)?;
+        self.0.eligible.configure_ordinary_streams(ordinary)
+    }
+    pub(crate) fn ordinary_streams_configured(&self) -> bool {
+        self.0.eligible.ordinary_streams_configured()
+    }
+    pub(crate) fn configure_combined_ordinary_streams(
+        &self,
+        extents: usize,
+        metadata_bytes: usize,
+    ) -> Result<(), &'static str> {
+        self.0
+            .eligible
+            .configure_combined_ordinary_streams(eligible::OrdinaryReservation {
+                extents,
+                metadata_bytes,
+            })
+    }
+    pub(crate) fn prepare_ordinary_streams(
+        &self,
+        playback: &hex_engine::playback::Playback,
+        revision: u64,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Box<OrdinaryStreams>, &'static str> {
+        self.0
+            .eligible
+            .prepare_ordinary_streams(playback, revision, context)
+    }
+    pub(crate) fn release_ordinary_streams(&self, streams: Box<OrdinaryStreams>) {
+        self.0.eligible.release_ordinary_streams(streams);
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::OrdinaryNativeReferences;
+pub(crate) use eligible::{
+    ActiveView as StreamActiveView, OrdinaryStreams, QuantumFailure, QuantumPins,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vacant_bank_with_contended_thread_observation_still_requires_a_witness() {
+        let root = CandidateRoot::new(1).unwrap();
+        let worker = root.clone();
+        let worker_thread = std::thread::spawn(move || {
+            worker.advance_on_control();
+            std::thread::current().id()
+        })
+        .join()
+        .unwrap();
+        let execution = lock(&root.0.execution);
+        assert_eq!(execution.last_thread, Some(worker_thread));
+        assert_eq!(root.report().occupied_slots, 0);
+        assert!(root.cleanup_thread().is_none()); // contention, not an absent worker
+        let expired = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now(),
+            )
+        }))
+        .expect_err("vacancy alone must not satisfy the thread witness");
+        assert_eq!(
+            expired.downcast_ref::<&str>().copied(),
+            Some("abandoned cleanup required UI polling")
+        );
+        drop(execution);
+        assert_eq!(
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+            ),
+            worker_thread
+        );
+    }
     #[test]
     fn actual_failed_metadata_disposal_closes_new_staging_and_preserves_refused_inputs() {
         let Some(owner) = crate::prepared::candidate_tests::candidate() else {
@@ -1153,7 +1431,14 @@ mod tests {
             });
             slot.phase = Phase::Cleaning;
         }
-        root.advance_on_control();
+        assert!(!root.cleanup_failed());
+        let status = crate::lifecycle::LifecycleStatus::new();
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
+        assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(root.recover(&ticket).is_none());
         assert!(lock(&root.0.bank).slots[ticket.stamp.slot].ready.is_some());
@@ -1163,6 +1448,15 @@ mod tests {
             .unwrap()
             .as_ref() as *const dyn Any as *const ();
         root.advance_on_control();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        // #4132: a later pass cannot complete a failed owner; the failure and
+        // its retained root stay latched, so retirement never releases them.
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
+        assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!(
             lock(&root.0.execution)
@@ -1352,3 +1646,6 @@ mod tests {
         assert!(root.recover(&next_ticket).is_some());
     }
 }
+
+#[cfg(test)]
+pub(crate) mod granular_test_fixture;

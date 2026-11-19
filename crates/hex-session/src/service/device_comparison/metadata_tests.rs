@@ -161,6 +161,37 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
                 state.audio_authoring_revision(source.context()),
                 Some(state.revision)
             );
+            let current = hex_engine::AudioSourceContext {
+                editor_revision: state.revision,
+                ..source.context()
+            };
+            assert_eq!(
+                state.audio_authoring_revision(current),
+                Some(state.revision)
+            );
+            assert_eq!(
+                state.audio_authoring_revision(hex_engine::AudioSourceContext {
+                    project_generation: current.project_generation + 1,
+                    ..current
+                }),
+                None
+            );
+            assert_eq!(
+                state.audio_authoring_revision(hex_engine::AudioSourceContext {
+                    editor_revision: source.context().editor_revision - 1,
+                    ..current
+                }),
+                None
+            );
+            for intermediate in source.context().editor_revision + 1..state.revision {
+                assert_eq!(
+                    state.audio_authoring_revision(hex_engine::AudioSourceContext {
+                        editor_revision: intermediate,
+                        ..current
+                    }),
+                    None
+                );
+            }
         }
         // An audible edit must break the equivalence and produce a new source.
         let audio = run(
@@ -241,10 +272,10 @@ fn comparison_metadata_event_backpressure_keeps_native_source_and_order_without_
     service.submit(Request::Undo).unwrap();
     service.submit(Request::Redo).unwrap();
     let before = polls.load(Ordering::Relaxed);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
     while polls.load(Ordering::Relaxed) <= before + 3 {
         assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
+        crate::test_wait::pause();
     }
     assert_eq!(sources.lock().unwrap().len(), count);
     let mut previous = initial.state;

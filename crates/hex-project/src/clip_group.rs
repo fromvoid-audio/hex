@@ -27,6 +27,87 @@ impl ClipGroupPreview {
         }
     }
 }
+
+/// One prepared incoming placement uses the same complete final-row plan as a
+/// group. Fresh material receives its identity only after final-count admission;
+/// a move/resize excludes its old identity without exposing an intermediate edit.
+pub(crate) fn place_one(
+    project: &mut Project,
+    track: TrackId,
+    content: ClipGroupContent,
+    fresh: bool,
+) -> Result<Created, Invalid> {
+    let member = ClipGroupPreview { track, content };
+    let selected = if fresh {
+        BTreeSet::new()
+    } else {
+        BTreeSet::from([member.id()])
+    };
+    let mut incoming = Vec::new();
+    incoming
+        .try_reserve_exact(1)
+        .map_err(|_| Invalid("could not reserve incoming placement"))?;
+    incoming.push(member);
+    match (fresh, batch::apply(project, incoming, &selected, fresh)?) {
+        (true, Created::Clips { first, last }) if first == last => Ok(Created::Clip(first)),
+        (false, Created::None) => Ok(Created::None),
+        _ => Err(Invalid(
+            "single placement returned an invalid identity range",
+        )),
+    }
+}
+
+/// Admit a complete clipboard/rectangle replacement against final row counts.
+/// Cuts include empty rectangle cells; ordinary clip paste supplies no cuts.
+pub(crate) fn place_batch(
+    project: &mut Project,
+    incoming: Vec<ClipGroupPreview>,
+    cuts: &[(TrackId, u64, u64)],
+) -> Result<Created, Invalid> {
+    batch::apply_with_cuts(project, incoming, &BTreeSet::new(), true, cuts)
+}
+
+/// Scalar/source edits retain collection order and never run overwrite work.
+/// A prepared extent change uses the same final-row admission as a move.
+pub(crate) fn replace_audio(project: &mut Project, incoming: Clip) -> Result<Created, Invalid> {
+    let id = incoming.id();
+    let old = project
+        .clip(incoming.id())
+        .ok_or(Invalid("audio clip no longer exists"))?;
+    if (old.start(), old.duration()) == (incoming.start(), incoming.duration()) {
+        *project.clip_mut(id)? = incoming;
+        return Ok(Created::None);
+    }
+    let track = project
+        .tracks()
+        .iter()
+        .find(|t| t.clips().iter().any(|c| c.id() == incoming.id()))
+        .map(|t| t.id())
+        .ok_or(Invalid("audio clip track missing"))?;
+    place_one(project, track, ClipGroupContent::Audio(incoming), false)
+}
+
+pub(crate) fn replace_midi(project: &mut Project, incoming: MidiClip) -> Result<Created, Invalid> {
+    let track = project
+        .tracks()
+        .iter()
+        .find(|t| t.midi_clips().iter().any(|c| c.id() == incoming.id()))
+        .map(|t| t.id())
+        .ok_or(Invalid("midi clip track missing"))?;
+    let old = project
+        .midi_clip(incoming.id())
+        .ok_or(Invalid("midi clip no longer exists"))?;
+    if (old.start(), old.length()) == (incoming.start(), incoming.length()) {
+        let target = project
+            .midi_clips_mut(incoming.id())?
+            .iter_mut()
+            .find(|c| c.id() == incoming.id())
+            .ok_or(Invalid("midi clip no longer exists"))?;
+        *target = incoming;
+        return Ok(Created::None);
+    }
+    place_one(project, track, ClipGroupContent::Midi(incoming), false)
+}
 impl Project {
     /// Validate the complete group before returning any preview. All ordinary
     /// tracks are hybrid; vertical movement preserves their relative indices.
@@ -88,6 +169,7 @@ impl Project {
         }
         // Clamp one shared delta at time zero, never individual members.
         let delta = requested_delta.max(-i128::from(earliest));
+        let beat_delta = all_midi_beat_delta(self, &selected, anchor, position)?;
         let mut result = Vec::new();
         result
             .try_reserve_exact(ids.len())
@@ -119,16 +201,18 @@ impl Project {
                 .iter()
                 .filter(|c| selected.contains(&c.id()))
             {
-                let frame = translated(self.tempo_map().beat_to_frame(clip.start())?, delta)?;
-                let start = midi_start(
-                    self,
-                    clip.start(),
-                    frame,
-                    delta,
-                    requested_delta,
-                    clip.id() == anchor,
-                    position,
-                )?;
+                let start = match beat_delta {
+                    Some(beat_delta) => shifted_beat(clip.start(), beat_delta)?,
+                    None => midi_start(
+                        self,
+                        clip.start(),
+                        translated(self.tempo_map().beat_to_frame(clip.start())?, delta)?,
+                        delta,
+                        requested_delta,
+                        clip.id() == anchor,
+                        position,
+                    )?,
+                };
                 let end = BeatTime::from_raw(
                     start
                         .raw()
@@ -156,6 +240,50 @@ impl Project {
 }
 pub(super) fn translated(frame: u64, delta: i128) -> Result<u64, Invalid> {
     u64::try_from(i128::from(frame) + delta)
+        .map_err(|_| Invalid("whole clip group exceeds timeline bounds"))
+}
+
+/// An all-MIDI group moves by one exact beat delta, clamped so its earliest
+/// member stays at or after beat zero, exactly as single-clip MIDI movement
+/// does. Mixed groups return `None` and share one frame delta instead, because
+/// audio members are frame-anchored.
+fn all_midi_beat_delta(
+    project: &Project,
+    selected: &BTreeSet<ClipId>,
+    anchor: ClipId,
+    position: ClipGroupPosition,
+) -> Result<Option<i128>, Invalid> {
+    let ClipGroupPosition::Midi(destination) = position else {
+        return Ok(None);
+    };
+    let anchor = project
+        .midi_clip(anchor)
+        .ok_or(Invalid("midi anchor is stale"))?
+        .start();
+    let mut earliest = anchor;
+    for track in project.tracks() {
+        if track.clips().iter().any(|c| selected.contains(&c.id())) {
+            return Ok(None);
+        }
+        for clip in track
+            .midi_clips()
+            .iter()
+            .filter(|c| selected.contains(&c.id()))
+        {
+            earliest = earliest.min(clip.start());
+        }
+    }
+    Ok(Some(midi_beat_delta(anchor, destination, earliest)))
+}
+
+/// The requested anchor beat delta, clamped at beat zero for `earliest`.
+pub(super) fn midi_beat_delta(anchor: BeatTime, destination: BeatTime, earliest: BeatTime) -> i128 {
+    (i128::from(destination.raw()) - i128::from(anchor.raw())).max(-i128::from(earliest.raw()))
+}
+
+pub(super) fn shifted_beat(beat: BeatTime, delta: i128) -> Result<BeatTime, Invalid> {
+    u64::try_from(i128::from(beat.raw()) + delta)
+        .map(BeatTime::from_raw)
         .map_err(|_| Invalid("whole clip group exceeds timeline bounds"))
 }
 

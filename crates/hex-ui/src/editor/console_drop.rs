@@ -19,14 +19,13 @@ impl EditorView {
         target: ConsoleDestination,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let active = self.active_browser_audio_drag.as_ref().is_some_and(|drag| {
-            self.browser_audio_drag_is_current(drag)
-                && drag.destination.get() == Some(BrowserDropDestination::Console(target))
-        });
+        let active = self.sample_drop_target() == Some(BrowserDropDestination::Console(target));
         let entity = cx.entity();
         surface
             .when(active, |surface| {
-                surface.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                surface
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .debug_selector(|| "console-sample-drop-preview".to_owned())
             })
             .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
                 if !event.bounds.contains(&event.event.position) {
@@ -64,16 +63,10 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let (track, before) = match target {
-            ConsoleDestination::Cell { track, scene } => (track, Some(scene)),
-            ConsoleDestination::InsertScene { track, before } => (track, before),
-        };
-        state.project.track(track).is_some()
-            && before
-                .is_none_or(|scene| state.project.scenes().iter().any(|item| item.id() == scene))
+        target.validate(&state.project).is_ok()
     }
 
-    fn drop_console_browser_audio(
+    pub(super) fn drop_console_browser_audio(
         &mut self,
         drag: &BrowserAudioDrag,
         target: ConsoleDestination,
@@ -91,18 +84,37 @@ impl EditorView {
             && !self.changelog.is_open()
             && !self.device_panel.has_pending_draft(cx)
             && self.tuning.client.snapshot().is_none();
-        // Always retire this exact UI payload before admission. The worker's
-        // AudioBatchControl, not a retained ghost, owns cancellation afterwards.
-        self.clear_browser_audio_drag(drag);
+        // The worker control owns cancellation after admission. The paint is
+        // copied before retiring the pointer payload.
         if !current {
+            self.clear_browser_audio_drag(drag);
             self.error = Some("sample drop canceled · console target or project changed".into());
             cx.notify();
             return;
         }
         let Some(state) = self.state.as_ref() else {
+            self.clear_browser_audio_drag(drag);
             cx.notify();
             return;
         };
+        if let Some(asset) = drag.project_asset {
+            let request = Request::InsertProjectSample {
+                project_generation: drag.project_generation,
+                revision: drag.revision,
+                asset,
+                destination: AudioBatchDestination::Console(target),
+                new_track_gain: None,
+                warp: hex_project::AudioImportWarp::Off,
+                audition_timing: None,
+            };
+            if self.enqueue_sample_drop(request, drag, BrowserDropDestination::Console(target)) {
+                self.stop_browser_preview_for_drop();
+                self.error = None;
+            }
+            self.clear_browser_audio_drag(drag);
+            cx.notify();
+            return;
+        }
         let context = AudioBatchContext {
             project_generation: self.project_generation,
             revision: state.revision,
@@ -115,35 +127,87 @@ impl EditorView {
         ) {
             Ok(request) => request,
             Err(reason) => {
+                self.clear_browser_audio_drag(drag);
                 self.error = Some(reason.into());
                 cx.notify();
                 return;
             }
         };
-        if self.enqueue(request) {
+        if self.enqueue_sample_drop(request, drag, BrowserDropDestination::Console(target)) {
+            self.stop_browser_preview_for_drop();
             self.audio_batch = Some(control);
             self.audio_batch_progress = None;
             self.error = None;
             self.poll_audio_batch();
         }
+        self.clear_browser_audio_drag(drag);
         cx.notify();
     }
 
-    fn drop_console_arrangement_clip(
+    pub(super) fn drop_console_arrangement_clip(
         &mut self,
         drag: &ClipDrag,
         target: ConsoleDestination,
         cx: &mut Context<Self>,
     ) {
         let current = self.mode == EditorMode::Session
+            && self.console_clip_drag_owned(drag)
             && self.drag_start_is_current(drag)
             && !self.edit_pending();
         // This receiver owns one Console clip, not a mapping of a selection.
         // Release the shared group borrow before retiring its exact UI payload.
         let multiple = drag.group.borrow().ids.len() > 1;
         if multiple {
-            self.clear_clip_drag(drag.project_generation, drag.clip);
+            self.retire_console_clip_drag(drag);
             self.error = Some("selected clips require an arrangement target".into());
+            cx.notify();
+            return;
+        }
+        if let ConsoleDestination::NewTrack {
+            before_track,
+            scene,
+        } = target
+        {
+            let unsupported_source = current && !self.console_column_clip_valid(drag);
+            let valid = current
+                && self.console_target_exists(target)
+                && self.console_column_clip_valid(drag)
+                && !self.save_dialog_open
+                && !self.export_dialog_open
+                && !self.export_pending
+                && self.audio_batch.is_none()
+                && !self.tuning.open
+                && !self.theme_settings.open
+                && !self.changelog.is_open()
+                && !self.device_panel.has_pending_draft(cx)
+                && self.tuning.client.snapshot().is_none();
+            self.retire_console_clip_drag(drag);
+            if valid {
+                let gain = match self.track_defaults.captured_gain() {
+                    Ok(gain) => gain,
+                    Err(error) => {
+                        self.error = Some(error.into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                if self.enqueue(Request::CopyArrangementClipToConsoleTrack {
+                    initial_gain: Some(gain),
+                    project_generation: drag.project_generation,
+                    revision: drag.revision,
+                    source: drag.clip,
+                    before_track,
+                    scene,
+                }) {
+                    self.error = None;
+                }
+            } else {
+                self.error = Some(if unsupported_source {
+                    "processed arrangement audio cannot yet copy to console · keep it in arrangement"
+                } else {
+                    "clip drop canceled · console target changed or editing is busy"
+                }.into());
+            }
             cx.notify();
             return;
         }
@@ -172,7 +236,7 @@ impl EditorView {
         } else {
             None
         };
-        self.clear_clip_drag(drag.project_generation, drag.clip);
+        self.retire_console_clip_drag(drag);
         if let Some(command) = command {
             self.enqueue(Request::Edit(command));
         } else {
@@ -181,6 +245,25 @@ impl EditorView {
             );
         }
         cx.notify();
+    }
+
+    pub(super) fn console_clip_drag_owned(&self, drag: &ClipDrag) -> bool {
+        self.active_clip_drag.as_ref().is_some_and(|active| {
+            active.project_generation == drag.project_generation
+                && active.revision == drag.revision
+                && active.clip == drag.clip
+                && std::rc::Rc::ptr_eq(&active.group, &drag.group)
+        })
+    }
+
+    // A delayed receiver may carry the same source ID as a newer pointer drag.
+    // Retire that payload alone; only the exact current group may clear input.
+    pub(super) fn retire_console_clip_drag(&mut self, drag: &ClipDrag) {
+        if self.console_clip_drag_owned(drag) {
+            self.clear_clip_drag(drag.project_generation, drag.clip);
+        } else {
+            drag.retire();
+        }
     }
 
     pub(super) fn insert_console_scene(

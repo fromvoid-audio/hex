@@ -1,7 +1,7 @@
-//! Control-owned, in-memory checkpoints for one mutable instrument track.
+//! Control-owned, in-memory checkpoints for one mutable instrument source.
 //!
 //! This is a bounded state-copy foundation, not a seek implementation. A
-//! checkpoint is valid only for the exact prepared revision, track and
+//! checkpoint is valid only for the exact prepared revision, source receiver and
 //! performance frame from which it was captured. It does not contain project
 //! sources, route clocks, effect histories or a serialized runtime format.
 use super::SessionPlayback;
@@ -127,15 +127,19 @@ impl MutableRuntimeCheckpointStore {
         self.declared_storage_bytes
     }
 
-    /// Retain a committed snapshot of one track at the playback's current
-    /// performance frame. Count and declared aggregate bytes are checked
-    /// before the prepared factory constructs the snapshot runtime.
+    /// Retain a committed snapshot of one source receiver at the playback's
+    /// current performance frame. Requests through any bound contributor
+    /// resolve to that source's single receiver checkpoint. Count and declared
+    /// aggregate bytes are checked before the factory constructs the snapshot.
     pub fn capture_track(
         &mut self,
         playback: &SessionPlayback,
         track: TrackId,
     ) -> Result<(), MutableRuntimeCheckpointError> {
         let revision = &playback.revision;
+        if revision.requires_control_sampler_sources() {
+            return Err(MutableRuntimeCheckpointError::IncompatiblePreparedRevision);
+        }
         if let Some(stored_revision) = &self.revision
             && !Arc::ptr_eq(stored_revision, revision)
         {
@@ -148,19 +152,28 @@ impl MutableRuntimeCheckpointStore {
         let Some(slot_index) = self.entries.iter().position(Option::is_none) else {
             return Err(MutableRuntimeCheckpointError::CheckpointCountExceeded);
         };
-        if self.entries.iter().any(|entry| {
-            entry.as_ref().is_some_and(|entry| {
-                entry.track == track && entry.performance_frame == playback.performance_frame
-            })
-        }) {
-            return Err(MutableRuntimeCheckpointError::DuplicateCheckpoint);
-        }
-
-        let route_index = playback
+        let requested_index = playback
             .routes
             .iter()
             .position(|route| route.id == track)
             .ok_or(MutableRuntimeCheckpointError::UnknownTrack)?;
+        let route_index = playback
+            .revision
+            .source_routing()
+            .receiver_index(requested_index)
+            .unwrap_or(requested_index);
+        let receiver = playback
+            .routes
+            .get(route_index)
+            .map(|route| route.id)
+            .ok_or(MutableRuntimeCheckpointError::UnknownTrack)?;
+        if self.entries.iter().any(|entry| {
+            entry.as_ref().is_some_and(|entry| {
+                entry.track == receiver && entry.performance_frame == playback.performance_frame
+            })
+        }) {
+            return Err(MutableRuntimeCheckpointError::DuplicateCheckpoint);
+        }
         let source = playback
             .mutable_instruments
             .get(route_index)
@@ -171,11 +184,18 @@ impl MutableRuntimeCheckpointStore {
         }
         let factory = revision
             .session()
-            .mutable_instrument_factory(track)
+            .mutable_instrument_factory(receiver)
             .ok_or(MutableRuntimeCheckpointError::MissingMutableRuntime)?;
 
         let charge =
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(factory, sample_rate)
+                .and_then(|bytes| {
+                    bytes.checked_add(if source.is_source_owner() {
+                        MutableInstrumentTrackRuntime::source_live_storage_upper_bound()
+                    } else {
+                        0
+                    })
+                })
                 .ok_or(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)?;
         let next_payload_bytes = self
             .payload_bytes()
@@ -190,10 +210,13 @@ impl MutableRuntimeCheckpointStore {
 
         let mut snapshot =
             MutableInstrumentTrackRuntime::new(factory, sample_rate).map_err(map_runtime_error)?;
+        if source.is_source_owner() {
+            snapshot.enable_source_live();
+        }
         snapshot.inherit_from(source).map_err(map_runtime_error)?;
 
         self.entries[slot_index] = Some(Entry {
-            track,
+            track: receiver,
             performance_frame: playback.performance_frame,
             declared_storage_bytes: charge,
             runtime: snapshot,
@@ -206,11 +229,11 @@ impl MutableRuntimeCheckpointStore {
         Ok(())
     }
 
-    /// Restore one track at the exact captured frame, leaving the checkpoint
-    /// reusable. The candidate is built and copied off to the side; the target
-    /// owner changes only after all validation and history-copy operations
-    /// succeed. Runtime retirement therefore occurs on the exclusive caller
-    /// thread, never inside the audio callback.
+    /// Restore one source receiver at the exact captured frame, leaving the
+    /// checkpoint reusable. The candidate is built and copied off to the side;
+    /// the target owner changes only after validation and history copying
+    /// succeed. Runtime retirement occurs on the exclusive caller thread,
+    /// never inside the audio callback.
     pub fn restore_track(
         &self,
         playback: &mut SessionPlayback,
@@ -227,25 +250,35 @@ impl MutableRuntimeCheckpointStore {
         if self.sample_rate != Some(sample_rate) {
             return Err(MutableRuntimeCheckpointError::IncompatibleSampleRate);
         }
+        let requested_index = playback
+            .routes
+            .iter()
+            .position(|route| route.id == track)
+            .ok_or(MutableRuntimeCheckpointError::UnknownTrack)?;
+        let route_index = playback
+            .revision
+            .source_routing()
+            .receiver_index(requested_index)
+            .unwrap_or(requested_index);
+        let receiver = playback
+            .routes
+            .get(route_index)
+            .map(|route| route.id)
+            .ok_or(MutableRuntimeCheckpointError::UnknownTrack)?;
         let Some(entry) = self.entries.iter().flatten().find(|entry| {
-            entry.track == track && entry.performance_frame == playback.performance_frame
+            entry.track == receiver && entry.performance_frame == playback.performance_frame
         }) else {
             return if self
                 .entries
                 .iter()
                 .flatten()
-                .any(|entry| entry.track == track)
+                .any(|entry| entry.track == receiver)
             {
                 Err(MutableRuntimeCheckpointError::IncompatiblePerformanceFrame)
             } else {
                 Err(MutableRuntimeCheckpointError::CheckpointUnavailable)
             };
         };
-        let route_index = playback
-            .routes
-            .iter()
-            .position(|route| route.id == track)
-            .ok_or(MutableRuntimeCheckpointError::UnknownTrack)?;
         let target = playback
             .mutable_instruments
             .get(route_index)
@@ -254,13 +287,23 @@ impl MutableRuntimeCheckpointStore {
         if !target.committed_state_available() {
             return Err(MutableRuntimeCheckpointError::UncommittedRuntime);
         }
+        if target.is_source_owner() != entry.runtime.is_source_owner() {
+            return Err(MutableRuntimeCheckpointError::RuntimeIncompatible);
+        }
         let factory = playback
             .revision
             .session()
-            .mutable_instrument_factory(track)
+            .mutable_instrument_factory(receiver)
             .ok_or(MutableRuntimeCheckpointError::MissingMutableRuntime)?;
         let candidate_charge =
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(factory, sample_rate)
+                .and_then(|bytes| {
+                    bytes.checked_add(if entry.runtime.is_source_owner() {
+                        MutableInstrumentTrackRuntime::source_live_storage_upper_bound()
+                    } else {
+                        0
+                    })
+                })
                 .ok_or(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)?;
         let candidate_charge = candidate_charge
             .checked_add(std::mem::size_of::<MutableInstrumentTrackRuntime>())
@@ -272,6 +315,9 @@ impl MutableRuntimeCheckpointStore {
 
         let mut candidate =
             MutableInstrumentTrackRuntime::new(factory, sample_rate).map_err(map_runtime_error)?;
+        if entry.runtime.is_source_owner() {
+            candidate.enable_source_live();
+        }
         candidate
             .inherit_from(&entry.runtime)
             .map_err(map_runtime_error)?;

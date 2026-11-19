@@ -12,6 +12,8 @@ pub enum GainInterpolation {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GainPoint {
+    /// Explicit left limit at a splice; None uses this point's ordinary gain.
+    pub incoming_gain: Option<f32>,
     pub beat: BeatTime,
     pub gain: f32,
     pub outgoing: GainInterpolation,
@@ -22,7 +24,12 @@ pub fn validate_gain_envelope(points: &[GainPoint]) -> Result<(), Invalid> {
         return Err(Invalid("track gain envelope point limit reached"));
     }
     for (index, point) in points.iter().enumerate() {
-        if !point.gain.is_finite() || !(0.0..=2.0).contains(&point.gain) {
+        if !point.gain.is_finite()
+            || !(0.0..=2.0).contains(&point.gain)
+            || point
+                .incoming_gain
+                .is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain))
+        {
             return Err(Invalid("automation gain must be finite and within 0..2"));
         }
         if index > 0 && points[index - 1].beat >= point.beat {
@@ -45,7 +52,22 @@ impl Project {
     pub(crate) fn refuse_automation_transform(&self, tracks: &[TrackId]) -> Result<(), Invalid> {
         for &id in tracks {
             let track = self.track(id).ok_or(Invalid("track no longer exists"))?;
-            if !track.gain_envelope().is_empty() || !track.gain_lane.spans.is_empty() {
+            if !track.gain_envelope().is_empty()
+                || !track.gain_lane.spans.is_empty()
+                || track
+                    .devices()
+                    .iter()
+                    .chain(track.instrument())
+                    .any(|device| !device.automation().is_empty())
+                || track
+                    .source_id()
+                    .and_then(|id| self.native_source(id))
+                    .is_some_and(|source| {
+                        source
+                            .devices()
+                            .any(|device| !device.automation().is_empty())
+                    })
+            {
                 return Err(Invalid(AUTOMATION_EDIT_UNSUPPORTED));
             }
         }
@@ -116,14 +138,12 @@ impl Project {
         let index = points
             .binary_search_by_key(&from, |point| point.beat)
             .map_err(|_| Invalid("gain point no longer exists"))?;
-        if from != to && points.binary_search_by_key(&to, |point| point.beat).is_ok() {
-            return Err(Invalid("gain point destination is occupied"));
-        }
         let mut point = points.remove(index);
         point.beat = to;
-        let index = points
-            .binary_search_by_key(&to, |point| point.beat)
-            .unwrap_err();
+        let index = match points.binary_search_by_key(&to, |point| point.beat) {
+            Ok(_) => return Err(Invalid("gain point destination is occupied")),
+            Err(index) => index,
+        };
         points.insert(index, point);
         self.replace_gain_envelope(track, points)
     }

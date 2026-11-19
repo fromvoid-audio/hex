@@ -223,7 +223,7 @@ fn install_gains(project: Project, mut gains: BTreeMap<u64, i32>) -> Result<Proj
     if !gains.is_empty() {
         return Err(StorageError::Invalid("unknown host gain device"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 pub(super) fn take_both_gains(
@@ -284,7 +284,7 @@ pub(super) fn install_both_gains(
     if !gains.is_empty() {
         return Err(StorageError::Invalid("unknown host gain device"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 pub(super) fn decode23(bytes: &[u8]) -> Result<Project, StorageError> {
     let doc: Document23 = serde_json::from_slice(bytes)?;
@@ -300,47 +300,6 @@ pub(super) fn decode23(bytes: &[u8]) -> Result<Project, StorageError> {
         gain_envelopes::DocumentV21::decode(&serde_json::to_vec(&value)?)?,
         gains,
     )
-}
-#[cfg(test)]
-fn encode23(project: &Project) -> Result<Vec<u8>, StorageError> {
-    let mut snapshot = project.snapshot();
-    let mut gains = BTreeMap::new();
-    for device in snapshot
-        .tracks
-        .iter_mut()
-        .flat_map(|t| t.devices.iter_mut().chain(t.instrument.iter_mut()))
-        .chain(
-            snapshot
-                .return_tracks
-                .iter_mut()
-                .flat_map(|t| t.devices.iter_mut()),
-        )
-    {
-        gains.insert(
-            device.id,
-            (
-                device.state.input_gain_millidb(),
-                device.state.output_gain_millidb(),
-            ),
-        );
-        device.state = device.state.clone().without_host_gains();
-    }
-    let unity = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
-    let mut value = serde_json::to_value(gain_envelopes::DocumentV21::from_project(&unity)?)?;
-    value["version"] = 23.into();
-    for_devices(&mut value, |device| {
-        let id = device["id"]
-            .as_u64()
-            .ok_or(StorageError::Invalid("invalid device id"))?;
-        let (input, output) = gains
-            .get(&id)
-            .ok_or(StorageError::Invalid("missing host gain"))?;
-        device["input_gain_millidb"] = (*input).into();
-        device["output_gain_millidb"] = (*output).into();
-        Ok(())
-    })?;
-    let doc: Document23 = serde_json::from_value(value)?;
-    crate::encode_document(&doc)
 }
 
 fn required_instrument<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -479,13 +438,16 @@ pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, S
 mod tests {
     use super::*;
     #[test]
-    fn main_touch_shapes_and_partial_mixed_duplicate_hybrids_are_distinct() {
-        let original = crate::decode(include_bytes!(
-            "../../tests/fixtures/lineages/foundation22.json"
-        ))
-        .unwrap();
-        let main = crate::encode_schema22(&original).unwrap();
-        assert_eq!(crate::decode(&main).unwrap(), original);
+    fn current_touch_fields_must_be_complete_and_unambiguous() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(hex_project::Command::AddTrack {
+                name: "touch".into(),
+            })
+            .unwrap();
+        let original = editor.project();
+        let main = crate::encode(original).unwrap();
+        assert_eq!(crate::decode(&main).unwrap(), *original);
         let base: serde_json::Value = serde_json::from_slice(&main).unwrap();
         for key in ["gain_touch_epoch", "gain_touch_spans"] {
             let mut missing = base.clone();
@@ -513,23 +475,5 @@ mod tests {
         let mut future = base;
         future["unrecognized"] = true.into();
         assert!(crate::decode(&serde_json::to_vec(&future).unwrap()).is_err());
-    }
-    #[test]
-    fn published_branch23_encoder_remains_readable_without_replacing_current_writer() {
-        let original = crate::decode(include_bytes!(
-            "../../tests/fixtures/lineages/foundation22.json"
-        ))
-        .unwrap();
-        let bytes = encode23(&original).unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["version"], 23);
-        assert!(value["tracks"][0].get("gain_touch_epoch").is_none());
-        assert_eq!(crate::decode(&bytes).unwrap(), original);
-        let current = crate::encode(&original).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
-            33
-        );
-        assert_eq!(crate::decode(&current).unwrap(), original);
     }
 }

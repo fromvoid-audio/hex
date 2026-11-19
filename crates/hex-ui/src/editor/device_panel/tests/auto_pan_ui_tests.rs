@@ -64,7 +64,9 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
             .expect("auto pan body");
         assert_eq!(
             frame.size.width,
-            px(auto_pan_panel::FRAME_WIDTH + gain_meters::WIDTH)
+            px(auto_pan_panel::FRAME_WIDTH
+                + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+                + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         for parameter in 1..=4 {
@@ -165,6 +167,36 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
     // Exercise every descriptor binding through the rendered typed-value control.
     for (parameter, input, expected) in [(1, "0.75", 0.75), (2, "2.5", 2.5), (3, "90", 90.0)] {
         let parameter = hex_lattice_contract::ParameterId::from_static(parameter);
+        // At the minimum window the responsive toolbar leaves a scrolling
+        // detail viewport. Bring lower fields into its real hit mask first.
+        if let Some(viewport) = visual.debug_bounds("clip-detail-viewport") {
+            let selector = Box::leak(
+                format!(
+                    "device-{}-parameter-{}-value",
+                    device.value(),
+                    parameter.value()
+                )
+                .into_boxed_str(),
+            );
+            let value = visual.debug_bounds(selector).unwrap();
+            let delta = if value.bottom() > viewport.bottom() {
+                viewport.bottom() - value.bottom() - px(2.0)
+            } else if value.top() < viewport.top() {
+                viewport.top() - value.top() + px(2.0)
+            } else {
+                px(0.0)
+            };
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: point(viewport.right() - px(1.0), viewport.center().y),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), delta)),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+            assert!(
+                viewport.contains(&visual.debug_bounds(selector).unwrap().center()),
+                "typed field must be visible before clicking"
+            );
+        }
         enter_typed_value(&mut visual, device, parameter, input);
         visual.simulate_keystrokes("enter");
         pump_until(&editor, cx, |view| {

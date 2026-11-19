@@ -1,7 +1,15 @@
-//! Registered analytic instrument preparation and compact immutable note samplers.
+//! Registered instrument preparation and compact immutable note samplers.
+//!
+//! Effects and instruments resolve through separate registries; a missing or malformed present
+//! instrument must refuse rather than fall back to another type. Preparation validates authored
+//! state and tuning on control. Analytic notes are copyable scalar samplers; shared contexts and
+//! mutable factories declare their own bounded storage and processing capabilities. Mutable
+//! committed/scratch histories participate in a whole-block transaction, with compatibility
+//! checked before any history transfer. These trusted native interfaces provide no foreign-code
+//! sandbox or host resource lease.
 use super::{MAX_NATIVE_DEVICE_TYPES, PreparedMutableInstrumentRuntime, StereoFrame};
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    DeviceContractError, DeviceTypeId, ModulationSourceId, NativeDeviceMetadata, NativeDeviceState,
 };
 use std::fmt;
 
@@ -261,6 +269,16 @@ pub trait PreparedNativeInstrument: Send + Sync {
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
         Ok(None)
     }
+    /// Prepare the same mutable provider with one occurrence-pressure input.
+    /// A slot can collect pressure before any route is assigned. Unsupported
+    /// providers must refuse instead of silently falling back to stock playback.
+    fn prepare_mutable_note_pressure(
+        &self,
+        _source: ModulationSourceId,
+        _route: Option<crate::PreparedPressureRoute>,
+    ) -> Result<Box<dyn PreparedMutableInstrumentRuntime>, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
     /// Once opted in, the control compiler keeps this device's continuation
     /// runtime across subsequent revisions, including Undo to an analytic state.
     /// New opens and never-authored devices retain ordinary capability selection.
@@ -287,14 +305,36 @@ pub trait PreparedNativeInstrument: Send + Sync {
 /// registry from effects because they prepare authored notes rather than a
 /// stereo effect matrix.
 pub trait NativeInstrumentDefinition: NativeDeviceMetadata {
+    /// Pre-allocation bound for one inline-only resource factory/prepared module payload.
+    /// Default unknown; resource-aware hosts cross-check the actual factory's declaration after
+    /// compilation. This quote grants neither source custody nor heap/graph provenance.
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        None
+    }
+    /// Opt into immutable, host-retained resource inventories. The default
+    /// refuses asset bindings before migration or provider execution.
+    fn supports_asset_resources(&self) -> bool {
+        false
+    }
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError>;
+
+    /// Prepare against an explicit host runtime ceiling. Existing providers
+    /// retain their ordinary factory; runtime construction validates its limits.
+    fn prepare_instrument_with_runtime_limits(
+        &self,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+        _limits: crate::NativeInstrumentRuntimeLimits,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.prepare_instrument(state, context)
+    }
 }
 
-/// Bounded immutable registry for native analytic instruments.
+/// Bounded immutable registry for native instruments.
 pub struct NativeInstrumentRegistry<'a> {
     definitions: &'a [&'a dyn NativeInstrumentDefinition],
 }
@@ -426,25 +466,52 @@ impl<'a> NativeInstrumentRegistry<'a> {
         )
     }
 
-    /// Prepare the exact effective table; resource bindings refuse before
-    /// provider migration until the host supplies actual resource leases.
+    /// Prepare the exact effective configuration. Ordinary definitions refuse resource bindings
+    /// before migration; opted-in definitions receive a validated inventory whose lifetime remains
+    /// the host's responsibility.
     pub fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        state.require_asset_free_processing()?;
-        context.validate_for(state)?;
+        self.prepare_instrument_checked(state, context, None)
+    }
+
+    /// The same state/capability/resource validation with explicit host limits.
+    pub fn prepare_instrument_with_runtime_limits(
+        &self,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+        limits: crate::NativeInstrumentRuntimeLimits,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.prepare_instrument_checked(state, context, Some(limits))
+    }
+
+    fn prepare_instrument_checked(
+        &self,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+        limits: Option<crate::NativeInstrumentRuntimeLimits>,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
+        if !definition.supports_asset_resources() {
+            state.require_asset_free_processing()?;
+        }
+        context.validate_for(state)?;
         let current = self.validate_current(
             definition,
             definition
                 .migrate_state(state)?
                 .with_host_metadata_from(state)?,
         )?;
-        definition.prepare_instrument(&current, context)
+        match limits {
+            Some(limits) => {
+                definition.prepare_instrument_with_runtime_limits(&current, context, limits)
+            }
+            None => definition.prepare_instrument(&current, context),
+        }
     }
 
     fn validate_current(

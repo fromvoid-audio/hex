@@ -1,0 +1,137 @@
+//! Headless, reproducible 100-track compensated routing workload.
+//!
+//! Run with `cargo run --release -p hex-engine --example profile_compensated_routing`.
+//! This measures SessionPlayback, not a native callback or device deadline.
+#[allow(dead_code)] // This workload reuses only the fixture's Arrangement sources.
+#[path = "support/session_audio_fixture.rs"]
+mod session_audio_fixture;
+
+use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_lattice_contract::NativeDeviceMetadata;
+use hex_project::{Command, Created, Editor};
+use std::{error::Error, hint::black_box, sync::Arc, time::Instant};
+
+const BLOCK: usize = 256;
+const TRACKS: usize = 100;
+const WARMUP: usize = 100;
+const MEASURED: usize = 300;
+const VERIFY_FRAMES: usize = 8_448; // Includes the first loop wrap.
+
+fn prepared(return_latency: bool) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
+    let fixture = session_audio_fixture::fixture(false)?;
+    if fixture.tracks.len() != TRACKS {
+        return Err("fixture track count changed".into());
+    }
+    let mut editor = Editor::new(fixture.project, 8)?;
+    let limiter = hex_devices::limiter::DEFINITION.default_state()?;
+    if return_latency {
+        let Created::ReturnTrack(bus) = editor.execute(Command::AddReturnTrack {
+            name: "profile return".into(),
+        })?
+        else {
+            return Err("expected return track".into());
+        };
+        editor.execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: limiter,
+        })?;
+        for track in &fixture.tracks {
+            editor.execute(Command::SetReturnSend {
+                track: *track,
+                return_track: bus,
+                gain: 0.125,
+            })?;
+        }
+    } else {
+        editor.execute(Command::InsertDevice {
+            track: *fixture.tracks.first().ok_or("fixture has no tracks")?,
+            before: None,
+            state: limiter,
+        })?;
+    }
+    editor.execute(Command::SetLoopRegion {
+        start: 0,
+        end: 8_192,
+        enabled: true,
+    })?;
+    let revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &fixture.media,
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    // The fixture has no Main devices, so a nonzero Main arrival is produced
+    // by the Track/Return graph and enables upstream compensated routing.
+    if revision.arrangement().main_latency_frames() == 0 {
+        return Err("fixture did not prepare a compensated graph".into());
+    }
+    Ok(revision)
+}
+
+fn playback(revision: Arc<PreparedRevision>) -> Result<SessionPlayback, Box<dyn Error>> {
+    let mut playback = SessionPlayback::new(revision)?;
+    playback.apply(SessionPlaybackCommand::Play)?;
+    Ok(playback)
+}
+
+fn verify(revision: &Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
+    let mut scalar = playback(Arc::clone(revision))?;
+    let mut block = playback(Arc::clone(revision))?;
+    let mut expected = vec![[0.0; 2]; VERIFY_FRAMES];
+    let mut actual = vec![[0.0; 2]; VERIFY_FRAMES];
+    for sample in expected.chunks_mut(1) {
+        scalar.render(sample)?;
+    }
+    for chunk in actual.chunks_mut(BLOCK) {
+        block.render(chunk)?;
+    }
+    if actual != expected
+        || !actual.iter().flatten().all(|v| v.is_finite())
+        || !actual.iter().flatten().any(|v| *v != 0.0)
+    {
+        return Err("partitioned PCM differs, is non-finite, or is silent".into());
+    }
+    Ok(())
+}
+
+fn measure(label: &str, revision: Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
+    verify(&revision)?;
+    let latency = revision.arrangement().main_latency_frames();
+    let mut playback = playback(revision)?;
+    let mut output = [[0.0; 2]; BLOCK];
+    for _ in 0..WARMUP {
+        playback.render(&mut output)?;
+    }
+    let mut times = Vec::with_capacity(MEASURED);
+    let mut digest = 0xcbf2_9ce4_8422_2325u64;
+    for _ in 0..MEASURED {
+        let start = Instant::now();
+        playback.render(black_box(&mut output))?;
+        times.push(start.elapsed().as_nanos());
+        for value in output.iter().flatten() {
+            digest = (digest ^ u64::from(value.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        black_box(&output);
+    }
+    times.sort_unstable();
+    println!(
+        "case={label} tracks={TRACKS} rate={} block={BLOCK} latency_frames={latency} warmup={WARMUP} measured={MEASURED} p50_us={:.3} p99_us={:.3} max_us={:.3} pcm_digest={digest:016x}",
+        session_audio_fixture::RATE,
+        times[MEASURED / 2] as f64 / 1000.0,
+        times[(MEASURED * 99).div_ceil(100) - 1] as f64 / 1000.0,
+        times[MEASURED - 1] as f64 / 1000.0
+    );
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    println!(
+        "compensated routing: arch={} os={} headless; source revision and host metadata recorded separately; setup and PCM oracle excluded; no native deadline claim",
+        std::env::consts::ARCH,
+        std::env::consts::OS
+    );
+    measure("track_latency", prepared(false)?)?;
+    measure("return_latency", prepared(true)?)?;
+    Ok(())
+}

@@ -10,6 +10,9 @@ pub(super) struct RootResourceWitness {
     lifecycle_workers: usize,
     analysis_workers: usize,
     output_contexts: usize,
+    native_workers: usize,
+    native_children: usize,
+    native_ipc: usize,
     source_workers: usize,
     catalog_channels: usize,
     source_readers: usize,
@@ -20,7 +23,13 @@ impl RootResourceWitness {
         self.root == root && self.root_data != 0 && self.root_shared_groups != 0
             && self.shared_handle_bound >= self.root_shared_groups
             && self.lifecycle_workers == 1 && self.output_contexts == 1 && self.analysis_workers <= 1
-            && self.source_workers <= 2 && self.catalog_channels <= 2
+            && self.native_workers <= hex_lattice::MAX_STATEFUL_PROCESSORS
+            && self.native_children <= hex_lattice::MAX_STATEFUL_PROCESSORS
+            && self.native_ipc.checked_add(self.native_children).is_some()
+            // Two N2 domains each retain one ordinary worker and, when
+            // granular sources are present, one dedicated rendering worker.
+            && self.catalog_channels <= 2
+            && (self.catalog_channels..=2 * self.catalog_channels).contains(&self.source_workers)
             // Counts are retained until actual source-pair/report closure;
             // zero sources legitimately need no reader or kernel handles.
             && self.source_readers.checked_add(self.kernel_handles).is_some()
@@ -34,11 +43,17 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     // the actual callback constructor visitor, independently of queue occupancy.
     // Observer Status handles outside this publication Root own no graph or
     // source lease; no process-wide Arc/RSS bound is claimed.
+    let insert_receipts = if bank.publication.stream_extents.is_some() {
+        bank.publication.slots.len().checked_add(1)?
+    } else {
+        0
+    };
     bank.publication
         .slots
         .len()
         .checked_mul(5)?
         .checked_add(28)?
+        .checked_add(insert_receipts)?
         .checked_add(
             bank.native
                 .as_ref()
@@ -47,6 +62,11 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
 }
 fn occupied_handles(bank: &NativeBank, excluded_preparation: Option<usize>) -> Option<usize> {
     let mut handles = root_handle_bound(bank)?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        handles = handles.checked_add(bank.sources.reserved_shared_handles())?;
+    }
+
     for domain in &bank.domains {
         if let Some(resources) = domain.resources {
             handles = handles.checked_add(resources.shared_handle_bound)?;
@@ -81,7 +101,13 @@ pub(super) fn for_candidate(
     bank: &NativeBank,
     summary: AudioCandidateConstructorSummary,
     excluded_preparation: Option<usize>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))] source_work: &native_sources::Work,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let native_sources = bank
+        .sources
+        .inventory(source_work)
+        .ok_or("native source construction is not sealed")?;
     if bank
         .domains
         .iter()
@@ -130,11 +156,24 @@ pub(super) fn for_candidate(
         lifecycle_workers: 1,
         analysis_workers: native.analysis_workers(),
         output_contexts: 1,
+        native_workers: 0,
+        native_children: 0,
+        native_ipc: 0,
         source_workers: 0,
         catalog_channels: 0,
         source_readers: 0,
         kernel_handles: 0,
     };
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        witness.root_shared_groups = witness
+            .root_shared_groups
+            .checked_add(native_sources.groups)
+            .ok_or("native source resource count overflow")?;
+        witness.native_workers = native_sources.workers;
+        witness.native_children = native_sources.children;
+        witness.native_ipc = native_sources.ipc;
+    }
     for domain in &bank.domains {
         let Some(resources) = domain.resources else {
             continue;

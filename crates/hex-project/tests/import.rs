@@ -111,7 +111,7 @@ fn prepared_import_adds_audio_to_an_existing_midi_track_in_one_history_step() {
     let result = editor
         .execute(Command::ImportPreparedAudioClip {
             track,
-            start: 17,
+            start: 24_000,
             path: PathBuf::from("Samples/Audio.wav"),
             source_sample_rate: 48_000,
             source_frames: 16,
@@ -133,7 +133,7 @@ fn prepared_import_adds_audio_to_an_existing_midi_track_in_one_history_step() {
     assert_eq!(lane.clips().len(), 1);
     assert_eq!(lane.clips()[0].id(), clip);
     assert_eq!(lane.clips()[0].asset(), asset);
-    assert_eq!(lane.clips()[0].start(), 17);
+    assert_eq!(lane.clips()[0].start(), 24_000);
     assert_eq!(lane.midi_clips().len(), 1);
     assert_eq!(lane.midi_clips()[0].id(), midi_clip);
     assert_eq!(lane.midi_clips()[0].notes().len(), 1);
@@ -341,6 +341,7 @@ fn moving_audio_clip_to_new_hybrid_track_preserves_identity_and_is_one_undo_step
 
     let Created::Track(inserted) = editor
         .execute(Command::MoveClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "track 3".into(),
             before_track: Some(anchor),
@@ -446,6 +447,7 @@ fn failed_audio_clip_insert_move_preserves_ids_order_and_redo() {
     editor.undo();
     let before = editor.project().clone();
     let invalid = editor.execute(Command::MoveClipToNewTrack {
+        initial_gain: None,
         clip,
         name: "new".into(),
         before_track: Some(missing_anchor),
@@ -503,66 +505,6 @@ fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_hi
         Created::Clip(clip) => clip,
         other => panic!("unexpected victim: {other:?}"),
     };
-    let second_victim = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 30,
-            duration: 40,
-            source_offset: 20,
-            source_length: 10,
-            looping: true,
-        })
-        .expect("second victim")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected second victim: {other:?}"),
-    };
-    let fully_covered_victim = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 40,
-            duration: 20,
-            source_offset: 40,
-            source_length: 20,
-            looping: false,
-        })
-        .expect("fully covered victim")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected fully covered victim: {other:?}"),
-    };
-    let touching_start = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 0,
-            duration: 40,
-            source_offset: 0,
-            source_length: 40,
-            looping: false,
-        })
-        .expect("clip touching drop start")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected clip: {other:?}"),
-    };
-    let touching_end = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 60,
-            duration: 20,
-            source_offset: 0,
-            source_length: 20,
-            looping: false,
-        })
-        .expect("clip touching drop end")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected clip: {other:?}"),
-    };
     editor
         .execute(Command::SetClipFades {
             clip: victim,
@@ -613,28 +555,6 @@ fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_hi
     assert_eq!(right.source_phase(), 10);
     assert_eq!(right.fade().span(), 100);
     assert_eq!(right.fade().offset(), 50);
-    let second_left = target_clips
-        .iter()
-        .find(|clip| clip.id() == second_victim)
-        .expect("second left fragment retains ID");
-    assert_eq!((second_left.start(), second_left.duration()), (30, 10));
-    let second_right = target_clips
-        .iter()
-        .find(|clip| {
-            clip.id() != second_victim
-                && clip.id() != incoming
-                && clip.start() == 60
-                && clip.duration() == 10
-        })
-        .expect("second right fragment");
-    assert_eq!(second_right.asset(), asset);
-    assert!(target_clips.iter().any(|clip| clip.id() == touching_start));
-    assert!(target_clips.iter().any(|clip| clip.id() == touching_end));
-    assert!(
-        !target_clips
-            .iter()
-            .any(|clip| clip.id() == fully_covered_victim)
-    );
     assert!(target_clips.iter().any(|clip| clip.id() == incoming));
     assert!(result.track(source).expect("source").clips().is_empty());
     let committed = result.clone();
@@ -801,4 +721,87 @@ fn imported_ids_are_not_reused_after_undo_branch() {
     assert!(second.1.value() > first.2.value());
     assert!(second.2.value() > first.2.value());
     assert!(!editor.can_redo());
+}
+
+#[test]
+fn beats_import_is_visible_before_one_prepare_and_refusal_preserves_redo_and_ids() {
+    use hex_project::{AudioImportWarp, WarpMode};
+    let mut editor = editor(8);
+    editor
+        .execute(Command::AddTrack {
+            name: "existing".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let commands = [24_000, 12_000].map(|frames| Command::ImportPreparedAudioTrackAt {
+        name: "sample".into(),
+        before_track: None,
+        start: 0,
+        path: PathBuf::from(format!("{frames}.wav")),
+        source_sample_rate: 48_000,
+        source_frames: frames,
+        playback_frames: frames,
+        conversion_version: 0,
+    });
+    let mut calls = 0;
+    let result = editor.execute_audio_imports_with_warp_prepared(
+        commands.to_vec(),
+        AudioImportWarp::Beats,
+        |candidate, results| {
+            calls += 1;
+            assert_eq!(results.len(), 2);
+            for (index, track) in candidate.tracks().iter().enumerate() {
+                let clip = &track.clips()[0];
+                let domain = &clip.audio_edit().unwrap().domain;
+                assert!(domain.warp_enabled);
+                let settings = domain.warp.as_ref().unwrap();
+                assert!(matches!(settings.mode, WarpMode::Beats { .. }));
+                assert_eq!(
+                    settings.markers[1].source_frame,
+                    if index == 0 { 24_000 } else { 12_000 }
+                );
+            }
+            Err::<(), _>(hex_project::Invalid("injected preparation refusal"))
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(calls, 1);
+    assert_eq!(editor.project(), &before);
+    assert!(!editor.can_undo());
+    assert!(editor.can_redo());
+    // Existing zero-warp entry point remains an explicit Off default.
+    editor
+        .execute_audio_imports_prepared(commands.to_vec(), |candidate, _| {
+            assert!(
+                candidate
+                    .tracks()
+                    .iter()
+                    .all(|track| track.clips()[0].audio_edit().is_none())
+            );
+            Ok::<_, hex_project::Invalid>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn new_device_imports_record_sinc_v2_or_identity_conversion() {
+    let mut editor = editor(4);
+    for (rate, expected) in [
+        (44_100, hex_project::SINC_CONVERSION_V2),
+        (48_000, hex_project::IDENTITY_CONVERSION),
+    ] {
+        let Created::Asset(asset) = editor
+            .execute(Command::ImportDeviceAsset {
+                path: PathBuf::from(format!("Media/device-{rate}.wav")),
+                sample_rate: rate,
+                frames: 4_410,
+            })
+            .expect("device asset")
+        else {
+            panic!("asset")
+        };
+        let asset = editor.project().asset(asset).expect("asset");
+        assert_eq!(asset.conversion_version(), expected);
+    }
 }

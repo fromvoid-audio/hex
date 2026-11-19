@@ -19,15 +19,21 @@ impl Playback {
             tuning_audition,
             project,
             prepared_revision,
+            resident_pcm_publication,
             session_runtime,
             linear_runtime,
             session_unavailable,
             position: _,
             performance_frame: _,
             performance_clock_exhausted: _,
+            transport_fade,
             playing: _,
         } = self;
-        if tuning_audition.is_some() || linear_runtime.is_some() || session_unavailable.is_some() {
+        if resident_pcm_publication.is_some()
+            || tuning_audition.is_some()
+            || linear_runtime.is_some()
+            || session_unavailable.is_some()
+        {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let revision = prepared_revision
@@ -55,6 +61,11 @@ impl Playback {
             std::mem::size_of::<SessionPlayback>(),
         )?;
         session.visit_fresh_candidate_storage(ledger)?;
+        ledger.bytes(
+            Owner::exclusive(transport_fade),
+            Location("transport-fade-box", 0),
+            std::mem::size_of::<super::transport_fade::TransportFade>(),
+        )?;
         let metronome = metronome
             .as_ref()
             .ok_or(AudioStorageError::UnknownStorage)?;

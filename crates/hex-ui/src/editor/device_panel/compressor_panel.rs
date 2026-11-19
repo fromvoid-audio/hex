@@ -10,6 +10,8 @@ use hex_engine::{CompressorTransferCurve, NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
+pub(super) mod sidechain;
+
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::COMPRESSOR_FRAME_WIDTH;
 const THRESHOLD: ParameterId = ParameterId::from_static(1);
 const RATIO: ParameterId = ParameterId::from_static(2);
@@ -159,6 +161,7 @@ pub(super) fn render_body(
     let knee = control(KNEE, ControlPresentation::InlineValue);
     let mix = control(MIX, ControlPresentation::InlineValue);
     let detector = control(DETECTOR, ControlPresentation::CompactSelector);
+    let sidechain = sidechain::control(view, cx, device);
     let mut graph = div()
         .id(ElementId::Name(
             format!("compressor-transfer-{}", device.value()).into(),
@@ -172,6 +175,7 @@ pub(super) fn render_body(
             if let Some(plot) = hex_widgets::curve_plot(
                 curve.points,
                 theme::device_style(theme::DeviceStyleRole::Display),
+                hex_widgets::CurvePlotGrid::Horizontal,
             ) {
                 graph = graph.child(plot);
             }
@@ -237,7 +241,8 @@ pub(super) fn render_body(
                 .justify_between()
                 .child(field("knee", knee))
                 .child(field("mix", mix)),
-        );
+        )
+        .children(sidechain);
     let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
     crate::device_composition::split_body(rail, main)
         .id(ElementId::Name(

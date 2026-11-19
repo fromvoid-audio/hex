@@ -2,7 +2,7 @@
 //! These receipts never authorize activation: due rendering uses Transition.
 use super::*;
 use hex_stream::ProtectionRole;
-impl Active {
+impl ActiveView<'_> {
     fn scheduled_is_pending(&self, due: u64) -> bool {
         self.state.runtime.as_ref().is_some_and(|runtime| {
             runtime.status().is_some_and(|status| {
@@ -58,6 +58,20 @@ impl Active {
             scheduled.allow_prewarm = false;
         }
     }
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    /// A successor that abandoned its candidate role leaves the original
+    /// schedule authoritative. Let it request its own pages again; the
+    /// revoked page stamps must never be reused.
+    pub(crate) fn publication_abandoned(&mut self) {
+        if let Some(scheduled) = self
+            .state
+            .streaming
+            .as_mut()
+            .and_then(|workspace| workspace.scheduled.as_mut())
+        {
+            scheduled.allow_prewarm = true;
+        }
+    }
     pub(super) fn service_launch_prewarm(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -96,6 +110,10 @@ impl Active {
             pending_play: false,
             command_prefix: prefix,
             frames,
+            fenced_restart: false,
+            foreign_continuation: false,
+            confirmed_fade: None,
+            tempo_cut: None,
         };
         if self
             .state
@@ -124,13 +142,16 @@ impl Active {
         self.state.streaming.as_mut()?.scheduled = None;
         Some(scheduled.ticket)
     }
-    pub(crate) fn inherit_schedule_observation(&mut self, previous: &mut Active) -> Option<u64> {
+    pub(crate) fn inherit_schedule_observation(
+        &mut self,
+        previous: &mut ActiveView<'_>,
+    ) -> Option<u64> {
         let mut scheduled = previous.state.streaming.as_mut()?.scheduled.take()?;
         // Called only after the real checked handoff. The closed constructor
         // starts without pending routes, and the single observational slot
         // forbids competing future schedules; any surviving due route is an
         // actual inherited target (partial cancellation can remove others).
-        if self.state.stamp.root != previous.state.stamp.root
+        if self.state.correlation.root != previous.state.correlation.root
             || !self.scheduled_is_pending(scheduled.due)
         {
             return Some(scheduled.ticket);
@@ -176,6 +197,18 @@ impl Active {
         domains: &mut [Option<DomainEnvelope>; 2],
         prefix: u64,
     ) -> bool {
+        self.stream_view()
+            .test_launch_prewarm_protected(domains, prefix)
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+impl ActiveView<'_> {
+    pub(crate) fn test_launch_prewarm_protected(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        prefix: u64,
+    ) -> bool {
         self.service_launch_prewarm(domains, prefix, 1);
         let Some(w) = self.state.streaming.as_ref() else {
             return false;
@@ -187,7 +220,7 @@ impl Active {
                         .ok()
                         .and_then(|p| p.inner.loan.as_ref())
                         .is_some_and(|loan| {
-                            loan.is_protected(
+                            loan.is_resource_protected(
                                 ProtectionRole::Candidate,
                                 stamp,
                                 &w.extents[token.slot],

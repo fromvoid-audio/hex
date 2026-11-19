@@ -16,3 +16,20 @@
          )*
  
          #[cfg(all(feature = "unsupported", not(any($($(target_os = $platform),*),*))))]
+--- a/src/sys/linux_macos/macos.rs
++++ b/src/sys/linux_macos/macos.rs
+@@ -1 +1 @@
+-use libc::{c_char, c_int, c_void, size_t, ssize_t, uint32_t};
++use libc::{c_char, c_int, c_void, size_t, ssize_t};
+@@ -26 +26 @@
+-            position: uint32_t,
++            position: u32,
+@@ -46 +46 @@
+-            position: uint32_t,
++            position: u32,
+@@ -82 +82 @@
+-            position: uint32_t,
++            position: u32,
+@@ -102 +102 @@
+-            position: uint32_t,
++            position: u32,

@@ -207,7 +207,7 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
     .expect("focus return");
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_resize(size(px(2100.0), px(760.0)));
+    visual.simulate_resize(size(px(2400.0), px(760.0)));
     visual.run_until_parked();
     let toggle = visual
         .debug_bounds("device-panel-bottom-toggle")
@@ -349,9 +349,19 @@ fn workspace_three_returns_device_menu_from_root_or_track_focus(cx: &mut TestApp
         });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| {
-                // GPUI's existing tracked-parent mouse-down handler focuses
-                // root when this non-focusable add button is clicked.
-                assert!(v.focus.is_focused(window));
+                assert!(!v.focus.is_focused(window));
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("hex_device_picker"))
+                );
+                assert!(
+                    window
+                        .context_stack()
+                        .iter()
+                        .any(|context| context.contains("hex_text_input"))
+                );
             })
         });
         visual.simulate_keystrokes("tab");
@@ -477,6 +487,11 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
         assert!(v.device_panel.add_menu_open);
     });
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    // Cancel the visible picker before using another control. Hidden-state
+    // coverage below deliberately installs the stale flag, independent of UI placement.
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     let toggle = visual
         .debug_bounds("device-panel-bottom-toggle")
         .unwrap()
@@ -485,6 +500,12 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_none());
     editor.read_with(&visual, |v, _| assert!(!v.clip_view_open));
+    editor.update(&mut visual, |v, cx| {
+        v.device_panel.add_menu_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     visual.update(|window, cx| editor.read_with(cx, |v, _| assert!(v.focus.is_focused(window))));
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
@@ -506,6 +527,19 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
     visual.simulate_click(toggle, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_some());
+    visual.update(|window, _| {
+        let contexts = window.context_stack();
+        assert!(
+            contexts
+                .iter()
+                .any(|context| context.contains("hex_device_picker"))
+        );
+        assert!(
+            contexts
+                .iter()
+                .any(|context| context.contains("hex_text_input"))
+        );
+    });
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.mode, crate::editor::EditorMode::Session)
@@ -544,6 +578,9 @@ fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut Test
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.mode, crate::editor::EditorMode::Arrangement)
     });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     let remove = visual
         .debug_bounds("remove selected track")
         .unwrap()
@@ -555,6 +592,13 @@ fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut Test
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_none());
     assert!(visual.debug_bounds("device-add-toggle").is_none());
+    // Preserve the legacy stale-menu regression after the rendered owner is gone.
+    editor.update(&mut visual, |v, cx| {
+        v.device_panel.add_menu_open = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-add-menu").is_none());
     let before = editor.read_with(&visual, |v, _| {
         assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
         assert!(v.selected_track.is_none());
@@ -612,11 +656,13 @@ fn workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape(
                 track,
                 points: vec![
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 1.0,
                         outgoing: hex_project::GainInterpolation::Linear,
                     },
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ONE,
                         gain: 0.5,
                         outgoing: hex_project::GainInterpolation::Linear,

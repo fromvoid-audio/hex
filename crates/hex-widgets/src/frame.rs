@@ -1,7 +1,11 @@
 use crate::{ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle};
-use gpui::{Div, IntoElement, div, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, Div, IntoElement, SharedString, TextRun, canvas, div, point, prelude::*, px, rgb,
+};
 
 /// Canonical compact shell geometry, in logical pixels, for every device.
+pub const DEVICE_FRAME_HEADER_WIDTH: f32 = 24.0;
+/// Minimum length of the title slot within the left header.
 pub const DEVICE_FRAME_HEADER_HEIGHT: f32 = 14.0;
 pub const DEVICE_FRAME_HEADER_PADDING: f32 = 3.0;
 pub const DEVICE_FRAME_HEADER_GAP: f32 = 2.0;
@@ -187,17 +191,33 @@ pub fn device_display(style: ControlStyle) -> Div {
         .gap(px(DEVICE_SECTION_RADIUS))
 }
 
-/// Canonical device frame. Title/actions retain caller input handlers. The idle
+/// Canonical housing for all production and sandbox devices; bodies supply slots
+/// instead of recreating the housing. Title/actions retain caller input handlers. The idle
 /// header and surround use the same surface, without an intervening border.
-/// `leading_control` precedes the flexible title; trailing actions follow it.
-/// The caller owns control state, commands and input; no decorative toggle is added.
-/// Use `device_body` for rounded lower-surface/content containment.
+/// The left header keeps its controls above a flexible vertical title slot.
+/// The caller owns device commands and supplies a stable parent element identity.
+/// Shared housing toggles own transient panel visibility. Open panels share
+/// a scroll region with the body.
+/// Use `device_body` for rounded body/content containment.
 pub fn device_frame(
     title: impl IntoElement,
     style: impl Into<DeviceFrameStyle>,
     leading_control: impl IntoElement,
     header_actions: impl IntoElement,
     body: impl IntoElement,
+) -> Div {
+    device_frame_with_modulators(title, style, leading_control, header_actions, body, None)
+}
+
+/// Shared housing with production modulator contents. The caller owns every
+/// edit and binding. The housing only manages the disclosure and its focus.
+pub fn device_frame_with_modulators(
+    title: impl IntoElement,
+    style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
+    header_actions: impl IntoElement,
+    body: impl IntoElement,
+    modulator_panel: Option<AnyElement>,
 ) -> Div {
     let style = style.into();
     let radius = DEVICE_CORNER_RADIUS;
@@ -207,15 +227,21 @@ pub fn device_frame(
         .min_w_0()
         .min_h_0()
         .border_1()
-        .border_color(rgb(style.controls.border))
+        .border_color(rgb(style.border))
         .bg(rgb(style.controls.surface))
         .rounded(px(radius))
         .overflow_hidden()
-        .child(device_header(title, style, leading_control, header_actions))
-        .child(body)
+        .child(crate::device_housing::Housing {
+            body: body.into_any_element(),
+            modulator_panel,
+            title: title.into_any_element(),
+            leading: leading_control.into_any_element(),
+            actions: header_actions.into_any_element(),
+            style,
+        })
 }
 
-/// Canonical header composition, also available to custom surrounds. Insets clip
+/// Canonical left header composition, also available to custom surrounds. Insets clip
 /// oversized caller actions/title content to the safe rounded interior.
 pub fn device_header(
     title: impl IntoElement,
@@ -227,22 +253,26 @@ pub fn device_header(
     div()
         .debug_selector(|| "device-frame-header".into())
         .flex()
+        .flex_col()
         .flex_shrink_0()
-        .h(px(DEVICE_FRAME_HEADER_HEIGHT))
+        .w(px(DEVICE_FRAME_HEADER_WIDTH))
         .border_l(px(DEVICE_FRAME_HEADER_PADDING))
         .border_r(px(DEVICE_FRAME_HEADER_PADDING))
+        .py(px(DEVICE_FRAME_HEADER_PADDING))
         .border_color(rgb(style.header_background))
         .overflow_hidden()
         .gap(px(DEVICE_FRAME_HEADER_GAP))
         .items_center()
         .bg(rgb(style.header_background))
         .rounded_tl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
-        .rounded_tr(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
+        .rounded_bl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
         .child(div().flex_shrink_0().child(leading_control))
+        .child(div().flex_shrink_0().child(header_actions))
         .child(
             div()
+                .w_full()
+                .min_h(px(DEVICE_FRAME_HEADER_HEIGHT))
                 .flex_1()
-                .h_full()
                 .flex()
                 .items_center()
                 .min_w_0()
@@ -251,5 +281,72 @@ pub fn device_header(
                 .text_size(px(style.controls.font_size))
                 .child(title),
         )
-        .child(div().flex_shrink_0().child(header_actions))
+}
+
+/// Paint the caller's display text using the inherited font and color. Only the
+/// glyphs rotate. The owner keeps the title's ordinary layout and drag target.
+pub fn vertical_device_name(name: impl Into<SharedString>) -> impl IntoElement {
+    let name = name.into();
+    let name = if name.contains(['\n', '\r']) {
+        SharedString::from(name.replace(['\n', '\r'], " "))
+    } else {
+        name
+    };
+    canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            let available = bounds.size.height - px(4.0);
+            if available <= px(0.0) || name.is_empty() {
+                return;
+            }
+            let style = window.text_style();
+            let font = style.font();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let text = window.text_system();
+            let run = TextRun {
+                len: name.len(),
+                font: font.clone(),
+                color: style.color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let mut line =
+                text.shape_line(name.clone(), font_size, std::slice::from_ref(&run), None);
+            if line.width > available {
+                let mut runs = vec![run];
+                let fitted = text.line_wrapper(font, font_size).truncate_line(
+                    name.clone(),
+                    available,
+                    "…",
+                    &mut runs,
+                );
+                line = text.shape_line(fitted, font_size, &runs, None);
+            }
+            let center = bounds.center();
+            let baseline = point(
+                center.x + (line.ascent - line.descent) / 2.0,
+                center.y + line.width / 2.0,
+            );
+            for run in &line.runs {
+                for glyph in &run.glyphs {
+                    let origin = baseline + point(glyph.position.y, -glyph.position.x);
+                    if glyph.is_emoji {
+                        // Keep the glyph in the name even when it has no
+                        // monochrome variant in the inherited font.
+                        let _ = window.paint_emoji(origin, run.font_id, glyph.id, font_size);
+                    } else {
+                        let _ = window.paint_vertical_glyph(
+                            origin,
+                            run.font_id,
+                            glyph.id,
+                            font_size,
+                            style.color,
+                        );
+                    }
+                }
+            }
+        },
+    )
+    .size_full()
 }

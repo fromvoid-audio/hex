@@ -58,15 +58,20 @@ mod tests {
     use crate::session_playback::{ReleaseEntry, SessionContinuation};
     use std::mem::{align_of, size_of};
 
-    // Uses the actual unchanged payload types; only location storage differs.
+    // Uses the actual current payload and source metadata; only location
+    // storage differs.
     #[allow(dead_code)]
     struct LegacyEntry {
+        source_origin: Option<super::super::ReleaseSourceOrigin>,
+        monitor_offset: u64,
         track_index: usize,
         tail_group: Option<u16>,
         track_id: hex_project::TrackId,
         order: u64,
         mix: crate::PreparedTrackMix,
         continuation: Option<SessionContinuation>,
+        inline_tuning_owned: bool,
+        clip_gain: f64,
         voice: crate::midi_template::MidiReleaseVoice,
     }
 

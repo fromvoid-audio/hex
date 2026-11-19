@@ -134,3 +134,40 @@ fn balanced_mastered_render_remains_partition_exact_through_enabled_loop() {
     }
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn solo_overrides_authored_track_mute_without_changing_history() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let (first, a) = add_track(&mut e, "first", "first.wav", &[[0.25; 2]; 16]);
+    let (_, b) = add_track(&mut e, "second", "second.wav", &[[0.5; 2]; 16]);
+    let media = BTreeMap::from([
+        (a, Audio::new(48_000, vec![[0.25; 2]; 16]).unwrap()),
+        (b, Audio::new(48_000, vec![[0.5; 2]; 16]).unwrap()),
+    ]);
+    e.execute(Command::Mute {
+        track: first,
+        muted: true,
+    })
+    .unwrap();
+    assert_eq!(render(e.project(), &media, 4), [[0.5; 2]; 4]);
+    e.execute(Command::ToggleSolo {
+        track: first,
+        exclusive: true,
+    })
+    .unwrap();
+    assert!(e.project().track(first).unwrap().muted());
+    assert_eq!(render(e.project(), &media, 4), [[0.25; 2]; 4]);
+    assert!(e.undo());
+    assert!(e.project().track(first).unwrap().muted());
+    assert_eq!(render(e.project(), &media, 4), [[0.5; 2]; 4]);
+    assert!(e.redo());
+    assert_eq!(render(e.project(), &media, 4), [[0.25; 2]; 4]);
+    // Multi-solo is additive even when both authored tracks remain muted.
+    let mut snapshot = e.project().snapshot();
+    for t in &mut snapshot.tracks {
+        t.muted = true;
+        t.soloed = true;
+    }
+    let both = Project::from_snapshot(snapshot).unwrap();
+    assert_eq!(render(&both, &media, 4), [[0.75; 2]; 4]);
+}

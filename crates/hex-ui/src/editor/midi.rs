@@ -14,7 +14,7 @@ impl EditorView {
     ) {
         if self.edit_pending()
             || self.project_generation != generation
-            || self.selected_clip != Some(clip_id)
+            || self.detail_clip_id() != Some(clip_id)
             || self
                 .state
                 .as_ref()
@@ -79,10 +79,17 @@ impl EditorView {
         self.enqueue(Request::Edit(command));
     }
 
+    /// Whole-clip selection for workspace actions; never infer it from the inspector.
     pub(super) fn selected_midi_clip_data(&self) -> Option<ClipId> {
         let state = self.state.as_ref()?;
         let id = self.selected_clip?;
         state.project.midi_source(id).map(|_| id)
+    }
+
+    /// Current inspector source, including a retained non-selection context.
+    pub(super) fn detail_midi_clip_data(&self) -> Option<ClipId> {
+        let id = self.detail_clip_id()?;
+        self.state.as_ref()?.project.midi_source(id).map(|_| id)
     }
 
     pub(super) fn selected_arrangement_midi_clip_data(&self) -> Option<ClipId> {
@@ -95,10 +102,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
-        self.enqueue(Request::Edit(Command::AddMidiTrack {
-            name: format!("track {}", count + 1),
-        }));
+        self.insert_default_track(self.new_track_insertion_anchor());
     }
 
     pub(super) fn add_midi_clip(&mut self) {
@@ -133,7 +137,7 @@ impl EditorView {
             return;
         };
         let _ = end;
-        self.piano_beat_start = BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.piano_beat_span = BeatTime::from_raw(4 * BeatTime::ONE.raw());
         self.midi_selection.clear();
         self.enqueue(Request::Edit(Command::PlaceMidiClip {
@@ -192,24 +196,18 @@ impl EditorView {
         }));
     }
 
-    pub(super) fn duplicate_midi_clip(&mut self, clip: ClipId) {
-        if self.edit_pending() {
-            return;
-        }
-        self.enqueue(Request::Edit(Command::DuplicateMidiClip(clip)));
-    }
-
     pub(super) fn remove_selected_note(&mut self) {
         if self.edit_pending() {
             return;
         }
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
         let notes = self.midi_selection.ids().to_vec();
         if notes.is_empty() {
             return;
         }
+        self.finish_live_midi_marquees();
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
         let accepted = if notes.len() == 1 {
@@ -226,6 +224,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
+        self.finish_live_midi_marquees();
         let Some(clip) = self.midi_clip() else {
             return;
         };
@@ -239,6 +238,56 @@ impl EditorView {
         self.midi_group_gesture = None;
         if let Err(error) = self.midi_selection.select_all(notes) {
             self.error = Some(error.into());
+        } else {
+            self.clear_midi_time_selection();
+            self.audition_midi_selection();
+        }
+    }
+
+    /// With a note selection, arrows retain musical nudge behavior. Otherwise they
+    /// move the local insertion cursor, never transport or canonical project time.
+    /// Grid-off navigation uses the existing sixteenth-note movement step.
+    pub(super) fn navigate_piano_cursor(&mut self, right: bool) {
+        if self.midi_step.enabled && right {
+            self.enter_midi_step();
+            return;
+        }
+        if !self.midi_step.enabled && !self.midi_selection.is_empty() {
+            self.nudge_selected_note(right);
+            return;
+        }
+        if self.edit_pending() || self.detail_midi_clip_data().is_none() {
+            return;
+        }
+        self.clear_midi_time_selection();
+        self.cancel_midi_note_gesture();
+        let current = self
+            .midi_marker
+            .unwrap_or(self.piano_beat_start.max(0) as u64);
+        let step = self.midi_snap_grid.movement_step();
+        let next = if right {
+            let Some(next) = current.checked_add(step).filter(|value| *value < u64::MAX) else {
+                return;
+            };
+            next
+        } else {
+            current.saturating_sub(step)
+        };
+        self.midi_marker = Some(next);
+        self.reveal_piano_cursor(next);
+    }
+
+    pub(super) fn reveal_piano_cursor(&mut self, next: u64) {
+        let step = self.midi_snap_grid.movement_step();
+        // Keep the insertion position visible without changing zoom or source extent.
+        let span = self.piano_beat_span.raw().max(1);
+        let start = self.piano_beat_start;
+        if i128::from(next) < start {
+            self.piano_beat_start = i128::from(next);
+        } else if i128::from(next) >= start.saturating_add(i128::from(span)) {
+            self.piano_beat_start =
+                i128::from(next.saturating_sub(span.saturating_sub(step.min(span / 2).max(1))))
+                    .min(i128::from(u64::MAX - span));
         }
     }
 
@@ -295,7 +344,7 @@ impl EditorView {
         &mut self,
         parameter: super::midi_group_drag::GroupParameter,
     ) {
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
@@ -312,12 +361,12 @@ impl EditorView {
 
     fn nudge_selected_group(&mut self, time_delta: i128, pitch_delta: i16) {
         if self.edit_pending()
-            || self.midi_selection.len() < 2
+            || self.midi_selection.is_empty()
             || self.midi_selection.len() > hex_project::MAX_NOTES
         {
             return;
         }
-        let Some(clip_id) = self.selected_midi_clip_data() else {
+        let Some(clip_id) = self.detail_midi_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -342,6 +391,7 @@ impl EditorView {
             if selected.binary_search(&note.id()).is_ok() {
                 originals.push(super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -356,16 +406,38 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.edit_pending()
         {
             self.error = Some("selected midi notes changed · nudge canceled".into());
             return;
         }
+        self.finish_live_midi_marquees();
         self.cancel_midi_note_gesture();
+        let first = originals.iter().map(|note| note.start).min().unwrap_or(0);
+        let Some((start, prefix)) = super::midi_viewport_grid::source_prefix(
+            i128::from(first) + time_delta,
+            u64::MAX - clip_length,
+            self.piano_beat_start,
+            self.piano_beat_span.raw(),
+            self.midi_snap_grid
+                .step_raw()
+                .unwrap_or(BeatTime::ONE.raw()),
+        ) else {
+            self.error = Some("midi source origin exceeds the finite grid range".into());
+            return;
+        };
+        let time_delta = start - i128::from(first);
+        for note in &mut originals {
+            let Some(start) = note.start.checked_add(prefix) else {
+                self.error = Some("midi source prefix overflow".into());
+                return;
+            };
+            note.start = start;
+        }
         let updates = match super::midi_group_drag::nudge_updates(
             &originals,
-            clip_length,
+            u64::MAX,
             time_delta,
             pitch_delta,
         ) {
@@ -376,10 +448,37 @@ impl EditorView {
                 return;
             }
         };
-        self.enqueue(Request::Edit(Command::UpdateMidiNotes {
-            clip: clip_id,
-            notes: updates,
-        }));
+        let command = if prefix > 0 {
+            Command::UpdateMidiNotesWithSourcePrefix {
+                clip: clip_id,
+                prefix: BeatTime::from_raw(prefix),
+                notes: updates,
+            }
+        } else if updates.iter().any(|note| {
+            note.start
+                .raw()
+                .checked_add(note.duration.raw())
+                .is_none_or(|end| end > clip_length)
+        }) {
+            Command::UpdateMidiNotesWithSourceExtent {
+                clip: clip_id,
+                notes: updates,
+            }
+        } else {
+            Command::UpdateMidiNotes {
+                clip: clip_id,
+                notes: updates,
+            }
+        };
+        if prefix > 0 || self.midi_audition.enabled {
+            self.submit_midi_drag_preview(
+                clip_id,
+                super::midi_pending_drag::Frozen::Nudge,
+                command,
+            );
+        } else {
+            self.enqueue(Request::Edit(command));
+        }
     }
 
     pub(super) fn adjust_selected_group(
@@ -393,7 +492,7 @@ impl EditorView {
         if self.edit_pending()
             || self.midi_selection.len() < 2
             || self.midi_selection.len() > hex_project::MAX_NOTES
-            || self.selected_midi_clip_data() != Some(expected_clip)
+            || self.detail_midi_clip_data() != Some(expected_clip)
             || self.project_generation != expected_generation
             || self.midi_selection.epoch() != expected_selection_epoch
             || self
@@ -423,6 +522,7 @@ impl EditorView {
                 .iter()
                 .map(|note| super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -442,7 +542,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -451,6 +551,7 @@ impl EditorView {
             return;
         }
         let grid_step = self.midi_snap_grid.movement_step();
+        self.finish_live_midi_marquees();
         self.cancel_midi_note_gesture();
         let updates = match super::midi_group_drag::parameter_updates(
             &originals,
@@ -470,7 +571,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -485,11 +586,19 @@ impl EditorView {
     }
 
     pub(super) fn edit_pending(&self) -> bool {
-        self.gain_recorder.blocks_edits()
-            || self.opening_project
-            || self.close_prompt_open
+        self.edit_blocked_outside_request_queue()
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
+    }
+
+    pub(super) fn edit_blocked_outside_request_queue(&self) -> bool {
+        self.gain_recorder.blocks_edits()
+            || self.midi_recorder.blocks_edits()
+            || self.audio_recorder.blocks_edits()
+            || self.automation_view.devices.pointer_active()
+            || self.sampler_parameter_pending()
+            || self.opening_project
+            || self.close_prompt_open
             || self.device_gesture_pending()
     }
 
@@ -497,7 +606,7 @@ impl EditorView {
         self.state
             .as_ref()?
             .project
-            .midi_source(self.selected_clip?)
+            .midi_source(self.detail_clip_id()?)
     }
 
     pub(super) fn update_note_field(
@@ -540,10 +649,14 @@ impl EditorView {
         match field {
             NoteField::Pitch(delta) => pitch = (i16::from(pitch) + delta).clamp(0, 127) as u8,
             NoteField::Onset(delta) => {
+                if delta < 0 && start < step {
+                    self.nudge_selected_group(-i128::from(step), 0);
+                    return;
+                }
                 start = if delta < 0 {
                     start.saturating_sub(step)
                 } else {
-                    start.saturating_add(step)
+                    start.saturating_add(step).min(u64::MAX - duration)
                 }
             }
             NoteField::Duration(delta) => {
@@ -568,21 +681,50 @@ impl EditorView {
         if !clip.notes().iter().any(|item| item.id() == note_id) {
             return;
         }
-        if start
-            .checked_add(duration)
-            .is_none_or(|end| end > clip.source_length().raw())
-        {
+        let Some(end) = start.checked_add(duration) else {
+            self.error = Some("midi note end exceeds the beat range".into());
+            return;
+        };
+        let grows_source = end > clip.source_length().raw();
+        if grows_source && !matches!(field, NoteField::Onset(_)) {
             self.error = Some("edit would move the note outside its clip".into());
             return;
         }
-        self.enqueue(Request::Edit(Command::UpdateMidiNote {
-            note: note_id,
-            start: BeatTime::from_raw(start),
-            duration: BeatTime::from_raw(duration),
-            pitch,
-            channel,
-            velocity,
-        }));
+        let Some(clip_id) = self.detail_midi_clip_data() else {
+            return;
+        };
+        self.finish_live_midi_marquees();
+        let command = if grows_source {
+            Command::UpdateMidiNotesWithSourceExtent {
+                clip: clip_id,
+                notes: vec![hex_project::MidiNoteUpdate {
+                    note: note_id,
+                    start: BeatTime::from_raw(start),
+                    duration: BeatTime::from_raw(duration),
+                    pitch,
+                    channel,
+                    velocity,
+                }],
+            }
+        } else {
+            Command::UpdateMidiNote {
+                note: note_id,
+                start: BeatTime::from_raw(start),
+                duration: BeatTime::from_raw(duration),
+                pitch,
+                channel,
+                velocity,
+            }
+        };
+        if self.midi_audition.enabled && (start != old_start || pitch != old_pitch) {
+            self.submit_midi_drag_preview(
+                clip_id,
+                super::midi_pending_drag::Frozen::Nudge,
+                command,
+            );
+        } else {
+            self.enqueue(Request::Edit(command));
+        }
     }
 }
 
@@ -593,3 +735,7 @@ pub(super) enum NoteField {
     Duration(i8),
     Velocity(i16),
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_command_ui_tests.rs"]
+mod tests;

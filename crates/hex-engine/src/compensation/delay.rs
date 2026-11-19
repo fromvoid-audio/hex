@@ -36,7 +36,15 @@ impl<T: Copy + Default> RingPair<T> {
     }
 
     pub(super) fn storage_bytes(&self) -> Result<usize, CompensationError> {
-        add_bytes(vector_bytes(&self.committed)?, vector_bytes(&self.scratch)?)
+        let Self {
+            committed,
+            scratch,
+            committed_cursor: _,
+            scratch_cursor: _,
+            dirty_start: _,
+            dirty_len: _,
+        } = self;
+        add_bytes(vector_bytes(committed)?, vector_bytes(scratch)?)
     }
 
     pub(super) fn begin(&mut self) {
@@ -61,7 +69,15 @@ impl<T: Copy + Default> RingPair<T> {
         previous
     }
 
+    pub(super) fn valid_len(&self) -> usize {
+        self.scratch_cursor.valid
+    }
+
     pub(super) fn at_delay(&self, delay: usize) -> Option<T> {
+        self.at_delay_ref(delay).copied()
+    }
+
+    pub(super) fn at_delay_ref(&self, delay: usize) -> Option<&T> {
         if delay >= self.scratch_cursor.valid {
             return None;
         }
@@ -71,7 +87,7 @@ impl<T: Copy + Default> RingPair<T> {
         } else {
             capacity - (delay + 1 - self.scratch_cursor.next)
         };
-        self.scratch.get(index).copied()
+        self.scratch.get(index)
     }
 
     fn copy_dirty(source: &[T], destination: &mut [T], start: usize, len: usize) {
@@ -146,12 +162,28 @@ impl<T: Copy + Default> RingPair<T> {
 #[derive(Debug)]
 pub struct DelayPair {
     ring: RingPair<Frame>,
+    committed_nonzero: usize,
+    scratch_nonzero: usize,
     delay_frames: u32,
     storage_bytes: usize,
     transaction_active: bool,
 }
 
 impl DelayPair {
+    pub(super) fn history_is_silent(&self) -> bool {
+        self.committed_nonzero == 0
+    }
+    pub(super) fn owned_data_bytes(&self) -> Result<usize, CompensationError> {
+        let Self {
+            ring,
+            committed_nonzero: _,
+            scratch_nonzero: _,
+            delay_frames: _,
+            storage_bytes: _,
+            transaction_active: _,
+        } = self;
+        ring.storage_bytes()
+    }
     pub fn new(delay_frames: u32, limits: CompensationLimits) -> Result<Self, CompensationError> {
         limits.validate()?;
         if delay_frames > limits.max_cumulative_frames {
@@ -170,6 +202,8 @@ impl DelayPair {
         }
         Ok(Self {
             ring,
+            committed_nonzero: 0,
+            scratch_nonzero: 0,
             delay_frames,
             storage_bytes,
             transaction_active: false,
@@ -207,7 +241,7 @@ impl DelayPair {
             return Err(CompensationError::BufferLength);
         }
         for (source, target) in input.iter().zip(output) {
-            *target = self.ring.push(*source);
+            *target = self.process_frame(*source);
         }
         Ok(())
     }
@@ -217,9 +251,17 @@ impl DelayPair {
             return Err(CompensationError::TransactionInactive);
         }
         for frame in frames {
-            *frame = self.ring.push(*frame);
+            *frame = self.process_frame(*frame);
         }
         Ok(())
+    }
+
+    fn process_frame(&mut self, input: Frame) -> Frame {
+        let previous = self.ring.push(input);
+        // For zero delay, previous equals input and the count stays zero.
+        self.scratch_nonzero = self.scratch_nonzero + usize::from(input != [0.0; 2])
+            - usize::from(previous != [0.0; 2]);
+        previous
     }
 
     pub fn commit_transaction(&mut self) -> Result<(), CompensationError> {
@@ -227,6 +269,7 @@ impl DelayPair {
             return Err(CompensationError::TransactionInactive);
         }
         self.ring.commit();
+        self.committed_nonzero = self.scratch_nonzero;
         self.transaction_active = false;
         Ok(())
     }
@@ -236,6 +279,7 @@ impl DelayPair {
             return Err(CompensationError::TransactionInactive);
         }
         self.ring.rollback();
+        self.scratch_nonzero = self.committed_nonzero;
         self.transaction_active = false;
         Ok(())
     }
@@ -248,9 +292,14 @@ impl DelayPair {
     }
     pub(super) fn copy_history_from(&mut self, source: &Self) {
         self.ring.copy_history_from(&source.ring);
+        // The transfer preflight requires equal ring lengths.
+        self.committed_nonzero = source.committed_nonzero;
+        self.scratch_nonzero = self.committed_nonzero;
     }
     pub fn reset_epoch(&mut self) {
         self.ring.reset();
+        self.committed_nonzero = 0;
+        self.scratch_nonzero = 0;
         self.transaction_active = false;
     }
 }

@@ -6,8 +6,10 @@
 //! fixed buffers, and commit/rollback copy the circular intervals actually touched.
 
 use crate::Frame;
-use std::{fmt, mem::size_of};
+use std::{fmt, mem::size_of, num::NonZeroU64};
 
+mod block_origins;
+pub(crate) use block_origins::OriginWindow;
 mod delay;
 mod plan;
 pub use delay::DelayPair;
@@ -119,6 +121,11 @@ fn requested_ring_bytes<T>(capacity: usize) -> Result<usize, CompensationError> 
 /// Beat preserves exact Q32.32 quarter-note ticks; no project or runtime owner is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportStamp {
+    /// Arrangement frame-coordinate identity when this content entered the
+    /// graph. History copies keep it with the exact original PCM and timing.
+    pub authored_clock_epoch: Option<NonZeroU64>,
+    /// Local source tempo; stays aligned with the same delayed content stamp.
+    pub tempo_micro_bpm: Option<u32>,
     /// Exact source performance-frame identity, independent of loop position.
     pub performance_frame: u64,
     /// Actual host transport state when this source frame entered the graph.
@@ -129,6 +136,9 @@ pub struct TransportStamp {
     /// Loop-normalized Arrangement beat when representable in Q32.32.
     /// An unavailable beat does not invalidate the exact frame identity.
     pub arrangement_beat_raw: Option<u64>,
+    /// Meter and active cycle at the same source origin as the audio.
+    pub meter: Option<hex_project::Meter>,
+    pub cycle_beats_raw: Option<(u64, u64)>,
 }
 
 /// One fixed prepared graph. Every edge uses the plan's stable-key sorted index.
@@ -145,6 +155,39 @@ pub struct CompensationRuntime {
 }
 
 impl CompensationRuntime {
+    pub(crate) fn visit_owned_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        let Self {
+            plan,
+            edges,
+            stamps,
+            storage_bytes: _,
+            transaction_active,
+        } = self;
+        if *transaction_active {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        let count = || -> Result<usize, CompensationError> {
+            let mut bytes = add_bytes(plan.storage_bytes()?, vector_bytes(edges)?)?;
+            bytes = add_bytes(bytes, stamps.storage_bytes()?)?;
+            for edge in edges {
+                bytes = add_bytes(bytes, edge.owned_data_bytes()?)?;
+            }
+            Ok(bytes)
+        };
+        let bytes = count().map_err(|_| crate::AudioStorageError::Overflow)?;
+        // All DATA belongs to this private constructor: immutable plan Vecs,
+        // edge rows, each concrete ring pair and the one transport stamp pair.
+        // No owning handle or borrowed device/provider is present.
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("compensation-owned-data", 0),
+            bytes,
+        )
+    }
     /// Fallible control-only construction. Budgets charge actual Vec capacities,
     /// including the edge table and immutable plan, rather than requested lengths.
     pub fn new(plan: LatencyPlan, limits: CompensationLimits) -> Result<Self, CompensationError> {
@@ -268,6 +311,44 @@ impl CompensationRuntime {
         self.stamps.at_delay(delay_frames as usize).flatten()
     }
 
+    pub(crate) fn stamp_at_delay_ref(&self, delay_frames: u32) -> Option<&TransportStamp> {
+        self.stamps.at_delay_ref(delay_frames as usize)?.as_ref()
+    }
+
+    /// Oldest already-staged frame the input can still see after a compatible
+    /// handoff. At the next render one new stamp is pushed before this read.
+    pub(crate) fn oldest_pending_stage_clock(&self, input_delay: u32) -> Option<NonZeroU64> {
+        let index = self
+            .stamps
+            .valid_len()
+            .min(input_delay as usize)
+            .checked_sub(1)?;
+        self.stamps
+            .at_delay_ref(index)?
+            .as_ref()?
+            .authored_clock_epoch
+    }
+
+    /// Preview an upcoming stage's Arrangement frame before its stamp is pushed.
+    /// The supplied incoming projection belongs to the same planned clock as
+    /// the caller's eventual render. Historical stamps are read verbatim from
+    /// this owner's current transactional history; no clock is rebased here.
+    pub(crate) fn preview_stage_frame<E>(
+        history: Option<&Self>,
+        delay_frames: u32,
+        upcoming_offset: u64,
+        incoming: impl FnOnce(u64) -> Result<Option<u64>, E>,
+    ) -> Result<Option<u64>, E> {
+        let delay = u64::from(delay_frames);
+        if upcoming_offset >= delay {
+            incoming(upcoming_offset - delay)
+        } else {
+            Ok(history
+                .and_then(|history| history.stamp_at_delay((delay - upcoming_offset - 1) as u32))
+                .map(|stamp| stamp.arrangement_frame))
+        }
+    }
+
     pub fn node_input_stamp(
         &self,
         node_index: usize,
@@ -330,6 +411,18 @@ impl CompensationRuntime {
     }
     pub(crate) fn history_horizon(&self) -> u32 {
         self.plan.max_latency_frames()
+    }
+    pub(crate) fn edge_history_is_silent(&self, index: usize) -> bool {
+        self.is_closed()
+            && self
+                .edges
+                .get(index)
+                .is_some_and(DelayPair::history_is_silent)
+    }
+    /// True when no committed routing edge holds PCM. Transport stamps do not
+    /// affect signal quiescence. This visits only the bounded edge table.
+    pub(crate) fn pcm_history_is_silent(&self) -> bool {
+        self.is_closed() && self.edges.iter().all(DelayPair::history_is_silent)
     }
     pub(crate) fn can_copy_edge_history_from(
         &self,

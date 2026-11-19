@@ -1,5 +1,15 @@
 //! Original nonlinear stereo saturation for the native Lattice device chain.
+//!
+//! Drive, curve and output run inside the shared 8x oversampled ADAA stage
+//! (`crate::oversampling`, Pulse #4146), so the soft and digital clips stay
+//! below -60 db of aliasing at +36 db drive. The device declares the stage's
+//! 11 frames of latency; the dry path is delayed by the same 11 frames, so the
+//! zero-wet endpoint is the exact dry signal, delayed. Bypass advances the
+//! histories and passes the input through undelayed (the host counts bypass as
+//! zero latency). Non-finite input samples pass through to the host's audio
+//! fault boundary without entering the histories.
 
+use crate::oversampling::{Kernel, LATENCY_FRAMES, Oversampler, Shaper};
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
     StereoFrame, StereoMatrix,
@@ -9,6 +19,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::any::Any;
+mod automation;
 
 pub const SATURATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.saturator");
 pub const SATURATOR_STATE_VERSION: u32 = 1;
@@ -25,50 +36,82 @@ pub mod parameter {
     pub const CURVE: ParameterId = ParameterId::from_static(4);
 }
 
-const DESCRIPTORS: &[ParameterDescriptor] = &[
-    ParameterDescriptor {
-        id: parameter::DRIVE,
-        label: "drive",
-        kind: ParameterKind::Float {
-            min: -36.0,
-            max: 36.0,
-            unit: Some("db"),
+const BINDINGS: [crate::parameter_binding::Binding<SaturatorSettings>; 4] = [
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::DRIVE,
+            label: "drive",
+            kind: ParameterKind::Float {
+                min: -36.0,
+                max: 36.0,
+                unit: Some("db"),
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(0.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::OUTPUT,
-        label: "output",
-        kind: ParameterKind::Float {
-            min: -36.0,
-            max: 6.0,
-            unit: Some("db"),
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.drive_db,
+        |c, v| c.drive_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::OUTPUT,
+            label: "output",
+            kind: ParameterKind::Float {
+                min: -36.0,
+                max: 6.0,
+                unit: Some("db"),
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(0.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::DRY_WET,
-        label: "dry/wet",
-        kind: ParameterKind::Float {
-            min: 0.0,
-            max: 1.0,
-            unit: None,
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.output_db,
+        |c, v| c.output_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::DRY_WET,
+            label: "dry/wet",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(1.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(1.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::CURVE,
-        label: "curve",
-        kind: ParameterKind::Choice {
-            labels: CURVE_LABELS,
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.dry_wet,
+        |c, v| c.dry_wet = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        ParameterDescriptor {
+            id: parameter::CURVE,
+            label: "curve",
+            kind: ParameterKind::Choice {
+                labels: CURVE_LABELS,
+            },
+            default: ParameterValue::Choice(0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Choice(0),
-        presentation: ParameterPresentation::Linear,
-    },
+        crate::parameter_binding::CHOICE_ENVELOPE,
+        |c| match c.curve {
+            SaturationCurve::SoftClip => 0,
+            SaturationCurve::DigitalClip => 1,
+        },
+        |c, v| {
+            c.curve = match v {
+                0 => SaturationCurve::SoftClip,
+                1 => SaturationCurve::DigitalClip,
+                _ => return Err(DeviceContractError::InvalidParameterValue),
+            };
+            Ok(())
+        },
+    ),
 ];
+const DESCRIPTORS: &[ParameterDescriptor] =
+    &crate::parameter_binding::descriptors(&BINDINGS, BINDINGS[0].descriptor);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SaturatorSettings {
@@ -129,16 +172,8 @@ fn decode(state: &NativeDeviceState) -> Result<SaturatorSettings, DeviceContract
 }
 
 fn validate_settings(settings: SaturatorSettings) -> Result<(), DeviceContractError> {
-    for (id, value) in [
-        (parameter::DRIVE, settings.drive_db),
-        (parameter::OUTPUT, settings.output_db),
-        (parameter::DRY_WET, settings.dry_wet),
-    ] {
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(ParameterValue::Float(value))?;
+    for binding in &BINDINGS {
+        binding.descriptor.validate(binding.read(&settings))?;
     }
     Ok(())
 }
@@ -194,17 +229,20 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        let settings = decode(state)?;
-        match id {
-            parameter::DRIVE => Ok(ParameterValue::Float(settings.drive_db)),
-            parameter::OUTPUT => Ok(ParameterValue::Float(settings.output_db)),
-            parameter::DRY_WET => Ok(ParameterValue::Float(settings.dry_wet)),
-            parameter::CURVE => Ok(ParameterValue::Choice(match settings.curve {
-                SaturationCurve::SoftClip => 0,
-                SaturationCurve::DigitalClip => 1,
-            })),
-            _ => Err(DeviceContractError::UnknownParameter),
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&decode(state)?))
+    }
+
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        let mut semantics = crate::parameter_binding::binding(&BINDINGS, id)?.semantics;
+        if runtime_parameter_automation_supported(id) {
+            semantics.modulation = hex_lattice_contract::ParameterModulation::SampleRate;
         }
+        Ok(Some(semantics))
     }
 
     fn patch_parameter(
@@ -214,28 +252,59 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        match (id, value) {
-            (parameter::DRIVE, ParameterValue::Float(value)) => settings.drive_db = value,
-            (parameter::OUTPUT, ParameterValue::Float(value)) => settings.output_db = value,
-            (parameter::DRY_WET, ParameterValue::Float(value)) => settings.dry_wet = value,
-            (parameter::CURVE, ParameterValue::Choice(0)) => {
-                settings.curve = SaturationCurve::SoftClip
-            }
-            (parameter::CURVE, ParameterValue::Choice(1)) => {
-                settings.curve = SaturationCurve::DigitalClip
-            }
-            _ => return Err(DeviceContractError::InvalidParameterValue),
-        }
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
         encode(settings)
     }
 }
 
+// The current concrete direct-control path implements only these fixed
+// IDs, with value-only/no-smoothing updates. Other families may explicitly
+// implement structural/smoothed delivery without changing Binding metadata.
+fn runtime_parameter_automation_supported(parameter: ParameterId) -> bool {
+    let implemented = parameter
+        .value()
+        .checked_sub(1)
+        .is_some_and(|index| index < 4);
+    let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+        return false;
+    };
+    implemented
+        && binding.declares_arrangement_automation()
+        && binding.semantics.normalization
+            != hex_lattice_contract::ParameterNormalization::Unspecified
+        && binding.semantics.stepping != hex_lattice_contract::ParameterStepping::Unspecified
+        && binding.semantics.change_impact == hex_lattice_contract::ParameterChangeImpact::ValueOnly
+        && binding.semantics.smoothing == hex_lattice_contract::ParameterSmoothing::None
+}
+
 impl NativeDeviceDefinition for SaturatorDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+            return Ok(false);
+        };
+        binding.semantics.validate(binding.descriptor)?;
+        Ok(runtime_parameter_automation_supported(parameter))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(Self::prepare_owned(state, context.sample_rate, parameters)?),
+            )),
+        })
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -257,24 +326,12 @@ impl NativeDeviceDefinition for SaturatorDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        if !(8_000..=192_000).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        Ok(Some(Box::new(PreparedSaturator {
-            settings: decode(state)?,
-            sample_rate,
-            drive_gain: gain_from_db(state, parameter::DRIVE)?,
-            output_gain: gain_from_db(state, parameter::OUTPUT)?,
-        })))
+        Ok(Some(Box::new(Self::prepare_owned(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
-}
-
-fn gain_from_db(state: &NativeDeviceState, id: ParameterId) -> Result<f64, DeviceContractError> {
-    let ParameterValue::Float(db) = SATURATOR_DEFINITION.read_parameter(state, id)? else {
-        return Err(DeviceContractError::InvalidParameterValue);
-    };
-    amplitude_from_db(db)
 }
 
 fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
@@ -284,7 +341,11 @@ fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
         .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
-struct PreparedSaturator {
+/// Closed control-prepared Saturator factory. All fields are fixed inline;
+/// canonical envelope backing stays in the host's existing program owner.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedSaturator {
+    automation_mask: u8,
     settings: SaturatorSettings,
     sample_rate: u32,
     drive_gain: f64,
@@ -292,6 +353,36 @@ struct PreparedSaturator {
 }
 
 impl PreparedNativeProcessor for PreparedSaturator {
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
+    fn parameter_automation_descriptor(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<ParameterDescriptor> {
+        self.supports(parameter)
+            .then(|| DESCRIPTORS.iter().find(|d| d.id == parameter).copied())
+            .flatten()
+    }
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.supports(parameter)
+    }
+
+    fn parameter_modulation_semantics(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterSemantics> {
+        if !self.supports_parameter_automation(parameter) {
+            return None;
+        }
+        let binding = crate::parameter_binding::binding(&BINDINGS, parameter).ok()?;
+        Some(hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            ..binding.semantics
+        })
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -301,60 +392,239 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(SaturatorRuntime {
+        self.check_inline_ownership();
+        let runtime = SaturatorRuntime {
+            base: *self,
+            controls: crate::parameter_binding::Controls::new(
+                self.settings,
+                std::array::from_fn(|index| self.automation_mask & (1u8 << index) != 0),
+            ),
             settings: self.settings,
             sample_rate: self.sample_rate,
             drive_gain: self.drive_gain,
             output_gain: self.output_gain,
-        })
+            kernel: Kernel::new(),
+            channels: [Oversampler::default(); 2],
+            delay: [[0.0; 2]; LATENCY_FRAMES],
+            delay_index: 0,
+            gain_ramp_remaining: [0; 2],
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
 
     fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
+        Some(LATENCY_FRAMES as u32)
     }
 
     fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite { max_tail_frames: 0 }
+        // Oversampler histories and the dry delay drain within this bound.
+        OutputTail::Finite {
+            max_tail_frames: TAIL_FRAMES,
+        }
     }
 }
 
-struct SaturatorRuntime {
+/// Zero input frames after which every history is exactly zero and output is
+/// silent: the oversampler drain, which outlasts the 11-frame dry delay.
+const TAIL_FRAMES: u64 = crate::oversampling::DRAIN_FRAMES as u64;
+const _: () = assert!(crate::oversampling::DRAIN_FRAMES >= LATENCY_FRAMES);
+
+/// Closed fixed-inline DSP owner, including the last effective controls used by
+/// transactional history copying. It owns no program, asset or external handle.
+///
+/// A direct drive or output edit arrives as a new runtime. Each fallback gain
+/// ramps from the previous effective value to its new target over 5 ms, even if
+/// another control is automated. Eligibility is independent of value presence;
+/// authored gains keep their per-frame law. Each ramp is independent of sample
+/// rate and block partition.
+/// Curve changes switch immediately: the two clip laws are not crossfaded.
+#[derive(Clone, Copy, Debug)]
+pub struct SaturatorRuntime {
+    base: PreparedSaturator,
+    controls: crate::parameter_binding::Controls<SaturatorSettings, 4>,
     settings: SaturatorSettings,
     sample_rate: u32,
     drive_gain: f64,
     output_gain: f64,
+    kernel: Kernel,
+    channels: [Oversampler; 2],
+    /// Dry input, delayed by the oversampler latency.
+    delay: [[f64; 2]; LATENCY_FRAMES],
+    delay_index: usize,
+    gain_ramp_remaining: [u32; 2],
+}
+
+/// Direct-edit gain ramp frames: 5 ms at every rate, like Compressor's dry/wet.
+fn gain_ramp_frames(sample_rate: u32) -> u32 {
+    sample_rate.div_ceil(200)
+}
+
+impl SaturatorRuntime {
+    /// Renders one frame and advances every history. Bypassed frames keep
+    /// their input; an active direct-edit ramp advances only when audible.
+    fn render_frame(&mut self, frame: &mut StereoFrame, bypassed: bool) {
+        if !bypassed {
+            self.advance_gain_ramp();
+        }
+        let settings = self.settings;
+        let wet = f64::from(settings.dry_wet);
+        let input = frame.map(f64::from);
+        let finite = input.map(f64::is_finite);
+        let mut processed = [0.0; 2];
+        for (channel, (stage, value)) in self.channels.iter_mut().zip(input).enumerate() {
+            let value = if finite[channel] { value } else { 0.0 };
+            let shaped = match settings.curve {
+                SaturationCurve::SoftClip => {
+                    stage.process(value, self.drive_gain, &self.kernel, &SoftClip)
+                }
+                SaturationCurve::DigitalClip => {
+                    stage.process(value, self.drive_gain, &self.kernel, &DigitalClip)
+                }
+            };
+            processed[channel] = shaped * self.output_gain;
+        }
+        let stored = [0, 1].map(|channel| if finite[channel] { input[channel] } else { 0.0 });
+        let dry = std::mem::replace(&mut self.delay[self.delay_index], stored);
+        self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
+        if bypassed {
+            return;
+        }
+        for channel in 0..2 {
+            if !finite[channel] {
+                // Leave the fault visible to the host's audio boundary.
+                continue;
+            }
+            frame[channel] = if wet == 0.0 {
+                dry[channel]
+            } else if wet == 1.0 {
+                processed[channel]
+            } else {
+                dry[channel] * (1.0 - wet) + processed[channel] * wet
+            } as f32;
+        }
+    }
+
+    fn clear_history(&mut self) {
+        self.channels = [Oversampler::default(); 2];
+        self.delay = [[0.0; 2]; LATENCY_FRAMES];
+        self.delay_index = 0;
+    }
+
+    /// Advance each fallback gain independently; eligibility alone never
+    /// suppresses a direct edit. Authored values retain their per-frame law.
+    #[inline]
+    fn advance_gain_ramp(&mut self) {
+        if self.gain_ramp_remaining == [0; 2] {
+            return;
+        }
+        for (index, (gain, target)) in [
+            (&mut self.drive_gain, self.base.drive_gain),
+            (&mut self.output_gain, self.base.output_gain),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let remaining = &mut self.gain_ramp_remaining[index];
+            if *remaining == 0 || self.controls.has_value(index) {
+                continue;
+            }
+            *gain += (target - *gain) / f64::from(*remaining);
+            *remaining -= 1;
+            if *remaining == 0 {
+                *gain = target;
+            }
+        }
+    }
+
+    /// Bypass is already a discontinuity; resume from exact fallback targets.
+    fn finish_gain_ramp(&mut self) {
+        if self.gain_ramp_remaining == [0; 2] {
+            return;
+        }
+        for (index, (gain, target)) in [
+            (&mut self.drive_gain, self.base.drive_gain),
+            (&mut self.output_gain, self.base.output_gain),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if self.gain_ramp_remaining[index] != 0 && !self.controls.has_value(index) {
+                *gain = target;
+            }
+        }
+        self.gain_ramp_remaining = [0; 2];
+    }
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.base.supports(parameter)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        let mut resolved = self.controls.resolve(&BINDINGS, values)?;
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            self.apply_automation(values, &mut resolved, offset)?;
+            self.render_frame(frame, false);
+        }
+        Ok(())
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        self.finish_gain_ramp();
+        let mut resolved = self.controls.resolve(&BINDINGS, values)?;
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            self.apply_automation(values, &mut resolved, offset)?;
+            self.finish_gain_ramp();
+            self.render_frame(frame, true);
+        }
+        Ok(())
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
-        let settings = self.settings;
-        let drive = self.drive_gain;
-        let output = self.output_gain;
-        let wet = f64::from(settings.dry_wet);
         for frame in frames {
-            if wet == 0.0 {
-                continue;
-            }
-            frame[0] = process_sample(f64::from(frame[0]), settings, drive, output, wet) as f32;
-            frame[1] = process_sample(f64::from(frame[1]), settings, drive, output, wet) as f32;
+            self.render_frame(frame, false);
         }
     }
 
     fn process_bypassed_block(
         &mut self,
-        _frames: &mut [StereoFrame],
+        frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        self.finish_gain_ramp();
+        for frame in frames {
+            self.render_frame(frame, true);
+        }
     }
 
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        self.controls.reset();
+        self.settings = self.base.settings;
+        self.drive_gain = self.base.drive_gain;
+        self.output_gain = self.base.output_gain;
+        self.clear_history();
+        self.gain_ramp_remaining = [0; 2];
+    }
 
     fn is_quiescent(&self) -> bool {
-        true
+        self.channels.iter().all(Oversampler::is_quiescent)
+            && self.delay.iter().flatten().all(|v| *v == 0.0)
     }
 
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
@@ -364,7 +634,52 @@ impl NativeProcessorRuntime for SaturatorRuntime {
             .is_some_and(|previous| self.sample_rate == previous.sample_rate)
     }
 
-    fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+        let Some(previous) = previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .filter(|previous| self.sample_rate == previous.sample_rate)
+        else {
+            return;
+        };
+        self.channels = previous.channels;
+        self.delay = previous.delay;
+        self.delay_index = previous.delay_index;
+        if self.base.automation_mask != 0 && previous.base.automation_mask != 0 {
+            self.controls.inherit(&previous.controls);
+            self.settings = previous.settings;
+        }
+        self.drive_gain = previous.drive_gain;
+        self.output_gain = previous.output_gain;
+        for (index, (gain, target, old_target, parameter)) in [
+            (
+                self.drive_gain,
+                self.base.drive_gain,
+                previous.base.drive_gain,
+                parameter::DRIVE,
+            ),
+            (
+                self.output_gain,
+                self.base.output_gain,
+                previous.base.output_gain,
+                parameter::OUTPUT,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            self.gain_ramp_remaining[index] = if gain == target {
+                0
+            } else if target == old_target
+                && (self.base.supports(parameter) || !previous.controls.has_value(index))
+            {
+                // Transactional twins retain each in-flight trajectory.
+                previous.gain_ramp_remaining[index]
+            } else {
+                gain_ramp_frames(self.sample_rate)
+            };
+        }
+    }
 
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
@@ -378,6 +693,44 @@ impl NativeProcessorRuntime for SaturatorRuntime {
     }
 }
 
+/// The soft-clip law and its continuous antiderivative: x^2 / 2 inside
+/// |x| <= 0.5, |x| - ln|x| / 4 + C outside, with C joining both at 0.5.
+struct SoftClip;
+impl Shaper for SoftClip {
+    fn tag(&self) -> u8 {
+        1
+    }
+    fn value(&self, x: f64) -> f64 {
+        soft_clip(x)
+    }
+    fn antiderivative(&self, x: f64) -> f64 {
+        let magnitude = x.abs();
+        if magnitude <= 0.5 {
+            0.5 * x * x
+        } else {
+            magnitude - 0.25 * magnitude.ln() - 0.375 - 0.25 * std::f64::consts::LN_2
+        }
+    }
+}
+/// The digital clip and its antiderivative: x^2 / 2 inside |x| <= 1, |x| - 1/2
+/// outside.
+struct DigitalClip;
+impl Shaper for DigitalClip {
+    fn tag(&self) -> u8 {
+        2
+    }
+    fn value(&self, x: f64) -> f64 {
+        x.clamp(-1.0, 1.0)
+    }
+    fn antiderivative(&self, x: f64) -> f64 {
+        if x.abs() <= 1.0 {
+            0.5 * x * x
+        } else {
+            x.abs() - 0.5
+        }
+    }
+}
+
 fn soft_clip(input: f64) -> f64 {
     let magnitude = input.abs();
     if magnitude <= 0.5 {
@@ -388,6 +741,8 @@ fn soft_clip(input: f64) -> f64 {
 }
 
 #[inline]
+/// The static transfer: the value a held finite input settles to once the
+/// oversampled stage and dry delay are full (`transfer_curve` previews it).
 fn process_sample(
     sample: f64,
     settings: SaturatorSettings,

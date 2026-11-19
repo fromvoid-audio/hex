@@ -7,6 +7,7 @@ impl<'a> AudioRootStorageLedger<'a> {
         handle: u64,
     ) -> Result<(), AudioStorageError> {
         let crate::Clip {
+            active: _,
             audio,
             start: _,
             end: _,
@@ -43,13 +44,30 @@ impl<'a> AudioRootStorageLedger<'a> {
         let crate::ClipMetadata {
             gain: _,
             source_phase: _,
+            reversed: _,
             fade: _,
             streamed: _,
+            sparse,
         } = metadata;
         self.bytes(
             Owner::exclusive(metadata),
             Location("clip-metadata-box", 0),
             std::mem::size_of::<crate::ClipMetadata>(),
+        )?;
+        if let Some(map) = sparse {
+            self.sparse_map(map)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn sparse_map(
+        &mut self,
+        map: &'a std::sync::Arc<crate::SparseFrameMap>,
+    ) -> Result<(), AudioStorageError> {
+        self.bytes(
+            Owner::shared(map),
+            Location("sparse-frame-map", 0),
+            map.retained_bytes()
+                .ok_or(AudioStorageError::UnknownStorage)?,
         )
     }
     pub(crate) fn map(&mut self, map: &'a hex_project::TempoMap) -> Result<(), AudioStorageError> {

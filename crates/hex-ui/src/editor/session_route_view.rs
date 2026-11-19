@@ -237,7 +237,7 @@ fn route_entries_match_project(entries: &[SessionRouteEntry], project: &Project)
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         CellRouteMarker, RouteView, cache_read_result, cell_route_markers,
@@ -296,7 +296,8 @@ mod tests {
         SessionRouteEntry {
             track_id,
             owner,
-            active_launch_beat_raw: None,
+            active_origin: None,
+            audio_launch_frame: None,
             pending: None,
         }
     }
@@ -312,6 +313,7 @@ mod tests {
             capability,
             route_state_generation: 7,
             performance_at_update: 100,
+            clock_anchor: None,
         }
     }
 

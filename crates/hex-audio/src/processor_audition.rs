@@ -365,6 +365,8 @@ fn validate(
     if match identity.owner {
         ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
         ProcessorChainOwner::Main => false,
+        // Source stages do not participate in live audition yet.
+        ProcessorChainOwner::Source(_) => true,
     } {
         return Err(TargetError::InvalidOwner);
     }
@@ -400,6 +402,13 @@ fn decode_intent(intent: u64) -> (u64, ClearMode) {
         ClearMode::Smooth
     };
     (intent >> 2, mode)
+}
+
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<TargetCommand>(TARGET_COMMAND_CAPACITY)?
+        .checked_add(3 * std::mem::size_of::<AtomicU64>())
 }
 
 #[cfg(test)]
@@ -473,6 +482,12 @@ mod tests {
             ),
             (
                 PostNodeIdentity::new(ProcessorChainOwner::Return(0), 17, main.device_type),
+                12,
+                48_000,
+                TargetError::InvalidOwner,
+            ),
+            (
+                PostNodeIdentity::new(ProcessorChainOwner::Source(4), 17, main.device_type),
                 12,
                 48_000,
                 TargetError::InvalidOwner,

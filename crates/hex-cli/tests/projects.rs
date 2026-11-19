@@ -61,7 +61,7 @@ fn run(directory: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
+fn explicit_cli_export_range_stems_and_overwrite_preserve_previous_file() {
     let directory = TempDir::new();
     fs::write(
         directory.path().join("source.wav"),
@@ -95,7 +95,11 @@ fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
     assert_eq!(entries.len(), 1);
     let data = fs::read(&entries[0]).unwrap();
     assert_eq!(data.len(), 52);
-    assert_eq!(i16::from_le_bytes([data[44], data[45]]), 8192);
+    let stem_sample = i16::from_le_bytes([data[44], data[45]]);
+    assert!(
+        (i32::from(stem_sample) - 8192).abs() <= 1,
+        "dithered {stem_sample}"
+    );
     fs::write(directory.path().join("existing.wav"), b"old recording").unwrap();
     let refusal = run(
         &directory.0,
@@ -123,18 +127,39 @@ fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
         String::from_utf8_lossy(&replaced.stderr)
     );
     let text = String::from_utf8(replaced.stdout).unwrap();
-    assert!(!text.contains("previous file preserved"));
-    assert!(fs::read_dir(directory.path()).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".hex-export-")
-    }));
-    assert_eq!(
-        &fs::read(directory.path().join("existing.wav")).unwrap()[44..],
-        &data[44..]
-    );
+    let retained = text
+        .lines()
+        .find_map(|line| line.strip_prefix("previous file preserved at "))
+        .expect("confirmed overwrite reports the retained file");
+    let retained = directory.path().join(retained);
+    assert_eq!(fs::read(&retained).unwrap(), b"old recording");
+    let staging: Vec<_> = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hex-export-")
+        })
+        .collect();
+    assert_eq!(staging, vec![retained]);
+    // Main and stem files carry independent ±1 LSB TPDF dither streams.
+    let replaced = fs::read(directory.path().join("existing.wav")).unwrap();
+    assert_eq!(replaced.len(), data.len());
+    for (main, stem) in replaced[44..]
+        .chunks_exact(2)
+        .zip(data[44..].chunks_exact(2))
+    {
+        let (main, stem) = (
+            i16::from_le_bytes([main[0], main[1]]),
+            i16::from_le_bytes([stem[0], stem[1]]),
+        );
+        assert!(
+            (i32::from(main) - i32::from(stem)).abs() <= 2,
+            "{main} vs {stem}"
+        );
+    }
     assert!(
         !run(
             &directory.0,
@@ -332,7 +357,8 @@ fn renders_converted_source_at_project_rate_and_refuses_changed_source_shape() {
     .expect("conversion reference");
     for (rendered, reference) in output.audio().frames().iter().zip(reference.frames()) {
         for channel in 0..2 {
-            assert!((rendered[channel] - reference[channel]).abs() <= 1.0 / 32768.0);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((rendered[channel] - reference[channel]).abs() <= 2.6 / 32_768.0);
         }
     }
     fs::write(&source, wav(&samples[..479])).expect("changed source");
@@ -475,4 +501,213 @@ fn persisted_balance_and_master_gain_reach_the_shared_wav_renderer() {
         }
     }
     assert_eq!(rendered.frames(), 3);
+}
+
+#[test]
+fn path_bearing_errors_keep_the_exact_mixed_case_path() {
+    let directory = TempDir::new();
+    let project = directory.path().join("MiXeD Case").join("Huge.HEX");
+    fs::create_dir(project.parent().unwrap()).expect("mixed-case directory");
+    fs::File::create(&project)
+        .and_then(|file| file.set_len(1 << 30))
+        .expect("sparse oversized project");
+    let output = directory.path().join("Out.wav");
+    let result = ProcessCommand::new(env!("CARGO_BIN_EXE_hex-cli"))
+        .arg("render-project")
+        .arg(&project)
+        .arg(&output)
+        .output()
+        .expect("run cli");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).expect("utf-8 stderr");
+    assert!(
+        stderr.contains(project.to_str().expect("utf-8 path")),
+        "{stderr}"
+    );
+    assert!(!output.exists());
+}
+
+/// Save the imported one-track project with a default reverb on its track, so
+/// the automatic export range must include the reverb's declared finite tail.
+fn reverb_tail_project(directory: &Path) -> (Project, PathBuf) {
+    fs::write(directory.join("source.wav"), wav(&[16_384, -8_192, 4_096])).unwrap();
+    assert!(
+        run(directory, &["import-project", "source.wav", "dry.hex"])
+            .status
+            .success()
+    );
+    let mut editor = Editor::new(hex_storage::load(directory.join("dry.hex")).unwrap(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.reverb",
+    ))
+    .unwrap();
+    let Created::Device(_) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("reverb")
+    };
+    hex_storage::save_new(directory.join("tail.hex"), editor.project()).unwrap();
+    (editor.project().clone(), directory.join("source.wav"))
+}
+
+#[test]
+fn render_project_includes_effect_tail_and_matches_canonical_export_bytes() {
+    let directory = TempDir::new();
+    let (project, source) = reverb_tail_project(directory.path());
+    let rendered = run(&directory.0, &["render-project", "tail.hex", "cli.wav"]);
+    assert!(
+        rendered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+
+    // The UI's ExportRange { frames: None } path for an ordinary in-memory project.
+    let media = decode_wav_file(&source, Limits::new(4096, 3)).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let bank = std::collections::BTreeMap::from([(asset, media.audio().clone())]);
+    let prepared = std::sync::Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &project,
+            &bank,
+            std::sync::Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let signal = hex_export::ExportSignal::Main;
+    let frames =
+        hex_export::controlled_frame_count(prepared.arrangement(), 0, None, &signal).unwrap();
+    assert!(frames > 3, "reverb tail must extend past the 3-frame clip");
+    let canonical = directory.path().join("canonical.wav");
+    hex_export::render_prepared_controlled(
+        &canonical,
+        prepared,
+        0,
+        frames,
+        signal,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+
+    let cli = fs::read(directory.path().join("cli.wav")).unwrap();
+    assert_eq!(u64::try_from(cli.len() - 44).unwrap(), frames * 4);
+    assert_eq!(cli, fs::read(canonical).unwrap());
+}
+
+#[test]
+fn export_project_overwrite_publishes_to_an_absent_destination() {
+    let directory = TempDir::new();
+    fs::write(directory.path().join("source.wav"), wav(&[8_192, -8_192])).unwrap();
+    assert!(
+        run(
+            &directory.0,
+            &["import-project", "source.wav", "project.hex"]
+        )
+        .status
+        .success()
+    );
+    let result = run(
+        &directory.0,
+        &[
+            "export-project",
+            "project.hex",
+            "new.wav",
+            "0",
+            "2",
+            "--overwrite",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        fs::read(directory.path().join("new.wav")).unwrap().len(),
+        52
+    );
+}
+
+#[test]
+fn export_project_format_option_writes_pcm24_and_float32_that_decode_to_the_render() {
+    let directory = TempDir::new();
+    fs::write(
+        directory.path().join("source.wav"),
+        wav(&[16_384, 8_192, -8_192]),
+    )
+    .unwrap();
+    assert!(
+        run(
+            &directory.0,
+            &["import-project", "source.wav", "project.hex"]
+        )
+        .status
+        .success()
+    );
+    let id = hex_storage::load(directory.path().join("project.hex"))
+        .unwrap()
+        .tracks()[0]
+        .id()
+        .value();
+    let stems = format!("--stems={id}");
+    let export = |destination: &str, extra: &[&str]| {
+        let mut args = vec!["export-project", "project.hex", destination, "0", "3"];
+        args.extend_from_slice(extra);
+        let result = run(&directory.0, &args);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    export("float.wav", &["--format=float32"]);
+    export("pcm24.wav", &["--overwrite", "--format=pcm24"]);
+    export("stems", &["--format=float32", &stems]);
+    let decode = |path: PathBuf| {
+        decode_wav_file(path, Limits::new(4096, 3))
+            .expect("decode export")
+            .audio()
+            .frames()
+            .to_vec()
+    };
+    let float = decode(directory.path().join("float.wav"));
+    // Float output is bit-exact: the 16-bit source values pass through at unity.
+    assert_eq!(float, [[0.5, 0.5], [0.25, 0.25], [-0.25, -0.25]]);
+    let pcm24 = decode(directory.path().join("pcm24.wav"));
+    for (packed, exact) in pcm24.iter().flatten().zip(float.iter().flatten()) {
+        assert!(
+            (packed - exact).abs() <= 1.0 / 8_388_608.0,
+            "{packed} not within one 24-bit lsb of {exact}"
+        );
+    }
+    assert_eq!(
+        fs::read(directory.path().join("pcm24.wav")).unwrap().len(),
+        44 + 3 * 6
+    );
+    let stem = fs::read_dir(directory.path().join("stems"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .next()
+        .unwrap();
+    assert_eq!(decode(stem), float, "stems honour the selected format");
+    let refused = run(
+        &directory.0,
+        &[
+            "export-project",
+            "project.hex",
+            "bad.wav",
+            "0",
+            "3",
+            "--format=pcm8",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("unknown export format"));
+    assert!(!directory.path().join("bad.wav").exists());
 }

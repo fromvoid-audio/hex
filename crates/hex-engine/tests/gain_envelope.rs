@@ -36,6 +36,7 @@ fn fixture(frames: usize) -> Fixture {
 }
 fn point(beat: BeatTime, gain: f32, outgoing: GainInterpolation) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat,
         gain,
         outgoing,
@@ -267,7 +268,9 @@ fn transport_clock_survives_session_ownership_pause_seek_wrap_and_linear_export(
     p.render(&mut output).unwrap();
     assert_eq!(
         output,
-        [[0.125, -0.25], [0.25, -0.5], [0.125, -0.25], [0.25, -0.5]]
+        // A two-frame loop preserves its attack and fades its final
+        // Arrangement-audio frame to zero on every pass.
+        [[0.125, -0.25], [0.0; 2], [0.125, -0.25], [0.0; 2]]
     );
     let mut linear = SessionPlayback::new_linear_arrangement_export(revision(&f)).unwrap();
     linear.apply(SessionPlaybackCommand::Play).unwrap();
@@ -352,10 +355,31 @@ fn gain_balance_mute_is_once_before_sends_return_feeds_and_master() {
 #[test]
 fn automated_hybrid_track_matches_static_unity_oracle_and_tempo_edit_reprepares_at_position() {
     let mut f = fixture(48000);
+    let Created::Track(source) = f
+        .editor
+        .execute(Command::AddTrack {
+            name: "silent midi source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("source track")
+    };
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetMidiSource {
+            destination: f.track,
+            source: Some(source),
+        })
+        .unwrap();
     let Created::Clip(clip) = f
         .editor
         .execute(Command::PlaceMidiClip {
-            track: f.track,
+            track: source,
             start: BeatTime::ZERO,
             length: BeatTime::ONE,
         })
@@ -367,6 +391,7 @@ fn automated_hybrid_track_matches_static_unity_oracle_and_tempo_edit_reprepares_
         .execute(Command::AddMidiNotes {
             clip,
             notes: vec![hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::ZERO,
                 duration: BeatTime::ONE,
                 pitch: 60,
@@ -401,20 +426,41 @@ fn automated_hybrid_track_matches_static_unity_oracle_and_tempo_edit_reprepares_
     );
     let mut old = playback(&f);
     old.render(&mut [[0.0; 2]; 12000]).unwrap();
+    let beat = f
+        .editor
+        .project()
+        .tempo_map()
+        .frame_to_beat(12_000)
+        .unwrap();
     let mut snapshot = f.editor.project().snapshot();
     snapshot.tempo_points = vec![TempoPoint::new(
         BeatTime::ZERO,
         Tempo::new(60_000_000).unwrap(),
     )];
     f.editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
-    // New-map frame12000 is beat1/4. No implicit smoothing from the old gain1/2.
+    // Keep the old beat under the new map, without implicit gain smoothing.
+    let frame = f.editor.project().tempo_map().beat_to_frame(beat).unwrap();
+    assert_eq!(frame, 24_000);
     let r = revision(&f);
     let mut next = SessionPlayback::new(r).unwrap();
     next.try_inherit_state_from(&mut old).unwrap();
+    assert_eq!(next.arrangement_frame(), frame);
     let mut sample = [[0.0; 2]; 1];
     next.render(&mut sample).unwrap();
-    let expected = arrangement(&f);
-    assert_eq!(sample[0], expected[12000]);
+    // The retained shared MIDI source keeps its performance clock while the
+    // Arrangement gain follows the remapped musical cursor. Use an independent
+    // unity-gain render at that source clock and apply the beat-1/2 gain.
+    let mut unity_snapshot = f.editor.project().snapshot();
+    unity_snapshot.tracks[0].gain = 1.0;
+    unity_snapshot.tracks[0].gain_envelope.clear();
+    let unity = Fixture {
+        editor: Editor::new(Project::from_snapshot(unity_snapshot).unwrap(), 8).unwrap(),
+        track: f.track,
+        asset: f.asset,
+        frames: f.frames,
+    };
+    let source = arrangement(&unity)[12_000];
+    assert_eq!(sample[0], [source[0] * 0.5, source[1] * 0.5]);
 }
 
 #[test]

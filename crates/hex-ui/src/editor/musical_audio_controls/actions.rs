@@ -80,7 +80,9 @@ pub(super) fn command(
         Action::Anchor => {
             return Ok(Command::SetAudioClipMusical {
                 clip: id,
-                enabled: clip.audio_edit().is_none_or(|e| e.musical_start.is_none()),
+                enabled: clip
+                    .audio_edit()
+                    .is_none_or(|e| e.live_musical_start().is_none()),
             });
         }
         Action::Warp => {
@@ -89,13 +91,7 @@ pub(super) fn command(
                 settings: if domain.is_some_and(|d| d.warp_enabled) {
                     None
                 } else {
-                    Some(
-                        if let Some(settings) = domain.and_then(|d| d.warp.as_ref()) {
-                            settings.clone()
-                        } else {
-                            hex_project::default_audio_warp(clip, project.tempo_map(), modes()[0])?
-                        },
-                    )
+                    Some(project.audio_warp_settings_for_enable(id)?)
                 },
             });
         }
@@ -302,5 +298,72 @@ pub(super) fn command(
     Ok(Command::SetAudioClipWarp {
         clip: id,
         settings: Some(settings),
+    })
+}
+
+/// Every control declares its group semantics here; source indices are local.
+/// No wildcard: adding an action requires choosing its selection behavior.
+pub(super) fn selection_command(
+    project: &hex_project::Project,
+    id: ClipId,
+    action: Action,
+) -> Result<Command, hex_project::Invalid> {
+    use hex_project::{ClipEdit, WarpAdjustment};
+    let edit = match action {
+        Action::Pitch(cents) => ClipEdit::PitchBy { cents },
+        Action::Warp => ClipEdit::WarpEnabled {
+            enabled: project
+                .clip(id)
+                .ok_or(hex_project::Invalid("audio clip no longer exists"))?
+                .audio_edit()
+                .is_none_or(|edit| !edit.domain.warp_enabled),
+        },
+        Action::SelectMode(index) => ClipEdit::WarpMode {
+            mode: *modes()
+                .get(usize::from(index))
+                .ok_or(hex_project::Invalid("warp algorithm missing"))?,
+        },
+        Action::Grain(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Grain(delta),
+        },
+        Action::Fluctuation(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Fluctuation(delta),
+        },
+        Action::Seed => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Seed,
+        },
+        Action::Preserve => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Preserve,
+        },
+        Action::SelectTail(tail) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Tail(tail),
+        },
+        Action::Decay(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Decay(delta),
+        },
+        Action::Formants(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Formants(delta),
+        },
+        Action::Resolution(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Resolution(delta),
+        },
+        Action::Anchor
+        | Action::MarkerAdd
+        | Action::MarkerFrame(..)
+        | Action::MarkerBeat(..)
+        | Action::MarkerRemove(_)
+        | Action::EnvelopeAdd
+        | Action::EnvelopeFrame(..)
+        | Action::EnvelopeGain(..)
+        | Action::EnvelopeRemove(_)
+        | Action::Page(_) => {
+            // Scalar commands are widened by the central property resolver.
+            // Indexed source commands retain their explicit source scope.
+            return command(project, id, action);
+        }
+    };
+    Ok(Command::EditClips {
+        clips: vec![id],
+        edit,
     })
 }

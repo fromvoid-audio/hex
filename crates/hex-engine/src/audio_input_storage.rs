@@ -227,6 +227,14 @@ impl OwnedAudioInputs {
     }
 }
 impl AudioInputStorageAndObligations {
+    pub(crate) fn visit_owned_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        ledger.inputs(&self.inputs)?;
+        ledger.vec(&self.allocations)?;
+        ledger.vec(&self.obligations)
+    }
     pub fn summary(&self) -> AudioInputStorageSummary {
         self.summary
     }
@@ -235,6 +243,13 @@ impl AudioInputStorageAndObligations {
         asset: hex_project::AssetId,
     ) -> Result<AudioSourceToken, AudioStorageError> {
         self.inputs.source_token(asset)
+    }
+    /// Borrow the exact pitched source through the retained input bank.
+    pub fn pitched_source_token(
+        &self,
+        key: crate::StreamSourceKey,
+    ) -> Result<AudioSourceToken, AudioStorageError> {
+        self.inputs.pitched_source_token(key)
     }
     pub fn source_view(
         &self,

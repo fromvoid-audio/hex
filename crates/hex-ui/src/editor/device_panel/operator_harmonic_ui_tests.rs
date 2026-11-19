@@ -29,6 +29,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     let (handle, editor) = actor_editor_window(cx, service, initial, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     let tab = Box::leak(format!("operator-page-{}-oscillator", device.value()).into_boxed_str());
     let bounds = visual.debug_bounds(tab).unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
@@ -38,7 +39,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         .debug_bounds(graph_id)
         .expect("64-column painter is visible");
     assert!(bounds.size.height >= px(80.0));
-    assert!(bounds.size.width >= px(200.0));
+    assert!(bounds.size.width >= px(180.0));
     // The painter owns the upper display; optional tools stay inactive.
     for index in 0..4 {
         let tool =
@@ -46,24 +47,31 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         assert!(visual.debug_bounds(tool).is_none());
     }
     let tab_bounds = visual.debug_bounds(tab).unwrap();
-    assert!(bounds.bottom() <= tab_bounds.top());
-    let preview = visual.debug_bounds("operator-waveform-preview").unwrap();
-    assert!(preview.top() >= tab_bounds.bottom());
-    assert!(preview.size.width >= px(48.0));
-    assert!(preview.size.height >= px(12.0));
+    let cycle = visual.debug_bounds("operator-waveform-cycle").unwrap();
+    assert!(bounds.left() >= tab_bounds.right());
+    assert!(cycle.bottom() <= bounds.top());
+    assert!(visual.debug_bounds("operator-envelope-graph").is_some());
+    assert!(visual.debug_bounds("operator-fixed-anchors").is_none());
     let envelope = visual.debug_bounds("operator-envelope-fields").unwrap();
-    let oscillator = visual.debug_bounds("operator-oscillator-fields").unwrap();
-    assert!(envelope.right() <= oscillator.left());
+    let oscillator = visual
+        .debug_bounds(Box::leak(
+            format!("operator-options-panel-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(oscillator.right() <= envelope.left());
     assert!(envelope.top() >= tab_bounds.bottom());
-    assert!(oscillator.top() >= tab_bounds.bottom());
     let field = |parameter| {
         Box::leak(format!("operator-field-{}-{parameter}", device.value()).into_boxed_str())
             as &'static str
     };
-    let phase = visual.debug_bounds(field(3)).unwrap();
+    let phase = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-3-value", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
     let velocity = visual.debug_bounds(field(74)).unwrap();
     assert!(
-        velocity.right() <= phase.left(),
+        phase.right() <= velocity.left(),
         "envelope velocity and oscillator phase cells must not collide"
     );
     for parameter in [33, 34, 35, 36, 37, 38, 74, 360, 361, 362] {
@@ -79,7 +87,7 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         let bounds = visual.debug_bounds(control).expect("oscillator toggle");
         assert!(bounds.left() >= oscillator.left() && bounds.right() <= oscillator.right());
     }
-    for parameter in [3, 74, 78, 358, 360, 361] {
+    for parameter in [3, 74, 358, 360, 361] {
         let text = editor.read_with(cx, |view, app| {
             let ParameterControl::Float { entity, .. } = &view.device_panel.controls
                 [&ParameterKey {
@@ -162,6 +170,80 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
             ));
         }
     });
+    // A fast right stroke clears every crossed column, even with Shift held,
+    // and retains the same single canonical snapshot/history transaction.
+    let (before_clear, clear_revision, before_values) = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.device(device).unwrap().state().clone(),
+            state.revision,
+            (93..=156)
+                .map(|id| operator_parameter_value(state, track, device, id))
+                .collect::<Vec<_>>(),
+        )
+    });
+    let clear_from = point(
+        bounds.left() + bounds.size.width * 2.5 / 64.0,
+        bounds.top() + px(2.0),
+    );
+    let clear_to = point(
+        bounds.left() + bounds.size.width * 59.5 / 64.0,
+        bounds.center().y,
+    );
+    let outside = point(bounds.right() + px(20.0), bounds.top() - px(10.0));
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_down(clear_from, MouseButton::Right, shift);
+    visual.simulate_mouse_move(clear_to, Some(MouseButton::Right), shift);
+    visual.simulate_mouse_up(outside, MouseButton::Right, shift);
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == clear_revision + 1)
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        for (index, before) in before_values.iter().enumerate() {
+            assert_eq!(
+                operator_parameter_value(state, track, device, 93 + index as u32),
+                if index < 2 {
+                    *before
+                } else {
+                    ParameterValue::Float(0.0)
+                }
+            );
+        }
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.project.device(device).unwrap().state() == &before_clear)
+    });
+    visual.run_until_parked();
+    let cancel_revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+    visual.simulate_mouse_down(clear_from, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_move(clear_to, Some(MouseButton::Right), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, cancel_revision);
+        assert_eq!(state.project.device(device).unwrap().state(), &before_clear);
+    });
+    // Return to the final painted column for the existing keyboard continuation.
+    for _ in 0..64 {
+        visual.simulate_keystrokes("right");
+    }
     // A redraw must refresh the painter's values, not just the canonical project.
     // Keyboard adjustment of the last painted bar observes that rendered value.
     visual.run_until_parked();
@@ -207,7 +289,14 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     let envelope_tab_bounds = visual.debug_bounds(envelope_tab).unwrap();
     visual.simulate_click(envelope_tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();
-    assert_eq!(visual.debug_bounds(field(3)).unwrap(), phase);
+    assert_eq!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-3-value", device.value()).into_boxed_str()
+            ))
+            .unwrap(),
+        phase
+    );
     assert_eq!(visual.debug_bounds(field(74)).unwrap(), velocity);
     assert_eq!(visual.debug_bounds(tab).unwrap(), tab_bounds);
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
@@ -382,7 +471,8 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
         );
     });
     assert!(visual.debug_bounds(graph).is_none());
-    assert!(visual.debug_bounds("operator-waveform-preview").is_some());
+    assert!(visual.debug_bounds("operator-envelope-graph").is_some());
+    assert!(visual.debug_bounds("operator-fixed-anchors").is_none());
     visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_click(tab_bounds.center(), Modifiers::default());
     visual.run_until_parked();
@@ -417,25 +507,10 @@ fn waveform_menu_order_preserves_saved_choices_and_undo(cx: &mut TestAppContext)
     visual.run_until_parked();
     let popup = Box::leak(format!("device-{}-parameter-57-popup", device.value()).into_boxed_str());
     let popup_bounds = visual.debug_bounds(popup).expect("wave menu");
-    let label_width = visual.update(|window, _| {
-        window
-            .text_system()
-            .shape_line(
-                "noise looped".into(),
-                px(control_style().font_size),
-                &[gpui::TextRun {
-                    len: "noise looped".len(),
-                    font: gpui::font(theme::FONT_FAMILY),
-                    color: gpui::rgb(0xffffff).into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            )
-            .width
-    });
-    assert!(popup_bounds.size.width >= label_width + px(10.0));
+    // Compact menus share the field rectangle; full option text belongs to
+    // each row's tooltip rather than widening the device-panel layout.
+    assert_eq!(popup_bounds.left(), bounds.left());
+    assert_eq!(popup_bounds.right(), bounds.right());
     visual.simulate_keystrokes("down");
     pump_until(&editor, cx, |view| {
         view.state.as_ref().is_some_and(|state| {
@@ -476,6 +551,7 @@ fn companion_toggles_and_loop_are_canonical_with_undo(cx: &mut TestAppContext) {
     let (handle, editor) = actor_editor_window(cx, service, initial, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    open_operator_options(&mut visual, device);
     for (parameter, expected) in [
         (357, ParameterValue::Bool(false)),
         (359, ParameterValue::Bool(true)),

@@ -2,16 +2,12 @@
 use super::*;
 use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
 use hex_lattice_contract::{DeviceTypeId, ParameterValue};
-use std::time::{Duration, Instant};
 
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
-            Err(error) => panic!("browser instrument worker: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 
@@ -21,6 +17,7 @@ fn request(revision: u64, kind: &'static str) -> Request {
         revision,
         class: hex_engine::NativeDeviceClass::Instrument,
         type_id: DeviceTypeId::from_static(kind),
+        new_track_gain: None,
     }
 }
 
@@ -28,7 +25,11 @@ fn request(revision: u64, kind: &'static str) -> Request {
 fn browser_enter_worker_selected_defaults_created_track_and_one_undo_redo() {
     let service = Service::new(48_000, 32, 0).unwrap();
     let original = event(&service).state;
-    for kind in ["hex.instrument.fm4", "hex.instrument.sine"] {
+    for kind in [
+        "hex.instrument.fm4",
+        "hex.instrument.sine",
+        "hex.instrument.sampler",
+    ] {
         let before = if kind == "hex.instrument.fm4" {
             Arc::clone(&original)
         } else {
@@ -42,7 +43,8 @@ fn browser_enter_worker_selected_defaults_created_track_and_one_undo_redo() {
         assert!(added.error.is_none(), "{:?}", added.error);
         let track = &added.state.project.tracks()[0];
         assert!(matches!(added.created, Some(hex_project::Created::Track(id)) if id == track.id()));
-        assert_eq!(track.name(), "track 1");
+        assert_eq!(track.name(), kind.trim_start_matches("hex.instrument."));
+        assert!(track.name_is_automatic());
         assert_eq!(track.ordered_device_chain().count(), 1);
         assert_eq!(
             track.instrument().unwrap().state(),
@@ -104,6 +106,7 @@ fn browser_enter_worker_refuses_unknown_wrong_class_and_stale_without_mutation()
                 revision,
                 class,
                 type_id: DeviceTypeId::from_static(kind),
+                new_track_gain: None,
             })
             .unwrap();
         let refused = event(&service);
@@ -185,4 +188,110 @@ fn browser_enter_worker_refusal_preserves_active_gesture_and_history() {
         event(&service).state.project.tracks(),
         initial.project.tracks()
     );
+}
+
+#[test]
+fn existing_track_drops_rename_automatic_names_with_instruments_only() {
+    use hex_engine::NativeDeviceClass::{Effect, Instrument};
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let drop = |editor: &mut hex_project::Editor, track, class, kind: &'static str| {
+        let instrument = editor
+            .project()
+            .track(track)
+            .and_then(hex_project::Track::instrument)
+            .map(hex_project::Device::id);
+        let command = arrangement_device_command(
+            editor.project(),
+            class,
+            DeviceTypeId::from_static(kind),
+            ArrangementDeviceDestination::ExistingTrack { track, instrument },
+            Some(0.25),
+        )
+        .unwrap();
+        if class == Effect {
+            assert!(matches!(command, Command::InsertDevice { .. }));
+        }
+        editor.execute(command).unwrap();
+        let track = editor.project().track(track).unwrap();
+        assert_eq!(track.gain(), 1.0);
+        (track.name().to_owned(), track.name_is_automatic())
+    };
+    let Ok(hex_project::Created::Track(default)) =
+        editor.execute(Command::InsertDefaultTrack { before_track: None })
+    else {
+        panic!("default track")
+    };
+    assert_eq!(
+        drop(&mut editor, default, Effect, "hex.utility"),
+        ("track 1".into(), true)
+    );
+    assert_eq!(
+        drop(&mut editor, default, Instrument, "hex.instrument.sampler"),
+        ("sampler".into(), true)
+    );
+    assert_eq!(
+        drop(&mut editor, default, Instrument, "hex.instrument.sine"),
+        ("sine".into(), true)
+    );
+    let Ok(hex_project::Created::Track(custom)) = editor.execute(Command::AddTrack {
+        name: "track 2".into(),
+    }) else {
+        panic!("custom track")
+    };
+    assert_eq!(
+        drop(&mut editor, custom, Instrument, "hex.instrument.sampler"),
+        ("track 2".into(), false)
+    );
+}
+
+#[test]
+fn device_track_requests_apply_captured_gain_atomically() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    let initial = event(&service).state;
+    for is_drop in [false, true] {
+        let revision = if is_drop {
+            service.submit(Request::Undo).unwrap();
+            event(&service).state.revision
+        } else {
+            initial.revision
+        };
+        let make_request = |gain| {
+            if is_drop {
+                Request::DropBrowserDeviceOnArrangement {
+                    project_generation: 0,
+                    revision,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: DeviceTypeId::from_static("hex.utility"),
+                    destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+                    new_track_gain: Some(gain),
+                }
+            } else {
+                Request::InsertBrowserInstrumentTrack {
+                    project_generation: 0,
+                    revision,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+                    new_track_gain: Some(gain),
+                }
+            }
+        };
+        service.submit(make_request(f32::NAN)).unwrap();
+        let refused = event(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project.tracks(), initial.project.tracks());
+        assert_eq!(refused.state.revision, revision);
+        service.submit(make_request(0.25)).unwrap();
+        let inserted = event(&service);
+        assert!(inserted.error.is_none(), "{:?}", inserted.error);
+        assert_eq!(inserted.state.project.tracks()[0].gain(), 0.25);
+        let after = Arc::clone(&inserted.state.project);
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            event(&service).state.project.tracks(),
+            initial.project.tracks()
+        );
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(event(&service).state.project, after);
+    }
 }

@@ -1,0 +1,617 @@
+"""Release channel/custody regressions; native gates remain separate acceptance."""
+import importlib.util
+import os
+import py_compile
+import shutil
+import sys
+import json
+from pathlib import Path
+import plistlib
+import subprocess
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+SPEC = importlib.util.spec_from_file_location("release_fixture", Path(__file__).resolve().parents[1] / "hex-release.py")
+release = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(release)
+
+
+class DeliveryImportSourceTests(unittest.TestCase):
+    @staticmethod
+    def load_entrypoints(root: Path):
+        source_scripts = Path(__file__).resolve().parents[1]
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("hex-release.py", "prepare-launch-discovery.py", "hex-test-build.py",
+                     "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                     "ci_checkpoint.py", "ci_target_storage.py", "release_notes.py",
+                     "changelog.py", "manual.py", "hex-test-build.json", "hex-release.json"):
+            shutil.copyfile(source_scripts / name, scripts / name)
+        loaded = {}
+        for filename, name in (("hex-release.py", "source_guard_release_probe"),
+                               ("prepare-launch-discovery.py", "source_guard_launch_probe")):
+            spec = importlib.util.spec_from_file_location(name, scripts / filename)
+            entry = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {name: entry}):
+                spec.loader.exec_module(entry)
+            loaded[filename] = entry
+        return scripts, loaded
+
+    def test_loaded_delivery_source_is_checked_before_release_and_launch_work(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                scripts, entries = self.load_entrypoints(root)
+                release_entry = entries["hex-release.py"]
+                launch_entry = entries["prepare-launch-discovery.py"]
+                delivery_path = scripts / "hex-test-build.py"
+                executed_source = delivery_path.read_bytes()
+
+                # A matching source witness is accepted by the same guard used
+                # by the public entrypoints.
+                release_entry.delivery.require_delivery_source(root)
+                if changed:
+                    delivery_path.write_bytes(executed_source + b"\n# changed after import\n")
+
+                before = {path.relative_to(root) for path in root.rglob("*")}
+                expected_message = "delivery source"
+                operations = (
+                    (release_entry.Refusal, release_entry.cut,
+                     (SimpleNamespace(channel="beta", version="0.1.0", base=None,
+                                      max_changes=10, generation_timeout=300, checklist=None,
+                                      included=None, accept_source=None), root / "artifacts/releases")),
+                    (release_entry.Refusal, release_entry.package, (root / "candidate",)),
+                    (release_entry.Refusal, release_entry.install, (root / "release.json",)),
+                    (launch_entry.delivery.DeliveryError, launch_entry.prepare, (False,)),
+                )
+                for refusal, operation, arguments in operations:
+                    with self.subTest(operation=operation.__name__):
+                        if changed:
+                            with self.assertRaisesRegex(refusal, expected_message):
+                                operation(*arguments)
+                        else:
+                            # The guard accepts the matched bytes and execution
+                            # reaches the operation's next dependency.
+                            with patch.object(release_entry, "source", side_effect=RuntimeError("reached cut")), \
+                                    patch.object(release_entry, "locked", side_effect=RuntimeError("reached package")), \
+                                    patch.object(release_entry, "verify_release", side_effect=RuntimeError("reached install")), \
+                                    patch.object(launch_entry.delivery, "run", side_effect=RuntimeError("reached prepare")):
+                                with self.assertRaisesRegex(RuntimeError, "reached"):
+                                    operation(*arguments)
+                if changed:
+                    self.assertEqual({path.relative_to(root) for path in root.rglob("*")}, before)
+
+    def test_delivery_source_descriptors_close_when_wrapping_fails(self):
+        source = Path(__file__).resolve().parents[1] / "prepare-launch-discovery.py"
+        spec = importlib.util.spec_from_file_location("launch_close_probe", source)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "delivery.py"
+            path.write_text("pass\n")
+            for loader in (release._delivery_source, launcher._delivery_source):
+                with self.subTest(loader=loader.__module__):
+                    original_open = os.open
+                    opened = []
+
+                    def track_open(*args, **kwargs):
+                        descriptor = original_open(*args, **kwargs)
+                        opened.append(descriptor)
+                        return descriptor
+
+                    with patch.object(os, "open", side_effect=track_open), \
+                            patch.object(os, "fdopen", side_effect=OSError("fixture wrap failure")):
+                        with self.assertRaisesRegex(OSError, "fixture wrap failure"):
+                            loader(path)
+                    self.assertEqual(len(opened), 2)
+                    for descriptor in opened:
+                        with self.assertRaises(OSError):
+                            os.fstat(descriptor)
+
+    def test_release_and_launch_refuse_symlinked_scripts_directory(self):
+        source = Path(__file__).resolve().parents[1] / "prepare-launch-discovery.py"
+        spec = importlib.util.spec_from_file_location("launch_directory_probe", source)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            actual = root / "actual-scripts"
+            actual.mkdir()
+            (actual / "hex-test-build.py").write_text("pass\n")
+            (root / "scripts").symlink_to(actual, target_is_directory=True)
+            for loader in (release._delivery_source, launcher._delivery_source):
+                with self.subTest(loader=loader.__module__), self.assertRaises(OSError):
+                    loader(root / "scripts" / "hex-test-build.py")
+
+    def test_release_and_launch_refuse_delivery_symlink_and_fifo_before_execution(self):
+        source_scripts = Path(__file__).resolve().parents[1]
+        for entrypoint in ("hex-release.py", "prepare-launch-discovery.py"):
+            for kind in ("symlink", "fifo", "missing", "directory"):
+                with self.subTest(entrypoint=entrypoint, kind=kind), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory).resolve()
+                    scripts = root / "scripts"
+                    scripts.mkdir()
+                    shutil.copyfile(source_scripts / entrypoint, scripts / entrypoint)
+                    marker = root / "executed"
+                    dependency = scripts / "hex-test-build.py"
+                    if kind == "symlink":
+                        payload = root / "payload.py"
+                        payload.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+                        dependency.symlink_to(payload)
+                    elif kind == "fifo":
+                        os.mkfifo(dependency)
+                    elif kind == "directory":
+                        dependency.mkdir()
+                    result = subprocess.run([sys.executable, str(scripts / entrypoint), "--help"],
+                                            capture_output=True, timeout=2)
+                    self.assertNotEqual(result.returncode, 0)
+                    if kind in ("fifo", "directory"):
+                        self.assertIn(b"delivery source is not a regular file", result.stderr)
+                    else:
+                        self.assertIn(b"hex-test-build.py", result.stderr)
+                    self.assertFalse(marker.exists())
+
+    def test_release_and_launch_import_current_delivery_source_with_stale_pyc(self):
+        source_scripts = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            scripts = Path(temporary).resolve() / "scripts"
+            scripts.mkdir()
+            for name in ("hex-release.py", "prepare-launch-discovery.py", "hex-test-build.py",
+                         "local-ci.py", "ci_plan.py", "python_test_plan.py", "build_inputs.py",
+                         "ci_checkpoint.py", "ci_target_storage.py", "release_notes.py",
+                         "changelog.py", "manual.py"):
+                shutil.copyfile(source_scripts / name, scripts / name)
+            delivery_path = scripts / "hex-test-build.py"
+            original = delivery_path.read_bytes()
+            before = b'IDENTITY = "org.portalsurfer.hex.dev"'
+            after = b'IDENTITY = "org.portalsurfer.hex.dex"'
+            self.assertEqual(original.count(before), 1)
+            self.assertEqual(len(before), len(after))
+            py_compile.compile(str(delivery_path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            stamp = delivery_path.stat()
+            delivery_path.write_bytes(original.replace(before, after, 1))
+            os.utime(delivery_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+            # Sensitivity control: standard timestamp-based loading really sees
+            # the stale bytecode; runtime-only name avoids CI imports.
+            control_spec = importlib.util.spec_from_file_location("hex_update_runtime", delivery_path)
+            control = importlib.util.module_from_spec(control_spec)
+            with patch.dict(sys.modules, {control_spec.name: control}):
+                control_spec.loader.exec_module(control)
+            self.assertEqual(control.IDENTITY, "org.portalsurfer.hex.dev")
+            self.assertFalse(hasattr(control, "ci"))
+            self.assertFalse(hasattr(control, "changelog"))
+
+            for filename, name, delivery_name in (
+                ("hex-release.py", "release_source_probe", "hex_release_delivery"),
+                ("prepare-launch-discovery.py", "launch_source_probe", "hex_launch_delivery"),
+            ):
+                with self.subTest(filename=filename), patch.dict(sys.modules):
+                    spec = importlib.util.spec_from_file_location(name, scripts / filename)
+                    entry = importlib.util.module_from_spec(spec)
+                    sys.modules[name] = entry
+                    spec.loader.exec_module(entry)
+                    self.assertEqual(entry.delivery.IDENTITY, "org.portalsurfer.hex.dex")
+                    self.assertEqual(entry.delivery.__name__, delivery_name)
+                    self.assertEqual(Path(entry.delivery.__file__), delivery_path)
+                    self.assertEqual(entry.delivery.__spec__.origin, str(delivery_path))
+                    self.assertTrue(hasattr(entry.delivery, "ci"))
+                    self.assertTrue(hasattr(entry.delivery, "changelog"))
+
+
+class ReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.addCleanup(patch.stopall)
+        patch.object(release, "ROOT", self.root).start()
+        (self.root / "scripts").mkdir()
+        source_scripts = Path(__file__).resolve().parents[1]
+        for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py",
+                     "build_inputs.py", "ci_checkpoint.py", "ci_target_storage.py"):
+            shutil.copyfile(source_scripts / name, self.root / "scripts" / name)
+        config = Path(__file__).resolve().parents[1] / "hex-test-build.json"
+        (self.root / "scripts/hex-test-build.json").write_bytes(config.read_bytes())
+        (self.root / "scripts/hex-release.json").write_text('{"notary_profile":"fixture"}')
+        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion="0.1.0"\n')
+        self.store = self.root / "artifacts/releases"
+        self.snapshot = {"format": 1, "source": "a" * 40, "base": "b" * 40,
+                         "covered_changes": ["a" * 40], "batches": []}
+        patch.object(release, "source", return_value="a" * 40).start()
+        patch.object(release, "git", side_effect=lambda *a: "c" * 40 if "HEAD^{tree}" in a else "").start()
+        patch.object(release.notes, "prepare", return_value={"pending": 0}).start()
+        patch.object(release.notes, "snapshot", side_effect=lambda *a, **k: self.snapshot).start()
+        def documentation(root, destination, version, source):
+            destination.mkdir()
+            (destination / "hex-manual.html").write_text("<html>" + version + "</html>")
+            (destination / "hex-manual.pdf").write_bytes(b"%PDF-1.7\n/BaseFont /AAAAAA+Ioskeley-Mono\n%%EOF\n")
+            manifest = {"schema": 1, "version": version, "source": source,
+                        "outputs": {name: release.delivery.sha(destination / name)
+                                    for name in ("hex-manual.html", "hex-manual.pdf")}}
+            (destination / "documentation.json").write_bytes(release.encode(manifest))
+            return manifest
+        patch.object(release.manual, "build", side_effect=documentation).start()
+
+    def cut(self, channel="beta", **kwargs):
+        return release.cut(SimpleNamespace(channel=channel, version="0.1.0", base=None,
+                           max_changes=10, generation_timeout=300, checklist=None, included=None,
+                           accept_source=kwargs.get("accept_source")), self.store)
+
+    def test_beta_beta_stable_and_next_target_preserve_original_snapshots(self):
+        first = self.cut()
+        old = {str(p.relative_to(first)): p.read_bytes() for p in first.rglob("*") if p.is_file()}
+        second = self.cut()
+        self.assertEqual(release.read(first / "plan.json")["version"], "0.1.0-beta.1")
+        self.assertEqual(release.read(second / "plan.json")["version"], "0.1.0-beta.2")
+        stable = self.cut("stable", accept_source="a" * 40)
+        self.assertEqual(release.read(stable / "plan.json")["version"], "0.1.0")
+        self.assertEqual([release.read(p / "plan.json")["build"] for p in (first, second, stable)], [1, 2, 3])
+        with self.assertRaisesRegex(release.Refusal, "already reserved"):
+            self.cut("stable", accept_source="a" * 40)
+        self.assertEqual({str(p.relative_to(first)): p.read_bytes() for p in first.rglob("*") if p.is_file()}, old)
+        self.assertEqual(release.next_version("beta", "0.2.0", {"0.1.0-beta.9"}, "20261023"), "0.2.0-beta.1")
+
+    def test_stable_without_exact_native_acceptance_cannot_reserve_version(self):
+        with self.assertRaisesRegex(release.Refusal, "native acceptance"):
+            self.cut("stable")
+        self.assertFalse((self.store / "versions").exists())
+
+    def test_channel_order_is_numeric_and_nightly_order_is_separate(self):
+        self.assertEqual(release.next_version("beta", "0.1.0", {"0.1.0-beta.9", "0.1.0-beta.10"}, "20261023"), "0.1.0-beta.11")
+        self.assertEqual(release.next_version("nightly", "0.1.0", {"0.1.0-beta.99", "0.1.0-nightly.20261022.99"}, "20261023"), "0.1.0-nightly.20261023.1")
+        for version in ("../0.1.0", "0.1.0-beta.1", "01.2.3", "1.2", "1.2.3+build"):
+            with self.subTest(version=version), self.assertRaises(release.Refusal):
+                release.next_version("beta", version, set(), "20261023")
+
+    def test_frozen_notes_source_and_checklist_mutation_refuse_before_build(self):
+        candidate = self.cut()
+        release.validate_plan(candidate)
+        for name in ("notes.json", "snapshot.json", "RELEASE-NOTES.md", "TESTING.md"):
+            before = (candidate / name).read_bytes()
+            (candidate / name).write_bytes(before + b" ")
+            with self.subTest(name=name), self.assertRaisesRegex(release.Refusal, "changed"):
+                release.validate_plan(candidate)
+            (candidate / name).write_bytes(before)
+        with patch.object(release, "source", return_value="d" * 40), self.assertRaisesRegex(release.Refusal, "source changed"):
+            release.validate_plan(candidate)
+        plan = release.read(candidate / "plan.json")
+        plan["channel"] = "stable"
+        (candidate / "plan.json").write_bytes(release.encode(plan))
+        with self.assertRaisesRegex(release.Refusal, "version reservation"):
+            release.validate_plan(candidate)
+
+    def test_release_environment_preserves_explicit_profile_and_binds_frozen_notes(self):
+        candidate = self.cut()
+        plan = release.read(candidate / "plan.json")
+        with patch.dict(release.os.environ, {"CARGO_PROFILE_DEV_DEBUG": "2"}, clear=True):
+            env = release.release_environment(candidate, plan)
+        self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
+        self.assertEqual(env["CARGO_PROFILE_TEST_DEBUG"], "0")
+        self.assertEqual(env["HEX_RELEASE_CHANGELOG"], str(candidate / "notes.json"))
+        self.assertEqual(env["HEX_RELEASE_LABEL"], "0.1.0-beta.1")
+
+    def test_generation_failure_leaves_previous_release_and_no_new_reservation(self):
+        first = self.cut()
+        before = (first / "plan.json").read_bytes()
+        with patch.object(release.notes, "prepare", side_effect=ValueError("model unavailable")):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                self.cut()
+        self.assertEqual((first / "plan.json").read_bytes(), before)
+        self.assertEqual(len(list((self.store / "versions").glob("*.json"))), 1)
+
+    def test_only_inference_timeouts_retry_and_retries_are_bounded(self):
+        failure = release.notes.Refusal("generation failed with retained diagnostics")
+        failure.__cause__ = subprocess.TimeoutExpired("configured codex", 300)
+        with patch.object(release.notes, "prepare", side_effect=[failure, {"complete": True}]) as prepare:
+            self.assertEqual(release.prepare_notes(self.store, "a" * 40), {"complete": True})
+            self.assertEqual(prepare.call_count, 2)
+        with patch.object(release.notes, "prepare", side_effect=failure) as prepare:
+            with self.assertRaises(release.notes.Refusal):
+                release.prepare_notes(self.store, "a" * 40)
+            self.assertEqual(prepare.call_count, 3)
+        with patch.object(release.notes, "prepare", side_effect=release.notes.Refusal("invalid model output")) as prepare:
+            with self.assertRaises(release.notes.Refusal):
+                release.prepare_notes(self.store, "a" * 40)
+            self.assertEqual(prepare.call_count, 1)
+
+    def test_immutable_retry_and_concurrent_reservation_do_not_overwrite(self):
+        path = self.root / "snapshot.json"
+        release.immutable(path, b"original")
+        release.immutable(path, b"original")
+        with self.assertRaises(release.Refusal):
+            release.immutable(path, b"changed")
+        self.assertEqual(path.read_bytes(), b"original")
+        with release.locked(self.store), self.assertRaisesRegex(release.Refusal, "active"):
+            with release.locked(self.store):
+                self.fail("concurrent writer admitted")
+
+    def test_interrupted_reservation_recovers_original_version_before_next_cut(self):
+        first = self.cut()
+        (self.store / "versions/0.1.0-beta.1.json").unlink()
+        second = self.cut()
+        self.assertEqual(release.read(second / "plan.json")["version"], "0.1.0-beta.2")
+        release.validate_plan(first)
+        (self.store / "versions/0.1.0-beta.1.json").unlink()
+        release.validate_plan(first)
+        self.assertEqual(release.read(self.store / "versions/0.1.0-beta.1.json")["candidate"], str(first))
+
+    def test_failed_notary_wait_resumes_existing_submission_without_reupload(self):
+        candidate = self.cut()
+        app = candidate / "hex.app"
+        app.mkdir()
+        plan = release.read(candidate / "plan.json")
+        patch.object(release, "check_bundle").start()
+        patch.object(release.delivery, "inventory", return_value={"Contents/MacOS/hex": "fixture"}).start()
+        calls = []
+
+        def command(argv, log):
+            calls.append(argv)
+            if "submit" in argv:
+                return b'{"id":"same-submission"}'
+            if "wait" in argv:
+                raise release.Refusal("offline")
+            return b""
+
+        with patch.object(release, "command", side_effect=command):
+            for _ in range(2):
+                with self.assertRaisesRegex(release.Refusal, "offline"):
+                    release.notarize(candidate, app, plan)
+        self.assertEqual(sum("submit" in call for call in calls), 1)
+        self.assertEqual(sum("wait" in call for call in calls), 2)
+        self.assertFalse((candidate / "release.json").exists())
+
+    def test_archive_corruption_refuses_before_extraction_or_install(self):
+        archive = self.root / "hex.zip"
+        archive.write_bytes(b"original")
+        manifest = self.root / "release.json"
+        manifest.write_bytes(release.encode({"schema": 1, "status": "ready", "archive": archive.name,
+                                            "archive_sha256": release.delivery.sha(archive)}))
+        archive.write_bytes(b"changed")
+        with patch.object(release.subprocess, "run") as run:
+            with self.assertRaisesRegex(release.Refusal, "hash mismatch"):
+                release.install(manifest)
+            run.assert_not_called()
+
+    def test_out_of_order_completion_cannot_rewind_channel_and_retry_is_idempotent(self):
+        first, second = self.cut(), self.cut()
+        for candidate in (first, second):
+            plan = release.read(candidate / "plan.json")
+            (candidate / "release.json").write_bytes(release.encode({**plan, "status": "ready", "archive_sha256": "f" * 64}))
+        release.publish_channel(second / "release.json")
+        index = self.store / "channels/beta.json"
+        before = index.read_bytes()
+        release.publish_channel(first / "release.json")
+        release.publish_channel(second / "release.json")
+        self.assertEqual(index.read_bytes(), before)
+        self.assertEqual(release.read(index)["version"], "0.1.0-beta.2")
+
+    def test_explicit_target_adoption_reaches_guard_without_changing_candidate(self):
+        for adopt in (False, True):
+            candidate = self.cut()
+            frozen = (candidate / "plan.json").read_bytes()
+            report = candidate / "fixture-ci-summary.json"
+            report.write_text("{}")
+            runner = SimpleNamespace(summary_path=report, output_dir=candidate / "fixture-ci-output",
+                                     run=lambda: 0)
+            with patch.object(release, "preflight"), \
+                    patch.object(release.ci, "LocalCiRunner", return_value=runner), \
+                    patch.object(release.delivery, "validate_ci"), \
+                    patch.object(release.delivery, "optimized_artifact",
+                                 side_effect=release.Refusal("guard boundary")) as guarded:
+                with self.assertRaisesRegex(release.Refusal, "guard boundary"):
+                    release.package(candidate, adopt_release_target=adopt)
+            self.assertEqual(guarded.call_args.kwargs["adopt"], adopt)
+            self.assertTrue(callable(guarded.call_args.kwargs["verification_check"]))
+            self.assertEqual((candidate / "plan.json").read_bytes(), frozen)
+            self.assertFalse((candidate / "release.json").exists())
+
+    def test_cli_requires_explicit_adoption_for_cut_and_resume(self):
+        candidate = self.cut()
+        for operation in ("beta", "resume"):
+            for adopt in (False, True):
+                argv = [operation] + ([str(candidate)] if operation == "resume" else [])
+                if adopt:
+                    argv.append("--adopt-release-target")
+                with patch.object(release, "store_path", return_value=self.store), \
+                        patch.object(release, "cut", return_value=candidate), \
+                        patch.object(release, "package", return_value={}) as package:
+                    self.assertEqual(release.main(argv), 0)
+                package.assert_called_once_with(candidate, adopt_release_target=adopt)
+
+    def test_fresh_distribution_reserves_before_cut_and_keeps_ci_target_separate(self):
+        dev = self.root / "dev-target"
+        target = self.root / "release target"
+        dev.mkdir()
+        target.mkdir()
+        lock_state = self.root / "locks"
+        state_paths = release.ci.target_state_paths
+        cut_release = release.cut
+        candidate = None
+        runners = []
+        calls = []
+
+        def require_lock():
+            with self.assertRaisesRegex(release.ci.TargetCacheError, "already in use"):
+                release.reserve_fresh_release_target(str(target), os.environ)
+
+        def cut(args, store):
+            nonlocal candidate
+            require_lock()
+            calls.append("cut")
+            candidate = cut_release(args, store)
+            return candidate
+
+        def runner(root, env):
+            self.assertEqual(root, self.root)
+            runners.append(dict(env))
+            report = self.root / "fixture-ci-summary.json"
+            report.write_text("{}")
+
+            def run():
+                require_lock()
+                calls.append("full-ci")
+                self.assertEqual(env["CARGO_TARGET_DIR"], str(dev))
+                self.assertEqual(env["CARGO_CACHE_RUSTC_INFO"], "0")
+                self.assertEqual(list(target.iterdir()), [])
+                return 0
+
+            return SimpleNamespace(env=env, summary_path=report,
+                                   output_dir=self.root / f"optimized-run-{len(runners)}",
+                                   run=run,
+                                   validate_release_inputs=lambda owner: calls.append(owner["state"]))
+
+        def verify(report, consumer, source, *, reservation=None):
+            require_lock()
+            self.assertEqual(source, "a" * 40)
+            self.assertEqual(report, self.root / "fixture-ci-summary.json")
+            self.assertEqual(consumer.env["CARGO_TARGET_DIR"], str(target))
+            self.assertEqual(consumer.env["CARGO_CACHE_RUSTC_INFO"], "0")
+            if reservation is not None:
+                reservation.revalidate(str(target))
+                calls.append("reserved-verification")
+            else:
+                calls.append("guarded-verification")
+
+        def artifact(consumer, *, adopt, reservation, on_admission, verification_check):
+            self.assertFalse(adopt)
+            require_lock()
+            reservation.revalidate(consumer.env["CARGO_TARGET_DIR"])
+            verification_check()
+            on_admission({"state": "pending"})
+            verification_check()
+            raise release.Refusal("fixture stops before packaging")
+
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(dev)}), \
+                patch.object(release.ci, "target_state_paths",
+                             side_effect=lambda path, state=None: state_paths(path, state or lock_state)), \
+                patch.object(release, "store_path", return_value=self.store), \
+                patch.object(release, "cut", side_effect=cut), \
+                patch.object(release, "preflight"), \
+                patch.object(release.ci, "LocalCiRunner", side_effect=runner), \
+                patch.object(release.delivery, "validate_ci", side_effect=verify), \
+                patch.object(release.delivery, "optimized_artifact", side_effect=artifact):
+            self.assertEqual(release.main(["beta", "--fresh-release-target", str(target)]), 1)
+            self.assertIsNotNone(candidate)
+            self.assertEqual(release.main(["resume", str(candidate), "--fresh-release-target", str(target)]), 1)
+            with release.reserve_fresh_release_target(str(target), os.environ) as again:
+                again.revalidate(str(target))
+        self.assertEqual([env["CARGO_TARGET_DIR"] for env in runners], [str(dev), str(target), str(target)])
+        self.assertEqual(calls, ["cut", "full-ci", "reserved-verification", "reserved-verification",
+                                 "guarded-verification", "pending", "reserved-verification", "reserved-verification",
+                                 "guarded-verification", "pending"])
+
+    def test_fresh_release_refuses_unsafe_target_before_cut_or_cargo(self):
+        dev = self.root / "dev-target"
+        dev.mkdir()
+        nested = dev / "nested"
+        nested.mkdir()
+        populated = self.root / "populated"
+        populated.mkdir()
+        original = populated / "payload"
+        original.write_bytes(b"keep existing bytes")
+        alias = self.root / "alias"
+        alias.symlink_to(populated, target_is_directory=True)
+        state_paths = release.ci.target_state_paths
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(dev)}), \
+                patch.object(release.ci, "target_state_paths",
+                             side_effect=lambda path, state=None: state_paths(path, state or self.root / "locks")), \
+                patch.object(release, "store_path", return_value=self.store), \
+                patch.object(release, "cut") as cut, \
+                patch.object(release.ci, "LocalCiRunner") as cargo:
+            for target in (dev, nested, populated, alias, self.root / "absent"):
+                with self.subTest(target=target):
+                    self.assertEqual(release.main(["beta", "--fresh-release-target", str(target)]), 1)
+            cut.assert_not_called()
+            cargo.assert_not_called()
+        self.assertEqual(original.read_bytes(), b"keep existing bytes")
+        self.assertTrue(alias.is_symlink())
+        self.assertFalse((self.root / "absent").exists())
+
+    def test_partial_generated_stage_is_recoverable_but_redirected_stage_refuses(self):
+        candidate = self.cut()
+        stage = candidate / "bundle.pending.app"
+        stage.mkdir()
+        (stage / "partial-binary").write_bytes(b"partial generated bytes")
+        release.discard_generated_stage(candidate, "bundle.pending.app")
+        self.assertFalse(stage.exists())
+        original = self.root / "project.hex"
+        original.write_bytes(b"original user data")
+        stage.symlink_to(original)
+        with self.assertRaises(release.Refusal):
+            release.discard_generated_stage(candidate, "bundle.pending.app")
+        self.assertEqual(original.read_bytes(), b"original user data")
+
+
+class DistributionReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.app = self.root / "hex.app"
+        resources = self.app / "Contents/Resources"
+        (resources / "manual").mkdir(parents=True)
+        (self.app / "Contents/MacOS").mkdir()
+        executable = self.app / "Contents/MacOS/hex"
+        executable.write_bytes(b"fixture executable; native checks injected")
+        executable.chmod(0o755)
+        configuration = json.loads((Path(__file__).resolve().parents[1] / "hex-test-build.json").read_text())
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/hex-test-build.json").write_bytes(release.encode(configuration))
+        self.receipt = {"schema": 1, "channel": "beta", "profile": "release", "build": 1,
+                        "verification": {"mode": "full-ci", "tests": "passed"}, "source": "a" * 40,
+                        "target": "0.1.0", "version": "0.1.0-beta.1", "signing": configuration["signing"]}
+        for name, key in (("notes.json", "notes_sha256"), ("snapshot.json", "snapshot_sha256"),
+                          ("TESTING.md", "checklist_sha256"), ("local-ci-summary.json", "ci_report_sha256")):
+            (resources / name).write_bytes(b"fixture")
+            self.receipt[key] = release.delivery.sha(resources / name)
+        documents = {"schema": 1, "version": self.receipt["version"], "source": self.receipt["source"], "outputs": {}}
+        for name in ("hex-manual.html", "hex-manual.pdf"):
+            (resources / "manual" / name).write_bytes(b"fixture document")
+            documents["outputs"][name] = release.delivery.sha(resources / "manual" / name)
+        (resources / "manual/documentation.json").write_bytes(release.encode(documents))
+        self.receipt["documentation_sha256"] = release.delivery.sha(resources / "manual/documentation.json")
+        (resources / "release-build.json").write_bytes(release.encode(self.receipt))
+        self.info = {"CFBundleIdentifier": release.delivery.IDENTITY, "CFBundleExecutable": "hex", "CFBundleVersion": "1",
+                     "CFBundleShortVersionString": "0.1.0", "HexReleaseVersion": self.receipt["version"],
+                     "HexReleaseChannel": "beta", "HexSourceRevision": self.receipt["source"],
+                     "NSMicrophoneUsageDescription": "hex uses audio input to record audio into your project."}
+        self.save_info()
+        self.addCleanup(patch.stopall)
+        patch.object(release.delivery, "ROOT", self.root).start()
+        patch.object(release.delivery, "native_signature", return_value={}).start()
+        patch.object(release.delivery, "verify_signed_bundle").start()
+        patch.object(release.delivery, "verify_native_executable").start()
+        self.signature = patch.object(release.delivery.subprocess, "run", return_value=SimpleNamespace(
+            stdout=plistlib.dumps({"com.apple.security.device.audio-input": True}),
+            stderr=b"flags=0x10000(runtime)\nTimestamp=fixture secure timestamp\n")).start()
+
+    def save_info(self):
+        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
+
+    def test_installer_recognizes_distribution_and_refuses_changed_version_or_notes(self):
+        self.assertEqual(release.delivery.verify(self.app), self.receipt)
+        self.info["CFBundleVersion"] = "2"
+        self.save_info()
+        with self.assertRaisesRegex(release.Refusal, "metadata"):
+            release.delivery.verify(self.app)
+        self.info["CFBundleVersion"] = "1"
+        self.save_info()
+        (self.app / "Contents/Resources/notes.json").write_bytes(b"changed")
+        with self.assertRaisesRegex(release.Refusal, "resource"):
+            release.delivery.verify(self.app)
+
+    def test_distribution_requires_runtime_timestamp_and_audio_input_entitlement(self):
+        for details, entitlements in ((b"flags=0x0\nTimestamp=fixture\n", {"com.apple.security.device.audio-input": True}),
+                                      (b"flags=0x10000(runtime)\n", {"com.apple.security.device.audio-input": True}),
+                                      (b"flags=0x10000(runtime)\nTimestamp=fixture\n", {})):
+            self.signature.return_value = SimpleNamespace(stdout=plistlib.dumps(entitlements), stderr=details)
+            with self.subTest(details=details, entitlements=entitlements), self.assertRaisesRegex(release.Refusal, "hardened"):
+                release.delivery.verify_distribution(self.app)
+
+
+if __name__ == "__main__":
+    unittest.main()

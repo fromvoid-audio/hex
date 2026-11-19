@@ -10,6 +10,7 @@ impl AudioPreparationCustody {
             incarnation: _,
             phase: _,
             bank,
+            current_sampler,
             slots,
             next_disposal: _,
             first_panic,
@@ -33,9 +34,13 @@ impl AudioPreparationCustody {
         if let Some(bank) = bank {
             l.inputs(bank)?;
         }
+        current_sampler.visit(l)?;
+        let bank = bank.as_ref().or_else(|| current_sampler.bank());
         l.vec(slots)?;
         l.growth(capacity.previous_slot_backing_bytes)?;
+        l.growth(capacity.native_compiler_workspace_bytes)?;
         for SourceSlot {
+            active: _,
             track: _,
             clip: _,
             source: _,
@@ -47,13 +52,24 @@ impl AudioPreparationCustody {
             phase: _,
             gain: _,
             looping: _,
+            reversed: _,
             fade: _,
             owner,
+            prepared_origin,
+            sparse_frames: _,
+            sparse,
+            transformed: _,
             disposal: _,
             #[cfg(test)]
                 probe: _,
         } in slots
         {
+            if let Some(map) = sparse {
+                l.sparse_map(map)?;
+            }
+            if let Some(origin) = prepared_origin {
+                l.source(origin)?;
+            }
             if let Some(owner) = owner {
                 l.source(owner)?;
             }
@@ -61,7 +77,7 @@ impl AudioPreparationCustody {
         let view = revision.visit_audio_storage(l)?;
         if view.arrangement.is_some() {
             if let Some(bank) = bank {
-                arrangement_clips.validate_root_sources_at(bank, view.arrangement)?;
+                arrangement_clips.validate_root_sources_at(slots, bank, view.arrangement)?;
                 assembly.validate_pairs_at(bank, view.session)?;
             } else {
                 return Err(AudioStorageError::SourceMismatch);

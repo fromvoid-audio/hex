@@ -9,6 +9,7 @@ pub(super) struct ChainWindow {
     cards: Vec<(DeviceId, f32, f32)>,
     focus: HashMap<DeviceId, FocusHandle>,
     selection_focus: Option<FocusHandle>,
+    reveal_after_prepare: Option<DeviceId>,
     pub(super) refused_delete: Option<super::keyboard::RefusedDelete>,
     width: Rc<Cell<f32>>,
 }
@@ -41,6 +42,13 @@ impl ChainWindow {
                 .retain(|id, _| devices.iter().any(|device| device.0 == *id));
             self.cards = cards;
         }
+        if let Some(device) = self.reveal_after_prepare.take() {
+            self.reveal(device);
+        }
+    }
+
+    pub(super) fn reveal_after_prepare(&mut self, device: DeviceId) {
+        self.reveal_after_prepare = Some(device);
     }
 
     pub(super) fn focus(&mut self, device: DeviceId, cx: &App) -> FocusHandle {
@@ -60,6 +68,22 @@ impl ChainWindow {
         self.focus
             .get(&device)
             .is_some_and(|focus| focus.is_focused(window))
+    }
+
+    /// Scroll the least distance that shows `device` with its gutters, or its
+    /// start when wider than the viewport. Unknown geometry leaves it alone.
+    pub(super) fn reveal(&self, device: DeviceId) {
+        let Some(&(_, left, width)) = self.cards.iter().find(|card| card.0 == device) else {
+            return;
+        };
+        if let Some(offset) = reveal_offset(
+            left,
+            width,
+            f32::from(self.scroll.offset().x),
+            self.width.get(),
+        ) {
+            self.scroll.set_offset(point(px(offset), px(0.0)));
+        }
     }
 
     fn visible(&self, device: DeviceId, initial_width: Option<f32>) -> bool {
@@ -86,6 +110,26 @@ impl ChainWindow {
     }
 }
 
+fn reveal_offset(left: f32, width: f32, offset: f32, viewport: f32) -> Option<f32> {
+    if ![left, width, offset, viewport]
+        .iter()
+        .all(|value| value.is_finite())
+        || viewport <= 0.0
+    {
+        return None;
+    }
+    let start = left - DEVICE_CHAIN_PADDING;
+    let end = left + width + DEVICE_CHAIN_PADDING;
+    let target = if start + offset < 0.0 {
+        -start
+    } else if end + offset > viewport {
+        (viewport - end).max(-start)
+    } else {
+        return None;
+    };
+    Some(target.min(0.0))
+}
+
 pub(super) fn must_mount(
     view: &EditorView,
     device: DeviceId,
@@ -105,7 +149,7 @@ pub(super) fn must_mount(
         || panel.controls.keys().any(|key| key.device == device && super::parameter_rows::pinned(view, *key, window, cx))
         || panel.pending_values.keys().any(|key| key.device == device)
         || view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target,
-            GestureTarget::DeviceParameter { device: target, .. } | GestureTarget::DeviceParameterPair { device: target, .. } | GestureTarget::DeviceParameterSnapshot { device: target } if target == device))
+            GestureTarget::DeviceParameter { device: target, .. } | GestureTarget::DeviceParameterPair { device: target, .. } | GestureTarget::DeviceParameterSnapshot { device: target } | GestureTarget::EqNodeCreation { device: target } if target == device))
         || view.active_native_device_drag.as_ref().is_some_and(|drag| {
             matches!(drag.source, drag::NativeDeviceDragSource::Existing { device: source, .. } if source == device)
                 || drag.destination.get().is_some_and(|target| target.before == Some(device) || target.replace == Some(device))
@@ -133,18 +177,22 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>) -> Div {
     let expected_offset = scroll.offset();
     // Observe the already-laid-out rail without introducing a child that
     // could change its scroll extent, padding, order or drop geometry.
-    let rail = div().on_children_prepainted(move |_, _, cx| {
-        let measured = f32::from(scroll.bounds().size.width);
-        let resized = measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
-        if resized || scroll.offset() != expected_offset {
-            let entity = entity.clone();
-            cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
-        }
-    });
+    // The shared track/Return/Main rail is recessed behind neutral device panels.
+    let rail = div()
+        .bg(rgb(theme::color(theme::PaletteRole::Border)))
+        .on_children_prepainted(move |_, _, cx| {
+            let measured = f32::from(scroll.bounds().size.width);
+            let resized =
+                measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
+            if resized || scroll.offset() != expected_offset {
+                let entity = entity.clone();
+                cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+            }
+        });
     super::keyboard::rail(view, cx, rail)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 
@@ -232,5 +280,38 @@ mod tests {
             chain.visible(ids[2], None),
             "invalid viewport cannot hide a card"
         );
+    }
+
+    #[test]
+    fn reveal_scrolls_the_least_distance_to_show_a_card() {
+        // Card 150..750 in a 400 px viewport.
+        assert_eq!(
+            reveal_offset(150.0, 600.0, 0.0, 400.0),
+            Some(-147.0),
+            "too wide: show start"
+        );
+        assert_eq!(
+            reveal_offset(150.0, 200.0, 0.0, 400.0),
+            None,
+            "already visible"
+        );
+        assert_eq!(
+            reveal_offset(150.0, 300.0, 0.0, 400.0),
+            Some(-53.0),
+            "right edge"
+        );
+        assert_eq!(
+            reveal_offset(150.0, 200.0, -300.0, 400.0),
+            Some(-147.0),
+            "left edge"
+        );
+        assert_eq!(
+            reveal_offset(3.0, 100.0, -50.0, 400.0),
+            Some(0.0),
+            "first card"
+        );
+        for viewport in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(reveal_offset(150.0, 300.0, 0.0, viewport), None);
+        }
     }
 }

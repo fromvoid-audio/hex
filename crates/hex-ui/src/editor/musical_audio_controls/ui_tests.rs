@@ -16,22 +16,99 @@ const CHOICES: [&str; 6] = [
 
 #[gpui::test]
 fn selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats(cx: &mut TestAppContext) {
-    let (handle, editor, _, clip, paths) = bounded_audio_detail_fixture(cx);
+    for (enabled, width) in [
+        (false, 880.0),
+        (true, 880.0),
+        (false, 1_280.0),
+        (true, 1_280.0),
+    ] {
+        let (handle, editor, _, clip, paths) = bounded_audio_detail_fixture(cx);
+        if enabled {
+            prepare_beats_fixture(&editor, clip, cx);
+        }
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(width), px(540.0)));
+        visual.run_until_parked();
+        paths.assert_bounded(&editor, cx);
+        let toggle = visual
+            .debug_bounds("audio-clip-warp-toggle")
+            .expect("visible warp toggle");
+        let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
+        assert!(toggle.origin.y >= sidebar.origin.y && toggle.bottom() <= sidebar.bottom());
+        assert!(toggle.origin.x >= sidebar.origin.x && toggle.right() <= sidebar.right());
+        assert!(
+            toggle.size.width >= px(32.0) && toggle.size.width <= px(64.0),
+            "warp label needs a compact readable button: {toggle:?}"
+        );
+        assert!(
+            visual
+                .debug_bounds("audio-clip-warp-toggle-indicator")
+                .is_none(),
+            "warp must use the labeled button rather than an unlabeled square"
+        );
+        let style = theme::control_style();
+        let expected: gpui::Background =
+            rgb(if enabled { style.accent } else { style.surface }).into();
+        assert_eq!(
+            visual.rendered_background("audio-clip-warp-toggle"),
+            Some(expected)
+        );
+        visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            if enabled {
+                assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: None }) if *id == clip));
+            } else {
+                assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) }) if *id == clip && settings.mode == modes()[0]));
+            }
+        });
+    }
+}
+#[gpui::test]
+fn selected_long_clip_warp_toggle_enables_tones(cx: &mut TestAppContext) {
+    use hex_project::{Created, Editor, Project};
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, clip, .. } = model
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: 20_000_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import");
+    };
+    model
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    paths.assert_bounded(&editor, cx);
-    let toggle = visual
-        .debug_bounds("audio-clip-warp-toggle")
-        .expect("visible warp toggle");
-    let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
-    assert!(toggle.origin.y >= sidebar.origin.y && toggle.bottom() <= sidebar.bottom());
-    visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) })
-            if *id == clip && settings.mode == modes()[0]));
-    });
+    let toggle = visual.debug_bounds("audio-clip-warp-toggle").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    let edit = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    assert!(matches!(&edit,
+        Command::SetAudioClipWarp { clip: id, settings: Some(settings) }
+        if *id == clip && matches!(settings.mode, WarpMode::Tones { .. })
+    ));
+    model.execute(edit).unwrap();
+    let result = model.project().clip(clip).unwrap();
+    assert_eq!(result.duration(), 20_000_000);
+    assert!(result.audio_edit().unwrap().domain.warp_enabled);
 }
+
 #[gpui::test]
 fn algorithm_picker_dispatches_direct_choice_without_resetting_current_settings(
     cx: &mut TestAppContext,
@@ -79,6 +156,7 @@ fn prepare_beats_fixture(editor: &gpui::Entity<EditorView>, clip: ClipId, cx: &m
             comparison_audio: None,
             project: Arc::new(model.project().clone()),
             waveforms: old.waveforms.clone(),
+            source_overviews: old.source_overviews.clone(),
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             midi_preview: old.midi_preview.clone(),
             gain_preview: old.gain_preview.clone(),
@@ -226,6 +304,7 @@ fn bounded_audio_detail_fixture(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: std::collections::BTreeMap::from([(asset, peaks)]),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::default(),
                     gain_preview: Ok(Arc::new(Default::default())),
@@ -246,4 +325,190 @@ fn bounded_audio_detail_fixture(
         })
         .unwrap();
     (handle, editor, track, clip, paths)
+}
+
+#[gpui::test]
+fn shift_selected_warp_applies_to_every_clip_with_its_own_source_region(cx: &mut TestAppContext) {
+    let (handle, editor, track, first, _paths) = bounded_audio_detail_fixture(cx);
+    let (mut model, second) = editor.read_with(cx, |view, _| {
+        let mut model =
+            hex_project::Editor::new((*view.state.as_ref().unwrap().project).clone(), 16).unwrap();
+        let asset = model.project().clip(first).unwrap().asset();
+        let hex_project::Created::Clip(second) = model
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: 144_000,
+                duration: 24_000,
+                source_offset: 12_000,
+                source_length: 24_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        model
+            .execute(Command::SetAudioClipPitch {
+                clip: second,
+                cents: 700,
+            })
+            .unwrap();
+        (model, second)
+    });
+    editor.update(cx, |view, cx| {
+        let old = view.state.as_ref().unwrap();
+        view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
+            comparison_audio: None,
+            project: Arc::new(model.project().clone()),
+            waveforms: old.waveforms.clone(),
+            source_overviews: old.source_overviews.clone(),
+            audio_clip_waveforms: old.audio_clip_waveforms.clone(),
+            midi_preview: old.midi_preview.clone(),
+            gain_preview: old.gain_preview.clone(),
+            timeline_frames: old.timeline_frames,
+            can_undo: false,
+            can_redo: false,
+            revision: old.revision + 1,
+            unsaved: false,
+            document_path: None,
+        }));
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (id, modifiers) in [
+        (first, Modifiers::default()),
+        (
+            second,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        ),
+    ] {
+        let selector: &'static str =
+            Box::leak(format!("clip-name-{}", id.value()).into_boxed_str());
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("rendered selectable header");
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, modifiers);
+        visual.run_until_parked();
+    }
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_clip_ids(), vec![first, second])
+    });
+    // Other scalar controls share dispatch; raw source/geometry commands may
+    // not silently target only the focused member of a whole-clip selection.
+    editor.read_with(cx, |view, _| {
+        use hex_session::service::Request;
+        let Request::Edit(relative) = view
+            .resolve_clip_action_scope(
+                Request::Edit(
+                    actions::selection_command(model.project(), second, Action::Pitch(100))
+                        .unwrap(),
+                ),
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("relative edit")
+        };
+        let mut pitched = hex_project::Editor::new(model.project().clone(), 8).unwrap();
+        pitched.execute(relative).unwrap();
+        assert_eq!(
+            pitched
+                .project()
+                .clip(first)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            100
+        );
+        assert_eq!(
+            pitched
+                .project()
+                .clip(second)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            800
+        );
+        let request = view
+            .resolve_clip_action_scope(
+                Request::Edit(Command::SetAudioClipGain {
+                    clip: second,
+                    millidb: -6_000,
+                }),
+                false,
+            )
+            .unwrap();
+        let Request::Edit(command) = request else {
+            panic!("edit")
+        };
+        let mut gain = hex_project::Editor::new(model.project().clone(), 8).unwrap();
+        gain.execute(command).unwrap();
+        for id in [first, second] {
+            assert_eq!(gain.project().clip(id).unwrap().gain().millidb(), -6_000);
+        }
+        assert!(
+            view.resolve_clip_action_scope(
+                Request::Edit(Command::TrimClipEdge {
+                    clip: second,
+                    edge: hex_project::TrimEdge::Left,
+                    frame: 145_000,
+                }),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            view.resolve_clip_action_scope(
+                Request::Edit(Command::SetAudioClipWarp {
+                    clip: second,
+                    settings: None,
+                }),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            view.resolve_clip_action_scope(
+                Request::Edit(Command::SetAudioClipWarp {
+                    clip: second,
+                    settings: None,
+                }),
+                true
+            )
+            .is_ok()
+        );
+    });
+    let bounds = visual.debug_bounds("audio-clip-warp-toggle").unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    let command = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    let before = model.project().clone();
+    model.execute(command).unwrap();
+    for id in [first, second] {
+        let clip = model.project().clip(id).unwrap();
+        let domain = &clip
+            .audio_edit()
+            .expect("selected clip must receive warp")
+            .domain;
+        assert!(domain.warp_enabled);
+        let warp = domain.warp.as_ref().unwrap();
+        assert_eq!(warp.mode, modes()[0]);
+        assert_eq!(
+            warp.markers[0].source_frame,
+            before.clip(id).unwrap().source_offset()
+        );
+    }
+    assert!(model.undo());
+    assert_eq!(model.project(), &before);
 }

@@ -1,6 +1,9 @@
 use super::*;
-use gpui::{point, px, size};
+#[cfg(all(test, not(feature = "ui-test-support")))]
+use gpui::size;
+use gpui::{point, px};
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 fn context() -> ScrubContext {
     ScrubContext {
         generation: 7,
@@ -16,6 +19,7 @@ fn context() -> ScrubContext {
     }
 }
 
+#[cfg(all(test, not(feature = "ui-test-support")))]
 #[test]
 fn latest_target_replaces_moves_and_release_survives_an_in_flight_destination() {
     let mut gesture = ScrubGesture {
@@ -201,6 +205,7 @@ mod ui {
                 comparison_audio: None,
                 project: Arc::clone(&state.project),
                 waveforms: state.waveforms.clone(),
+                source_overviews: state.source_overviews.clone(),
                 audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                 midi_preview: Arc::clone(&state.midi_preview),
                 gain_preview: state.gain_preview.clone(),

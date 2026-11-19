@@ -16,7 +16,7 @@ impl Playback {
         }
         let candidate = Runtime::prepare(project, input)?;
         let bytes = candidate.storage_bytes();
-        if bytes > 8192 {
+        if bytes > crate::tuning_audition::MAX_TUNING_AUDITION_STORAGE_BYTES {
             return Err(Invalid("tuning audition exceeds its fixed storage budget"));
         }
         self.session_runtime

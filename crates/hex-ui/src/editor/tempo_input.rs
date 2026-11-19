@@ -1,28 +1,23 @@
-//! Local tempo draft; one commit uses the existing canonical tempo-point command.
+//! Local global-tempo draft; one commit replaces the canonical project tempo map.
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
-use hex_project::{BeatTime, Command, Tempo};
+use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
+
+mod value;
+use value::tempo_value;
 
 pub(super) struct Binding {
     generation: u64,
     revision: u64,
-    beat: BeatTime,
     entity: Entity<NumericControl>,
     _subscription: Subscription,
     _observation: Subscription,
-}
-
-fn tempo_value(value: f64) -> Option<Tempo> {
-    if !value.is_finite() || !(1.0..=1000.0).contains(&value) {
-        return None;
-    }
-    Tempo::new((value * 1_000_000.0).round() as u32).ok()
 }
 
 impl EditorView {
@@ -41,28 +36,20 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return div();
         };
-        let Some(cursor_beat) = self.cursor_beat() else {
-            return div();
-        };
         let generation = self.project_generation;
         let revision = state.revision;
-        // Playback may move the cursor while typing. Retain the originally
-        // displayed tempo point until this draft ends, never retarget its write.
+        // Generation/revision fence the draft. Cursor/playback position never
+        // changes the displayed global tempo or targets a new tempo point.
         let replace = self.project_tempo_control.as_ref().is_some_and(|binding| {
-            binding.generation != generation
-                || binding.revision != revision
-                || (binding.beat != cursor_beat && !binding.entity.read(cx).is_interacting())
+            binding.generation != generation || binding.revision != revision
         });
         if replace && let Some(binding) = self.project_tempo_control.take() {
             binding.entity.update(cx, |numeric, cx| numeric.cancel(cx));
         }
-        let beat = self
-            .project_tempo_control
-            .as_ref()
-            .map_or(cursor_beat, |binding| binding.beat);
-        let tempo = state.project.tempo_map().tempo_at(beat);
+        let tempo = state.project.tempo_map().tempo_at(BeatTime::ZERO);
         let value = f64::from(tempo.micro_bpm()) / 1_000_000.0;
         let enabled = !self.edit_pending();
+        let replaces_points = state.project.tempo_map().points().len() > 1;
         if self.project_tempo_control.is_none() {
             let spec = NumericSpec::new(1.0, 1000.0, 120.0, NumericScale::Linear, 6, Some("bpm"))
                 .and_then(|spec| spec.with_keyboard_steps(1.0, 0.1))
@@ -80,11 +67,11 @@ impl EditorView {
             let config = spec.and_then(|spec| {
                 NumericControlConfig::new(
                     "project-tempo",
-                    theme::text("project tempo at cursor quarter · bpm"),
+                    theme::text("project tempo · bpm"),
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    super::device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
             let Ok(config) = config else { return div() };
@@ -93,7 +80,7 @@ impl EditorView {
                     cx,
                     config
                         .with_command_fine_steps()
-                        .with_appearance(NumericControlAppearance::InlineValue),
+                        .with_presentation(NumericControlPresentation::InlineValue),
                 )
             });
             let subscription =
@@ -114,29 +101,30 @@ impl EditorView {
                         return;
                     };
                     // A sub-micro-BPM edit can round back to the same canonical value.
-                    if view
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.project.tempo_map().tempo_at(beat) == tempo)
-                    {
+                    if view.state.as_ref().is_some_and(|state| {
+                        state.project.tempo_map().points().len() == 1
+                            && state.project.tempo_map().tempo_at(BeatTime::ZERO) == tempo
+                    }) {
                         return;
                     }
-                    view.enqueue(Request::Edit(Command::SetTempoPoint { beat, tempo }));
+                    view.enqueue(Request::Edit(Command::SetProjectTempo { tempo }));
                     cx.notify();
                 });
             let observation = cx.observe(&entity, |_, _, cx| cx.notify());
             self.project_tempo_control = Some(Binding {
                 generation,
                 revision,
-                beat,
                 entity,
                 _subscription: subscription,
                 _observation: observation,
             });
         }
-        let binding = self.project_tempo_control.as_ref().unwrap();
+        let Some(binding) = self.project_tempo_control.as_ref() else {
+            return div();
+        };
         binding.entity.update(cx, |numeric, cx| {
             numeric.set_enabled(enabled, cx);
+            numeric.set_commit_unchanged_text(replaces_points);
             let _ = numeric.set_external_value(value, cx);
         });
         div()
@@ -152,29 +140,62 @@ impl EditorView {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::*;
-    #[test]
-    fn project_tempo_range_and_micro_bpm_precision() {
-        for value in [
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            0.0,
-            -1.0,
-            0.999999,
-            1000.000001,
-        ] {
-            assert!(tempo_value(value).is_none());
+    #[gpui::test]
+    fn project_tempo_same_value_explicit_commit_collapses_later_points_and_cursor_is_display_only(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::editor::{bind_editor_keys, clip_drag_ui_test, tempo_input_ui_test::begin};
+        use gpui::VisualTestContext;
+        cx.update(bind_editor_keys);
+        let mut model =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        model
+            .execute(hex_project::Command::SetTempoPoint {
+                beat: hex_project::BeatTime::from_quarters(2).unwrap(),
+                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let (handle, editor) =
+            clip_drag_ui_test::editor_window(cx, model.project().clone(), Default::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        for cursor in [0, 48_000, 96_000] {
+            editor.update(cx, |view, cx| {
+                view.offline_cursor = cursor;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            editor.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.project_tempo_control
+                        .as_ref()
+                        .unwrap()
+                        .entity
+                        .read(cx)
+                        .value(),
+                    120.0
+                )
+            });
         }
-        for (value, micro) in [
-            (1.0, 1_000_000),
-            (123.456789, 123_456_789),
-            (1000.0, 1_000_000_000),
-        ] {
-            assert_eq!(tempo_value(value).unwrap().micro_bpm(), micro);
-        }
+        begin(&mut visual);
+        visual.simulate_input("120");
+        visual.simulate_keystrokes("escape");
+        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+        begin(&mut visual);
+        visual.simulate_input("120");
+        visual.simulate_keystrokes("enter");
+        let command = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().expect("explicit global commit must clear later points even when the initial BPM is unchanged"));
+        model.execute(command).unwrap();
+        assert_eq!(model.project().tempo_map().points().len(), 1);
+        assert_eq!(
+            model
+                .project()
+                .tempo_map()
+                .tempo_at(hex_project::BeatTime::from_quarters(8).unwrap())
+                .micro_bpm(),
+            120_000_000
+        );
     }
 }
 

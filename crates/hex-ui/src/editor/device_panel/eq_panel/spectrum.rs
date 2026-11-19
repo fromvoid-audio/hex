@@ -1,7 +1,10 @@
-//! View-local analyzer intent; the existing audio client still owns the sole tap.
+//! View-local analyzer intent and complete mounted-chain membership. Audio
+//! retains bounded capture/FFT ownership; focus never owns another EQ's tap.
 use super::*;
 use gpui::Focusable;
-use hex_audio::spectrum_target::{SpectrumTarget, TargetError};
+use hex_audio::spectrum_target::{
+    SpectrumTarget, SpectrumTargetRequest, SpectrumTargets, TargetError,
+};
 
 const WAITING: &str = "spectrum waits for available current project audio";
 
@@ -9,18 +12,27 @@ const WAITING: &str = "spectrum waits for available current project audio";
 pub(in super::super) struct SpectrumSelection {
     generation: u64,
     revision: Option<u64>,
-    off: HashSet<DeviceId>,
+    output_identity: Option<u64>,
+    // Protocol lookup key plus canonical identity for revision retirement.
+    off: HashMap<u64, DeviceId>,
     status_message: Option<String>,
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in super::super) test_channel: Option<hex_audio::spectrum_target::SpectrumTargetControl>,
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in super::super) test_client: Option<hex_audio::prepared::Client>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in super::super) test_now: Option<std::time::Instant>,
 }
-
 impl SpectrumSelection {
-    pub(super) fn enabled(&self, device: DeviceId) -> bool {
-        !self.off.contains(&device)
+    fn enabled_raw(&self, device: u64) -> bool {
+        !self.off.contains_key(&device)
     }
+    pub(super) fn enabled(&self, device: DeviceId) -> bool {
+        !self.off.contains_key(&device.value())
+    }
+}
+pub(in crate::editor) fn is_eq(kind: hex_engine::DeviceTypeId) -> bool {
+    matches!(kind.as_str(), Ok("hex.eq" | "hex.eq8"))
 }
 
 // The shared panel status can also carry save/edit failures. Retire only the
@@ -41,9 +53,12 @@ fn clear_status(view: &mut EditorView) -> bool {
 fn target_error_message(error: TargetError) -> &'static str {
     match error {
         TargetError::OutputClosed => "spectrum unavailable: audio output is closed",
-        TargetError::InvalidDevice | TargetError::InvalidOwner | TargetError::WrongDeviceType => {
-            "spectrum unavailable: selected eq target is invalid"
-        }
+        TargetError::InvalidDevice
+        | TargetError::InvalidOwner
+        | TargetError::WrongDeviceType
+        | TargetError::TooManyTargets
+        | TargetError::DuplicateTarget
+        | TargetError::InconsistentContext => "spectrum unavailable: eq target set is invalid",
         TargetError::InvalidActivationFloor => "spectrum waits for a valid audio publication",
         TargetError::UnsupportedSampleRate(_) => {
             "spectrum unavailable: unsupported audio sample rate"
@@ -72,93 +87,155 @@ fn report_error(view: &mut EditorView, error: TargetError) {
     report_status(view, target_error_message(error).into());
 }
 
-pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
-    let mut changed = false;
-    if view.device_panel.eq_spectrum.generation != view.project_generation {
-        clear_status(view);
-        let intent = &mut view.device_panel.eq_spectrum;
-        intent.generation = view.project_generation;
-        intent.revision = None;
-        intent.off.clear();
-        changed = true;
-    }
-    let selected = view
-        .device_panel
-        .selected_device
-        .filter(|device| {
-            view.device_panel.eq_spectrum.enabled(*device)
-                && view.state.as_ref().is_some_and(|state| {
-                    state
-                        .project
-                        .device(*device)
-                        .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
-                })
-        })
-        .map(DeviceId::value);
-    if selected.is_none() {
-        changed |= clear_status(view);
-    }
-    let invalid_target = desired(view).is_some_and(|target| {
-        target.identity.device_type == eq::EQ_TYPE_ID
-            && (selected != Some(target.identity.device_id)
-                || target.project_generation != view.project_generation
-                || !view.state.as_ref().is_some_and(|state| {
-                    let matches = |device: &hex_project::Device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == eq::EQ_TYPE_ID
-                    };
-                    match target.identity.owner {
-                        hex_engine::ProcessorChainOwner::Main => {
-                            state.project.main_devices().iter().any(matches)
-                        }
-                        hex_engine::ProcessorChainOwner::Track(id) => state
-                            .project
-                            .tracks()
-                            .iter()
-                            .find(|track| track.id().value() == id)
-                            .is_some_and(|track| track.devices().iter().any(matches)),
-                        hex_engine::ProcessorChainOwner::Return(id) => state
-                            .project
-                            .return_tracks()
-                            .iter()
-                            .find(|track| track.id().value() == id)
-                            .is_some_and(|track| track.devices().iter().any(matches)),
-                    }
-                }))
-    });
-    if invalid_target {
-        clear(view);
-        changed = true;
-    }
-
-    let intent = &mut view.device_panel.eq_spectrum;
-    let Some(state) = view.state.as_ref() else {
-        return changed;
-    };
-    if intent.revision != Some(state.revision) {
-        intent.off.retain(|device| {
-            state
-                .project
-                .device(*device)
-                .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
-        });
-        intent.revision = Some(state.revision);
-    }
-    changed
-}
-
-fn desired(view: &EditorView) -> Option<SpectrumTarget> {
+fn desired(view: &EditorView) -> Option<&SpectrumTargets> {
     #[cfg(all(test, feature = "ui-test-support"))]
     if let Some(client) = &view.device_panel.eq_spectrum.test_client {
-        return client.spectrum_desired();
+        return client.spectrum_desired_targets();
     }
     #[cfg(all(test, feature = "ui-test-support"))]
     if let Some(channel) = &view.device_panel.eq_spectrum.test_channel {
-        return channel.desired();
+        return Some(channel.desired_targets());
     }
     view.audio
         .as_ref()
-        .and_then(|audio| audio.control.spectrum_desired())
+        .and_then(|audio| audio.control.spectrum_desired_targets())
+}
+fn output_identity(view: &EditorView) -> Option<u64> {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(client) = &view.device_panel.eq_spectrum.test_client {
+        return client.output_identity();
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if view.device_panel.eq_spectrum.test_channel.is_some() {
+        return Some(0);
+    }
+    view.audio
+        .as_ref()
+        .and_then(|audio| audio.control.output_identity())
+}
+fn publish(view: &mut EditorView, requests: &[SpectrumTargetRequest]) -> Result<(), TargetError> {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(client) = &mut view.device_panel.eq_spectrum.test_client {
+        client.spectrum_set_targets(requests)?;
+        return Ok(());
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(channel) = &mut view.device_panel.eq_spectrum.test_channel {
+        channel.set_targets(requests)?;
+        return Ok(());
+    }
+    view.audio
+        .as_mut()
+        .ok_or(TargetError::OutputClosed)?
+        .control
+        .spectrum_set_targets(requests)?;
+    Ok(())
+}
+fn clear(view: &mut EditorView) {
+    let _ = publish(view, &[]);
+    view.device_panel.spectrum_results.clear();
+}
+fn now(_view: &EditorView) -> std::time::Instant {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(now) = _view.device_panel.eq_spectrum.test_now {
+        return now;
+    }
+    std::time::Instant::now()
+}
+fn matches(
+    result: &hex_audio::spectrum_worker::PublishedSpectra,
+    target: SpectrumTarget,
+    now: std::time::Instant,
+) -> bool {
+    result.output.stamp.target == target.token
+        && result.output.stamp.generation == target.project_generation
+        && result.output.stamp.sample_rate_hz == target.sample_rate_hz
+        && result.output.stamp.applied_revision >= target.activation_floor
+        && result.output.is_fresh_at(now)
+}
+pub(in crate::editor) fn result(
+    view: &EditorView,
+    identity: hex_engine::PostNodeIdentity,
+) -> Option<&hex_audio::spectrum_worker::PublishedSpectra> {
+    if !view
+        .device_panel
+        .eq_spectrum
+        .enabled_raw(identity.device_id)
+    {
+        return None;
+    }
+    let (_, target) = desired(view)?.find(identity)?;
+    let result = view.device_panel.spectrum_results.get(&target.token)?;
+    (target.project_generation == view.project_generation && matches(result, target, now(view)))
+        .then_some(result)
+}
+
+pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
+    let endpoint = output_identity(view);
+    let mut changed = false;
+    if view.device_panel.eq_spectrum.generation != view.project_generation {
+        clear_status(view);
+        view.device_panel.eq_spectrum.generation = view.project_generation;
+        view.device_panel.eq_spectrum.revision = None;
+        view.device_panel.eq_spectrum.off.clear();
+        view.device_panel.spectrum_results.clear();
+        changed = true;
+    }
+    if view.device_panel.eq_spectrum.output_identity != endpoint {
+        view.device_panel.eq_spectrum.output_identity = endpoint;
+        view.device_panel.spectrum_results.clear();
+        clear_status(view);
+        changed = true;
+    }
+    if let Some(state) = view.state.as_ref()
+        && view.device_panel.eq_spectrum.revision != Some(state.revision)
+    {
+        view.device_panel.eq_spectrum.off.retain(|_, id| {
+            state
+                .project
+                .device(*id)
+                .is_some_and(|device| is_eq(device.state().type_id()))
+        });
+        view.device_panel.eq_spectrum.revision = Some(state.revision);
+    }
+    let before: Vec<_> = desired(view)
+        .into_iter()
+        .flat_map(SpectrumTargets::iter)
+        .map(|(_, target)| target)
+        .collect();
+    let mut valid: Vec<_> = before
+        .iter()
+        .copied()
+        .filter(|target| {
+            view.spectrum_target_is_visible_and_current(*target)
+                && view
+                    .device_panel
+                    .eq_spectrum
+                    .enabled_raw(target.identity.device_id)
+        })
+        .collect();
+    if valid.len() != before.len() {
+        let requests: Vec<_> = valid
+            .iter()
+            .copied()
+            .map(SpectrumTargetRequest::from)
+            .collect();
+        if let Err(error) = publish(view, &requests) {
+            valid.clear();
+            report_error(view, error);
+        }
+        changed = true;
+    }
+    let now = now(view);
+    let count = view.device_panel.spectrum_results.len();
+    view.device_panel
+        .spectrum_results
+        .retain(|_, result| valid.iter().any(|target| matches(result, *target, now)));
+    changed |= count != view.device_panel.spectrum_results.len();
+    if !view.clip_view_open || !view.device_panel_active {
+        changed |= clear_status(view);
+    }
+    changed
 }
 
 fn context(view: &EditorView) -> Result<Option<(u64, u32)>, String> {
@@ -184,140 +261,130 @@ fn context(view: &EditorView) -> Result<Option<(u64, u32)>, String> {
     let Some(state) = view.state.as_ref() else {
         return Ok(None);
     };
-    Ok(view
-        .audio_admission
-        .published_audio_revision(view.project_generation, state.revision)
+    // The analyzer follows the signal that reaches the output. A pending
+    // or refused publication does not advance the installed graph's revision.
+    let installed = audio
+        .control
+        .status()
+        .and_then(|status| status.recording_source())
+        .filter(|source| {
+            source.context.project_generation == view.project_generation
+                && audio.control.output_identity() == Some(source.output_identity)
+        })
+        .map(|source| source.audio_revision);
+    let retained = || {
+        desired(view)?
+            .iter()
+            .map(|(_, target)| target)
+            .find(|target| {
+                target.project_generation == view.project_generation
+                    && target.sample_rate_hz == audio.sample_rate
+            })
+            .map(|target| target.activation_floor)
+    };
+    Ok(installed
+        .or_else(retained)
+        .or_else(|| {
+            view.audio_admission
+                .published_audio_revision(view.project_generation, state.revision)
+        })
         .map(|floor| (floor, audio.sample_rate)))
 }
 
-fn clear(view: &mut EditorView) {
-    #[cfg(all(test, feature = "ui-test-support"))]
-    if let Some(client) = &mut view.device_panel.eq_spectrum.test_client {
-        let _ = client.spectrum_clear();
-        view.device_panel.spectrum_result = None;
-        return;
-    }
-    #[cfg(all(test, feature = "ui-test-support"))]
-    if let Some(channel) = &mut view.device_panel.eq_spectrum.test_channel {
-        let _ = channel.clear();
-        view.device_panel.spectrum_result = None;
-        return;
-    }
-    if let Some(audio) = view.audio.as_mut() {
-        let _ = audio.control.spectrum_clear();
-    }
-    view.device_panel.spectrum_result = None;
-}
-
-fn select(
+/// Called once by the owning chain after its existing mount/culling decision.
+/// Publishing one whole set avoids card paint order taking another card's tap.
+pub(in crate::editor) fn sync_visible(
     view: &mut EditorView,
-    identity: hex_engine::PostNodeIdentity,
-    floor: u64,
-    rate: u32,
-) -> Result<(), TargetError> {
-    #[cfg(all(test, feature = "ui-test-support"))]
-    if let Some(client) = &mut view.device_panel.eq_spectrum.test_client {
-        client.spectrum_select(identity, view.project_generation, floor, rate)?;
-        return Ok(());
-    }
-    #[cfg(all(test, feature = "ui-test-support"))]
-    if let Some(channel) = &mut view.device_panel.eq_spectrum.test_channel {
-        channel.select(identity, view.project_generation, floor, rate)?;
-        return Ok(());
-    }
-    let audio = view.audio.as_mut().ok_or(TargetError::OutputClosed)?;
-    audio
-        .control
-        .spectrum_select(identity, view.project_generation, floor, rate)?;
-    Ok(())
-}
-
-pub(super) fn sync_selected(
-    view: &mut EditorView,
-    device: DeviceId,
-    owner: hex_engine::ProcessorChainOwner,
+    identities: &[hex_engine::PostNodeIdentity],
 ) {
     reconcile(view);
-    // Mounting/hovering a panel is never selection. Only the existing explicit
-    // card selection or a real focus-entry event may choose this device.
-    if view.device_panel.selected_device != Some(device) {
-        return;
-    }
-    if !view.state.as_ref().is_some_and(|state| {
-        state
-            .project
-            .device(device)
-            .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
-    }) {
-        return;
-    }
-    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    if !view.device_panel.eq_spectrum.enabled(device) {
-        if desired(view).is_some_and(|target| {
-            target.identity == identity && target.project_generation == view.project_generation
-        }) {
-            clear(view);
-        }
+    let identities: Vec<_> = identities
+        .iter()
+        .copied()
+        .filter(|identity| {
+            is_eq(identity.device_type)
+                && view.spectrum_identity_is_visible_and_current(*identity, view.project_generation)
+                && view
+                    .device_panel
+                    .eq_spectrum
+                    .enabled_raw(identity.device_id)
+        })
+        .collect();
+    if identities.is_empty() {
+        clear(view);
         clear_status(view);
         return;
     }
     let (floor, rate) = match context(view) {
         Ok(Some(context)) => context,
         Ok(None) => {
-            // Recovery can retire this endpoint without replacing the project
-            // or its selected EQ. Pending publication is not the old output's
-            // setup/closed failure; retire only feedback owned by this analyzer.
-            view.device_panel.spectrum_result = None;
+            clear(view);
             if view
                 .device_panel
                 .eq_spectrum
                 .status_message
                 .as_deref()
-                .is_some_and(|message| message != WAITING)
+                .is_some_and(|m| m != WAITING)
             {
                 clear_status(view);
             }
             return;
         }
         Err(error) => {
-            view.device_panel.spectrum_result = None;
+            clear(view);
             report_status(view, error);
             return;
         }
     };
     let current = desired(view);
-    if current.is_some_and(|target| {
-        target.identity == identity
-            && target.project_generation == view.project_generation
-            && target.activation_floor == floor
-            && target.sample_rate_hz == rate
-    }) {
-        return;
-    }
-    // Both successful activation and refusal retire the previous tap's pixels.
-    view.device_panel.spectrum_result = None;
-    match select(view, identity, floor, rate) {
+    let requests: Vec<_> = identities
+        .into_iter()
+        .map(|identity| {
+            // Stable taps retain their FFT window across graph revisions. The
+            // callback still observes only the exact node on the active graph.
+            let previous = current
+                .and_then(|targets| targets.find(identity))
+                .map(|(_, target)| target)
+                .filter(|target| {
+                    target.project_generation == view.project_generation
+                        && target.sample_rate_hz == rate
+                });
+            SpectrumTargetRequest {
+                identity,
+                project_generation: view.project_generation,
+                activation_floor: previous
+                    .map_or(floor, |target| floor.min(target.activation_floor)),
+                sample_rate_hz: rate,
+            }
+        })
+        .collect();
+    match publish(view, &requests) {
         Ok(()) => {
             clear_status(view);
         }
-        Err(error) => report_error(view, error),
+        Err(error) => {
+            clear(view);
+            report_error(view, error);
+        }
     }
 }
 
-pub(super) fn toggle(
+pub(in crate::editor) fn toggle(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     owner: hex_engine::ProcessorChainOwner,
+    kind: hex_engine::DeviceTypeId,
 ) -> Stateful<Div> {
     reconcile(view);
     let enabled = view.device_panel.eq_spectrum.enabled(device);
     let generation = view.project_generation;
     let revision = view.state.as_ref().map(|state| state.revision);
-    text_action_button(
+    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), kind);
+    text_segment_button(
         format!("eq8-spectrum-{}", device.value()),
         "spectrum",
-        "show live spectrum for the selected eq; audio output must be available",
+        "show live spectrum for this eq; audio output must be available",
         theme::DeviceActionRole::Normal,
         enabled,
     )
@@ -325,31 +392,25 @@ pub(super) fn toggle(
     .on_click(cx.listener(move |view, _, _, cx| {
         if generation != view.project_generation
             || view.state.as_ref().map(|state| state.revision) != revision
+            || !view.spectrum_identity_is_visible_and_current(identity, generation)
         {
             view.device_panel.message = Some("spectrum target changed; select it again".into());
             cx.notify();
             return;
         }
-        reconcile(view);
         if view.device_panel.eq_spectrum.enabled(device) {
-            view.device_panel.eq_spectrum.off.insert(device);
-            if desired(view).is_some_and(|target| {
-                target.identity
-                    == hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID)
-                    && target.project_generation == generation
-            }) {
-                clear(view);
-            }
-        } else {
-            view.device_panel.eq_spectrum.off.remove(&device);
-            view.device_panel.selected_device = Some(device);
-            sync_selected(view, device, owner);
-        }
-        if view.device_panel.eq_spectrum.enabled(device) && matches!(context(view), Ok(None)) {
-            report_status(view, WAITING.into());
-        } else if !view.device_panel.eq_spectrum.enabled(device) {
+            view.device_panel
+                .eq_spectrum
+                .off
+                .insert(device.value(), device);
             clear_status(view);
+        } else {
+            view.device_panel.eq_spectrum.off.remove(&device.value());
+            if matches!(context(view), Ok(None)) {
+                report_status(view, WAITING.into());
+            }
         }
+        reconcile(view);
         cx.notify();
     }))
 }
@@ -382,7 +443,7 @@ pub(super) fn focus_listener(
                             .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
                     })
                 {
-                    view.device_panel.selected_device = Some(device);
+                    view.device_panel.select_only(Some(device));
                     // Focus is delivered after paint; dirty the next frame,
                     // following the existing Operator focus subscription seam.
                     cx.defer_in(window, |_, _, cx| cx.notify());

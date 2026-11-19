@@ -182,7 +182,11 @@ fn current32_placement_keeps_required_tuning_manifest_and_refuses_old31() {
     .unwrap();
     let bytes = hex_storage::encode(e.project()).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(original["version"], 33);
+    // Its musical content renders with the v2 warp resampler.
+    assert_eq!(
+        original["version"],
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
     assert!(original.get("device_assets").is_some());
     assert_eq!(original["tuning"]["enabled"], true);
     assert_eq!(
@@ -192,12 +196,8 @@ fn current32_placement_keeps_required_tuning_manifest_and_refuses_old31() {
     let mut old = original.clone();
     old["version"] = 31.into();
     old.as_object_mut().unwrap().remove("main_devices");
-    let error = hex_storage::decode(&serde_json::to_vec(&old).unwrap()).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported alpha project format 31")
-    );
+    // Relabelling a current envelope does not produce an original31 layout.
+    assert!(hex_storage::decode(&serde_json::to_vec(&old).unwrap()).is_err());
     for field in ["tuning", "device_assets"] {
         let mut missing = original.clone();
         missing.as_object_mut().unwrap().remove(field);

@@ -1,4 +1,12 @@
-//! Explicit desktop-owned, off-callback MTS-ESP publication.
+//! # Purpose
+//! Own explicit desktop-controlled MTS-ESP tuning publication outside audio callbacks.
+//!
+//! # Dependencies
+//! Uses hex-tuning and the existing native mts-esp-master-adapter boundary.
+//!
+//! # Does not own
+//! Does not own project tuning history, instrument DSP or a second tuning model. Process-global
+//! native ownership and publisher shutdown remain explicit lifecycle operations.
 use hex_tuning::ProjectTuning;
 use mts_esp_master_adapter::{Error as NativeError, ScaleMetadata, TuningPublication};
 use std::{
@@ -54,7 +62,7 @@ pub enum State {
     Pending,
     Disabling,
     Active,
-    Blocked,
+    Blocked { recovery_available: bool },
     Unavailable(NativeError),
     Stopped,
 }
@@ -102,6 +110,7 @@ struct Mailbox {
     latest: Option<Publication>,
     epoch: u64,
     attempt: u64,
+    recover: bool,
     next_client: u64,
     shutdown: bool,
 }
@@ -160,6 +169,7 @@ impl Handle {
             .ok_or(ControlError::Exhausted)?;
         state.epoch = epoch;
         state.attempt = attempt;
+        state.recover = false;
         state.snapshot = Snapshot {
             owner: Some(publication.revision.owner),
             desired: Some(publication.revision),
@@ -212,18 +222,34 @@ impl Handle {
         Ok(())
     }
     pub fn retry(&self, owner: Owner) -> Result<(), ControlError> {
+        self.request_attempt(owner, false)
+    }
+    /// Request a single shared-state reset after an explicit user action.
+    /// Only the current owner of an IPC-blocked registration can request it.
+    pub fn recover(&self, owner: Owner) -> Result<(), ControlError> {
+        self.request_attempt(owner, true)
+    }
+    fn request_attempt(&self, owner: Owner, recover: bool) -> Result<(), ControlError> {
         let mut state = self
             .0
             .mailbox
             .lock()
             .map_err(|_| ControlError::Unavailable)?;
-        if state.shutdown || state.snapshot.owner != Some(owner) {
+        if state.shutdown
+            || state.snapshot.owner != Some(owner)
+            || recover
+                && state.snapshot.state
+                    != (State::Blocked {
+                        recovery_available: true,
+                    })
+        {
             return Err(ControlError::Stale);
         }
         state.attempt = state
             .attempt
             .checked_add(1)
             .ok_or(ControlError::Exhausted)?;
+        state.recover = recover;
         state.snapshot.state = State::Pending;
         self.0.ready.notify_one();
         Ok(())
@@ -276,7 +302,7 @@ fn run(shared: &Shared, mut transport: impl Transport) {
     let mut attempted = None;
     let mut published = None;
     loop {
-        let (epoch, attempt, owner, latest, shutdown) = {
+        let (epoch, attempt, recover, owner, latest, shutdown) = {
             let Ok(state) = shared.mailbox.lock() else {
                 transport.release();
                 return;
@@ -284,6 +310,7 @@ fn run(shared: &Shared, mut transport: impl Transport) {
             (
                 state.epoch,
                 state.attempt,
+                state.recover,
                 state.snapshot.owner,
                 state.latest,
                 state.shutdown,
@@ -305,32 +332,40 @@ fn run(shared: &Shared, mut transport: impl Transport) {
             published = None;
         }
         if owner.is_none() {
-            if let Ok(mut state) = shared.mailbox.lock() {
-                if state.epoch == epoch && state.snapshot.owner.is_none() {
-                    state.snapshot = Snapshot::default();
-                }
+            if let Ok(mut state) = shared.mailbox.lock()
+                && state.epoch == epoch
+                && state.snapshot.owner.is_none()
+            {
+                state.snapshot = Snapshot::default();
             }
         } else if let Some(publication) = latest {
             if active_epoch.is_none() && attempted != Some((epoch, attempt)) {
                 attempted = Some((epoch, attempt));
-                match transport.acquire() {
+                if recover
+                    && !shared.mailbox.lock().is_ok_and(|state| {
+                        state.epoch == epoch && state.attempt == attempt && !state.shutdown
+                    })
+                {
+                    continue;
+                }
+                match transport.acquire(recover) {
                     Ok(()) => {
                         active_epoch = Some(epoch);
                         published = None;
                     }
                     Err(error) => {
-                        if let Ok(mut state) = shared.mailbox.lock() {
-                            if state.epoch == epoch {
-                                state.snapshot.state = if matches!(
-                                    error,
-                                    NativeError::ExistingMaster
-                                        | NativeError::LocalMasterAlreadyRegistered
-                                ) {
-                                    State::Blocked
-                                } else {
-                                    State::Unavailable(error)
-                                };
-                            }
+                        if let Ok(mut state) = shared.mailbox.lock()
+                            && state.epoch == epoch
+                            && state.attempt == attempt
+                            && !state.shutdown
+                        {
+                            state.snapshot.state = match error {
+                                NativeError::ExistingMaster
+                                | NativeError::ExistingMasterWithIpc => State::Blocked {
+                                    recovery_available: error == NativeError::ExistingMasterWithIpc,
+                                },
+                                _ => State::Unavailable(error),
+                            };
                         }
                     }
                 }
@@ -349,30 +384,29 @@ fn run(shared: &Shared, mut transport: impl Transport) {
                     }
                     match transport.clients() {
                         Ok(clients) => {
-                            if let Ok(mut state) = shared.mailbox.lock() {
-                                if state.epoch == epoch
-                                    && state.snapshot.owner == owner
-                                    && !state.shutdown
-                                {
-                                    state.snapshot.published = published;
-                                    state.snapshot.clients = clients;
-                                    state.snapshot.state = if state.snapshot.desired == published {
-                                        State::Active
-                                    } else {
-                                        State::Pending
-                                    };
-                                }
+                            if let Ok(mut state) = shared.mailbox.lock()
+                                && state.epoch == epoch
+                                && state.snapshot.owner == owner
+                                && !state.shutdown
+                            {
+                                state.snapshot.published = published;
+                                state.snapshot.clients = clients;
+                                state.snapshot.state = if state.snapshot.desired == published {
+                                    State::Active
+                                } else {
+                                    State::Pending
+                                };
                             }
                         }
                         Err(error) => {
                             transport.release();
                             active_epoch = None;
                             published = None;
-                            if let Ok(mut state) = shared.mailbox.lock() {
-                                if state.epoch == epoch {
-                                    state.snapshot.state = State::Unavailable(error);
-                                    state.snapshot.published = None;
-                                }
+                            if let Ok(mut state) = shared.mailbox.lock()
+                                && state.epoch == epoch
+                            {
+                                state.snapshot.state = State::Unavailable(error);
+                                state.snapshot.published = None;
                             }
                         }
                     }

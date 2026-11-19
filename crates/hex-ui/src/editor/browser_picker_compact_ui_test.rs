@@ -1,5 +1,6 @@
 //! Pointer resize and painted compact-heading contract; no native GPU claim.
 use super::*;
+use crate::theme;
 
 fn picker(
     cx: &mut TestAppContext,
@@ -31,6 +32,90 @@ fn picker(
         assert_eq!(view.sample_roots(), vec![samples]);
     });
     (handle, editor, directory)
+}
+
+#[gpui::test]
+fn browser_picker_compact_rows_share_blue_selection_and_readable_ink(cx: &mut TestAppContext) {
+    #[cfg(target_os = "macos")]
+    {
+        cx.use_native_text_system()
+            .expect("native bundled-font shaping");
+        cx.update(|cx| theme::load_fonts(cx).expect("bundled ioskeley mono"));
+    }
+    let (handle, editor, _directory) = picker(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let rows = [
+        "browser-section-all",
+        "browser-section-samples",
+        "browser-section-devices",
+        "browser-section-projects",
+        "browser-section-vst3",
+        "browser-place-0",
+        "browser-collection-0",
+        "browser-collection-1",
+        "browser-collection-2",
+    ];
+    let fill = theme::color(theme::PaletteRole::Secondary);
+    let ink = theme::readable_text(fill, theme::color(theme::PaletteRole::Background));
+    for width in [124.0, 23.0] {
+        resize(visual, width);
+        for row in rows {
+            assert_eq!(visual.debug_bounds(row).unwrap().size.height, px(18.0));
+        }
+        for (row, label, glyph) in [
+            (
+                "browser-section-devices",
+                "browser-picker-label-section-1",
+                Some("browser-picker-glyph-section-1"),
+            ),
+            (
+                "browser-place-0",
+                "browser-picker-label-place-0",
+                Some("browser-picker-glyph-place-0"),
+            ),
+            (
+                "browser-collection-1",
+                "browser-picker-label-collection-1",
+                None,
+            ),
+        ] {
+            let bounds = visual.debug_bounds(row).unwrap();
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(row),
+                Some(gpui::Background::from(gpui::rgb(fill)))
+            );
+            if width > 23.0 {
+                let label_bounds = visual.debug_bounds(label).unwrap();
+                assert!(
+                    label_bounds.left() >= bounds.left() && label_bounds.right() <= bounds.right()
+                );
+                #[cfg(target_os = "macos")]
+                assert!(
+                    visual
+                        .rendered_monochrome_colors(label)
+                        .contains(&gpui::rgb(ink).into()),
+                    "selected label ink: {label}; expected={ink:x}; actual={:?}",
+                    visual.rendered_monochrome_colors(label)
+                );
+            }
+            if let Some(glyph) = glyph {
+                assert!(
+                    visual
+                        .rendered_monochrome_colors(glyph)
+                        .contains(&gpui::rgb(ink).into()),
+                    "selected glyph ink: {glyph}"
+                );
+                let icon = visual.debug_bounds(glyph).unwrap();
+                assert!((f32::from(icon.center().y - bounds.center().y)).abs() <= 0.5);
+                assert!(icon.top() >= bounds.top() && icon.bottom() <= bounds.bottom());
+            }
+            let focus = editor.read_with(visual, |view, _| view.browser.results_focus.clone());
+            assert!(visual.update(|window, _| focus.is_focused(window)));
+        }
+    }
 }
 
 #[gpui::test]
@@ -93,6 +178,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         "browser-section-devices",
         "browser-section-projects",
         "browser-section-all",
+        "browser-section-vst3",
         "browser-control-⚙",
         "browser-place-0",
     ];
@@ -104,6 +190,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         "browser-picker-glyph-section-1",
         "browser-picker-glyph-section-2",
         "browser-picker-glyph-section-3",
+        "browser-picker-glyph-section-4",
         "browser-picker-glyph-place-0",
     ];
     let outer = visual.debug_bounds("browser-resize-handle").unwrap();
@@ -117,15 +204,9 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         let before_rows = rows.map(|name| visual.debug_bounds(name).unwrap());
         let before_glyphs = glyphs.map(|name| visual.debug_bounds(name).unwrap());
         let names = if settings {
-            vec![
-                "collections",
-                "collections pending",
-                "library",
-                "sections · session",
-                "places",
-            ]
+            vec!["collections", "library", "sections · session", "places"]
         } else {
-            vec!["collections", "collections pending", "library", "places"]
+            vec!["collections", "library", "places"]
         };
         let headings = names
             .iter()
@@ -273,4 +354,171 @@ fn browser_picker_compact_drag_hysteresis_avoids_chatter_and_keeps_other_widths_
         );
         resize(visual, minimum + band * 0.5);
     }
+}
+
+#[gpui::test]
+fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changelog(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _directory) = picker(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let minimum = f32::from(visual.debug_bounds("browser-control-⚙").unwrap().size.width) + 1.0;
+    resize(visual, minimum);
+    let deadline = crate::test_wait::hang_deadline();
+    while editor.read_with(visual, |view, _| view.state.is_none()) {
+        editor.update(visual, |view, cx| {
+            view.tick(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "initial worker snapshot"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let revision = editor.read_with(visual, |view, _| {
+        view.state
+            .as_ref()
+            .map(|state| (state.revision, state.can_undo, state.can_redo))
+    });
+    let query = visual.debug_bounds("browser-search").unwrap().center();
+    visual.simulate_click(query, Modifiers::default());
+    for (index, enabled) in [false, true, false].into_iter().enumerate() {
+        assert_eq!(visual.update(|_, cx| crate::tooltips::enabled(cx)), enabled);
+        editor.update_in(visual, |view, window, cx| {
+            assert!(
+                view.browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
+        });
+        for target in [
+            "browser-section-samples",
+            "browser-section-devices",
+            "browser-section-projects",
+            "browser-section-all",
+            "browser-section-vst3",
+            "browser-place-0",
+        ] {
+            let center = visual.debug_bounds(target).unwrap().center();
+            visual.simulate_mouse_move(center, None, Modifiers::default());
+            visual.run_until_parked();
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("identification-tooltip").is_some(),
+                "{target}, enabled={enabled}"
+            );
+        }
+        assert_eq!(
+            editor.read_with(visual, |view, _| view.state.as_ref().map(|state| (
+                state.revision,
+                state.can_undo,
+                state.can_redo
+            ))),
+            revision
+        );
+        if index < 2 {
+            let button = visual.debug_bounds("help-tooltip-toggle").unwrap().center();
+            visual.simulate_click(button, Modifiers::default());
+            visual.run_until_parked();
+        }
+    }
+    let changelog = visual.debug_bounds("open-changelog").unwrap().center();
+    visual.simulate_click(changelog, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("changelog-notes").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("changelog-notes").is_none());
+    let node = visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|node| node.descriptor.name.as_ref() == "help tooltips")
+            .unwrap()
+            .descriptor
+            .clone()
+    });
+    assert!(
+        visual.update(|window, cx| window.perform_accessibility_request(
+            &gpui::AccessibilityRequest {
+                id: node.id,
+                revision: node.revision,
+                action: gpui::AccessibilityAction::Focus
+            },
+            cx
+        ))
+    );
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|n| n.descriptor.id == node.id)
+            .unwrap()
+            .descriptor
+            .focused
+    }));
+    visual.simulate_keystrokes("shift-tab");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("open-changelog"),
+        Some(gpui::Background::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Hover
+        )))),
+        "previous tab stop is changelog"
+    );
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|window, _| window
+            .accessibility_nodes()
+            .find(|n| n.descriptor.id == node.id)
+            .unwrap()
+            .descriptor
+            .focused),
+        "next tab stop is help"
+    );
+    for key in ["space", "enter"] {
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: true,
+        });
+        visual.run_until_parked();
+        assert!(
+            !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+            "held activation stays off"
+        );
+    }
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(
+        !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+        "Space remains the global transport shortcut"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|_, cx| crate::tooltips::enabled(cx)),
+        "Enter activates the focused help toggle"
+    );
+    visual.simulate_keystrokes("shift-tab enter");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("changelog-notes").is_some(),
+        "shift-tab reaches changelog"
+    );
+    assert_eq!(
+        editor.read_with(visual, |view, _| view.state.as_ref().map(|state| (
+            state.revision,
+            state.can_undo,
+            state.can_redo
+        ))),
+        revision
+    );
 }

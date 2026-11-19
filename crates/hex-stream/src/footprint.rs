@@ -44,6 +44,8 @@ impl EndpointData {
 pub struct TransportData {
     pub page_objects: usize,
     pub pcm_boxes: usize,
+    pub scalar_boxes: usize,
+    pub scalar_coverage_boxes: usize,
     /// Audited constructor declaration, NOT an observed Vec capacity. Unknown
     /// unless observed pinned source and supported std family match within the
     /// repository fixed-Cargo-invocation class and exact required CI.
@@ -61,6 +63,8 @@ impl TransportData {
         sum([
             self.page_objects,
             self.pcm_boxes,
+            self.scalar_boxes,
+            self.scalar_coverage_boxes,
             self.queue_slot_data_declared,
             self.queue_object_data,
             self.catalog_owner_data,
@@ -75,18 +79,35 @@ impl TransportData {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorkerData {
     pub constructor_complete: bool,
+    pub granular: Option<crate::GranularRuntimeData>,
     pub source_slots: AllocationData,
     pub definition_paths: usize,
     pub reader_paths: usize,
+    /// Digest backing plus sized manifest owner DATA, conservatively charged
+    /// per reader even when immutable owners are shared. Excludes Arc metadata.
     pub manifests: usize,
     pub kernel_objects: usize,
     pub kernel_weights: usize,
+    pub pitch_filter_weights: usize,
     pub kernel_handles: usize,
+    pub manifest_handles: usize,
     pub source_scratch: AllocationData,
+    pub pitch_scratch: AllocationData,
     pub free_page_handles: AllocationData,
     pub held_page_handles: AllocationData,
     pub held_failures: AllocationData,
     pub membership: AllocationData,
+    pub scalar_membership: AllocationData,
+    pub scalar_shared_rows: AllocationData,
+    pub scalar_source_slots: AllocationData,
+    pub scalar_source_backings: usize,
+    pub scalar_projection_data: usize,
+    pub scalar_projection_groups: usize,
+    pub scalar_source_handles: usize,
+    pub scalar_cursor_handle_bound: usize,
+    pub scalar_job_data: usize,
+    pub scalar_deferred_keys: AllocationData,
+    pub scalar_deferred_inline: usize,
     pub catalog_object: usize,
     pub construction_definition_slots: AllocationData,
     pub construction_kernel_cache: AllocationData,
@@ -96,17 +117,29 @@ impl WorkerData {
     pub fn bytes(self) -> Option<usize> {
         self.constructor_complete.then_some(())?;
         sum([
+            self.granular
+                .map_or(Some(0), crate::GranularRuntimeData::bytes)?,
             self.source_slots.bytes()?,
             self.definition_paths,
             self.reader_paths,
             self.manifests,
             self.kernel_objects,
             self.kernel_weights,
+            self.pitch_filter_weights,
             self.source_scratch.bytes()?,
+            self.pitch_scratch.bytes()?,
             self.free_page_handles.bytes()?,
             self.held_page_handles.bytes()?,
             self.held_failures.bytes()?,
             self.membership.bytes()?,
+            self.scalar_membership.bytes()?,
+            self.scalar_shared_rows.bytes()?,
+            self.scalar_source_slots.bytes()?,
+            self.scalar_source_backings,
+            self.scalar_projection_data,
+            self.scalar_job_data,
+            self.scalar_deferred_keys.bytes()?,
+            self.scalar_deferred_inline,
             self.catalog_object,
         ])
     }
@@ -118,8 +151,8 @@ impl WorkerData {
         ])
     }
 }
-/// Complete only within the explicitly listed DATA contract inherited from
-/// PR177 8d444c06 docs/page-delivery.md. Arc control blocks, mpsc/thread/OS
+/// Complete only for the DATA fields listed by EndpointData, TransportData and
+/// WorkerData. Arc control blocks, mpsc/thread/OS
 /// machinery, allocator rounding/headers and stack/thread locals are excluded
 /// HERE and MUST remain explicit obligations in the aggregate façade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

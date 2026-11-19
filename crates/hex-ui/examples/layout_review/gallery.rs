@@ -2,6 +2,8 @@
 #[path = "compositions.rs"]
 mod compositions;
 mod eq;
+#[path = "eq_spectrum.rs"]
+mod eq_spectrum;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "tests.rs"]
 mod tests;
@@ -12,9 +14,9 @@ use gpui::{
     px, rgb,
 };
 use hex_widgets::{
-    DiscreteControlAppearance, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, ResponseGraphModel, Selector,
-    SelectorConfig, Toggle, ToggleConfig,
+    NumericControl, NumericControlConfig, NumericControlPresentation, NumericScale, NumericSpec,
+    ResponseGraph, ResponseGraphModel, Selector, SelectorAppearance, SelectorConfig, Toggle,
+    ToggleAppearance, ToggleConfig,
 };
 use std::collections::HashMap;
 
@@ -150,6 +152,7 @@ struct Fixture {
     toggles: Vec<Entity<Toggle>>,
     selectors: Vec<Entity<Selector>>,
     graph: Entity<ResponseGraph>,
+    eq_local: Option<eq::Local>,
     discrete_height: f32,
 }
 impl Fixture {
@@ -161,44 +164,82 @@ impl Fixture {
         let generic = matches!(entry, Entry::Instrument | Entry::Effect);
         let mut numeric = Vec::new();
         for index in 0..numbers {
+            let oscillator_level = entry == Entry::Vector && index < 12 && index % 3 == 2;
             let (appearance, width, height) = match entry {
-                Entry::Vector if index >= 24 => (NumericControlAppearance::InlineValue, 46.0, 14.0),
+                Entry::Vector if index < 12 => {
+                    (NumericControlPresentation::FilledSlider, 60.0, 18.0)
+                }
+                Entry::Vector if index >= 24 => {
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
+                }
                 Entry::Vector | Entry::Eq8 => (
-                    NumericControlAppearance::MicroDial,
+                    NumericControlPresentation::MicroDial,
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
                 Entry::Compressor if index >= 3 => {
-                    (NumericControlAppearance::InlineValue, 46.0, 14.0)
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
                 }
-                Entry::Utility if index == 3 => (NumericControlAppearance::InlineValue, 46.0, 14.0),
+                Entry::Utility if index == 3 => {
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
+                }
                 Entry::Instrument | Entry::Effect => {
-                    (NumericControlAppearance::Standard, 136.0, 26.0)
+                    (NumericControlPresentation::HorizontalSlider, 136.0, 26.0)
                 }
-                _ => (NumericControlAppearance::CompactDial, 64.0, 52.0),
+                _ => (NumericControlPresentation::CompactDial, 64.0, 52.0),
             };
-            let role = if appearance == NumericControlAppearance::InlineValue {
+            let role = if appearance == NumericControlPresentation::InlineValue {
                 theme::DeviceStyleRole::Readout
             } else {
                 theme::DeviceStyleRole::Control
             };
-            let spec = NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%"))
-                .map_err(|error| error.to_string())?;
-            let kind = if appearance == NumericControlAppearance::Standard {
-                NumericControlKind::HorizontalSlider
+            let (spec, value) = if oscillator_level {
+                (
+                    NumericSpec::new(
+                        0.0,
+                        1.0,
+                        0.5,
+                        NumericScale::LinearAmplitudeDecibels,
+                        1,
+                        None::<&str>,
+                    ),
+                    0.5,
+                )
+            } else if entry == Entry::Vector && index < 12 {
+                if index % 3 == 0 {
+                    (
+                        NumericSpec::new(
+                            1.0 / 128.0,
+                            128.0,
+                            1.0,
+                            NumericScale::Logarithmic,
+                            2,
+                            None::<&str>,
+                        ),
+                        [1.0, 2.0, 8.0, 10.0][index / 3],
+                    )
+                } else {
+                    (
+                        NumericSpec::new(-1000.0, 1000.0, 0.0, NumericScale::Linear, 2, Some("hz")),
+                        if index == 4 { 0.75 } else { 0.0 },
+                    )
+                }
             } else {
-                NumericControlKind::Knob
+                (
+                    NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%")),
+                    50.0,
+                )
             };
+            let spec = spec.map_err(|error| error.to_string())?;
             let config = NumericControlConfig::new(
                 format!("fixture-{}-numeric-{index}", entry.key()),
                 theme::text(["amount", "fine", "level"][index % 3]),
-                kind,
+                appearance,
                 spec,
-                50.0,
+                value,
                 theme::device_style(role),
             )
-            .map_err(|error| error.to_string())?
-            .with_appearance(appearance);
+            .map_err(|error| error.to_string())?;
             let entity = cx.new(|cx| {
                 let mut control = NumericControl::from_config(cx, config);
                 control.set_tab_navigation(true, cx);
@@ -221,9 +262,9 @@ impl Fixture {
             )
             .map_err(str::to_owned)?
             .with_appearance(if generic {
-                DiscreteControlAppearance::Standard
+                ToggleAppearance::Standard
             } else {
-                DiscreteControlAppearance::CompactButton
+                ToggleAppearance::CompactButton
             });
             switches.push(cx.new(|cx| {
                 let mut control = Toggle::from_config(cx, config);
@@ -233,20 +274,25 @@ impl Fixture {
         }
         let mut choices = Vec::new();
         for index in 0..selectors {
+            // Exercise a compact menu beyond the taller clipped Saturator card.
+            let extra_choices = if entry == Entry::Saturator { 20 } else { 8 };
             let config = SelectorConfig::new(
                 format!("fixture-{}-selector-{index}", entry.key()),
                 ["sine", "saw", "square", "triangle", "long fixture option"]
                     .map(theme::text)
                     .into_iter()
-                    .chain((0..7).map(|index| theme::text(format!("extra choice {index}")))),
+                    .chain(
+                        (0..extra_choices)
+                            .map(|index| theme::text(format!("extra choice {index}"))),
+                    ),
                 0,
                 theme::device_style(theme::DeviceStyleRole::Control),
             )
             .map_err(str::to_owned)?
             .with_appearance(if generic {
-                DiscreteControlAppearance::Standard
+                SelectorAppearance::Standard
             } else {
-                DiscreteControlAppearance::CompactSelector
+                SelectorAppearance::CompactSelector
             });
             choices.push(cx.new(|cx| {
                 let mut control = Selector::from_config(cx, config);
@@ -268,32 +314,39 @@ impl Fixture {
             toggles: switches,
             selectors: choices,
             graph,
+            eq_local: None,
             discrete_height: if generic { 22.0 } else { 14.0 },
         })
     }
     fn sync(&self, disabled: bool, cx: &mut Context<Gallery>) {
-        for number in &self.numbers {
+        let has_node = self.entry != Entry::Eq || eq::has_selected(self);
+        for (index, number) in self.numbers.iter().enumerate() {
             number.entity.update(cx, |control, cx| {
                 let _ = control.set_external_style(theme::device_style(number.role), cx);
-                control.set_enabled(!disabled, cx);
+                control.set_enabled(!disabled && (has_node || index == 0), cx);
             });
         }
-        for entity in &self.toggles {
+        for (index, entity) in self.toggles.iter().enumerate() {
             entity.update(cx, |control, cx| {
                 let _ = control
                     .set_external_style(theme::device_style(theme::DeviceStyleRole::Control), cx);
-                control.set_enabled(!disabled, cx);
+                control.set_enabled(
+                    !disabled
+                        && (has_node || index != 0)
+                        && (self.entry != Entry::Eq || index != eq::AUDITION_TOGGLE),
+                    cx,
+                );
             });
         }
-        for entity in &self.selectors {
+        for (index, entity) in self.selectors.iter().enumerate() {
             entity.update(cx, |control, cx| {
                 let _ = control
                     .set_external_style(theme::device_style(theme::DeviceStyleRole::Control), cx);
-                control.set_enabled(!disabled, cx);
+                control.set_enabled(!disabled && (has_node || index == 0), cx);
             });
         }
         if self.entry == Entry::Eq {
-            eq::sync(self, cx);
+            eq::sync(self, disabled, cx);
             return;
         }
         self.graph.update(cx, |graph, cx| {
@@ -315,6 +368,7 @@ impl Fixture {
                     ],
                     analyzer: None,
                     input_analyzer: None,
+                    analyzer_peak: None,
                     nodes: Vec::new(),
                 },
                 theme::device_style(theme::DeviceStyleRole::Display),
@@ -433,14 +487,40 @@ impl Gallery {
 
     fn finish_drafts(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(fixture) = self.fixtures.get(&self.entry) {
-            for number in &fixture.numbers {
-                if let Err(error) = number
+            let mut prepared = Vec::new();
+            for (index, number) in fixture.numbers.iter().enumerate() {
+                match number
                     .entity
-                    .update(cx, |control, cx| control.finish_edit(cx))
+                    .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
                 {
-                    self.error = Some(format!("finish the fixture value · {error}"));
-                    return false;
+                    Ok(Some(value)) => prepared.push((index, number.entity.clone(), value)),
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.error = Some(format!("finish the fixture value · {error}"));
+                        return false;
+                    }
                 }
+            }
+            if self.entry == Entry::Eq && !eq::can_finish_numeric(fixture, prepared.len()) {
+                self.error = Some("too many pending eq edits; try again".into());
+                return false;
+            }
+            for (index, entity, value) in prepared {
+                if self.entry == Entry::Eq
+                    && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
+                {
+                    eq::finish_numeric(
+                        fixture,
+                        index,
+                        value.previous,
+                        value.value,
+                        value.gesture.clone(),
+                        cx,
+                    );
+                }
+                entity.update(cx, |control, cx| {
+                    control.accept_finish_edit_for_owner(value, cx)
+                });
             }
         }
         self.error = None;
@@ -450,6 +530,12 @@ impl Gallery {
         if !self.finish_drafts(cx) {
             cx.notify();
             return;
+        }
+        if self.entry == Entry::Eq
+            && entry != Entry::Eq
+            && let Some(fixture) = self.fixtures.get(&Entry::Eq)
+        {
+            fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
         }
         self.entry = entry;
         self.selected = false;
@@ -474,6 +560,24 @@ impl Gallery {
         cx.notify();
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.entry == Entry::Eq
+            && !self.disabled
+            && event.keystroke.key == "z"
+            && event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+        {
+            if self.finish_drafts(cx)
+                && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
+                && !eq::defer_history(fixture, event.keystroke.modifiers.shift)
+                && let Err(error) = eq::history(fixture, event.keystroke.modifiers.shift, cx)
+            {
+                self.error = Some(error);
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         match event.keystroke.key.as_str() {
             "tab" => {
                 if self.finish_drafts(cx) {
@@ -633,6 +737,7 @@ impl Render for Gallery {
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(8.0))
                     .child(theme::text(status)).child(controls)
                     .child(div().id("sample-viewport").debug_selector(|| "sample-viewport".into()).w_full().min_w_0().h(px(208.0)).flex_shrink_0().overflow_x_scroll().child(sample))
+                    .when(self.entry == Entry::Eq, |view| view.child(theme::text("static spectrum fixture · audition unavailable")))
                     .child(theme::text("local controls · tab / shift-tab focus · arrows edit · escape cancels"))
                     .child(theme::text("selection paints only the header · click any card area to select"))
                     .child(theme::text("type a long value to inspect readout clipping; selector choices open a real popup"))))

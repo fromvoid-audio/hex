@@ -96,6 +96,8 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         .unwrap();
     let mut snapshot = editor.project().snapshot();
     let template = snapshot.tracks.remove(0);
+    // Synthetic inventory below assigns every source/device identity afresh.
+    snapshot.native_sources.clear();
     let utility =
         crate::default_native_device_state(DeviceTypeId::from_static("hex.utility")).unwrap();
     let stateful = effect(shape.effect);
@@ -114,6 +116,9 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         track.instrument_position = Some(48);
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: if index >= shape.tracks - shape.effect_tracks && slot == 63 {
@@ -129,6 +134,11 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    content_view: None,
+                    active: true,
+                    playback_offset_raw: 0,
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                    volume: hex_project::MidiClipVolume::default(),
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: next,
@@ -140,6 +150,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
                     loop_end_raw: 8 << 32,
                     looping: false,
                     notes: vec![hex_project::MidiNoteSnapshot {
+                        active: true,
                         id: next + 1,
                         start_raw: 0,
                         duration_raw: 8 << 32,
@@ -159,6 +170,9 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         let mut devices = Vec::new();
         for slot in 0..64 {
             devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: if index < shape.returns && slot == 63 {
@@ -190,7 +204,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
             });
     }
     snapshot.next_id = next;
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
     Arc::new(
         PreparedRevision::prepare(
             &project,
@@ -203,10 +217,28 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
 }
 
 pub(super) fn handoff(shape: &Shape) -> Result<SessionPlayback, crate::SessionPlaybackError> {
-    let mut previous = SessionPlayback::new(revision(shape, true, 100_000)).unwrap();
+    handoff_with(shape, revision(shape, true, 100_000), || {
+        revision(shape, false, 100)
+    })
+}
+
+pub(super) fn handoff_prepared(
+    shape: &Shape,
+    previous_revision: Arc<PreparedRevision>,
+    candidate_revision: Arc<PreparedRevision>,
+) -> Result<SessionPlayback, crate::SessionPlaybackError> {
+    handoff_with(shape, previous_revision, || candidate_revision)
+}
+
+fn handoff_with(
+    shape: &Shape,
+    previous_revision: Arc<PreparedRevision>,
+    candidate_revision: impl FnOnce() -> Arc<PreparedRevision>,
+) -> Result<SessionPlayback, crate::SessionPlaybackError> {
+    let mut previous = SessionPlayback::new(previous_revision).unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
     previous.render(&mut [[0.0; 2]; 96]).unwrap();
-    let mut candidate = SessionPlayback::new(revision(shape, false, 100)).unwrap();
+    let mut candidate = SessionPlayback::new(candidate_revision()).unwrap();
     if let Err(error) = candidate.try_inherit_state_from(&mut previous) {
         eprintln!(
             "current handoff refusal: effects={} returns={} mutable={:?} track_pair_bytes={} return_pair_bytes={} instrument_pair_bytes={} error={error:?}",
@@ -278,11 +310,21 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         base = base
             .checked_sub(owner.accounted_storage_bytes().unwrap())
             .unwrap();
-        let ledgers = owner.ledger_capacity_bytes().unwrap();
+        let source_live_bytes = if owner.is_source_owner() {
+            MutableInstrumentTrackRuntime::source_live_storage_upper_bound()
+        } else {
+            0
+        };
+        let ledgers = owner
+            .ledger_capacity_bytes()
+            .unwrap()
+            .checked_add(source_live_bytes)
+            .unwrap();
         assert_eq!(
             ledgers,
-            128 * size_of::<crate::mutable_instrument::MutableOccurrence>()
+            128 * size_of::<crate::mutable_instrument::MutableOccurrence>() + source_live_bytes
         );
+        let (frozen, modulation) = owner.proof_auxiliary_storage_bytes().unwrap();
         OwnerCharge {
             header: if proposed {
                 size_of::<payload::HostOwner>()
@@ -295,6 +337,8 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
                 owner.runtime_pair_storage_bytes().unwrap()
             },
             ledgers,
+            frozen,
+            modulation,
         }
     };
     let active = runtime

@@ -21,7 +21,10 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 15;
+pub const OPERATOR_STATE_VERSION: u32 = KEYTRACK_STATE_VERSION;
+const KEYTRACK_STATE_VERSION: u32 = 17;
+const FINE_STATE_VERSION: u32 = 16;
+const GLOBAL_STATE_VERSION: u32 = 15;
 const COMPANION_STATE_VERSION: u32 = 14;
 const CATALOG_STATE_VERSION: u32 = 13;
 const HARMONIC_STATE_VERSION: u32 = 12;
@@ -34,9 +37,13 @@ const WAVEFORM_STATE_VERSION: u32 = 2;
 pub mod algorithms;
 mod companion;
 mod enable;
+mod filter_response;
+mod fine;
+pub use filter_response::operator_filter_frequency_response;
 mod global;
 mod harmonic_runtime;
 mod harmonics;
+mod keytrack;
 mod modulation;
 pub use harmonics::{
     partial as harmonic_parameter, range as harmonic_range_parameter,
@@ -46,6 +53,7 @@ mod enable_continuation;
 mod feedback_runtime;
 mod lfo;
 mod lfo_runtime;
+mod occurrence_gain;
 mod tuning;
 const LEGACY_STATE_VERSION: u32 = 1;
 const CORE_FIELDS: usize = 32;
@@ -65,7 +73,8 @@ const STORED_PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + FILTER_PARAMETERS
     + harmonics::COUNT
     + companion::COUNT;
-const PARAMETER_COUNT: usize = STORED_PARAMETER_COUNT + global::COUNT + modulation::COUNT + 1;
+const PARAMETER_COUNT: usize =
+    STORED_PARAMETER_COUNT + global::COUNT + modulation::COUNT + 1 + fine::COUNT + keytrack::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -79,7 +88,9 @@ const FILTER_PAYLOAD_BYTES: usize = ENABLE_PAYLOAD_BYTES + crate::operator_filte
 const HARMONIC_PAYLOAD_BYTES: usize = FILTER_PAYLOAD_BYTES + harmonics::BYTES;
 const COMPANION_PAYLOAD_BYTES: usize = HARMONIC_PAYLOAD_BYTES + companion::BYTES;
 const GLOBAL_PAYLOAD_BYTES: usize = COMPANION_PAYLOAD_BYTES + global::BYTES;
-const PAYLOAD_BYTES: usize = GLOBAL_PAYLOAD_BYTES + modulation::BYTES;
+const MODULATION_PAYLOAD_BYTES: usize = GLOBAL_PAYLOAD_BYTES + modulation::BYTES;
+const FINE_PAYLOAD_BYTES: usize = MODULATION_PAYLOAD_BYTES + fine::BYTES;
+const PAYLOAD_BYTES: usize = FINE_PAYLOAD_BYTES + keytrack::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -87,6 +98,16 @@ pub mod parameter {
         carrier, modulation, oscillator_level, oscillator_phase, oscillator_ratio,
     };
     use hex_lattice_contract::ParameterId;
+
+    /// Note-pitch tracking, 0–100%, from fixed to normal keyboard tuning. Operators are one-based.
+    pub const fn pitch_keytrack(operator: u32) -> ParameterId {
+        super::keytrack::parameter(operator)
+    }
+
+    /// Signed Hz added after ratio or fixed-frequency multiplication. Operators are one-based.
+    pub const fn fine_offset(operator: u32) -> ParameterId {
+        super::fine::parameter(operator)
+    }
 
     /// Stable independently persisted enable switch; operators are one-based.
     pub const fn enabled(operator: u32) -> ParameterId {
@@ -441,6 +462,18 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         offset += 1;
     }
     result[STORED_PARAMETER_COUNT + global::COUNT + modulation::COUNT] = algorithms::DESCRIPTOR;
+    let fine = fine::descriptors();
+    let mut offset = 0;
+    while offset < fine::COUNT {
+        result[PARAMETER_COUNT - keytrack::COUNT - fine::COUNT + offset] = fine[offset];
+        offset += 1;
+    }
+    let keytrack = keytrack::descriptors();
+    let mut offset = 0;
+    while offset < keytrack::COUNT {
+        result[PARAMETER_COUNT - keytrack::COUNT + offset] = keytrack[offset];
+        offset += 1;
+    }
     result
 }
 
@@ -461,6 +494,8 @@ pub struct OperatorSettings {
     companion: companion::Settings,
     global: global::Settings,
     modulation: modulation::Settings,
+    fine: fine::Settings,
+    pitch_keytrack: keytrack::Settings,
 }
 
 impl OperatorSettings {
@@ -486,7 +521,15 @@ impl OperatorSettings {
             companion: companion::Settings::default(),
             global: global::Settings::default(),
             modulation: modulation::Settings::default(),
+            fine: fine::Settings::default(),
+            pitch_keytrack: keytrack::Settings::default(),
         }
+    }
+
+    /// Global voice settings select the mutable harmonic renderer. This
+    /// control-side query does not prepare a voice, context or runtime pair.
+    pub fn has_global_voice_runtime(&self) -> bool {
+        self.global.active
     }
 
     pub fn from_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
@@ -504,6 +547,8 @@ impl OperatorSettings {
             11 => FILTER_PAYLOAD_BYTES,
             HARMONIC_STATE_VERSION | CATALOG_STATE_VERSION => HARMONIC_PAYLOAD_BYTES,
             COMPANION_STATE_VERSION => COMPANION_PAYLOAD_BYTES,
+            GLOBAL_STATE_VERSION => MODULATION_PAYLOAD_BYTES,
+            FINE_STATE_VERSION => FINE_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -621,19 +666,36 @@ impl OperatorSettings {
         } else {
             companion::Settings::default()
         };
-        let global = if state.state_version() >= OPERATOR_STATE_VERSION {
+        let global = if state.state_version() >= GLOBAL_STATE_VERSION {
             global::Settings::decode(
                 &state.payload()[COMPANION_PAYLOAD_BYTES..GLOBAL_PAYLOAD_BYTES],
             )?
         } else {
             global::Settings::legacy()
         };
-        let modulation = if state.state_version() >= OPERATOR_STATE_VERSION {
-            modulation::Settings::decode(&state.payload()[GLOBAL_PAYLOAD_BYTES..])?
+        let modulation = if state.state_version() >= GLOBAL_STATE_VERSION {
+            modulation::Settings::decode(
+                &state.payload()[GLOBAL_PAYLOAD_BYTES..MODULATION_PAYLOAD_BYTES],
+            )?
         } else {
             modulation::Settings::default()
         };
+        let fine = if state.state_version() >= FINE_STATE_VERSION {
+            fine::Settings::decode(&state.payload()[MODULATION_PAYLOAD_BYTES..FINE_PAYLOAD_BYTES])?
+        } else {
+            fine::Settings::default()
+        };
+        let pitch_keytrack = if state.state_version() >= KEYTRACK_STATE_VERSION {
+            keytrack::Settings::decode(&state.payload()[FINE_PAYLOAD_BYTES..])?
+        } else {
+            keytrack::Settings::from_fixed(tuning.fixed_flags())
+        };
+        if tuning.fixed_flags() != pitch_keytrack.fixed_flags() {
+            return Err(DeviceContractError::MalformedState);
+        }
         let result = Self {
+            pitch_keytrack,
+            fine,
             modulation,
             global,
             companion,
@@ -677,6 +739,8 @@ impl OperatorSettings {
         self.companion.append(&mut payload);
         self.global.append(&mut payload);
         self.modulation.append(&mut payload);
+        self.fine.append(&mut payload);
+        self.pitch_keytrack.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -707,6 +771,9 @@ impl OperatorSettings {
         DeviceContractError,
     > {
         self.tuning.modes()?;
+        if self.tuning.fixed_flags() != self.pitch_keytrack.fixed_flags() {
+            return Err(DeviceContractError::MalformedState);
+        }
         self.lfo.validate()?;
         self.filter.validate()?;
         self.companion.validate()?;
@@ -827,6 +894,7 @@ impl OperatorSettings {
         sample_rate: u32,
     ) -> Result<PreparedOperatorConfiguration, DeviceContractError> {
         let (oscillators, routing, envelopes) = self.kernel_parts()?;
+        let fixed_anchors = self.tuning.fixed_anchors()?;
         PreparedOperatorConfiguration::new_with_tuning_and_amplitude_velocity(
             sample_rate,
             oscillators,
@@ -842,6 +910,10 @@ impl OperatorSettings {
                 std::array::from_fn(|i| self.companion.float(i, 1) as f32),
                 std::array::from_fn(|i| self.companion.words[i][2] != 0),
             )
+        })
+        .and_then(|configuration| configuration.with_fine_offsets(self.fine.values()))
+        .and_then(|configuration| {
+            configuration.with_pitch_keytrack(self.pitch_keytrack.values(), fixed_anchors)
         })
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
@@ -907,6 +979,12 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.pitch_keytrack.read(parameter) {
+            return Ok(value);
+        }
+        if let Some(value) = settings.fine.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.modulation.read(parameter) {
             return Ok(value);
         }
@@ -1010,6 +1088,15 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.pitch_keytrack.patch(parameter, value)? {
+            settings
+                .tuning
+                .set_fixed_flags(settings.pitch_keytrack.fixed_flags());
+            return settings.to_state();
+        }
+        if settings.fine.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.modulation.patch(parameter, value)? {
             settings.global.active = true;
             return settings.to_state();
@@ -1047,6 +1134,15 @@ impl NativeDeviceMetadata for OperatorMetadata {
             return settings.to_state();
         }
         if settings.tuning.patch(parameter, value)? {
+            for operator in 1..=OPERATORS as u32 {
+                if parameter == parameter::fixed(operator) {
+                    let fixed = settings.tuning.fixed_flags()[operator as usize - 1];
+                    settings.pitch_keytrack.patch(
+                        parameter::pitch_keytrack(operator),
+                        ParameterValue::Float(if fixed { 0.0 } else { 100.0 }),
+                    )?;
+                }
+            }
             return settings.to_state();
         }
         if parameter == parameter::ALGORITHM {
@@ -1173,6 +1269,14 @@ struct PreparedOperatorInstrument {
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prefers_mutable_continuation(&self) -> bool {
         self.harmonic_runtime.tuning.is_some()
+            || self.harmonic_runtime.settings.fine.values() != [0.0; OPERATORS]
+            || self
+                .harmonic_runtime
+                .settings
+                .pitch_keytrack
+                .values()
+                .iter()
+                .any(|v| *v != 0.0 && *v != 100.0)
             || self
                 .harmonic_runtime
                 .settings
@@ -1354,6 +1458,8 @@ mod capture_proof;
 mod enable_continuation_tests;
 #[cfg(test)]
 mod enable_tests;
+#[cfg(test)]
+mod fine_tests;
 #[cfg(test)]
 mod fixed_tests;
 #[cfg(test)]

@@ -81,7 +81,8 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(value["version"], 33);
+    // Warped content renders with the v2 warp resampler.
+    assert_eq!(value["version"], hex_storage::WARP_RESAMPLER_SCHEMA_VERSION);
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
@@ -101,7 +102,7 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
 }
 
 #[test]
-fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
+fn current_shapes_preserve_events_appearance_names_and_strict_validation() {
     use hex_project::{AudioEventEdit, ClipFade, ClipFlavor, ElementColor};
     for musical in [false, true] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
@@ -217,7 +218,7 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
                 "mutation {mutation}"
             );
         }
-        assert_eq!(value["version"], 33);
+        assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
         let raw = String::from_utf8(bytes.clone()).unwrap();
         for key in ["fade_shapes", "audio_event_state"] {
             let duplicate = format!("{{\"{key}\":[],{}", &raw[1..]);
@@ -226,74 +227,117 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
                 "duplicate {key} cannot be hidden by adaptation"
             );
         }
-        let mut events28 = value.clone();
-        events28["version"] = 28.into();
-        events28.as_object_mut().unwrap().remove("main_devices");
+    }
+}
+
+#[test]
+fn frozen_tempo_map_roundtrips_and_rejects_malformed_current_timing() {
+    use hex_project::{AudioClipTiming, AudioEventEdit};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "frozen".into(),
+            path: "original.wav".into(),
+            sample_rate: 48_000,
+            frames: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ONE,
+            tempo: Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: None,
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split {
+                at: BeatTime::ONE.raw() / 2,
+            },
+        })
+        .unwrap();
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(3).unwrap(),
+            length: BeatTime::ONE,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 36_000);
+    let AudioClipTiming::Frozen { tempo, .. } = &editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .timing
+    else {
+        panic!("frozen")
+    };
+    assert_eq!(tempo.points().len(), 2);
+    assert_eq!(editor.project().tempo_map().points().len(), 1);
+    let bytes = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for mutation in 0..11 {
+        let mut bad = value.clone();
+        let timing = &mut bad["audio_clip_state"][0]["audio_edit"]["timing"];
+        match mutation {
+            0 => timing["sample_rate"] = 44_100.into(),
+            1 => timing["reference_start_raw"] = i128::MAX.to_string().into(),
+            2 => timing["reference_start_raw"] = "not a number".into(),
+            3 => timing["tempo_points"] = serde_json::json!([]),
+            4 => timing["tempo_points"][0]["beat_raw"] = 1.into(),
+            5 => timing["tempo_points"][1]["beat_raw"] = 0.into(),
+            6 => timing["kind"] = "unknown".into(),
+            7 => timing["unexpected"] = true.into(),
+            8 => bad["audio_clip_state"][0]["audio_edit"]
+                .as_object_mut()
+                .unwrap()
+                .remove("timing")
+                .map(|_| ())
+                .unwrap(),
+            9 => bad["audio_clip_state"][0]["audio_edit"]["domain"]["warp_enabled"] = true.into(),
+            _ => {
+                timing["tempo_points"] = serde_json::json!(vec![
+                    serde_json::json!({"beat_raw": 0, "micro_bpm": 120_000_000});
+                    hex_project::MAX_TEMPO_POINTS + 1
+                ])
+            }
+        }
         assert!(
-            hex_storage::decode(&serde_json::to_vec(&events28).unwrap()).is_err(),
-            "frozen 28 refuses fade shapes"
-        );
-        events28.as_object_mut().unwrap().remove("tuning");
-        events28.as_object_mut().unwrap().remove("device_assets");
-        events28.as_object_mut().unwrap().remove("fade_shapes");
-        let migrated28 = hex_storage::decode(&serde_json::to_vec(&events28).unwrap()).unwrap();
-        assert_eq!(
-            migrated28.clip(clip).unwrap().audio_events(),
-            editor.project().clip(clip).unwrap().audio_events()
-        );
-        assert_eq!(migrated28.track(track).unwrap().color(), ElementColor::Cyan);
-        assert_eq!(migrated28.clip_flavor(clip), Some(ClipFlavor::Accent));
-        assert_eq!(migrated28.clip_name(clip), Some("shaped name"));
-        let mut appearance = value.clone();
-        appearance["version"] = 27.into();
-        appearance.as_object_mut().unwrap().remove("main_devices");
-        assert!(
-            hex_storage::decode(&serde_json::to_vec(&appearance).unwrap()).is_err(),
-            "frozen 27 refuses shape fields"
-        );
-        appearance.as_object_mut().unwrap().remove("tuning");
-        appearance.as_object_mut().unwrap().remove("device_assets");
-        appearance.as_object_mut().unwrap().remove("fade_shapes");
-        appearance
-            .as_object_mut()
-            .unwrap()
-            .remove("audio_event_state");
-        let migrated27 = hex_storage::decode(&serde_json::to_vec(&appearance).unwrap()).unwrap();
-        assert_eq!(migrated27.track(track).unwrap().color(), ElementColor::Cyan);
-        assert_eq!(migrated27.clip_flavor(clip), Some(ClipFlavor::Accent));
-        assert_eq!(migrated27.clip_name(clip), Some("shaped name"));
-        assert!(
-            migrated27
-                .tracks()
-                .iter()
-                .flat_map(|t| t.clips())
-                .all(|c| !c.retained_fade().has_shape())
-        );
-        assert_eq!(
-            hex_storage::decode(&hex_storage::encode(&migrated27).unwrap()).unwrap(),
-            migrated27
-        );
-        let mut legacy = value;
-        legacy["version"] = 26.into();
-        legacy.as_object_mut().unwrap().remove("main_devices");
-        assert!(
-            hex_storage::decode(&serde_json::to_vec(&legacy).unwrap()).is_err(),
-            "26 must refuse the new shape field"
-        );
-        legacy.as_object_mut().unwrap().remove("tuning");
-        legacy.as_object_mut().unwrap().remove("device_assets");
-        legacy.as_object_mut().unwrap().remove("fade_shapes");
-        legacy.as_object_mut().unwrap().remove("audio_event_state");
-        legacy.as_object_mut().unwrap().remove("track_colors");
-        legacy.as_object_mut().unwrap().remove("accented_clips");
-        let migrated = hex_storage::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-        assert_eq!(migrated.clip_name(clip), Some("shaped name"));
-        assert!(
-            migrated
-                .tracks()
-                .iter()
-                .flat_map(|t| t.clips())
-                .all(|c| !c.retained_fade().has_shape())
+            hex_storage::decode(&serde_json::to_vec(&bad).unwrap()).is_err(),
+            "mutation {mutation}"
         );
     }
+    let mut old = value;
+    old["version"] = 35.into();
+    assert!(hex_storage::decode(&serde_json::to_vec(&old).unwrap()).is_err());
 }

@@ -158,13 +158,14 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
 
     let clips = (3..3 + MAX_CLIPS as u64)
         .map(|id| ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id,
             asset: 1,
-            start: 0,
+            start: id - 3,
             duration: 1,
             source_offset: 0,
             source_length: 1,
@@ -173,16 +174,25 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             fade: hex_project::ClipFade::neutral(1).unwrap(),
         })
         .collect();
-    let full = Project::from_snapshot(Snapshot {
+    let full = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
+        sample_rate_mode: Default::default(),
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![hex_project::AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "Samples/One.wav".into(),
             source_sample_rate: 48_000,
@@ -191,6 +201,10 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -221,7 +235,11 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         return_tracks: Vec::new(),
     })
     .expect("valid clip-limit fixture");
-    let full_clip = full.tracks()[0].clips()[0].id();
+    let full_clip = full.tracks()[0]
+        .clips()
+        .last()
+        .expect("last full clip")
+        .id();
     let mut full_editor = Editor::new(full, 8).expect("full editor");
     let before = full_editor.project().clone();
     assert!(

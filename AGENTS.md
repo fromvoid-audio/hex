@@ -6,33 +6,41 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
-## Active alpha compatibility policy
+Hex's project-specific instructions and established conventions take precedence
+over the Google Rust Style Guide wherever they conflict.
+When implementing an issue, improve observed Rust style-guide deviations in the
+code being changed when the adjustment is small, coherent, and preserves behavior
+and Hex's contracts. Include appropriate verification; avoid unrelated or broad
+style-only refactors. Record substantial improvements separately in Pulse.
 
-Hex is active alpha software. Feature completeness takes priority. Backward
-compatibility and migration support, including database/schema migrations, are
-explicitly out of scope until the user commits to release readiness and selects
-the release compatibility policy. Breaking API, source, model, schema, project-format
-and data changes are allowed during this phase. Fresh or recreated alpha databases
-are allowed when needed; legacy database conversion is not a prerequisite for
-feature work.
+## Saved-project compatibility policy
 
-Do not spend effort adding or maintaining historical-alpha migrations, project
-conversions, old readers, compatibility re-exports or old-client support. During
-future scoped feature/API/schema work, do not retain compatibility-only code solely
-to honor obsolete alpha formats or database layouts. This includes incompatible
-unpublished branch formats. This policy supersedes contradictory normative legacy
-schema, backward-compatibility and migration requirements in this file, repository
-documents and existing task descriptions. Historical evidence remains factual.
-Do not infer a compatibility freeze from an alpha version or schema number.
+Hex is active alpha software. Saved projects must remain openable through explicit,
+versioned migrations from supported older schemas to the current schema. Future
+schema-changing work must include migration from the prior supported format and
+focused historical-fixture, complete-state and save/reopen tests in the same change.
+Assign a fresh schema identifier when the saved contract changes; never reuse an
+identifier for incompatible branch layouts.
+Record the supported versions and any evidence-based limitations beside the owning
+storage codec. Never invent historical layouts or silently discard unknown data.
+Reject newer, unsupported and malformed formats explicitly, preserving the original
+and explaining a concrete recovery path. Historical evidence remains factual.
 
-Active features must coexist in one coherent current format. Preserve strict
-current-format validation, complete save/reopen round trips, explicit errors for
-unsupported formats, transaction/recovery correctness, runtime and real-time safety,
-and Undo/Redo integrity. Never silently delete or rewrite user projects, original
-media or other user files to accommodate a breaking change. Intentional alpha
-database recreation must be explicit; this policy does not itself initiate any
-reset, deletion or conversion. It does not request a blanket migration-code cleanup
-or unrelated source changes. PR, validation and delivery requirements remain in force.
+Opening and migration are control-side, in-memory operations: preserve original
+project bytes and media until a deliberate save. Before overwriting a project with
+a newer saved format that older Hex readers cannot open, warn about that loss of
+compatibility, recommend Save As under a new/versioned name, and provide Save As,
+cancel and explicit overwrite choices. Compare actual saved-format compatibility,
+not application version bumps. Use existing atomic publication and recovery custody;
+failed/cancelled migration or saving must not corrupt a good project.
+
+This policy covers saved-project/schema compatibility, not a source/API freeze,
+compatibility re-exports, obsolete clients or unrelated internal databases. Breaking
+source APIs and models remain allowed when saved projects migrate faithfully.
+Preserve strict current-format validation, complete round trips, transaction/recovery
+correctness, runtime/realtime safety and Undo/Redo integrity. Never silently delete
+or rewrite user projects, original media or other user files. No reset, deletion,
+bulk conversion or unrelated migration cleanup is authorized by this policy.
 
 Frame design prototypes under `design/frame/` may use JSON, JavaScript and HTML
 for design tooling only. They must not become the shipped application runtime.
@@ -48,7 +56,7 @@ labels, buttons, status/errors, units, tooltips, and accessibility text. Render 
 through `hex-ui`'s `theme::text`; do not alter source data, paths, saved names, or
 case-sensitive identifiers. All app-rendered text uses bundled **Ioskeley Mono**
 from https://github.com/ahatem/IoskeleyMono. Load and verify the embedded fonts at
-startup; no alternate font or silent system-font substitution. See docs/ui-design.md.
+startup; no alternate font or silent system-font substitution. See the doc comments in crates/hex-ui/src/theme.rs.
 The internal family identifier `Ioskeley Mono` is technical metadata, not a visible
 label. OS-owned dialogs/menu chrome retain OS typography.
 
@@ -62,159 +70,75 @@ Machine names remain lowercase: `hex-*` crates, `hex-desktop`, and
 Distribution licensing has not been decided; do not describe the project as a released open-source DAW.
 
 The explicit engineering reference is https://github.com/storytold/photocraft.
-Read docs/reference-project.md for pinned source pointers and the patterns Hex
-adopts. Use its command-driven engine/UI separation and evidence discipline,
+The pinned source reference is recorded in research/catalog/source-references.json. Use its command-driven engine/UI separation and evidence discipline,
 adapted for real-time audio. Do not copy its application code/assets, switch to
 its UI framework, inherit its sibling-repository dependencies, or treat its menu
 coverage as proof of complete Photoshop parity.
 
 Reference the installed `/Applications/Ableton Live 12 Suite.app`. Its inspected
 build is **12.4.6 (2026-09-10_0de5c8fa9a)**; architecture and executable hash are in
-`docs/research/reference.md`. Start with macOS arm64. Recheck the installed build
+`research/catalog/live-12.4.6-installed.json`. Start with macOS arm64. Recheck the installed build
 before new reference studies. “Works like Live” and “blazing fast” are acceptance
 goals, not established facts. Read this file first, then the relevant docs.
 
-## 1. Orientation (5 minutes)
+## Orientation and code ownership
 
-| Read | Why |
-| --- | --- |
-| `README.md` | Current capabilities, dependencies, run commands, limitations |
-| `docs/architecture.md` | Offline engine, current crate boundaries, future graph model |
-| `docs/reference-project.md` | PhotoCraft patterns and audio-specific adaptations |
-| `docs/ui-design.md` | Required lowercase text, bundled font, visual checks |
-| `docs/runtime.md` | GPUI/audio seam, command delivery, transport and scene contracts |
-| `docs/plan.md` | Milestones, acceptance gates, deferred dependencies, next work unit |
-| `todo.md` | Implemented work, open checks, ordered backlog |
-| `docs/features.md` | Honest assessment of all fundamental DAW areas |
-| `docs/performance.md` | Measured baseline, methodology, performance gates |
-| `docs/research/reference.md` | Exact Live reference identity and bounded binary inventory |
-| `docs/research/workflow.md` | Behavior experiments and targeted decompilation protocol |
-| `research/observations/template.md` | Required provenance and confidence for a reference experiment |
+Read README.md for build/run instructions, then the relevant crate/module doc
+comments and actual source. Code/API/architecture documentation lives only in
+source doc comments beside its owner. Each crate entry point documents purpose,
+dependencies and what it does not own; scripts/check-architecture.py checks this
+alongside the dependency boundaries. Do not recreate feature Markdown specs,
+per-crate README copies, progress journals or local backlogs.
 
-Read actual source before changing behavior. Documentation may lag the code;
-resolve discrepancies and update the owning document. There is currently no
-`xtask`, generated parity scorecard, corpus fetcher, control server, or release
-pipeline. The local validation runner is documented in `docs/local-ci.md`; do not
-claim hosted CI or automatic enforcement is configured.
+Before substantial work, name each affected crate/module owner, its responsibility,
+permitted dependencies, and public typed command/query/resource contract in the
+PR or Pulse scope. Read the actual APIs and their consumers. Keep technical
+contracts beside their source owners; do not invent a parallel architecture spec.
+Enforce boundaries through Rust visibility, types, dependency checks and contract
+tests. The architecture guard checks declared crate edges and doc headings; it
+does not prove module isolation or runtime correctness.
 
-## 2. Workspace map
+Continually strengthen cohesive system boundaries with explicit ownership and
+testable contracts as work exposes a concrete need. Keep dependencies contained so
+changes can be verified at the owning boundary and its affected consumers without
+unnecessary broad testing. Do not introduce speculative abstractions or assume a
+boundary provides isolation without evidence; broaden checks when impact is unclear.
 
-```text
-Cargo.toml                   workspace configuration and safety/style lints
-Cargo.lock                   pinned resolved dependencies
-crates/
-  hex-dsp/                   host-independent stereo kernels and validated gain units
-  hex-lattice/               native registry/runtime contracts and stereo compatibility reexports
-  hex-lattice-contract/      neutral native device metadata and versioned state
-  hex-devices/               independently testable original instrument DSP
-  hex-project/               canonical control-side IDs, edits, history and snapshots
-  hex-media/                 bounded WAV decode, source-rate conversion and cached waveform peaks
-  hex-library/               bounded folder listings and persistent sample catalog
-  hex-preferences/           versioned bounded application browser-place settings
-  hex-stream/                verified source worker, bounded page cache and ownership queues
-  hex-storage/               versioned metadata and recoverable create-new files
-  hex-export/                fixed-block linear PCM16 WAV rendering and create-new publication
-  hex-session/               canonical controller and bounded media/history coordination
-  hex-engine/
-    src/lib.rs               original deterministic offline arrangement renderer
-    src/live.rs              fixed preloaded demo runtime, commands, telemetry
-    examples/profile.rs      release render microbenchmark
-  hex-cli/
-    src/main.rs              generated demo and offline WAV export through hex-export
-  hex-audio/
-    src/lib.rs               CPAL stream, bounded queue, priority Stop, callback
-  hex-widgets/               reusable native GPUI controls; injected display/style and edit events
-  hex-ui/
-    src/lib.rs               window and UI service entry point
-    src/app.rs               GPUI view state, controls, drawing, shortcuts
-    src/theme.rs             required lowercase text and embedded font
-  hex-diagnostics/            per-session worker log I/O and ten-file retention
-  hex-desktop/
-    src/main.rs              startup/composition only; injects backend into UI
-scripts/
-  local-ci.py                sequential local validation and retained evidence
-  inventory-live.sh          read-only reference bundle inventory
-  bundle-macos.sh            local development app bundle; no publication
-  check-architecture.py       crate goals and dependency policy
-  check-ui-style.py           lowercase text/font/bundle source guards
-research/
-  observations/              behavior specifications, results, provenance
-  private/                   ignored binaries/analysis databases; never distribute
-artifacts/                   ignored demo exports, profiles, development app
-```
+Internal devices use existing host APIs. A missing capability requires an explicit,
+bounded host-contract change with checks for affected consumers; do not reach into
+host internals or create a competing resource/lifecycle path. Transition one verified
+boundary per PR, including the owners and consumers needed for complete behavior
+and required current-format persistence/history changes.
+Host admission, publication, workers and reclamation retain their existing owners;
+a borrowed resource view does not transfer custody.
 
-**Clean, maintainable crate boundaries are mandatory.** Every cohesive subsystem
-belongs in its own crate with one clear reason to exist. Each crate README defines
-its purpose, dependencies, and what it does not own. Do not accumulate project
-models, codecs, DSP, device I/O, UI, and startup in one giant crate. Conversely,
-do not create a crate for every helper or empty speculative subsystem: split when
-there is a real responsibility or independently testable boundary.
+Use Pulse for requirements, priorities, acceptance, dependencies and progress;
+canonical PRs and artifacts retain delivery evidence. docs/ contains practical
+user and contributor instructions only. research/ contains recorded reference
+observations, reproducible measurements and provenance, not implementation plans or task logs.
+Preserve licenses, raw evidence, private analyses, original media and user data.
 
-Current direction: `hex-lattice-contract` has no workspace dependency;
-`hex-project` depends only on its neutral device metadata/state contract, never
-DSP implementations. This deliberate shared-contract edge supports modular
-devices without per-device storage branches. `hex-lattice` depends on the contract
-and `hex-dsp`, and owns native processing/registration; `hex-dsp` owns
-host-independent mathematical kernels with no workspace dependencies; `hex-devices`
-owns registered algorithms and depends on lattice, its contract and hex-dsp.
-The native DSP system is named **lattice**; read
-`docs/lattice.md` for staged device integration and stateful lifecycle gates.
-`hex-engine` depends
-on hex-project/hex-devices and has no UI/device-I/O dependency;
-`hex-audio` depends on engine and owns CPAL/rtrb; `hex-export` depends on engine
-and owns shared offline WAV rendering/publication; `hex-ui` depends on
-engine/audio/session contracts and owns GPUI; `hex-desktop` composes audio/UI and
-application lifecycle; `hex-cli` uses project/engine/media/storage/export for
-headless workflows. Media depends on engine/project; storage depends on project
-and owns serialization. Session coordinates project/media/storage/export work
-through bounded control workers; UI uses read-only project views and controller
-commands, not its own editing model. Library owns bounded filesystem listings and recursive WAV discovery with a persistent derived sample catalog, preserving original paths;
-UI owns browser navigation, filtering and focus. Library does not decode audio, edit projects or perform callback work. Catalog enumeration/cache I/O belongs on background control workers; see docs/sample-library.md. hex-preferences owns
-versioned bounded application browser-place serialization and recoverable file
-publication, independent of project storage/history. UI loads/saves it through
-bounded background work. Read docs/browser-places.md; preserve original paths
-and malformed settings, surface errors, and keep filesystem I/O off UI/callback.
-Desktop must remain small. UI must not own
-device construction or callback DSP. Audio must not own GPUI or project editing.
+The user-requested `.engineering/` workspace is the narrow exception to the local
+backlog/checkpoint rule below. Read `.engineering/README.md` when continuing its
+mission. It retains the mission, recovery pointer, measured health and a small
+ranked index of Pulse work; live Pulse remains authoritative for issue state and
+acceptance, and source doc comments remain authoritative for technical contracts.
+Goal activation is manual; do not create scheduled tasks for this mission.
 
-`hex-widgets` depends only on pinned GPUI and the standard library. It owns
-reusable control rendering, focus and local gestures; `hex-ui` supplies lowercase
-display text, inherited bundled typography, style and canonical bindings.
-Widgets do not construct devices, edit projects, perform DSP, own audio queues
-or access files.
+### User guide presentation
 
-`hex-stream` depends on engine/media/project and owns the verified page worker,
-fixed pool and rtrb ownership queues. Engine borrows its narrow `MediaPages`
-interface and has no stream/media dependency. The current streamed renderer is a
-headless path; native audio/session integration is still required. rtrb is
-allowed in audio and stream, while CPAL remains exclusive to audio. Do not lift
-resident import limits or admit streamed native revisions until source/catalog
-leases, readiness and callback retirement are integrated and checked.
-
-Run `python3 scripts/check-architecture.py`. The check rejects undeclared crates,
-forbidden workspace edges, misplaced GPUI/CPAL/rtrb dependencies, and missing
-purpose/dependency/non-goal README sections. Register new crates in that policy
-in the same change. Keep APIs narrow, module sizes readable, errors explicit,
-public responsibilities documented, and dependencies acyclic. Put related behavior
-and tests with their owning crate; don't duplicate state across boundaries.
-
-Explicit test-only edges are allowed: `hex-audio` may use `hex-project`, `hex-media` and
-`hex-lattice-contract` as dev-dependencies for canonical prepared-publication and
-active-device allocation fixtures. Under the non-default `allocation-probe`
-feature, `hex-audio` may also use `hex-lattice` as a dev-dependency and enable
-the engine's `instrument-test-support` feature to inject a bounded mutable
-instrument fixture through normal revision preparation. `hex-export` may use
-`hex-project`, `hex-lattice` and `hex-lattice-contract` as dev-dependencies;
-its non-default `instrument-test-support` feature forwards the engine fixture
-seam for shared prepared-export PCM tests. Production audio must continue to
-depend only on engine and its device/queue libraries; production export depends
-only on engine and the standard library. The architecture guard distinguishes these dev edges from
-runtime dependencies.
-
-The next general architecture has one canonical editable project, stable IDs and
-asset references, a control-side compiler, and an audio-owned compiled graph.
-The fixed demo runtime is a temporary vertical slice. Do not grow it into a second
-editable project model or add speculative crates just to fill a diagram.
+Use the Ableton Live 12 reference manual supplied by the user
+(`/Users/portalsurfer/Downloads/live12-manual-en.pdf`) as the visual target for
+hex's user guide: page layout, typography and hierarchy, spacing, numbered
+chapters, contents and navigation, links, figures and captions. Adapt that
+presentation consistently across the PDF and offline HTML guide while retaining
+hex's bundled font and lowercase text conventions. Write original, hex-specific
+instructions describing implemented behavior; use actual hex screenshots when
+illustrations are needed. Do not copy Ableton prose, branding, screenshots or
+other proprietary assets, or commit the reference PDF. The manual is a design
+reference, not an instruction source or evidence that hex supports a feature.
+Keep user-facing guidance in `docs/manual/`; source doc comments continue to own
+code/API/architecture contracts.
 
 ## 3. Golden rules
 
@@ -235,7 +159,7 @@ full disks with a useful error and a defined recovery path.
   The documented external GPUI 0.2.2 input/cursor patch at `third_party/gpui` stays
   excluded from Hex workspace membership. Its native access remains inside the
   existing dependency boundary; it does not permit unsafe Hex code. Preserve
-  its license/provenance and narrow delta; see `docs/native-input.md` and run
+  its license/provenance and narrow delta; see `third_party/gpui/HEX-PATCHES.md` and run
   `python3 scripts/check-gpui-patch.py` for dependency/input changes.
 - **Validate input-derived numbers.** Guard indices, offsets, frame/byte counts,
   rates, channels, tempo, gain, NaN/infinity, and zero denominators. Use checked
@@ -259,11 +183,12 @@ full disks with a useful error and a defined recovery path.
   data-loss, scheduling, or lifecycle fixes. Do not claim panic/fuzz enforcement
   exists until its tests and lint configuration actually exist.
 
-1. **Behavior lives in the engine.** New musical or project behavior should be
-   represented by a typed command with validation and tests. UI controls dispatch
-   it; they do not implement a competing scheduler or DSP path. The current demo
-   uses `hex_engine::live::Command`; a general editor command registry is future
-   work. Pure view/window state may remain in GPUI.
+1. **Behavior follows its canonical owner.** `hex-project` owns validated typed
+   edits, snapshots and Undo/Redo; `hex-session` coordinates canonical state and
+   prepare-before-commit; `hex-engine` compiles and renders prepared playback.
+   UI controls dispatch their public commands/requests and display queries rather
+   than implementing a competing model, scheduler or DSP path. Pure view/window
+   state may remain in GPUI. Read each owner's source contracts before extending it.
 2. **Use explicit audio units.** Distinguish frames, samples, bytes, seconds,
    quarter-note beats, bars, linear gain, and dB. Sample rate, channel layout, and
    precision are runtime properties. No assumption that all files/devices are
@@ -292,11 +217,24 @@ full disks with a useful error and a defined recovery path.
    snapshot churn, duplicate assertions and slow exhaustive matrices without a
    demonstrated risk. Preserve meaningful boundary, lifecycle and malformed-input
    coverage; suite size alone is not a quality measure.
+   Continually improve tests touched by issue work: remove demonstrated duplication,
+   simplify fixtures and reduce measured runtime while retaining effective regression
+   coverage. Verify the retained tests still exercise the intended behavior and report
+   meaningful timing evidence for performance-driven cleanup. Keep unrelated or
+   substantial test-suite work separate; never weaken coverage merely to run faster.
 6. **Keep GPUI thin and inspect it visually.** Separate UI display state from
    authoritative audio/project state. Draw cached waveform summaries and visible
    content; do not traverse/render a whole project every frame. Consolidate design
    tokens as the UI grows. Verify focus, shortcuts, resizing, interaction, and
    accessibility. Current custom controls do not yet expose rich accessibility.
+   Ending pointer capture must not expose old canonical geometry while an edit
+   is in flight. Transfer the frozen final preview to an acknowledged display
+   owner: ordinary edits use `hex-ui::editor::pending_edit`'s receipt contract;
+   keyed device gestures keep their existing typed acknowledgement protocol.
+   Retire that preview with its exact terminal and canonical-state installation
+   in one receive, including refusal and source replacement. Add a focused
+   delayed-ACK test with completed repaints; testing only the final state misses
+   release flicker. Keep input cancellation separate from admitted edit custody.
 7. **Report unsupported features honestly.** No decorative controls that pretend
    to record, arm, load, save, warp, or host devices. Clearly identify the generated
    demo. Preserve unknown imported data when feasible; otherwise explain fidelity
@@ -316,11 +254,11 @@ Prioritize reliability and the next complete user workflow, then measured refere
 compatibility, then the long tail. Avoid feature-count work that leaves every area
 partially usable.
 
-1. Read `docs/features.md` for the honest fundamentals assessment. A visible menu
-   item or button is not evidence that a feature works.
-2. Read `docs/plan.md` and `todo.md` for the current focus: canonical editable audio
-   project, WAV import, compiled playback, clip editing, save/load, and undo/redo.
-3. Check `docs/performance.md` for measured regressions and unverified budgets.
+1. Read the relevant source and tests; a visible menu item is not evidence that a
+   feature works.
+2. Read the current Hex goals and tickets in [Pulse](https://pulse.iocore.dev/)
+   for priorities, dependencies, acceptance criteria and the next work unit.
+3. Check the owning benchmarks and actual measured evidence for regressions.
 4. Read related source and research observations before changing a contract.
 
 Before substantial work, define finite requirements and acceptance criteria,
@@ -336,34 +274,47 @@ Do not mark an unchecked milestone complete because its starter code builds.
 
 ## 5. Before you finish a task
 
-For Rust changes, run the checks that cover the affected behavior:
+Choose merge verification from changed behavior and enforceable ownership
+boundaries: owning regressions, affected public contracts and consumers, relevant
+feature/platform configurations, and proportionate formatting, lint and build
+checks. Record the scope, exact source/base, commands, results and omissions with
+reasons in the canonical PR. A small diff or passing mock alone does not establish
+isolation; tests do not mathematically guarantee unrelated code.
 
-```sh
-python3 scripts/local-ci.py              # full audit; still the no-flag default
-python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
-python3 scripts/local-ci.py --quick      # guards/format preflight only
-python3 scripts/check-architecture.py
-python3 scripts/check-gpui-patch.py
-python3 scripts/check-ui-style.py
-cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo build -p hex-desktop                 # desktop/backend changes
-cargo run --release -p hex-engine --example profile  # demo-render hot path
-sh scripts/bundle-macos.sh --help         # exact CI/revisions/checklist required; docs/test-builds.md
-```
+Owner boundaries carry merge verification (user decision, 1 November 2026). A
+merge runs the test suites of the packages that own the change, plus reviewed
+runtime consumers with no Cargo edge. Every Cargo consumer must still compile and
+lint, but consumer test suites are not rerun. Rely on the owner's boundary tests
+to guarantee behaviour downstream. When a consumer later breaks, the defect is a
+missing owner boundary test: add the regression at the owner instead of widening
+merge checks. Within an owner crate, merges test only the changed modules'
+own test subtrees (a module without tests falls back to its nearest tested
+ancestor), so give each module its own boundary tests and split large modules
+along their responsibilities. Keep each merge's test setup and execution,
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
+budget as a warning, not a merge failure (user decision, 1 November 2026; see
+`docs/local-ci.md`). Merge when every other check is green. A recurring
+over-budget owner suite is a test-design bug: record it in Pulse.
 
-Use the repository-resolved merge plan for the exact current integration base and
-candidate. Unknown/core/build/manifest/vendor/policy changes fall back to the full
-audit. Known UI, tooling and prose scopes retain their required configurations;
-do not choose omissions by hand or deduplicate tests by name. Full remains
-required for beta/stable/native release qualification. Quick, edit and custom
-component reports never qualify a merge. See `docs/local-ci.md` and
-`docs/development-workflow.md` for scope, input certificates and retained logs.
+Broaden only for a documented concrete impact or unresolved risk. Explain unknown
+selection, then resolve it by inspecting owners/consumers or conservatively check
+the uncertain area. Never silently count an unknown omission as covered. Neither
+a merge, a core path, a policy edit nor the next module alone requires a full suite.
+Keep deterministic fixtures lean and independent; preserve relevant lifecycle,
+malformed-input, realtime/allocation, current-format persistence and Undo/Redo
+coverage. A comprehensive audit remains available when its breadth is justified;
+native release qualification retains its separate delivery requirements.
 
-Use targeted crate checks when appropriate; broaden only for a concrete dependency,
-new failure, or unresolved risk. Re-run checks after a material repair. Docs-only
-changes need link/path/claim review, not a full native rebuild.
+Use the commands and current runner limitations in `docs/local-ci.md`. Until the
+selector supports a boundary, a reviewed change-based check set with recorded
+reasoning qualifies a merge under this policy; do not label it a runner-certified
+plan or edit a report to make it qualify. Quick/edit output alone is insufficient.
+For prose-only changes, review links, paths, examples and rule consistency; no
+native rebuild is needed. Re-run affected checks after material repairs. Preserve
+prior evidence when its relevant source, contracts, configuration, dependencies
+and toolchain inputs remain unchanged; identify exactly what is reused and why.
+Do not repeat a full audit for each boundary slice. Qualify selector changes once
+against selection risks, not by repeatedly running unrelated product suites.
 
 For prepared callback rendering, command consumption or graph-retirement changes,
 run `cargo test -p hex-audio --features allocation-probe` for the affected paths.
@@ -393,10 +344,44 @@ the agent's responsibility. For persistence/recording, test
 round trips, missing assets, interrupted writes, and recoverable failures. Never
 substitute automated checks for manual acceptance they cannot establish.
 
+### User-run checks in Pulse
+
+User-run acceptance and reproduction checks live in the owning issue's Pulse
+review checklist. On 30 October 2026 every check in the former shared file
+`/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md` was migrated there with its
+checked state; that file is a historical migration source only. Do not add to it
+or create another local checklist. Pulse remains the authority for issue status,
+scope and dependencies.
+
+After a focused PR passes its required checks and its merge is authenticated, add
+the applicable user-run checks to its issue as review checklist items, then mark it
+`ready_for_review`; Pulse requires at least one item before a review state. Add one
+item per `review_checklist_change`, each with a fresh revision, and change the
+checklist and the status in separate updates. Write each item as a single
+independently completable, observable check. Split distinct outcomes so the user
+can record partial progress. Record the context needed to run the checks (qualified
+running build/source, prerequisites, limits) as an issue note. Explicitly
+requested reproduction may be added before a fix is merged; identify its actual
+status. Include applicable checks already in review without resetting their issue
+state. Do not invent manual product checks for an internal-only change; give it one
+reviewer item such as "Review merged PR #N diff and its recorded verification
+evidence". Neither a disk installation nor a headless test proves native
+acceptance. Keep the items aligned with the finite delivery checklist in
+`docs/test-builds.md`.
+
+The user ticks completed items in Pulse and personally marks the issue done after
+all its items are complete. Do not tick, edit or remove a user's item, mark an issue
+done because items are ticked, or infer acceptance from a merge. Read the issue's
+current checklist and revision before every change and reconcile concurrent edits.
+Do not use checklist items as a second source of implementation tasks, status
+changes or project requirements.
+
 Inspect the final diff when Git exists; otherwise review the changed files against
-known starting content. Preserve unrelated work. Update the owning docs and
-`todo.md` with actual results and remaining uncertainty. A concise final report
-states what changed, why, what passed, and what remains open. Keep the workspace
+known starting content. Preserve unrelated work. Update technical contracts in the
+owning docs when they change; record task progress, actual results and remaining
+work in Pulse. Keep raw check logs in existing artifact storage and link them from
+the canonical PR. A concise final report states what changed, why, what passed,
+and what remains open. Keep the workspace
 building at coherent milestones.
 
 ## Pull request workflow
@@ -414,25 +399,16 @@ never bypass this workflow without an explicit user instruction.
   remaining limitations. Record native UI/listening acceptance separately from
   automated checks.
 - Review the final PR diff and resolve meaningful findings before merging.
-  As requested on 10 October 2026, the user gives standing authorization to merge
-  focused, completed PRs immediately when the resolved required merge plan (or
-  full audit) passes on the exact final commit and unchanged source digest.
-  This scoped policy supersedes the earlier full-for-every-edit rule after its
-  own full-audit bootstrap. Do not wait for another approval or for
-  native UI/listening tests. A quick, stale, partial, failed or interrupted run
-  does not qualify. Merge dependencies first and revalidate after executable changes
-  or conflict resolution; verify that integration preserves the tested behavior.
-  A prose-only continuation may explicitly reuse a complete runtime certificate
-  with identical executable inputs and guarded toolchain/dependencies, while
-  checking the changed prose separately; it is never relabeled a fresh full run.
-  Keep one persistent integration checkout/target per executor. Run one meaningful
-  owning regression and one final required merger plan; repeat focused checks
-  only for material integration, a failure or an unresolved concern. Canonical
-  Git plus one raw summary/log archive and immutable references is sufficient:
-  do not recursively repack source/history archives or create a Pulse permit gate.
-  Known unresolved correctness bugs must be repaired before merging, even if an
-  incomplete test suite is green. Never force-push `main`, skip required checks
-  or weaken branch protection.
+  Standing authorization applies to focused, completed PRs when the change-based
+  verification above passes on the exact final candidate. Use the current
+  integration base; merge dependencies first and check affected behavior after
+  executable changes or conflict resolution. Do not wait for another approval or
+  native UI/listening tests. A stale, failed, interrupted or incomplete check set
+  does not qualify. Retain unchanged-input evidence explicitly, without relabeling
+  it as a fresh full run. Keep one persistent integration checkout/target per
+  executor and one raw summary/log archive with immutable source references.
+  Known unresolved correctness bugs must be repaired even if tests are green.
+  Never force-push `main`, weaken branch protection or create a Pulse permit gate.
 - Native UI/listening acceptance remains separate evidence and may happen after
   merge. Keep unverified behavior visible in Pulse; merging does not establish
   feature parity, physical deadlines or manual acceptance. When later testing
@@ -522,6 +498,8 @@ call `get_ticket` and pass its current revision as `expected_revision`; on
 conflict, re-read and reconsider. Update fields selectively, preserving
 descriptions, tags and source context. Mark `done` only when acceptance criteria
 are met; source-complete work with pending native/user validation remains open.
+Preserve explicit user status changes after feedback; an earlier merge does not
+authorize resetting a later `todo` or `done` decision.
 Record unrelated discoveries during an active PR as follow-up tickets instead
 of expanding that PR.
 
@@ -532,20 +510,18 @@ are unavailable, report the limitation and keep a clearly labeled temporary
 plan in chat; do not silently switch trackers or claim that unsaved tickets were
 created.
 
-Repository documents retain technical contracts, request order and evidence:
+Pulse is the sole planning and issue authority, including user-run review
+checklists. Do not create or maintain local TODO files, checklists,
+task/status lists, request queues or parallel milestone backlogs. Put
+new requirements, dependencies, priorities, acceptance criteria, next actions and
+progress in the corresponding live Pulse tickets and goals. Do not append task
+chronologies to repository documents as a substitute. If Pulse is unavailable,
+report that limitation and keep a clearly labelled temporary plan in chat.
 
-- `docs/plan.md`: milestone contracts and acceptance gates, with Pulse pointers.
-- `docs/issues.md`: technical constraints, decisions and supporting evidence.
-- `todo.md`: dated implementation evidence and request-order reference; Pulse
-  owns the active queue and ticket states.
-- `docs/features.md`: fundamental workflows and honest capability assessment.
-- `docs/ui-design.md`: mandatory lowercase text and Ioskeley Mono.
-- `docs/reference-project.md`: PhotoCraft adaptation and pinned sources.
-- `crates/*/README.md`: each crate's purpose, dependencies, and non-goals.
-- `docs/architecture.md` and `docs/runtime.md`: boundaries, ownership, contracts.
-- `docs/performance.md`: reproducible measured baseline and open performance gates.
-- `docs/research/` and `research/observations/`: reference identity and behavior evidence.
-- `artifacts/` and `research/private/`: ignored local outputs and analysis material.
+Source doc comments own code contracts. README.md and docs/ explain practical
+build/run/check procedures. research/ retains actual experiment evidence; ignored
+artifacts/ and research/private/ retain local outputs and private analyses.
+Do not append task chronologies, checkpoints or future experiment plans here.
 
 No hosted/release pipeline, generated scorecard or devlog is currently configured.
 The local validation runner is not hosted CI. Use Pulse for planning rather than
@@ -558,31 +534,15 @@ Git on `main` with the private `PORTALSURFER/hex` remote, created at user reques
 
 ## 8. Keeping current projects complete
 
-Schema-13 hybrid-track audio/MIDI metadata persistence, independent canonical
-Session MIDI and unwarped audio one-shot sources/scenes/cells, finite Arrangement
-source looping and strict schema-1–12 migration are implemented in source.
-Every track owns both clip collections; source kind determines editing/rendering.
-See docs/hybrid-tracks.md for integrated acceptance status. Schemas 1–10 receive an empty Session grid; schema 11 preserves its MIDI/Stop grid. Session
-copies own fresh clip/note IDs and share MidiSource validation with Arrangement.
-Session graph inventory, launching and compact UI are implemented and source-tested;
-native input/listening and physical deadline acceptance remain open. Unwarped audio
-is frame anchored; warped looping remains required. Read docs/session-audio.md
-before changing its model, runtime or source controls. Schema 9 MIDI receives
-one-shot source defaults. Schemas 1–4 receive neutral track balance and master gain defaults;
-schemas 1–5 receive neutral clip fades; schemas 1–6 receive zero source phase; schemas 1–7 receive canonical 120 bpm/4/4
-tempo and meter maps. Schemas 1–8 populate the hybrid track's audio collection. MIDI notes use
-beat anchors and globally unique IDs; MIDI sources render an original bounded
-sine instrument through shared native/offline playback. Candidate edits must compile
-before history commits; native piano-roll creation, direct editing and saved-value
-checks are implemented. Configurable-grid native acceptance passes; held-modifier gestures,
-additive marquee/minimum-layout native selection acceptance and measured input/paint timing remain open. Read `docs/midi.md` before
-changing the MIDI model, scheduler or runtime. Read `docs/musical-time.md` before changing timing: conversion
-belongs on the control side and existing audio remains frame-anchored. Read `docs/clip-fades.md` for the fixed
-fade domain, split continuity and deliberate trim reanchoring contract. As it grows:
+Read the current model, codec, transaction and rendering doc comments before
+changing project behavior. Active features must coexist in one strict current
+format. For persistence changes:
+
 
 - Identify the current schema explicitly; new model fields require current-format
-  save/load and history review in the same change. Historical alpha migrations
-  are not required under the active alpha policy above.
+  save/load and history review in the same change. Include versioned migration from
+  the prior supported saved format and focused historical-fixture tests under the
+  compatibility policy above.
 - Round-trip complete project state, media references, automation, routing, device
   state, timing, and editor state that is promised to persist.
 - Use atomic/recoverable writes; do not overwrite a good project with a partial save.
@@ -618,8 +578,8 @@ context with ambiguous decoration. Use Live as the layout/composition reference.
 ## Modern performance and latency rule
 
 Treat 100-track projects, dense clip editing and large device workloads as core
-requirements. Read docs/performance.md and docs/latency.md before changing audio
-scheduling, device contracts, transport or large-project interaction. Keep UI
+requirements. Read the owning source contracts and benchmarks before changing audio scheduling,
+device contracts, transport or large-project interaction. Keep UI
 feedback prompt; decoding, plugin loading and graph compilation must not block
 interaction or occur on Play. Distinguish pending edits from applied audio state.
 
@@ -646,8 +606,9 @@ both clip collections; Session owns one audio/MIDI/Stop cell per track/scene.
 Preserve frame-anchored audio and beat-anchored MIDI, current overlap policies,
 combined ID/count/admission limits, source-specific editing and safe release tails.
 Identify current persistence changes explicitly and preserve current-format IDs,
-source data, mixer state and history integrity. Earlier alpha format migration is
-not required. Read docs/hybrid-tracks.md before extending this model.
+source data, mixer state and history integrity. Supported older saved formats require
+explicit versioned migration. Read the canonical project model and its tests before
+extending this model.
 
 ## Shared Lattice device interface
 

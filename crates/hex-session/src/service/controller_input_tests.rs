@@ -1,16 +1,14 @@
 //! Worker-side lease admission and same-instrument revision retention.
 use super::*;
+use crate::test_wait::HANG_BOUND;
 use hex_engine::live_expression::{LiveExpressionInput, Snapshot};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-use std::time::{Duration, Instant};
+#[track_caller]
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(event) = service.try_event() {
-            return event;
-        }
-        assert!(Instant::now() < deadline, "worker event timeout");
-        std::thread::sleep(Duration::from_millis(1));
+    // Blocks on the event channel itself instead of polling against a short deadline.
+    match service.events.recv_timeout(HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("worker event absent after {HANG_BOUND:?}: {error}"),
     }
 }
 #[test]
@@ -121,7 +119,7 @@ fn live_expression_worker_preserves_parameter_revisions_and_rejects_stale_genera
 }
 
 #[test]
-fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note_off() {
+fn controller_activation_preserves_worker_prepared_computer_and_hardware_notes() {
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
     use hex_engine::playback::Playback;
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -156,10 +154,20 @@ fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note
         }))
         .unwrap();
     let edited = next(&service);
-    let keys = Arc::new(ComputerKeyboardInput::default());
-    let oracle_keys = Arc::new(ComputerKeyboardInput::default());
+    let keys = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    let oracle_keys = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
     for input in [&keys, &oracle_keys] {
         input.set_key(0, Some((60, 100, 1))).unwrap();
+        let live = input.live_notes().unwrap();
+        live.publish(
+            live.current_activation_on_control().unwrap(),
+            hex_engine::computer_keyboard::LiveNoteEvent::NoteOn {
+                channel: 3,
+                pitch: 64,
+                velocity: 37,
+            },
+        )
+        .unwrap();
     }
     service
         .submit(Request::PrepareComputerKeyboard {
@@ -210,6 +218,18 @@ fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note
         "mutable Vector phase and envelope must continue without a retrigger"
     );
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    for input in [&keys, &oracle_keys] {
+        let live = input.live_notes().unwrap();
+        live.publish(
+            live.current_activation_on_control().unwrap(),
+            hex_engine::computer_keyboard::LiveNoteEvent::NoteOff {
+                channel: 3,
+                pitch: 64,
+                velocity: 0,
+            },
+        )
+        .unwrap();
+    }
     keys.set_key(0, None).unwrap();
     oracle_keys.set_key(0, None).unwrap();
     candidate.render(&mut actual).unwrap();

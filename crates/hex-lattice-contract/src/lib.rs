@@ -1,5 +1,32 @@
-//! Bounded metadata and authored state shared across native device boundaries.
+//! # Purpose
+//! Own neutral bounded native-device metadata, identifiers and authored state envelopes.
+//! Also owns shared foreign-processing bindings and copied parameter data;
+//! neither grants native custody.
+//!
+//! # Dependencies
+//! Uses only the standard library; no DSP or other workspace dependency.
+//!
+//! # Does not own
+//! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
+//! Opaque payloads and asset references require provider and host validation before processing.
+mod automation_target;
+mod descriptor_validation;
+pub use descriptor_validation::validate_parameter_descriptors;
 mod device_assets;
+pub use automation_target::DeviceAutomationTarget;
+mod host_gain;
+mod modulation_source_id;
+pub use host_gain::HostGain;
+pub use modulation_source_id::{ModulationOutputId, ModulationSourceId};
+mod foreign_binding;
+mod foreign_parameter;
+mod vst3_state_approval;
+pub use foreign_binding::ForeignProcessorBinding;
+pub use foreign_parameter::{
+    ForeignParameterPoint, MAX_FOREIGN_AUTOMATION_TARGETS, MAX_FOREIGN_PARAMETER_POINTS,
+    MAX_FOREIGN_TIMING_CHANGES,
+};
+pub use vst3_state_approval::{Vst3StateAuthority, Vst3StateVerifier};
 #[cfg(test)]
 mod device_assets_tests;
 pub use device_assets::{
@@ -13,7 +40,11 @@ mod snapshot_tests;
 pub use parameter_semantics::*;
 use std::{fmt, sync::Arc};
 
+/// Maximum opaque state for providers without a dedicated bound.
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
+/// Maximum complete opaque state envelope for the VST3 provider.
+pub const MAX_VST3_DEVICE_STATE_BYTES: usize = 512 * 1024;
+pub const VST3_DEVICE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 pub const MAX_DEVICE_TYPE_ID_BYTES: usize = 128;
 /// Device-owned IDs exclude zero and the two host gain identifiers.
 /// Devices deriving IDs from stable object identities must use checked
@@ -280,7 +311,7 @@ fn valid_parameter_text(value: &str) -> bool {
             .any(|character| character.is_uppercase() || character.is_control())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct NativeDeviceState {
     type_id: DeviceTypeId,
     state_version: u32,
@@ -288,7 +319,18 @@ pub struct NativeDeviceState {
     input_gain_millidb: i32,
     output_gain_millidb: i32,
     asset_references: Option<Arc<[DeviceAssetReference]>>,
+    // Process-local source provenance, never canonical or serialized state.
+    source_approval: Option<std::num::NonZeroU64>,
+    processing_approval: Option<std::num::NonZeroU64>,
 }
+impl PartialEq for NativeDeviceState {
+    fn eq(&self, other: &Self) -> bool {
+        self.processing_eq(other)
+            && self.input_gain_millidb == other.input_gain_millidb
+            && self.output_gain_millidb == other.output_gain_millidb
+    }
+}
+impl Eq for NativeDeviceState {}
 impl NativeDeviceState {
     pub fn new(
         type_id: DeviceTypeId,
@@ -299,7 +341,12 @@ impl NativeDeviceState {
         if state_version == 0 {
             return Err(DeviceContractError::InvalidStateVersion);
         }
-        if payload.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
+        let max_bytes = if type_id == VST3_DEVICE_TYPE_ID {
+            MAX_VST3_DEVICE_STATE_BYTES
+        } else {
+            MAX_NATIVE_DEVICE_STATE_BYTES
+        };
+        if payload.len() > max_bytes {
             return Err(DeviceContractError::StateTooLarge);
         }
         Ok(Self {
@@ -309,6 +356,8 @@ impl NativeDeviceState {
             input_gain_millidb: 0,
             output_gain_millidb: 0,
             asset_references: None,
+            source_approval: None,
+            processing_approval: None,
         })
     }
     pub const fn type_id(&self) -> DeviceTypeId {
@@ -330,6 +379,8 @@ impl NativeDeviceState {
         if references.len() > MAX_DEVICE_ASSET_REFERENCES {
             return Err(DeviceContractError::StateTooLarge);
         }
+        self.source_approval = None;
+        self.processing_approval = None;
         references.sort_unstable_by_key(|reference| reference.slot);
         if references
             .windows(2)
@@ -352,6 +403,10 @@ impl NativeDeviceState {
         }
         self.input_gain_millidb = source.input_gain_millidb;
         self.output_gain_millidb = source.output_gain_millidb;
+        if self.asset_references != source.asset_references {
+            self.source_approval = None;
+            self.processing_approval = None;
+        }
         self.asset_references.clone_from(&source.asset_references);
         Ok(self)
     }
@@ -369,40 +424,28 @@ impl NativeDeviceState {
         self.input_gain_millidb
     }
     pub fn input_gain_db(&self) -> f32 {
-        self.input_gain_millidb as f32 / 1000.0
+        HostGain(self.input_gain_millidb).db()
     }
     pub fn with_input_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
-        if !(-60_000..=24_000).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.input_gain_millidb = gain;
+        self.input_gain_millidb = HostGain::from_millidb(gain)?.millidb();
         Ok(self)
     }
     pub fn with_input_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
-        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.with_input_gain_millidb((gain * 1000.0).round() as i32)
+        self.with_input_gain_millidb(HostGain::from_db(gain)?.millidb())
     }
     /// Host-owned output trim, independent of the device's opaque DSP payload.
     pub const fn output_gain_millidb(&self) -> i32 {
         self.output_gain_millidb
     }
     pub fn output_gain_db(&self) -> f32 {
-        self.output_gain_millidb as f32 / 1000.0
+        HostGain(self.output_gain_millidb).db()
     }
     pub fn with_output_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
-        if !(-60_000..=24_000).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.output_gain_millidb = gain;
+        self.output_gain_millidb = HostGain::from_millidb(gain)?.millidb();
         Ok(self)
     }
     pub fn with_output_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
-        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.with_output_gain_millidb((gain * 1000.0).round() as i32)
+        self.with_output_gain_millidb(HostGain::from_db(gain)?.millidb())
     }
     pub fn without_host_gains(mut self) -> Self {
         self.input_gain_millidb = 0;
@@ -413,14 +456,24 @@ impl NativeDeviceState {
     pub fn processing_eq(&self, other: &Self) -> bool {
         self.type_id == other.type_id
             && self.state_version == other.state_version
-            && self.payload == other.payload
+            && (self.shares_payload_storage_with(other) || self.payload == other.payload)
             && self.asset_references == other.asset_references
     }
+    /// Match shared immutable payloads on the callback. Independently
+    /// allocated larger payloads require a fresh runtime handoff so callback
+    /// comparison work remains bounded by the ordinary device state limit.
+    pub fn processing_eq_on_callback(&self, other: &Self) -> bool {
+        (self.shares_payload_storage_with(other)
+            || (self.payload.len() <= MAX_NATIVE_DEVICE_STATE_BYTES
+                && other.payload.len() <= MAX_NATIVE_DEVICE_STATE_BYTES))
+            && self.processing_eq(other)
+    }
+
     pub fn input_gain_linear(&self) -> f32 {
-        10.0_f32.powf(self.input_gain_db() / 20.0)
+        HostGain(self.input_gain_millidb).linear()
     }
     pub fn output_gain_linear(&self) -> f32 {
-        10.0_f32.powf(self.output_gain_db() / 20.0)
+        HostGain(self.output_gain_millidb).linear()
     }
     /// Physical observations of this state's immutable payload handle. These
     /// counts/bytes establish neither constructor provenance nor lifetime
@@ -433,6 +486,8 @@ impl NativeDeviceState {
             input_gain_millidb: _,
             output_gain_millidb: _,
             asset_references: _,
+            source_approval: _,
+            processing_approval: _,
         } = self;
         (
             payload.len(),
@@ -446,6 +501,31 @@ impl NativeDeviceState {
     }
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+    /// Conservative shared payload/reference backing retained by this control-side state.
+    /// The inline state is charged by its enclosing owner. Arc headers/alignment are included;
+    /// reference entries contain only inline identities. Shared clones may be charged repeatedly,
+    /// so this is neither allocation identity nor an exclusive/closed-ownership proof.
+    pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
+        let header = 2usize.checked_mul(std::mem::size_of::<usize>())?;
+        let payload = self.payload.len().checked_add(header)?.checked_add(
+            std::mem::align_of::<usize>()
+                .max(std::mem::align_of::<u8>())
+                .checked_sub(1)?,
+        )?;
+        let references = match self.asset_references.as_ref() {
+            Some(references) => references
+                .len()
+                .checked_mul(std::mem::size_of::<DeviceAssetReference>())?
+                .checked_add(header)?
+                .checked_add(
+                    std::mem::align_of::<usize>()
+                        .max(std::mem::align_of::<DeviceAssetReference>())
+                        .checked_sub(1)?,
+                )?,
+            None => 0,
+        };
+        payload.checked_add(references)
     }
 }
 
@@ -465,6 +545,8 @@ pub enum DeviceContractError {
     RuntimeAllocation,
     UnsupportedProcessingClass,
     AssetResourcesUnavailable,
+    ForeignProcessingUnavailable,
+    ForeignProcessingFailed,
 }
 impl fmt::Display for DeviceContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -487,32 +569,15 @@ impl fmt::Display for DeviceContractError {
                 Self::RuntimeAllocation => "native processor runtime allocation failed",
                 Self::UnsupportedProcessingClass =>
                     "native device processing class is not admitted",
+                Self::ForeignProcessingUnavailable =>
+                    "foreign processing resources are unavailable for this graph",
+                Self::ForeignProcessingFailed => "foreign processor exchange failed",
                 Self::AssetResourcesUnavailable => "native device asset resources are not prepared",
             }
         )
     }
 }
 impl std::error::Error for DeviceContractError {}
-
-/// Validate a complete device-owned descriptor set, including dynamic overrides.
-/// Host input/output controls are outside this device parameter namespace.
-pub fn validate_parameter_descriptors(
-    descriptors: &[ParameterDescriptor],
-) -> Result<(), DeviceContractError> {
-    if descriptors.len() > MAX_PARAMETERS_PER_DEVICE {
-        return Err(DeviceContractError::InvalidDescriptor);
-    }
-    for (index, descriptor) in descriptors.iter().enumerate() {
-        descriptor.validate_descriptor()?;
-        if descriptors[..index]
-            .iter()
-            .any(|prior| prior.id == descriptor.id)
-        {
-            return Err(DeviceContractError::InvalidDescriptor);
-        }
-    }
-    Ok(())
-}
 
 /// Enumerate and validate state-owned descriptors on the control side. Callers
 /// must use this boundary even when a definition overrides enumeration.
@@ -534,9 +599,22 @@ pub fn validated_state_descriptors<D: NativeDeviceMetadata + ?Sized>(
     Ok(descriptors)
 }
 
+/// Per-definition optional auxiliary input; routing and buffer custody remain
+/// host-owned. An undeclared input is never inferred from device type or state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuxiliaryInput {
+    #[default]
+    None,
+    Stereo,
+}
+
 /// Device metadata/state operations; implementations own their codec.
 pub trait NativeDeviceMetadata: Sync {
     fn type_id(&self) -> DeviceTypeId;
+    /// One optional stereo key input, or none for existing single-bus devices.
+    fn auxiliary_input(&self) -> AuxiliaryInput {
+        AuxiliaryInput::None
+    }
     /// Optional lowercase presentation name. The type identifier remains the
     /// stable storage/registry identity; unnamed definitions display that ID.
     fn display_name(&self) -> Option<&'static str> {
@@ -804,6 +882,31 @@ mod tests {
     }
 
     #[test]
+    fn state_metadata_quote_retains_shared_odd_payload_and_reference_backing() {
+        let state = NativeDeviceState::new(AVAILABILITY_TYPE, 1, vec![7; 3]).unwrap();
+        let clone = state.clone();
+        assert_eq!(
+            state.retained_control_metadata_bytes(),
+            clone.retained_control_metadata_bytes()
+        );
+        let alignment = std::mem::align_of::<usize>();
+        let minimum = (3 + 2 * std::mem::size_of::<usize>()).next_multiple_of(alignment);
+        assert!(state.retained_control_metadata_bytes().unwrap() >= minimum);
+        let bound = state
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(2).unwrap(),
+            }])
+            .unwrap();
+        assert!(
+            bound.retained_control_metadata_bytes().unwrap()
+                >= clone.retained_control_metadata_bytes().unwrap()
+                    + std::mem::size_of::<DeviceAssetReference>()
+                    + 2 * std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
     fn metadata_defaults_valid_parameters_to_enabled_and_validates_state() {
         let definition = AlwaysEnabledDefinition;
         let state = definition.default_state().unwrap();
@@ -877,6 +980,29 @@ mod tests {
         let state = NativeDeviceState::new(id, 1, vec![1, 2]).unwrap();
         let clone = state.clone();
         assert!(Arc::ptr_eq(&state.payload, &clone.payload));
+    }
+
+    #[test]
+    fn callback_compares_large_vst3_state_only_when_it_shares_payload() {
+        let make_state =
+            |len| NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![42; len]).unwrap();
+        let large = make_state(150_545);
+        let independent = make_state(150_545);
+        assert!(large.processing_eq(&independent));
+        assert!(large.processing_eq_on_callback(&large.clone()));
+        assert!(!large.processing_eq_on_callback(&independent));
+        assert!(make_state(64).processing_eq_on_callback(&make_state(64)));
+    }
+
+    #[test]
+    fn vst3_envelopes_have_a_separate_bounded_size() {
+        let max = MAX_VST3_DEVICE_STATE_BYTES;
+        let state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![255; max]).unwrap();
+        assert_eq!(state.payload().len(), max);
+        assert_eq!(
+            NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![0; max + 1]),
+            Err(DeviceContractError::StateTooLarge),
+        );
     }
 
     #[test]

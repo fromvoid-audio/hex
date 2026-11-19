@@ -4,17 +4,20 @@ use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTes
 use hex_session::service::{Event, Request, Service};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none());
             return event;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[gpui::test]
 fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAppContext) {
@@ -104,7 +107,7 @@ fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAp
             if !console {
                 // Use the real toolbar to enter Console for its ordinary click path.
                 let button = visual
-                    .debug_bounds("show console view · tab")
+                    .debug_bounds("workspace-view-toggle")
                     .unwrap()
                     .center();
                 visual.simulate_click(button, Modifiers::default());
@@ -138,7 +141,7 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         .unwrap();
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(&mut visual, |v, cx| {
             v.tick(cx);
@@ -148,7 +151,10 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         if editor.read_with(&visual, |v, _| v.state.is_some()) {
             break;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workspace_generation2_startup_app_bindings_and_browser_return_route_tab: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     // No fixture assignment to mode, state, root focus or selection.
@@ -174,7 +180,7 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
             name: "focus return".into()
         })))
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(&mut visual, |v, cx| {
             v.tick(cx);
@@ -186,7 +192,10 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         }) {
             break;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workspace_generation2_startup_app_bindings_and_browser_return_route_tab: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     eprintln!("actual app input setup and constructor-owned startup focus: reciprocal Tab passed");
@@ -199,7 +208,7 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         assert_eq!(v.mode, EditorMode::Arrangement);
         // The existing text handler receives literal Tab. Preserve that local
         // behavior; workspace navigation must not consume the input instead.
-        assert_eq!(v.browser.search.read(cx).content, "piano\t");
+        assert_eq!(v.browser.search.read(cx).text(), "piano\t");
     });
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()
@@ -275,7 +284,7 @@ fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &m
         }
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.clip_paint_gesture.is_none());
+            assert!(!v.clip_paint_held());
             if cancel {
                 assert!(v.last_enqueued_edit.is_none());
                 assert_eq!(v.worker_requests_pending, 0);
@@ -299,7 +308,7 @@ fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &m
             }
         });
         visual.run_until_parked();
-        assert!(visual.debug_bounds("clip-paint-preview").is_none());
+        assert_eq!(visual.debug_bounds("clip-paint-preview").is_none(), cancel);
         visual.simulate_keystrokes("tab");
         editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
     }
@@ -348,7 +357,7 @@ fn workspace_review_toolbar_console_returns_tab_to_workspace(cx: &mut TestAppCon
     // Header selection precedes the view switch and has its own selection policy.
     let selection = editor.read_with(&visual, |v, _| (v.selected_clip_ids(), v.time_selection));
     let console = visual
-        .debug_bounds("show console view · tab")
+        .debug_bounds("workspace-view-toggle")
         .unwrap()
         .center();
     visual.simulate_click(console, Modifiers::default());
@@ -411,8 +420,8 @@ fn fixture(
                 v.selected_clip = Some(clip);
                 v.clip_selection.only(track_id, clip);
                 v.time_selection = Some(super::time_selection::TimeSelection {
-                    anchor_track: track_id,
-                    end_track: track_id,
+                    anchor_track: Some(track_id),
+                    end_track: Some(track_id),
                     anchor_frame: 2,
                     end_frame: 6,
                 });
@@ -444,11 +453,10 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
         cx.notify();
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("arrange view").is_some());
+    assert!(visual.debug_bounds("workspace-view-toggle").is_some());
     visual.simulate_keystrokes("tab");
     visual.run_until_parked();
-    assert!(visual.debug_bounds("console view").is_some());
-    assert!(visual.debug_bounds("arrange view").is_none());
+    assert!(visual.debug_bounds("workspace-view-toggle").is_some());
     editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
@@ -472,7 +480,7 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
     for width in [880.0, 1280.0] {
         visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(540.0)));
         visual.run_until_parked();
-        let name = visual.debug_bounds("arrange view").unwrap();
+        let name = visual.debug_bounds("workspace-view-toggle").unwrap();
         let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
         assert!(name.size.width > gpui::px(0.0));
         assert!(name.origin.x >= toolbar.origin.x && name.right() <= toolbar.right());
@@ -1055,6 +1063,84 @@ fn workspace_four_returns_console_still_retires_active_or_invalid_range(cx: &mut
             assert!(v.time_selection_gesture.is_none());
             assert!(v.time_range_move_gesture.is_none());
             assert_eq!(v.worker_requests_pending, 0);
+            assert!(v.pending_requests.is_empty());
+        });
+    }
+}
+
+#[gpui::test]
+fn workspace_navigation_controls_fit_edges_and_preserve_state(cx: &mut TestAppContext) {
+    let (_files, handle, editor) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [880.0, 1440.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+        visual.run_until_parked();
+        let status = visual.debug_bounds("editor-status-bar").unwrap();
+        let browser = visual.debug_bounds("toggle browser · cmd+alt+b").unwrap();
+        assert!(browser.top() >= status.top() && browser.bottom() <= status.bottom());
+        assert_eq!(browser.left(), status.left() + gpui::px(8.0));
+        let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+        let mode_button = visual.debug_bounds("workspace-view-toggle").unwrap();
+        assert!(mode_button.top() >= toolbar.top() && mode_button.bottom() <= toolbar.bottom());
+        assert!(mode_button.right() <= toolbar.right());
+        assert!(mode_button.left() > toolbar.center().x);
+        let before = editor.read_with(&visual, |v, _| {
+            (
+                v.state.as_ref().unwrap().clone(),
+                v.selected_track,
+                v.selected_clip_ids(),
+                v.time_selection,
+                v.selected_cell,
+                v.viewport,
+                v.clip_view_open,
+                v.device_panel_active,
+                v.mode,
+                v.browser.open,
+            )
+        });
+        for _ in 0..2 {
+            let browser = visual
+                .debug_bounds("toggle browser · cmd+alt+b")
+                .unwrap()
+                .center();
+            let was_open = editor.read_with(&visual, |v, _| v.browser.open);
+            visual.simulate_click(browser, Modifiers::default());
+            editor.read_with(&visual, |v, _| assert_eq!(v.browser.open, !was_open));
+            let mode_button = visual
+                .debug_bounds("workspace-view-toggle")
+                .unwrap()
+                .center();
+            let was_mode = editor.read_with(&visual, |v, _| v.mode);
+            visual.simulate_click(mode_button, Modifiers::default());
+            editor.read_with(&visual, |v, _| assert_ne!(v.mode, was_mode));
+        }
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project, before.0.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.0.revision);
+            assert_eq!(
+                (
+                    v.selected_track,
+                    v.selected_clip_ids(),
+                    v.time_selection,
+                    v.selected_cell,
+                    v.viewport,
+                    v.clip_view_open,
+                    v.device_panel_active,
+                    v.mode,
+                    v.browser.open
+                ),
+                (
+                    before.1,
+                    before.2.clone(),
+                    before.3,
+                    before.4,
+                    before.5,
+                    before.6,
+                    before.7,
+                    before.8,
+                    before.9
+                )
+            );
             assert!(v.pending_requests.is_empty());
         });
     }

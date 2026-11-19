@@ -1,11 +1,12 @@
-//! Immutable group-note move previews and one-shot canonical payloads.
-use super::midi_drag::{self, MidiGrid};
+//! Immutable note-group move, edge-resize and copy previews with atomic payloads.
+use super::midi_drag::{self, HitKind, MidiGrid};
 use hex_project::{BeatTime, ClipId, MidiNoteUpdate, NoteId};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct GroupNote {
     pub(super) id: NoteId,
+    pub(super) active: bool,
     pub(super) start: u64,
     pub(super) duration: u64,
     pub(super) pitch: u8,
@@ -201,15 +202,18 @@ pub(super) struct GroupContext {
     pub(super) revision: u64,
     pub(super) clip: Option<ClipId>,
     pub(super) selection_epoch: u64,
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
     pub(super) bounds: [f32; 4],
     pub(super) pending: bool,
 }
 
 pub(super) struct GroupStart {
+    pub(super) copy: bool,
+    pub(super) kind: HitKind,
     pub(super) generation: u64,
     pub(super) revision: u64,
     pub(super) clip: ClipId,
@@ -217,15 +221,18 @@ pub(super) struct GroupStart {
     pub(super) originals: Vec<GroupNote>,
     pub(super) pointer: [f32; 2],
     pub(super) bounds: [f32; 4],
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) clip_length: u64,
     pub(super) grid: MidiGrid,
 }
 
 #[derive(Clone)]
 pub(super) struct GroupGesture {
+    copy: bool,
+    kind: HitKind,
     generation: u64,
     revision: u64,
     clip: ClipId,
@@ -234,18 +241,21 @@ pub(super) struct GroupGesture {
     pointer_beat: u64,
     pointer_pitch: u8,
     bounds: [f32; 4],
-    beat_start: u64,
+    beat_start: i128,
     beat_span: u64,
     pitch_low: u8,
+    pitch_rows: u8,
     clip_length: u64,
     grid: MidiGrid,
     delta: i128,
     pitch_delta: i16,
+    source_prefix: u64,
 }
 
 impl GroupGesture {
     pub(super) fn begin(mut start: GroupStart) -> Option<Self> {
-        if start.originals.len() < 2
+        if start.originals.is_empty()
+            || (!start.copy && start.originals.len() < 2)
             || start.originals.len() > hex_project::MAX_NOTES
             || start.beat_span == 0
             || start.clip_length == 0
@@ -277,9 +287,19 @@ impl GroupGesture {
             start.beat_start,
             start.beat_span,
         )?;
-        let pointer_pitch =
-            midi_drag::pitch_at_point(start.pointer[1], start.bounds, start.pitch_low)?;
+        let pointer_pitch = midi_drag::pitch_at_point(
+            start.pointer[1],
+            start.bounds,
+            start.pitch_low,
+            start.pitch_rows,
+        )?;
         Some(Self {
+            copy: start.copy,
+            kind: if start.copy {
+                HitKind::Move
+            } else {
+                start.kind
+            },
             generation: start.generation,
             revision: start.revision,
             clip: start.clip,
@@ -291,10 +311,12 @@ impl GroupGesture {
             beat_start: start.beat_start,
             beat_span: start.beat_span,
             pitch_low: start.pitch_low,
+            pitch_rows: start.pitch_rows,
             clip_length: start.clip_length,
             grid: start.grid,
             delta: 0,
             pitch_delta: 0,
+            source_prefix: 0,
         })
     }
 
@@ -306,6 +328,7 @@ impl GroupGesture {
             && self.beat_start == context.beat_start
             && self.beat_span == context.beat_span
             && self.pitch_low == context.pitch_low
+            && self.pitch_rows == context.pitch_rows
             && self.grid == context.grid
             && self.bounds == context.bounds
             && !context.pending
@@ -313,37 +336,183 @@ impl GroupGesture {
 
     pub(super) fn update(&mut self, point: [f32; 2], invert_snap: bool) -> bool {
         let Some(pointer_beat) =
-            midi_drag::beat_at_point(point[0], self.bounds, self.beat_start, self.beat_span)
+            midi_drag::signed_beat_at_point(point[0], self.bounds, self.beat_start, self.beat_span)
         else {
             return false;
         };
-        let Some(pointer_pitch) = midi_drag::pitch_at_point(point[1], self.bounds, self.pitch_low)
+        let Some(pointer_pitch) =
+            midi_drag::pitch_at_point(point[1], self.bounds, self.pitch_low, self.pitch_rows)
         else {
             return false;
         };
-        let desired_delta = midi_drag::quantize_delta(
-            i128::from(pointer_beat) - i128::from(self.pointer_beat),
-            midi_drag::effective_grid(self.grid, invert_snap),
-        );
-        let desired_pitch = i16::from(pointer_pitch) - i16::from(self.pointer_pitch);
-        let Ok((delta, pitch_delta)) = resolve_common_delta(
-            &self.originals,
-            self.clip_length,
-            desired_delta,
-            desired_pitch,
-        ) else {
+        let grid = if self.kind == HitKind::ResizeTrailing {
+            midi_drag::note_end_grid(self.grid, invert_snap)
+        } else {
+            midi_drag::effective_grid(self.grid, invert_snap)
+        };
+        let desired_delta =
+            midi_drag::quantize_delta(pointer_beat - i128::from(self.pointer_beat), grid);
+        let (desired_delta, source_prefix) = if self.kind == HitKind::Move && !self.copy {
+            let first = self
+                .originals
+                .iter()
+                .map(|note| note.start)
+                .min()
+                .unwrap_or(0);
+            let Some((start, prefix)) = super::midi_viewport_grid::source_prefix(
+                i128::from(first) + desired_delta,
+                u64::MAX - self.clip_length,
+                self.beat_start,
+                self.beat_span,
+                self.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
+            ) else {
+                return false;
+            };
+            (start - i128::from(first), prefix)
+        } else {
+            (desired_delta, 0)
+        };
+        let resolved = if self.kind == HitKind::Move {
+            resolve_common_delta(
+                &self.originals,
+                u64::MAX,
+                desired_delta + i128::from(source_prefix),
+                i16::from(pointer_pitch) - i16::from(self.pointer_pitch),
+            )
+        } else {
+            resize_delta(
+                &self.originals,
+                self.clip_length,
+                self.kind,
+                desired_delta,
+                grid.minimum_gate(),
+            )
+            .map(|delta| (delta, 0))
+        };
+        let Ok((delta, pitch_delta)) = resolved else {
             return false;
         };
-        if self.delta == delta && self.pitch_delta == pitch_delta {
+        if self.delta == delta
+            && self.pitch_delta == pitch_delta
+            && self.source_prefix == source_prefix
+        {
             return false;
         }
         self.delta = delta;
         self.pitch_delta = pitch_delta;
+        self.source_prefix = source_prefix;
         true
     }
 
     pub(super) fn is_noop(&self) -> bool {
-        self.delta == 0 && self.pitch_delta == 0
+        self.source_prefix == 0 && self.delta == 0 && self.pitch_delta == 0
+    }
+
+    /// Copy toggles only a move gesture; a captured resize keeps its edge.
+    pub(super) fn set_copy(&mut self, copy: bool) -> bool {
+        if self.kind != HitKind::Move || self.copy == copy {
+            return false;
+        }
+        self.copy = copy;
+        true
+    }
+
+    /// Promote the existing single-note move without resampling its pointer
+    /// anchor. Both paths then share copy payloads and overwrite previews.
+    pub(super) fn from_note_copy(
+        note: midi_drag::NoteGesture,
+        selection_epoch: u64,
+    ) -> Result<Option<Self>, &'static str> {
+        let midi_drag::GestureKind::Move {
+            pointer_beat_raw,
+            pointer_pitch,
+        } = note.kind
+        else {
+            return Ok(None);
+        };
+        let mut originals = Vec::new();
+        originals
+            .try_reserve_exact(1)
+            .map_err(|_| "could not reserve midi copy preview")?;
+        originals.push(GroupNote {
+            id: note.note,
+            active: note.active,
+            start: note.original.start,
+            duration: note.original.duration,
+            pitch: note.original.pitch,
+            channel: note.channel,
+            velocity: note.velocity,
+        });
+        Ok(Some(Self {
+            copy: true,
+            kind: HitKind::Move,
+            generation: note.generation,
+            revision: note.revision,
+            clip: note.clip,
+            selection_epoch,
+            originals: Arc::from(originals),
+            pointer_beat: pointer_beat_raw,
+            pointer_pitch,
+            bounds: note.bounds,
+            beat_start: note.beat_start,
+            beat_span: note.beat_span,
+            pitch_low: note.pitch_low,
+            pitch_rows: note.pitch_rows,
+            clip_length: note.clip_length,
+            grid: note.grid,
+            delta: i128::from(note.preview.start) - i128::from(note.original.start),
+            pitch_delta: i16::from(note.preview.pitch) - i16::from(note.original.pitch),
+            source_prefix: 0,
+        }))
+    }
+
+    pub(super) fn is_copy(&self) -> bool {
+        self.copy
+    }
+
+    pub(super) fn copied_notes(&self) -> Result<Vec<hex_project::MidiNoteInsert>, &'static str> {
+        if !self.copy || self.is_noop() {
+            return Err("midi copy is a no-op");
+        }
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(self.originals.len())
+            .map_err(|_| "could not reserve midi copies")?;
+        for original in self.originals.iter() {
+            let note = self
+                .preview(original.id)
+                .ok_or("midi copy target changed")?;
+            result.push(hex_project::MidiNoteInsert {
+                active: original.active,
+                start: BeatTime::from_raw(note.start),
+                duration: BeatTime::from_raw(note.duration),
+                pitch: note.pitch,
+                channel: note.channel,
+                velocity: note.velocity,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Immutable admission context; borrowed input identity does not own notes.
+    pub(super) fn captured_context(&self) -> GroupContext {
+        GroupContext {
+            generation: self.generation,
+            revision: self.revision,
+            clip: Some(self.clip),
+            selection_epoch: self.selection_epoch,
+            beat_start: self.beat_start,
+            beat_span: self.beat_span,
+            pitch_low: self.pitch_low,
+            pitch_rows: self.pitch_rows,
+            grid: self.grid,
+            bounds: self.bounds,
+            pending: false,
+        }
+    }
+
+    pub(super) fn kind(&self) -> HitKind {
+        self.kind
     }
 
     pub(super) fn shared_originals(&self) -> Arc<[GroupNote]> {
@@ -354,29 +523,101 @@ impl GroupGesture {
         self.bounds
     }
 
+    pub(super) fn source_prefix(&self) -> u64 {
+        self.source_prefix
+    }
+
+    pub(super) fn source_length(&self) -> u64 {
+        self.clip_length
+    }
+
     pub(super) fn preview(&self, id: NoteId) -> Option<GroupNote> {
         let index = self
             .originals
             .binary_search_by_key(&id, |note| note.id)
             .ok()?;
         let mut note = *self.originals.get(index)?;
-        note.start = (i128::from(note.start) + self.delta) as u64;
-        note.pitch = (i16::from(note.pitch) + self.pitch_delta) as u8;
+        match self.kind {
+            HitKind::Move => {
+                note.start = (i128::from(note.start) + self.delta) as u64;
+                note.pitch = (i16::from(note.pitch) + self.pitch_delta) as u8;
+            }
+            HitKind::ResizeLeading => {
+                note.start = (i128::from(note.start) + self.delta) as u64;
+                note.duration = (i128::from(note.duration) - self.delta) as u64;
+            }
+            HitKind::ResizeTrailing => {
+                note.duration = (i128::from(note.duration) + self.delta) as u64
+            }
+        }
         Some(note)
     }
 
     pub(super) fn updates(&self) -> Result<Vec<MidiNoteUpdate>, &'static str> {
-        nudge_updates(
-            &self.originals,
-            self.clip_length,
-            self.delta,
-            self.pitch_delta,
-        )?
-        .ok_or("group midi edit is a no-op")
+        if self.kind != HitKind::Move || self.source_prefix > 0 {
+            if self.is_noop() {
+                return Err("group midi edit is a no-op");
+            }
+            let mut updates = Vec::new();
+            updates
+                .try_reserve_exact(self.originals.len())
+                .map_err(|_| "could not reserve group resize")?;
+            for original in self.originals.iter() {
+                let note = self
+                    .preview(original.id)
+                    .ok_or("group resize note changed")?;
+                updates.push(MidiNoteUpdate {
+                    note: note.id,
+                    start: BeatTime::from_raw(note.start),
+                    duration: BeatTime::from_raw(note.duration),
+                    pitch: note.pitch,
+                    channel: note.channel,
+                    velocity: note.velocity,
+                });
+            }
+            return Ok(updates);
+        }
+        nudge_updates(&self.originals, u64::MAX, self.delta, self.pitch_delta)?
+            .ok_or("group midi edit is a no-op")
     }
 }
 
-#[cfg(test)]
+/// One common edge delta keeps each member's opposite edge anchored. The
+/// shortest member limits shrinking; preexisting sub-grid notes never jump to
+/// a longer gate merely because a resize begins. Only explicit pointer motion
+/// changes geometry, and all results stay within the captured source.
+fn resize_delta(
+    originals: &[GroupNote],
+    length: u64,
+    kind: HitKind,
+    requested: i128,
+    minimum: u64,
+) -> Result<i128, &'static str> {
+    if kind == HitKind::Move || minimum == 0 {
+        return Err("invalid group resize");
+    }
+    // Reuse the same malformed note and source bounds checks as group movement.
+    resolve_common_delta(originals, length, 0, 0)?;
+    let mut lower = i128::MIN;
+    let mut upper = i128::MAX;
+    for note in originals {
+        let minimum = minimum.min(note.duration);
+        if kind == HitKind::ResizeLeading {
+            lower = lower.max(-i128::from(note.start));
+            upper = upper.min(i128::from(note.duration - minimum));
+        } else {
+            lower = lower.max(i128::from(minimum) - i128::from(note.duration));
+            let end = note
+                .start
+                .checked_add(note.duration)
+                .ok_or("invalid group resize end")?;
+            upper = upper.min(i128::from(length - end));
+        }
+    }
+    Ok(requested.clamp(lower, upper))
+}
+
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::{
         GroupContext, GroupGesture, GroupNote, GroupParameter, GroupStart, capture_selected_notes,
@@ -387,6 +628,88 @@ mod tests {
 
     const BOUNDS: [f32; 4] = [100.0, 200.0, 400.0, 240.0];
     const CLIP: u64 = 4 * BeatTime::ONE.raw();
+
+    #[test]
+    fn common_resize_limits_anchor_every_member_and_preserve_sub_grid_gates() {
+        use super::{HitKind, resize_delta};
+        let beat = BeatTime::ONE.raw();
+        let f = fixture(&[(beat / 2, beat, 60), (2 * beat, beat / 8, 64)]);
+        assert_eq!(
+            resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, i128::MIN, beat / 4).unwrap(),
+            -i128::from(beat / 2)
+        );
+        assert_eq!(
+            resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, i128::MAX, beat / 4).unwrap(),
+            0
+        );
+        assert_eq!(
+            resize_delta(&f.notes, CLIP, HitKind::ResizeTrailing, i128::MIN, beat / 4).unwrap(),
+            0
+        );
+        assert_eq!(
+            resize_delta(&f.notes, CLIP, HitKind::ResizeTrailing, i128::MAX, beat / 4).unwrap(),
+            i128::from(CLIP - 2 * beat - beat / 8)
+        );
+        assert!(resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, 0, 0).is_err());
+        assert!(resize_delta(&[], CLIP, HitKind::ResizeLeading, 0, 1).is_err());
+        assert!(
+            resize_delta(
+                &[GroupNote {
+                    start: u64::MAX,
+                    ..f.notes[0]
+                }],
+                CLIP,
+                HitKind::ResizeTrailing,
+                1,
+                1
+            )
+            .is_err()
+        );
+        for kind in [HitKind::ResizeLeading, HitKind::ResizeTrailing] {
+            for grid in [
+                MidiGrid::Quarter,
+                MidiGrid::Eighth,
+                MidiGrid::Sixteenth,
+                MidiGrid::ThirtySecond,
+                MidiGrid::Off,
+            ] {
+                let f = fixture(&[(beat, beat, 60), (2 * beat, beat / 2, 64)]);
+                let originals = f.notes.clone();
+                let mut drag = gesture(grid, f, [200.0, 315.0]);
+                drag.kind = kind;
+                assert!(drag.update(
+                    [
+                        if kind == HitKind::ResizeLeading {
+                            100.0
+                        } else {
+                            300.0
+                        },
+                        335.0
+                    ],
+                    false
+                ));
+                for original in &originals {
+                    let resized = drag.preview(original.id).unwrap();
+                    assert_eq!(
+                        (resized.pitch, resized.channel, resized.velocity),
+                        (original.pitch, original.channel, original.velocity)
+                    );
+                    if kind == HitKind::ResizeLeading {
+                        assert_eq!(
+                            resized.start + resized.duration,
+                            original.start + original.duration
+                        );
+                    } else {
+                        assert_eq!(resized.start, original.start);
+                    }
+                    assert!(resized.duration > 0 && resized.start + resized.duration <= CLIP);
+                }
+                assert!(drag.updates().is_ok());
+                drag.update([200.0, 315.0], false);
+                assert!(drag.is_noop());
+            }
+        }
+    }
 
     struct Fixture {
         editor: Editor,
@@ -433,6 +756,7 @@ mod tests {
                 };
                 GroupNote {
                     id,
+                    active: true,
                     start,
                     duration,
                     pitch,
@@ -458,7 +782,19 @@ mod tests {
         pointer: [f32; 2],
         pitch_low: u8,
     ) -> GroupGesture {
+        gesture_of_kind(grid, fixture, pointer, pitch_low, super::HitKind::Move)
+    }
+
+    fn gesture_of_kind(
+        grid: MidiGrid,
+        fixture: Fixture,
+        pointer: [f32; 2],
+        pitch_low: u8,
+        kind: super::HitKind,
+    ) -> GroupGesture {
         GroupGesture::begin(GroupStart {
+            copy: false,
+            kind,
             generation: 3,
             revision: 7,
             clip: fixture.clip,
@@ -469,6 +805,7 @@ mod tests {
             beat_start: 0,
             beat_span: CLIP,
             pitch_low,
+            pitch_rows: 24,
             clip_length: CLIP,
             grid,
         })
@@ -503,16 +840,73 @@ mod tests {
     }
 
     #[test]
-    fn shared_delta_clamps_at_each_member_domain_and_preserves_spacing() {
+    fn shared_move_crosses_source_end_preserving_spacing_and_numeric_gate_bounds() {
         let beat = BeatTime::ONE.raw();
         let fixture = fixture(&[(beat / 2, beat / 4, 60), (15 * beat / 4, beat / 4, 62)]);
         let first = fixture.notes[0];
         let edge = fixture.notes[1];
         let mut drag = gesture(MidiGrid::Off, fixture, [150.0, 315.0]);
-        assert!(!drag.update([250.0, 315.0], false));
-        assert!(drag.is_noop());
+        assert!(drag.update([250.0, 315.0], false));
+        assert_eq!(drag.preview(first.id).unwrap().start, first.start + beat);
+        assert_eq!(drag.preview(edge.id).unwrap().start, edge.start + beat);
+        let updates = drag.updates().unwrap();
+        assert_eq!(
+            updates[1].start.raw() + updates[1].duration.raw(),
+            CLIP + beat
+        );
+        let (delta, _) =
+            super::resolve_common_delta(&drag.originals, u64::MAX, i128::MAX, 0).unwrap();
+        assert_eq!(
+            i128::from(edge.start + edge.duration) + delta,
+            i128::from(u64::MAX)
+        );
+        assert!(drag.update([-10_000.0, 315.0], false));
+        assert_eq!(drag.preview(first.id).unwrap().start, 0);
+        assert_eq!(
+            drag.preview(edge.id).unwrap().start,
+            edge.start - first.start
+        );
+    }
+
+    #[test]
+    fn group_trailing_resize_is_free_by_default_and_snaps_while_cmd_is_held() {
+        let beat = BeatTime::ONE.raw();
+        let fixture = fixture(&[(beat, beat / 2, 60), (2 * beat, beat / 4, 61)]);
+        let first = fixture.notes[0];
+        let second = fixture.notes[1];
+        let mut drag = gesture_of_kind(
+            MidiGrid::Sixteenth,
+            fixture,
+            [250.0, 315.0],
+            48,
+            super::HitKind::ResizeTrailing,
+        );
+        let at = |x| crate::editor::midi_drag::beat_at_point(x, BOUNDS, 0, CLIP).unwrap();
+        let free = at(265.0) - at(250.0); // about 0.15 beat
+        assert!(drag.update([265.0, 315.0], false));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + free
+        );
+        assert_eq!(
+            drag.preview(second.id).unwrap().duration,
+            second.duration + free
+        );
         assert_eq!(drag.preview(first.id).unwrap().start, first.start);
-        assert_eq!(drag.preview(edge.id).unwrap().start, edge.start);
+        assert!(drag.update([265.0, 315.0], true));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + beat / 4
+        );
+        assert_eq!(
+            drag.preview(second.id).unwrap().duration,
+            second.duration + beat / 4
+        );
+        assert!(drag.update([265.0, 315.0], false));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + free
+        );
     }
 
     #[test]
@@ -549,6 +943,7 @@ mod tests {
             beat_start: 0,
             beat_span: CLIP,
             pitch_low: 104,
+            pitch_rows: 24,
             grid: MidiGrid::Off,
             bounds: BOUNDS,
             pending: false,

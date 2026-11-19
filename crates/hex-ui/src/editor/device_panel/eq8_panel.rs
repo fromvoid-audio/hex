@@ -1,10 +1,11 @@
 //! Compact eight-band equalizer panel backed by registered descriptors and DSP response data.
 mod graph;
+mod group;
+mod selection;
 
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    action_button, effective_parameter_value, finalize_controls,
-    parameter_control_with_presentation,
+    action_button, finalize_controls, parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb};
@@ -14,8 +15,8 @@ use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
 use hex_widgets::{
-    DiscreteControlAppearance, ResponseGraph, ResponseGraphEvent, ResponseGraphModel,
-    ResponseGraphNode, Toggle, ToggleChanged, ToggleConfig,
+    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, Toggle,
+    ToggleAppearance, ToggleChanged, ToggleConfig,
 };
 
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::EQ8_FRAME_WIDTH;
@@ -32,6 +33,9 @@ const MAX_Q: f32 = 18.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Eq8PanelState {
     pub(super) selected_band: usize,
+    pub(super) selected_bands: Option<u8>,
+    marquee_before: Option<(usize, Option<u8>)>,
+    collapse_band: Option<usize>,
     pub(super) selected_lane: usize,
     pub(super) audition_armed: bool,
     pub(super) audition_gesture_active: bool,
@@ -42,11 +46,14 @@ pub(super) struct GraphGestureState {
     origin_y: f32,
     initial_q: f32,
     q_by_delta: bool,
+    touch: super::eq_automation::DragTouch,
 }
 
 pub(super) struct GraphControl {
     pub(super) entity: Entity<ResponseGraph>,
     _subscription: Subscription,
+    _marquee_subscription: Subscription,
+    group_drag: Option<group::Drag>,
 }
 
 #[derive(Clone)]
@@ -76,10 +83,10 @@ pub(super) fn render_body(
         .min(2);
     let lane_count = if mode == 0 { 1 } else { 2 };
     let lane = panel.selected_lane.min(lane_count - 1);
-    if lane != panel.selected_lane {
-        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
-            panel.selected_lane = lane;
-        }
+    if lane != panel.selected_lane
+        && let Some(panel) = view.device_panel.eq8_panels.get_mut(&device)
+    {
+        panel.selected_lane = lane;
     }
     let bank = match mode {
         1 => 1 + lane,
@@ -94,7 +101,7 @@ pub(super) fn render_body(
         identity,
         device_view,
         bank,
-        panel.selected_band,
+        selection::mask(&panel),
     );
     let mode_parameter = parameter(device_view.parameters.as_slice(), id(201));
     let mode_control = mode_parameter.map_or_else(
@@ -281,7 +288,7 @@ fn audition_toggle(
                 .id(ElementId::Name("eq8-audition-unavailable".into()))
                 .child(unavailable("audition toggle unavailable"));
         };
-        let config = config.with_appearance(DiscreteControlAppearance::CompactIconButton);
+        let config = config.with_appearance(ToggleAppearance::CompactIconButton);
         let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
         let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
             if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
@@ -322,6 +329,7 @@ fn audition_toggle(
         .flex_shrink_0()
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: if armed {
                     "eq8 band audition armed".into()
                 } else {
@@ -340,99 +348,7 @@ pub(super) fn spectrum_toggle(
     owner: hex_engine::ProcessorChainOwner,
     device_type: hex_lattice_contract::DeviceTypeId,
 ) -> Stateful<Div> {
-    let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), device_type);
-    let generation = view.project_generation;
-    let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
-    let selected = view.audio.as_ref().and_then(|audio| {
-        audio
-            .control
-            .spectrum_desired()
-            .map(|target| target.identity == identity && target.project_generation == generation)
-    }) == Some(true);
-    let available = view.audio.as_ref().is_some_and(|audio| {
-        audio.spectrum_error.is_none() && (8_000..=192_000).contains(&audio.sample_rate)
-    });
-    let tooltip = view
-        .audio
-        .as_ref()
-        .and_then(|audio| audio.spectrum_error.clone())
-        .unwrap_or_else(|| {
-            if selected {
-                "hide live eq spectrum".to_owned()
-            } else {
-                "enable live eq spectrum · input/output samples are analyzed while audio runs"
-                    .to_owned()
-            }
-        });
-    hex_widgets::device_action(
-        theme::text("spectrum"),
-        theme::device_segment_style(selected && available),
-    )
-    .id(ElementId::Name(
-        format!("eq8-spectrum-{}", device.value()).into(),
-    ))
-    .debug_selector(move || format!("eq8-spectrum-{}", device.value()))
-    .px(px(3.0))
-    .h(px(13.0))
-    .cursor_pointer()
-    .tooltip(move |_, cx| {
-        cx.new(|_| super::super::transport::MiniTooltip {
-            description: tooltip.clone().into(),
-        })
-        .into()
-    })
-    .on_click(cx.listener(move |view, _, _, cx| {
-        let active = view.audio.as_ref().and_then(|audio| {
-            audio.control.spectrum_desired().map(|target| {
-                target.identity == identity && target.project_generation == generation
-            })
-        }) == Some(true);
-        if active {
-            if let Some(audio) = view.audio.as_mut() {
-                let _ = audio.control.spectrum_clear();
-            }
-            view.device_panel.spectrum_result = None;
-            view.device_panel.message = None;
-        } else if view.project_generation != generation
-            || view.state.as_ref().map(|state| state.revision) != Some(project_revision)
-        {
-            view.device_panel.message = Some("spectrum target changed; select it again".into());
-        } else if let Some(floor) = view
-            .audio_admission
-            .published_audio_revision(generation, project_revision)
-        {
-            if let Some(audio) = view.audio.as_mut() {
-                if audio.spectrum_error.is_some() || !(8_000..=192_000).contains(&audio.sample_rate)
-                {
-                    view.device_panel.message = Some(
-                        audio
-                            .spectrum_error
-                            .clone()
-                            .unwrap_or_else(|| "spectrum analysis unavailable".into()),
-                    );
-                } else {
-                    match audio.control.spectrum_select(
-                        identity,
-                        generation,
-                        floor,
-                        audio.sample_rate,
-                    ) {
-                        Ok(_) => view.device_panel.message = None,
-                        Err(_) => {
-                            view.device_panel.message =
-                                Some("spectrum analysis is unavailable for this target".into())
-                        }
-                    }
-                }
-            } else {
-                view.device_panel.message = Some("audio output is unavailable".into());
-            }
-        } else {
-            view.device_panel.message =
-                Some("waiting for the current project audio revision".into());
-        }
-        cx.notify();
-    }))
+    super::eq_panel::spectrum_toggle(view, cx, device, owner, device_type)
 }
 
 fn band_list(
@@ -442,12 +358,12 @@ fn band_list(
     identity: DeviceControlIdentity,
     device_view: &NativeDeviceView,
     bank: usize,
-    selected: usize,
+    selected: u8,
 ) -> Div {
     let mut rows = Vec::with_capacity(BAND_COUNT);
     for band in 0..BAND_COUNT {
         let index = band + 1;
-        let selected = selected == band;
+        let selected = selected & (1 << band) != 0;
         let row = hex_widgets::device_compact_row(super::device_layout_style(), selected)
             .id(ElementId::Name(
                 format!("eq8-band-row-{}-{band}", device.value()).into(),
@@ -464,6 +380,8 @@ fn band_list(
                 }
                 if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
                     panel.selected_band = band;
+                    panel.selected_bands = None;
+                    panel.collapse_band = None;
                 }
                 cx.notify();
             }))
@@ -541,7 +459,7 @@ fn compact_control(
         device,
         identity,
         parameter,
-        ControlPresentation::MiniDial,
+        ControlPresentation::MicroDial,
         ControlText {
             label: Some(label),
             codec: None,

@@ -82,6 +82,12 @@ fn malformed_current_format_inactive_provider_refuses_new_session() {
     let mut snapshot = before.snapshot();
     snapshot.tracks[0].instrument.as_mut().unwrap().comparison =
         Some(DeviceComparison::new(DeviceVariant::A, invalid));
+    snapshot.native_sources[0].devices[0].comparison = snapshot.tracks[0]
+        .instrument
+        .as_ref()
+        .unwrap()
+        .comparison
+        .clone();
     let malformed = Project::from_snapshot(snapshot).unwrap();
     let bytes = hex_storage::encode(&malformed).unwrap();
     let decoded = hex_storage::decode(&bytes).unwrap();

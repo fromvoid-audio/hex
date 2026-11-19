@@ -86,7 +86,9 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
 }
 
 fn query(editor: &gpui::Entity<EditorView>, cx: &mut VisualTestContext) -> String {
-    editor.read_with(cx, |view, cx| view.browser.search.read(cx).content.clone())
+    editor.read_with(cx, |view, cx| {
+        view.browser.search.read(cx).text().to_owned()
+    })
 }
 
 #[gpui::test]
@@ -276,7 +278,7 @@ fn browser_history_query_back_restores_item_before_filter_and_ime_restore_is_not
     visual.run_until_parked();
     click(visual, "browser-history-back");
     editor.read_with(visual,|view,cx| {
-        assert_eq!(view.browser.search.read(cx).content,"");
+        assert_eq!(view.browser.search.read(cx).text(),"");
         assert!(matches!(view.browser_selected_item(cx),Some(crate::editor::browser::BrowserItemKey::File(path)) if path.ends_with("loop.wav")),"query back must restore the original highlighted identity");
     });
     click(visual, "browser-search");
@@ -355,7 +357,7 @@ fn browser_history_same_name_rows_collection_and_queued_query_observer_keep_late
     editor.update(visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("new query", cx));
+            .update(cx, |input, cx| input.set_text("new query", cx));
         view.move_browser_history(false, cx);
     });
     visual.run_until_parked();
@@ -480,7 +482,7 @@ fn browser_history_hidden_custom_home_music_never_restore_through_back_or_forwar
             assert!(visual.did_prompt_for_paths());
             visual.simulate_paths_selection(Some(vec![custom.clone()]));
             visual.run_until_parked();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 let ready = editor.update(visual, |view, cx| {
                     if view.tick(cx) {
@@ -491,7 +493,10 @@ fn browser_history_hidden_custom_home_music_never_restore_through_back_or_forwar
                 if ready {
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "browser_history_hidden_custom_home_music_never_restore_through_back_or_forward: hang guard expired"
+                );
                 std::thread::yield_now();
             }
             let (target, roots, before) = editor.read_with(visual, |view, _| {
@@ -626,6 +631,7 @@ fn builtin_history_fixture(
                         Default::default(),
                         Default::default(),
                     ),
+                    None,
                     crate::editor::test_environment::Inputs {
                         existing_environment: Some(std::sync::Arc::clone(&directory.1)),
                         home: Some(home.clone()),
@@ -861,7 +867,7 @@ fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut
     visual.run_until_parked();
     // Complete ordinary Service startup before taking the project/history
     // oracle. This is setup only, before either tested history direction.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let ready = editor.update(visual, |view, cx| {
             if view.tick(cx) {
@@ -1051,7 +1057,7 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         editor.read_with(visual, |view, _| {
             assert_eq!(
                 view.browser.scroll.0.borrow().base_handle.offset().y,
-                -px(index as f32 * 22.0),
+                -px(index as f32 * super::super::ROW_HEIGHT),
                 "fixture must realize the strict anchor without bottom clamping"
             );
         });

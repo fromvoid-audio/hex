@@ -94,6 +94,34 @@ impl TempoMap {
         self.sample_rate
     }
 
+    /// Prove identical forward and inverse clock conversions without rewriting
+    /// authored points. Identical maps pass directly. Differently segmented
+    /// constant maps pass only when every boundary is an exact integral frame
+    /// from the origin: Q32 prefixes then telescope exactly, and inverse rounding
+    /// cannot select a different subframe marker. Other layouts conservatively
+    /// return false. After structural equality, the fallback scans at most
+    /// twice MAX_TEMPO_POINTS entries, with no allocation.
+    pub fn proves_same_clock(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        if self.sample_rate != other.sample_rate {
+            return false;
+        }
+        let Some(first) = self.points.first() else {
+            return false;
+        };
+        let tempo = first.tempo;
+        let factor = u128::from(self.sample_rate) * FRAME_FACTOR_NUMERATOR;
+        let denominator = u128::from(tempo.micro_bpm()) << FRAME_FRACTION_BITS;
+        self.points.iter().chain(&other.points).all(|point| {
+            point.tempo == tempo
+                && u128::from(point.beat.raw())
+                    .checked_mul(factor)
+                    .is_some_and(|scaled| scaled % denominator == 0)
+        })
+    }
+
     pub fn points(&self) -> &[TempoPoint] {
         &self.points
     }
@@ -237,6 +265,13 @@ impl TempoMap {
         }
     }
 
+    /// Fractional project frames with 32 fraction bits, using the same stored
+    /// segment prefixes as beat_to_frame. Control-side map preparation can keep
+    /// sample phase until its final quantization; this is not a callback clock.
+    pub fn beat_to_frame_q32(&self, beat: BeatTime) -> Result<u128, Invalid> {
+        self.frame_q32_at(beat)
+    }
+
     fn frame_q32_at(&self, beat: BeatTime) -> Result<u128, Invalid> {
         let index = self.segment_for_beat(beat);
         let point = self.points[index];
@@ -313,6 +348,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn clock_proof_preserves_fractional_prefixes_and_inverse_marker_rounding() {
+        for rate in [44_100, 48_000] {
+            for bpm in [120_000_000, 180_000_000] {
+                let tempo = Tempo::new(bpm).unwrap();
+                let original = TempoMap::constant(rate, tempo).unwrap();
+                let split = TempoMap::new(
+                    rate,
+                    [0, 1, 3, 5]
+                        .map(|n| TempoPoint::new(BeatTime::from_quarters(n).unwrap(), tempo))
+                        .to_vec(),
+                )
+                .unwrap();
+                assert_ne!(original, split, "authored state is never normalized");
+                assert!(original.proves_same_clock(&split));
+                assert!(split.proves_same_clock(&original));
+                for frame in (0..192_000).step_by(127) {
+                    assert_eq!(original.frame_to_beat(frame), split.frame_to_beat(frame));
+                }
+                for raw in [0, 1, (1 << 32) - 1, 1 << 32, (3 << 32) + 1, u64::MAX] {
+                    assert_eq!(
+                        original.beat_to_frame(BeatTime::from_raw(raw)),
+                        split.beat_to_frame(BeatTime::from_raw(raw))
+                    );
+                }
+                let subframe = TempoMap::new(
+                    rate,
+                    vec![
+                        TempoPoint::new(BeatTime::ZERO, tempo),
+                        TempoPoint::new(BeatTime::from_raw(1), tempo),
+                    ],
+                )
+                .unwrap();
+                assert_eq!(
+                    original.beat_to_frame(BeatTime::from_raw(1)),
+                    subframe.beat_to_frame(BeatTime::from_raw(1))
+                );
+                assert_ne!(original.frame_to_beat(0), subframe.frame_to_beat(0));
+                assert!(!original.proves_same_clock(&subframe));
+            }
+        }
+        let tempo = Tempo::new(143_000_000).unwrap();
+        let fractional = TempoMap::constant(48_000, tempo).unwrap();
+        let split = TempoMap::new(
+            48_000,
+            vec![
+                TempoPoint::new(BeatTime::ZERO, tempo),
+                TempoPoint::new(BeatTime::ONE, tempo),
+            ],
+        )
+        .unwrap();
+        assert!(
+            !fractional.proves_same_clock(&split),
+            "fractional prefix rounding must retain the strict proof"
+        );
+        assert!(!fractional.proves_same_clock(&TempoMap::constant(44_100, tempo).unwrap()));
+        assert!(!fractional.proves_same_clock(
+            &TempoMap::constant(48_000, Tempo::new(120_000_000).unwrap()).unwrap()
+        ));
     }
 
     #[test]

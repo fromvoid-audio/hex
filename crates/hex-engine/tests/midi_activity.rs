@@ -1,4 +1,7 @@
-use hex_engine::{MidiSpanBuffer, PreparedRevision, SessionPlaybackOwner};
+use hex_engine::{
+    MidiSpanBuffer, PreparedPlaybackObservation, PreparedRevision, SessionMidiOrigin,
+    SessionPlaybackOwner,
+};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -63,14 +66,37 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
     )
     .unwrap();
     assert_eq!(prepared.midi_preview().get(clip).unwrap().samples.len(), 32);
+    let observation = PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
     let mut spans = MidiSpanBuffer::default();
     for owner in [
         SessionPlaybackOwner::Arrangement,
         SessionPlaybackOwner::Session { clip: session },
     ] {
         let keys = prepared
-            .midi_gate_keys(track, owner, Some(BeatTime::ZERO), (0, 0), &mut spans)
+            .midi_gate_keys(
+                track,
+                owner,
+                Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                None,
+                (0, 0),
+                &mut spans,
+            )
             .unwrap();
+        assert_eq!(
+            observation
+                .activity()
+                .gate_keys(
+                    track,
+                    owner,
+                    Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                    None,
+                    (0, 0),
+                    &mut spans
+                )
+                .unwrap(),
+            keys,
+            "the resource-free observation retains every gate, not the 32-note preview"
+        );
         for pitch in 0..128 {
             assert_eq!(
                 keys[pitch / 64] & (1_u64 << (pitch % 64)) != 0,
@@ -82,7 +108,8 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
                 .midi_gate_keys(
                     track,
                     owner,
-                    Some(BeatTime::ZERO),
+                    Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                    None,
                     (12000, 12000),
                     &mut spans
                 )
@@ -97,6 +124,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
                 track,
                 SessionPlaybackOwner::Session { clip: session },
                 None,
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -108,6 +136,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
                 track,
                 SessionPlaybackOwner::Arrangement,
                 None,
+                None,
                 (u64::MAX, 0),
                 &mut spans
             )
@@ -118,6 +147,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
             .midi_gate_keys(
                 track,
                 SessionPlaybackOwner::Silence,
+                None,
                 None,
                 (0, 0),
                 &mut spans
@@ -193,6 +223,7 @@ fn review_followup_activity_honors_bypassed_and_missing_arrangement_instruments(
                 tracks[1],
                 SessionPlaybackOwner::Arrangement,
                 None,
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -211,6 +242,7 @@ fn review_followup_activity_honors_bypassed_and_missing_arrangement_instruments(
                 tracks[1],
                 SessionPlaybackOwner::Arrangement,
                 None,
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -226,6 +258,7 @@ fn review_followup_activity_honors_bypassed_and_missing_arrangement_instruments(
             .midi_gate_keys(
                 tracks[1],
                 SessionPlaybackOwner::Arrangement,
+                None,
                 None,
                 (0, 0),
                 &mut spans
@@ -311,7 +344,8 @@ fn review_followup_activity_uses_effective_routed_session_owner() {
                 .midi_gate_keys(
                     track,
                     effective.owner,
-                    effective.active_launch,
+                    effective.active_origin,
+                    None,
                     (runtime.arrangement_frame(), runtime.performance_frame()),
                     &mut spans
                 )
@@ -325,11 +359,172 @@ fn review_followup_activity_uses_effective_routed_session_owner() {
             .midi_gate_keys(
                 tracks[0],
                 SessionPlaybackOwner::Session { clip },
-                Some(BeatTime::ZERO),
+                Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                None,
                 (0, 0),
                 &mut spans
             )
             .unwrap(),
         [0; 2]
+    );
+}
+
+#[test]
+fn resource_free_observation_matches_mixed_routed_periodic_activity_and_meter_identity() {
+    let (mut editor, tracks, device) = activity_fixture();
+    let Created::Track(audio) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::RemoveInstrument { track: tracks[0] })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track: tracks[0],
+            scene,
+            name: "source".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiSource {
+            destination: tracks[1],
+            source: Some(tracks[0]),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiSource {
+            destination: tracks[2],
+            source: Some(tracks[1]),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 28_000,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = activity_prepare(&editor);
+    let quote =
+        PreparedPlaybackObservation::preparation_storage_quote_on_control(&revision).unwrap();
+    let observation = PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+    assert!(observation.retained_bytes_on_control().unwrap() <= quote);
+    let state = editor
+        .project()
+        .track(tracks[1])
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state();
+    let meter = observation.meter(device.value(), state.type_id()).unwrap();
+    assert!(std::ptr::eq(
+        meter,
+        revision
+            .arrangement()
+            .device_meter(device.value())
+            .unwrap()
+            .as_ref()
+    ));
+    assert!(
+        observation
+            .meter(device.value(), hex_devices::sampler::state::TYPE_ID)
+            .is_none()
+    );
+    let mut source_spans = MidiSpanBuffer::default();
+    let mut copied_spans = MidiSpanBuffer::default();
+    for track in [tracks[0], tracks[1], tracks[2], audio] {
+        assert_eq!(
+            observation.activity().route_track(track).unwrap(),
+            revision.midi_activity_route_track(track).unwrap()
+        );
+        assert_eq!(
+            observation
+                .activity()
+                .session_midi_clip(track, clip.value()),
+            (track != audio).then_some(clip)
+        );
+        for owner in [
+            SessionPlaybackOwner::Arrangement,
+            SessionPlaybackOwner::Session { clip },
+            SessionPlaybackOwner::Silence,
+        ] {
+            for launch in [None, Some(SessionMidiOrigin::launch(BeatTime::ZERO))] {
+                for frame in [0, 11_999, 12_000, 14_000, 27_999, 28_000, 56_000, u64::MAX] {
+                    assert_eq!(
+                        observation
+                            .activity()
+                            .gate_keys(
+                                track,
+                                owner,
+                                launch,
+                                None,
+                                (frame, frame),
+                                &mut copied_spans
+                            )
+                            .map_err(|_| ()),
+                        revision
+                            .midi_gate_keys(
+                                track,
+                                owner,
+                                launch,
+                                None,
+                                (frame, frame),
+                                &mut source_spans
+                            )
+                            .map_err(|_| ()),
+                        "track {track:?}, owner {owner:?}, launch {launch:?}, frame {frame}"
+                    );
+                }
+            }
+        }
+    }
+    drop(revision);
+    assert_eq!(
+        observation
+            .activity()
+            .gate_keys(
+                tracks[1],
+                SessionPlaybackOwner::Session { clip },
+                Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                None,
+                (0, 0),
+                &mut copied_spans
+            )
+            .unwrap(),
+        [1 << 60, 0],
+        "projection remains usable independently of the prepared graph"
     );
 }

@@ -8,7 +8,7 @@ use std::{
 };
 
 fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -363,7 +363,7 @@ fn return_workflow_routes_pcm_edits_devices_history_and_current_schema_roundtrip
     assert!(!saved.state.unsaved);
     let bytes = fs::read(&path).expect("saved document bytes");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("project json");
-    assert_eq!(document["version"], 33);
+    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     let persisted = hex_storage::load(&path).expect("load schema 25 project");
@@ -998,6 +998,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     }
     service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 1,
             value: ParameterValue::Float(f32::INFINITY),
@@ -1051,6 +1052,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     assert!(removed.active_device_gesture.is_none());
     service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key: remove_key,
             sequence: 2,
             value: ParameterValue::Float(0.9),

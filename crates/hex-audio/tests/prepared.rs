@@ -281,7 +281,8 @@ fn route_snapshot_tracks_launch_pending_cancel_stop_and_revision_capability() {
     let mut entries = [prepared::SessionRouteEntry {
         track_id: 0,
         owner: prepared::SessionRouteOwner::Silence,
-        active_launch_beat_raw: None,
+        active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     }; 2];
     let initial = control.status.session_routes(&mut entries).unwrap();
@@ -311,7 +312,12 @@ fn route_snapshot_tracks_launch_pending_cancel_stop_and_revision_capability() {
             clip_id: clip.value()
         }
     );
-    assert_eq!(entries[0].active_launch_beat_raw, Some(0));
+    assert_eq!(
+        entries[0].active_origin,
+        Some(hex_engine::SessionMidiOrigin::launch(
+            hex_project::BeatTime::ZERO
+        ))
+    );
 
     control.command(PlaybackCommand::Play).unwrap();
     callback.begin_block();
@@ -471,7 +477,8 @@ fn launch_and_play_is_atomic_for_unknown_clip_and_nonlaunch_payloads() {
     let mut routes = [prepared::SessionRouteEntry {
         track_id: 0,
         owner: prepared::SessionRouteOwner::Silence,
-        active_launch_beat_raw: None,
+        active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     }; 2];
     let snapshot = control.status.session_routes(&mut routes).unwrap();
@@ -529,7 +536,8 @@ fn accepted_reorder_publishes_route_entries_in_new_project_order_by_stable_id() 
     let mut entries = [prepared::SessionRouteEntry {
         track_id: 0,
         owner: prepared::SessionRouteOwner::Silence,
-        active_launch_beat_raw: None,
+        active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     }; 2];
     let routes = control.status.session_routes(&mut entries).unwrap();
@@ -1044,5 +1052,138 @@ fn ordinary_prepared_replacement_preserves_active_session_state_and_pcm() {
 
     control.request_shutdown();
     callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
+fn midi_cue_callback_ack_retains_clocks_pause_and_unrelated_route() {
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    let (revision, track, clip) = session_revision();
+    publish(
+        &mut control,
+        Playback::try_from_prepared_with_session(revision).unwrap(),
+    );
+    callback.begin_block();
+    control
+        .session_command_with_ticket(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 128]).unwrap();
+    control.command(PlaybackCommand::Pause).unwrap();
+    callback.begin_block();
+    let mut entries = [prepared::SessionRouteEntry::default(); 2];
+    let before = control.status.session_routes(&mut entries).unwrap();
+    let companion = entries[1];
+    let performance = control.status.performance_frame.load(Acquire);
+    let arrangement = control.status.position.load(Acquire);
+    let cue = control
+        .session_command_with_ticket(SessionPlaybackCommand::CueMidiClip {
+            track,
+            clip,
+            source_beat: BeatTime::ONE,
+            expected_route_generation: before.route_state_generation,
+        })
+        .unwrap();
+    // Admission alone cannot make the UI claim that the source has moved.
+    assert_eq!(control.status.session_routes(&mut entries).unwrap(), before);
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| callback.begin_block());
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.count_current, 0);
+        assert_eq!(measured.bytes_total, 0);
+        assert_eq!(measured.bytes_current, 0);
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    callback.begin_block();
+    let accepted = control.status.session_routes(&mut entries).unwrap();
+    assert_eq!(control.status.consumed_command.load(Acquire), cue);
+    assert_eq!(
+        accepted.route_state_generation,
+        before.route_state_generation + 1
+    );
+    assert_eq!(
+        entries[0].active_origin.unwrap().elapsed_at_anchor,
+        BeatTime::ONE
+    );
+    assert_eq!(entries[1], companion);
+    assert_eq!(control.status.performance_frame.load(Acquire), performance);
+    assert_eq!(control.status.position.load(Acquire), arrangement);
+    assert!(!control.status.playing.load(Acquire));
+    callback.render(&mut [[0.0; 2]; 128]).unwrap();
+    callback.begin_block();
+    assert_eq!(
+        control.status.session_routes(&mut entries).unwrap(),
+        accepted
+    );
+    assert_eq!(
+        entries[0].active_origin.unwrap().elapsed_at_anchor,
+        BeatTime::ONE
+    );
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
+fn transport_observation_tracks_one_published_owner_and_becomes_unavailable_on_shutdown() {
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    assert_eq!(control.status.transport_observation(), None);
+    let revision = control
+        .publish_with_policy_and_context_generation(
+            graph(48_000, 0.25),
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            17,
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 16]).unwrap();
+    let first = control.status.transport_observation().unwrap();
+    assert_eq!(
+        first.loop_state, None,
+        "legacy playback cannot report a session pass"
+    );
+    assert_eq!(
+        (first.audio_revision, first.control_generation),
+        (revision, 17)
+    );
+    assert_eq!(
+        (
+            first.arrangement_frame,
+            first.performance_frame,
+            first.playing
+        ),
+        (16, 16, true)
+    );
+    let next = control
+        .publish_with_policy_and_context_generation(
+            graph(48_000, 0.5),
+            prepared::PublicationPolicy::InstallFreshRuntime,
+            19,
+        )
+        .unwrap();
+    callback.begin_block();
+    let replacement = control.status.transport_observation().unwrap();
+    assert_eq!(
+        (replacement.audio_revision, replacement.control_generation),
+        (next, 19)
+    );
+    assert_eq!(
+        (
+            replacement.arrangement_frame,
+            replacement.performance_frame,
+            replacement.playing
+        ),
+        (0, 0, false)
+    );
+    control.request_shutdown();
+    assert_eq!(control.status.transport_observation(), None);
+    callback.begin_block();
+    assert_eq!(control.status.transport_observation(), None);
     control.reclaim();
 }

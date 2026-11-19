@@ -39,7 +39,7 @@ class DeviceLayoutGuardTests(unittest.TestCase):
         paths += [path.relative_to(guard.ROOT) for path in (guard.ROOT / guard.PANEL).glob("*_panel.rs")]
         if gallery:
             paths += [Path("crates/hex-ui/examples/layout_review") / name for name in ("gallery.rs", "compositions.rs")]
-            paths += [Path("crates/hex-ui/examples/layout_review.rs")]
+            paths += [Path("crates/hex-ui/examples/layout_review.rs"), Path("crates/hex-sandbox/src/main.rs")]
         for path in paths:
             (root / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(guard.ROOT / path, root / path)
@@ -77,6 +77,7 @@ class DeviceLayoutGuardTests(unittest.TestCase):
 
             helper = "pub(super) fn control_style() -> ControlStyle {"
             for injection in [
+                "let fork = hex_widgets::ActionStyle { background: 0x123456, text: 0xffffff, hover_background: 0xabcdef, hover_text: Some(0) };",
                 "let fork = ControlStyle { surface: 0x123456, ..theme::device_style(theme::DeviceStyleRole::Control) };",
                 "let mut fork = theme::device_style(theme::DeviceStyleRole::Control); fork.surface = theme::color(theme::PaletteRole::Primary);",
             ]:
@@ -113,6 +114,10 @@ class DeviceLayoutGuardTests(unittest.TestCase):
             entry = root / "crates/hex-ui/examples/layout_review.rs"
             entry.write_text(entry.read_text().replace("../src/device_composition.rs", "layout_review/copied_composition.rs"))
             self.assertTrue(any("include the owning" in error for error in guard.analyze(root)))
+            entry.write_text((guard.ROOT / entry.relative_to(root)).read_text())
+            entry = root / "crates/hex-sandbox/src/main.rs"
+            entry.write_text(entry.read_text().replace("../../hex-ui/src/device_composition.rs", "copied_composition.rs"))
+            self.assertTrue(any("hex-sandbox" in error and "include the owning" in error for error in guard.analyze(root)))
 
 
 if __name__ == "__main__":

@@ -3,13 +3,10 @@ use super::*;
 use crate::editor::{bind_editor_keys, test_environment::Environment};
 use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, size};
 use hex_session::service::Service;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -72,6 +69,20 @@ fn focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm(cx: &mu
         assert!(numeric.is_editing());
         assert!(view.last_enqueued_edit.is_none(), "arrow draft stays local");
     });
+    visual.simulate_keystrokes("shift-down");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.project_tempo_control
+                .as_ref()
+                .unwrap()
+                .entity
+                .read(cx)
+                .display_text(),
+            "120.9",
+            "Shift is fine even for a Command-fine opt-in field"
+        );
+    });
+    visual.simulate_keystrokes("shift-up");
     visual.simulate_keystrokes("cmd-down cmd-down cmd-up down");
     visual.simulate_keystrokes("enter");
     pump(&editor, &mut visual);
@@ -142,8 +153,8 @@ fn project_steps_preserve_bounds_precision_cancel_invalid_and_composition(cx: &m
         ("1", "down cmd-down", "1"),
         ("1000", "up cmd-up", "1000"),
         ("120.123456", "up cmd-down", "121.023456"),
-        ("120", "shift-up", "121"),
-        ("120", "shift-down", "119"),
+        ("120", "shift-up", "120.1"),
+        ("120", "shift-down", "119.9"),
         ("120", "cmd-up", "120.1"),
     ] {
         visual.simulate_keystrokes("cmd-a");
@@ -154,11 +165,11 @@ fn project_steps_preserve_bounds_precision_cancel_invalid_and_composition(cx: &m
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("120.123456");
     for _ in 0..100 {
-        visual.simulate_keystrokes("cmd-up");
+        visual.simulate_keystrokes("shift-up");
     }
     assert_eq!(project_text(&editor, &visual), "130.123456");
     for _ in 0..100 {
-        visual.simulate_keystrokes("cmd-down");
+        visual.simulate_keystrokes("shift-down");
     }
     assert_eq!(project_text(&editor, &visual), "120.123456");
     visual.simulate_keystrokes("cmd-a");
@@ -231,7 +242,13 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
     pump(&editor, &mut visual);
     let clip = editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
+        let clip = view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id();
+        assert_eq!(
+            view.selected_clip,
+            Some(clip),
+            "canonical import selects its initial clip"
+        );
+        clip
     });
     editor.update(&mut visual, |view, cx| {
         view.clip_view_open = true;
@@ -255,7 +272,7 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
     begin(&mut visual, "audio-sample-bpm-value");
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("120.123456");
-    visual.simulate_keystrokes("up cmd-up cmd-down down cmd-down");
+    visual.simulate_keystrokes("up shift-up cmd-down down shift-down");
     editor.read_with(&visual, |view, _| {
         assert_eq!(
             format!("{:?}", view.state.as_ref().unwrap().project),

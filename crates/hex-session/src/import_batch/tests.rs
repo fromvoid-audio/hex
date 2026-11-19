@@ -92,6 +92,164 @@ fn assert_unchanged(
 }
 
 #[test]
+fn existing_asset_placement_uses_batch_warp_overwrite_and_one_undo() {
+    for warp in [
+        hex_project::AudioImportWarp::Off,
+        hex_project::AudioImportWarp::Beats,
+    ] {
+        let mut s = session();
+        let id = track(&mut s);
+        let result = import(
+            &mut s,
+            vec![media(48_000, 24_000, 8192)],
+            AudioBatchDestination::Track {
+                track: id,
+                start: 0,
+            },
+        );
+        let Created::Imported { asset, .. } = result[0] else {
+            panic!("expected import")
+        };
+        let frames = s.resident_frames();
+        let before = s.project().track(id).unwrap().clips().to_vec();
+        let (created, _) = s
+            .place_existing_asset_revision_using(
+                ProjectSampleImport {
+                    asset,
+                    destination: crate::import_batch::AudioBatchDestination::Track {
+                        track: id,
+                        start: 12_000,
+                    },
+                    new_track_gain: None,
+                    warp,
+                },
+                None,
+                || Ok(()),
+                prepare_asset_free,
+            )
+            .unwrap();
+        let Created::Imported {
+            asset: actual,
+            clip,
+            ..
+        } = created
+        else {
+            panic!("expected placement")
+        };
+        assert_eq!(actual, asset);
+        assert_eq!(s.project().assets().count(), 1);
+        assert_eq!(s.resident_frames(), frames);
+        let inserted = s.project().clip(clip).unwrap();
+        assert_eq!(
+            inserted
+                .audio_edit()
+                .is_some_and(|edit| edit.domain.warp_enabled),
+            warp == hex_project::AudioImportWarp::Beats
+        );
+        assert!(
+            s.project()
+                .track(id)
+                .unwrap()
+                .clips()
+                .iter()
+                .any(|clip| clip.start() == 0 && clip.duration() == 12_000)
+        );
+        assert!(s.undo());
+        assert_eq!(s.project().track(id).unwrap().clips(), before);
+        assert!(s.redo());
+        assert_eq!(s.project().clip(clip).unwrap().asset(), asset);
+    }
+}
+
+#[test]
+fn existing_asset_placement_refusal_preserves_project_and_history() {
+    let mut s = session();
+    let id = track(&mut s);
+    let result = import(
+        &mut s,
+        vec![media(48_000, 24_000, 8192)],
+        AudioBatchDestination::Track {
+            track: id,
+            start: 0,
+        },
+    );
+    let Created::Imported { asset, .. } = result[0] else {
+        panic!("expected import")
+    };
+    let before = s.project().clone();
+    let frames = s.resident_frames();
+    let mut calls = 0;
+    let result = s.place_existing_asset_revision_using(
+        ProjectSampleImport {
+            asset,
+            destination: crate::import_batch::AudioBatchDestination::Track {
+                track: id,
+                start: 12_000,
+            },
+            new_track_gain: None,
+            warp: hex_project::AudioImportWarp::Beats,
+        },
+        None,
+        || {
+            calls += 1;
+            if calls == 2 {
+                Err(SessionError::Invalid("injected refusal"))
+            } else {
+                Ok(())
+            }
+        },
+        prepare_asset_free,
+    );
+    assert!(result.is_err());
+    assert_eq!(calls, 2);
+    assert_eq!(s.project(), &before);
+    assert_eq!(s.resident_frames(), frames);
+    assert_eq!(s.project().assets().count(), 1);
+    assert!(s.undo());
+    assert_eq!(s.project().track(id).unwrap().clips().len(), 0);
+}
+
+#[test]
+fn existing_asset_placement_refuses_unavailable_resident_without_editing() {
+    let mut s = session();
+    let id = track(&mut s);
+    let result = import(
+        &mut s,
+        vec![media(48_000, 128, 8192)],
+        AudioBatchDestination::Track {
+            track: id,
+            start: 0,
+        },
+    );
+    let Created::Imported { asset, .. } = result[0] else {
+        panic!("expected import")
+    };
+    s.media.remove(&asset);
+    let before = s.project().clone();
+    let result = s.place_existing_asset_revision_using(
+        ProjectSampleImport {
+            asset,
+            destination: crate::import_batch::AudioBatchDestination::Track {
+                track: id,
+                start: 256,
+            },
+            new_track_gain: None,
+            warp: hex_project::AudioImportWarp::Off,
+        },
+        None,
+        || Ok(()),
+        prepare_asset_free,
+    );
+    assert!(matches!(
+        result,
+        Err(SessionError::Invalid("project sample is not resident"))
+    ));
+    assert_eq!(s.project(), &before);
+    assert!(s.undo());
+    assert!(s.project().track(id).unwrap().clips().is_empty());
+}
+
+#[test]
 fn ordered_tracks_pcm_paths_and_whole_batch_undo_redo_without_files() {
     let mut s = session();
     let anchor = track(&mut s);
@@ -554,5 +712,94 @@ fn unsupported_metadata_in_middle_or_end_never_imports_other_members() {
             .is_err()
         );
         assert_unchanged(&s, &before, 0, 0, false, false);
+    }
+}
+
+#[test]
+fn final_admission_refusal_preserves_exact_current_waveform_owners() {
+    for warp in [
+        hex_project::AudioImportWarp::Off,
+        hex_project::AudioImportWarp::Beats,
+    ] {
+        let mut s = session();
+        import(
+            &mut s,
+            vec![media(48_000, 24_000, 8192)],
+            empty_destination(),
+        );
+        // Raw clips use their asset summary rather than a derived clip view.
+        // Seed a real processed view so refusal must preserve an existing owner.
+        let clip = s.project().tracks()[0].clips()[0].id();
+        s.command_prepared_revision(Command::SetAudioClipPitch { clip, cents: 100 }, None)
+            .unwrap();
+        let before = s.project().clone();
+        let waveforms = s.audio_clip_waveforms().unwrap();
+        assert_eq!(waveforms.len(), 1);
+        let frames = s.resident_frames();
+        let bank = s.media.len();
+        let cache_bytes = s.audio_transforms.cached_pcm_bytes().unwrap();
+        let pending = media(48_000, 12_000, -4096);
+        let rejected_pcm = pending.audio.clone();
+        let mut calls = 0;
+        let refused = s.import_prepared_batch_revision_using(
+            vec![pending],
+            empty_destination(),
+            &before,
+            None,
+            AudioImportOptions {
+                warp,
+                new_track_gain: Some(0.25),
+                ..Default::default()
+            },
+            || {
+                calls += 1;
+                if calls == 2 {
+                    Err(SessionError::Invalid("injected final admission refusal"))
+                } else {
+                    Ok(())
+                }
+            },
+            |input, admit| {
+                assert_eq!(input.project.tracks().last().unwrap().gain(), 0.25);
+                let staged = input.waveforms;
+                prepare_asset_free(input, &mut || {
+                    if warp == hex_project::AudioImportWarp::Beats {
+                        assert!(
+                            staged
+                                .borrow()
+                                .keys()
+                                .any(|clip| !waveforms.contains_key(clip)),
+                            "the final refusal must discard a genuinely staged new waveform owner"
+                        );
+                    }
+                    admit()
+                })
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(calls, 2, "the refusal must follow completed preparation");
+        assert_unchanged(&s, &before, bank, frames, true, false);
+        let after = s.audio_clip_waveforms().unwrap();
+        assert_eq!(
+            after.keys().collect::<Vec<_>>(),
+            waveforms.keys().collect::<Vec<_>>()
+        );
+        for (clip, old) in &waveforms {
+            let current = &after[clip];
+            assert!(Arc::ptr_eq(&old.waveform, &current.waveform));
+            assert_eq!((current.offset, current.length), (old.offset, old.length));
+        }
+        assert!(
+            after
+                .values()
+                .all(|view| !view.waveform.shares_audio_with(&rejected_pcm))
+        );
+        if warp == hex_project::AudioImportWarp::Off {
+            // The raw refusal has no paid transform cache: no unpublished PCM
+            // may escape through either canonical waveform or transform storage.
+            assert_eq!(s.audio_transforms.cached_pcm_bytes().unwrap(), cache_bytes);
+        }
+        // Beats transforms retain their existing independently charged bounded
+        // cache contract. This check targets the uncharged canonical display map.
     }
 }

@@ -1,3 +1,36 @@
+/// Semantic availability is separate from transient edit admission. Busy controls
+/// retain their available appearance while refusing input and accessibility edits.
+/// Numeric transitions to busy cancel an unsubmitted local draft, as disabling did;
+/// callers must keep a control available while it owns an active gesture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlAvailability {
+    #[default]
+    Available,
+    Busy,
+    Unavailable,
+}
+
+impl ControlAvailability {
+    pub fn for_edit(available: bool, busy: bool) -> Self {
+        if !available {
+            Self::Unavailable
+        } else if busy {
+            Self::Busy
+        } else {
+            Self::Available
+        }
+    }
+    pub(crate) fn interactive(self) -> bool {
+        self == Self::Available
+    }
+    pub(crate) fn painted_enabled(self) -> bool {
+        self != Self::Unavailable
+    }
+}
+
+/// Shared boolean-control corner radius, in logical pixels.
+pub const TOGGLE_CORNER_RADIUS: f32 = 2.0;
+
 /// Shared native device outline radius, in logical pixels.
 /// All device frames inherit this token.
 pub const DEVICE_CORNER_RADIUS: f32 = 4.0;
@@ -16,26 +49,36 @@ pub struct ControlStyle {
     pub text: u32,
     pub muted: u32,
     pub accent: u32,
+    /// Caller-resolved foreground for labels/icons painted directly on accent.
+    pub accent_text: u32,
+    /// Opaque numeric rail fill resolved by the owner to keep `text` readable
+    /// over both filled and empty portions of a numeric field.
+    pub numeric_fill: u32,
+    /// Caller-resolved foreground on the hover surface.
+    pub hover_text: u32,
     /// Neutral selected-control corner color, supplied by the application.
     pub focus_marker: u32,
     /// Full unfilled knob rail color, independent of the parameter value fill.
     pub dial_rail: u32,
     pub hover: u32,
+    /// Opaque text-selection highlight behind `text` in editable fields.
+    pub selection: u32,
+    /// Outline for rejected/invalid typed values.
+    pub invalid: u32,
     pub font_size: f32,
     /// Presentation only; source drafts, parser inputs and clipboard stay unchanged.
     pub text_case: crate::TextCase,
 }
 
 impl ControlStyle {
-    /// Resolve header selection without changing the neutral frame/control palette.
+    /// Resolve border-only selection without changing the neutral header/control palette.
     /// The owner retains selection, focus, bypass and drag/drop state separately.
     pub fn with_device_selection(self, selected: bool) -> DeviceFrameStyle {
-        let frame = DeviceFrameStyle::from(self);
+        let mut frame = DeviceFrameStyle::from(self);
         if selected {
-            frame.with_header_colors(self.accent, self.background)
-        } else {
-            frame
+            frame.border = self.accent;
         }
+        frame
     }
 
     pub fn validate(self) -> Result<Self, &'static str> {
@@ -47,11 +90,12 @@ impl ControlStyle {
     }
 }
 
-/// Neutral shell colors and independently resolved header paint. A selected
-/// header must never recolor the surround, outer border or caller-owned body.
+/// Neutral shell colors and independently resolved header paint. Selection uses
+/// the reserved outer border; the surround, header and caller-owned body stay neutral.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeviceFrameStyle {
     pub(crate) controls: ControlStyle,
+    pub(crate) border: u32,
     pub(crate) header_background: u32,
     pub(crate) header_text: u32,
 }
@@ -59,6 +103,7 @@ pub struct DeviceFrameStyle {
 impl From<ControlStyle> for DeviceFrameStyle {
     fn from(controls: ControlStyle) -> Self {
         Self {
+            border: controls.border,
             header_background: controls.surface,
             header_text: controls.text,
             controls,
@@ -79,9 +124,22 @@ impl DeviceFrameStyle {
 /// Caller-resolved text against both idle and hover backgrounds. No palette or
 /// contrast policy lives in the widget library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceActionStyle {
+pub struct ActionStyle {
     pub background: u32,
     pub text: u32,
     pub hover_background: u32,
-    pub hover_text: u32,
+    /// Override the foreground on hover when a contrast change is required.
+    /// None preserves the caller's semantic foreground (for example active loop).
+    pub hover_text: Option<u32>,
+}
+
+impl ActionStyle {
+    /// Preserve a state indicator on hover instead of replacing its active colors.
+    pub fn with_state_colors(mut self, background: u32, text: u32) -> Self {
+        self.background = background;
+        self.text = text;
+        self.hover_background = background;
+        self.hover_text = Some(text);
+        self
+    }
 }

@@ -12,6 +12,9 @@ enum Content {
 #[derive(Clone, Debug)]
 struct Captured {
     track: TrackId,
+    /// Distance from the selection origin in the member's own time domain:
+    /// frames for audio, raw beats for MIDI. MIDI spacing therefore survives
+    /// tempo changes and never takes a whole-frame round trip.
     offset: u64,
     content: Content,
 }
@@ -51,16 +54,20 @@ impl Project {
             .try_reserve(ids.len())
             .map_err(|_| Invalid("could not reserve clip clipboard"))?;
         let mut origin = u64::MAX;
+        let mut origin_beat = BeatTime::from_raw(u64::MAX);
         for track in self.tracks() {
             let before = clipboard.clips.len();
             for clip in track.clips().iter().filter(|c| selected.contains(&c.id())) {
                 origin = origin.min(clip.start());
-                if !clipboard.assets.iter().any(|(id, _)| *id == clip.asset()) {
-                    let asset = self
-                        .asset(clip.asset())
-                        .cloned()
-                        .ok_or(Invalid("copied asset no longer exists"))?;
-                    clipboard.assets.push((clip.asset(), asset));
+                origin_beat = origin_beat.min(self.tempo_map().frame_to_beat(clip.start())?);
+                for id in clip.referenced_assets() {
+                    if !clipboard.assets.iter().any(|(asset, _)| *asset == id) {
+                        let asset = self
+                            .asset(id)
+                            .cloned()
+                            .ok_or(Invalid("copied asset no longer exists"))?;
+                        clipboard.assets.push((id, asset));
+                    }
                 }
                 clipboard.clips.push(Captured {
                     track: track.id(),
@@ -73,11 +80,11 @@ impl Project {
                 .iter()
                 .filter(|c| selected.contains(&c.id()))
             {
-                let frame = self.tempo_map().beat_to_frame(clip.start())?;
-                origin = origin.min(frame);
+                origin = origin.min(self.tempo_map().beat_to_frame(clip.start())?);
+                origin_beat = origin_beat.min(clip.start());
                 clipboard.clips.push(Captured {
                     track: track.id(),
-                    offset: frame,
+                    offset: clip.start().raw(),
                     content: Content::Midi(clip.clone()),
                 });
             }
@@ -89,7 +96,10 @@ impl Project {
             return Err(Invalid("selected arrangement clip no longer exists"));
         }
         for clip in &mut clipboard.clips {
-            clip.offset -= origin;
+            clip.offset -= match clip.content {
+                Content::Audio(_) => origin,
+                Content::Midi(_) => origin_beat.raw(),
+            };
         }
         Ok(clipboard)
     }
@@ -109,6 +119,8 @@ impl ClipClipboard {
                 return Err(Invalid("copied media no longer matches the project"));
             }
         }
+        // Convert the paste anchor once; each member then offsets in its domain.
+        let anchor_beat = project.tempo_map().frame_to_beat(frame)?;
         let mut prepared = Vec::new();
         prepared
             .try_reserve(self.clips.len())
@@ -122,30 +134,29 @@ impl ClipClipboard {
             project
                 .track(track)
                 .ok_or(Invalid("paste track no longer exists"))?;
-            let start = frame
-                .checked_add(original.offset)
-                .ok_or(Invalid("paste clip start overflow"))?;
-            let beat = match &original.content {
-                Content::Audio(_) => BeatTime::ZERO,
-                Content::Midi(_) => project.tempo_map().frame_to_beat(start)?,
-            };
-            let (start, end) = match &original.content {
+            let (beat, start, end) = match &original.content {
                 Content::Audio(clip) => {
+                    let start = frame
+                        .checked_add(original.offset)
+                        .ok_or(Invalid("paste clip start overflow"))?;
                     let mut projected = clip.clone();
                     crate::audio_edit::move_clip(&mut projected, start, project.tempo_map())?;
-                    (
-                        start,
-                        start
-                            .checked_add(projected.duration())
-                            .ok_or(Invalid("paste clip end overflow"))?,
-                    )
+                    let end = start
+                        .checked_add(projected.duration())
+                        .ok_or(Invalid("paste clip end overflow"))?;
+                    (BeatTime::ZERO, start, end)
                 }
                 Content::Midi(clip) => {
-                    let end = beat
+                    let beat = anchor_beat
                         .raw()
+                        .checked_add(original.offset)
+                        .ok_or(Invalid("paste clip start overflow"))?;
+                    let end = beat
                         .checked_add(clip.length().raw())
                         .ok_or(Invalid("paste midi end overflow"))?;
+                    let beat = BeatTime::from_raw(beat);
                     (
+                        beat,
                         project.tempo_map().beat_to_frame(beat)?,
                         project.tempo_map().beat_to_frame(BeatTime::from_raw(end))?,
                     )
@@ -188,64 +199,36 @@ pub(crate) fn paste(
         };
         crate::time_range::insert_empty(project, tracks, frame, duration)?;
     }
-    // Apply the existing replacement policy only to old destination content.
-    // Batch members may overlap in a valid project and must not erase each other.
-    // Empty gaps remain outside the replacement, just as with a single clip copy.
-    for copy in &prepared {
-        match &copy.content {
-            Content::Audio(_) => {
-                crate::edit::overwrite_audio_interval(
-                    project,
-                    copy.track,
-                    copy.frame,
-                    copy.end,
-                    ClipId(0),
-                )?;
-                crate::midi::overwrite_midi_in_frames(
-                    project,
-                    copy.track,
-                    copy.frame,
-                    copy.end,
-                    ClipId(0),
-                )?;
-            }
-            Content::Midi(clip) => {
-                let end = BeatTime::from_raw(
-                    copy.beat
-                        .raw()
-                        .checked_add(clip.length().raw())
-                        .ok_or(Invalid("midi timeline end overflow"))?,
-                );
-                crate::edit::overwrite_audio_in_beats(
-                    project,
-                    copy.track,
-                    copy.beat,
-                    end,
-                    ClipId(0),
-                )?;
-                crate::midi::overwrite_midi_interval(
-                    project,
-                    copy.track,
-                    copy.beat,
-                    end,
-                    ClipId(0),
-                )?;
-            }
-        }
-    }
+    // Plan all members together; gaps do not replace destination content.
+    let mut incoming = Vec::new();
+    incoming
+        .try_reserve_exact(prepared.len())
+        .map_err(|_| Invalid("could not reserve clipboard placement"))?;
     for copy in prepared {
-        match copy.content {
+        let content = match copy.content {
             Content::Audio(mut clip) => {
                 crate::audio_edit::move_clip(&mut clip, copy.frame, project.tempo_map())?;
-                crate::clip_copy::append_audio(project, clip, copy.track)?;
+                crate::ClipGroupContent::Audio(clip)
             }
-            Content::Midi(clip) => {
-                crate::clip_copy::append_midi(project, clip, copy.track, copy.beat)?;
+            Content::Midi(mut clip) => {
+                clip.start = copy.beat;
+                crate::ClipGroupContent::Midi(clip)
             }
-        }
+        };
+        incoming.push(crate::ClipGroupPreview {
+            track: copy.track,
+            content,
+        });
     }
+    let created = crate::clip_group::place_batch(project, incoming, &[])?;
     Project::from_snapshot(project.snapshot())?;
-    Ok(Created::None)
+    // `first..=last` names only pasted clips: overwrite fragments (and ripple
+    // splits from `insert`) take their IDs before the first pasted clip, and
+    // the pasted MIDI note IDs inside the range are not clip IDs.
+    Ok(match created {
+        Created::Clips { first, last } if first == last => Created::Clip(first),
+        other => other,
+    })
 }
 
 #[cfg(test)]
@@ -458,22 +441,9 @@ mod tests {
         equal_midi_content(&original_midi, second_midi);
     }
     #[test]
-    fn overlapping_whole_members_survive_without_erasing_each_other() {
+    fn disjoint_whole_members_preserve_their_gap_and_source_content() {
         let (editor, _, target, audio, midi, _) = fixture();
-        let mut snapshot = editor.project().snapshot();
-        for track in &mut snapshot.tracks {
-            let clips = match &mut track.content {
-                crate::TrackContentSnapshot::Audio(_) => continue,
-                crate::TrackContentSnapshot::Instrument(clips) => clips,
-                crate::TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
-            };
-            for clip in clips {
-                if clip.id == midi.value() {
-                    clip.start_raw = beat(1).raw();
-                }
-            }
-        }
-        let project = Project::from_snapshot(snapshot).unwrap();
+        let project = editor.project().clone();
         let original_audio = project.clip(audio).unwrap().clone();
         let original_midi = project.midi_clip(midi).unwrap().clone();
         let clipboard = Arc::new(project.capture_clips(&[audio, midi]).unwrap());
@@ -495,10 +465,96 @@ mod tests {
         let m = destination
             .midi_clips()
             .iter()
-            .find(|c| c.start() == beat(11))
+            .find(|c| c.start() == beat(14))
             .unwrap();
         equal_audio_content(&original_audio, a);
         equal_midi_content(&original_midi, m);
+    }
+
+    /// Copy an audio clip at frame 0 and MIDI clips at `starts`, then paste
+    /// at the frame of beat 16; returns the anchor beat and pasted MIDI starts.
+    fn paste_midi_spacing(tempo_change: bool, starts: &[u64]) -> (BeatTime, Vec<BeatTime>) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: crate::Tempo::new(117_000_000).unwrap(),
+            })
+            .unwrap();
+        if tempo_change {
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: beat(18),
+                    tempo: crate::Tempo::new(61_000_000).unwrap(),
+                })
+                .unwrap();
+        }
+        let Created::Imported { track, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 4_800,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let mut ids = vec![clip];
+        for start in starts {
+            let Created::Clip(midi) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: beat(*start),
+                    length: beat(1),
+                })
+                .unwrap()
+            else {
+                panic!("midi")
+            };
+            ids.push(midi);
+        }
+        let clipboard = Arc::new(editor.project().capture_clips(&ids).unwrap());
+        let Created::Track(target) = editor
+            .execute(Command::AddTrack {
+                name: "target".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let frame = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(beat(16))
+            .unwrap();
+        editor
+            .execute(Command::PasteClips {
+                clipboard,
+                track: target,
+                frame,
+                insert: false,
+            })
+            .unwrap();
+        let project = editor.project();
+        let anchor = project.tempo_map().frame_to_beat(frame).unwrap();
+        let destination = project.track(target).unwrap();
+        assert_eq!(destination.clips()[0].start(), frame);
+        let pasted = destination.midi_clips().iter().map(|c| c.start()).collect();
+        (anchor, pasted)
+    }
+
+    #[test]
+    fn pasted_midi_keeps_exact_beat_offsets_at_non_integer_frame_tempo() {
+        let (anchor, pasted) = paste_midi_spacing(false, &[4]);
+        assert_eq!(pasted, [BeatTime::from_raw(anchor.raw() + beat(4).raw())]);
+    }
+
+    #[test]
+    fn pasted_midi_keeps_beat_spacing_across_a_tempo_change() {
+        let (anchor, pasted) = paste_midi_spacing(true, &[1, 5]);
+        let expected = [1, 5].map(|b| BeatTime::from_raw(anchor.raw() + beat(b).raw()));
+        assert_eq!(pasted, expected);
     }
 
     #[test]
@@ -556,5 +612,100 @@ mod tests {
             assert!(editor.redo());
             assert_eq!(editor.project().snapshot(), after);
         }
+    }
+
+    fn clips_in(project: &Project, first: ClipId, last: ClipId) -> BTreeSet<ClipId> {
+        project
+            .tracks()
+            .iter()
+            .flat_map(|t| {
+                t.clips()
+                    .iter()
+                    .map(|c| c.id())
+                    .chain(t.midi_clips().iter().map(|c| c.id()))
+            })
+            .filter(|id| *id >= first && *id <= last)
+            .collect()
+    }
+    #[test]
+    fn paste_reports_exactly_the_pasted_clips_and_never_overwrite_fragments() {
+        let (mut editor, _, target, audio, midi, gap) = fixture();
+        let several = Arc::new(editor.project().capture_clips(&[audio, midi]).unwrap());
+        let Created::Clips { first, last } = editor
+            .execute(Command::PasteClips {
+                clipboard: several,
+                track: target,
+                frame: 240_000,
+                insert: false,
+            })
+            .unwrap()
+        else {
+            panic!("several pasted clips report a clip range")
+        };
+        let destination = editor.project().track(target).unwrap();
+        let pasted = BTreeSet::from([
+            destination
+                .clips()
+                .iter()
+                .find(|c| c.start() == 240_000)
+                .unwrap()
+                .id(),
+            destination
+                .midi_clips()
+                .iter()
+                .find(|c| c.start() == beat(14))
+                .unwrap()
+                .id(),
+        ]);
+        assert_eq!(
+            clips_in(editor.project(), first, last),
+            pasted,
+            "pasted note IDs inside the range are not clips"
+        );
+
+        // A ripple insert inside the gap clip splits it; that fragment is
+        // born before the pasted clip and stays outside the reported result.
+        let one = Arc::new(editor.project().capture_clips(&[audio]).unwrap());
+        let before: BTreeSet<ClipId> = editor
+            .project()
+            .track(target)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .collect();
+        let Created::Clip(clip) = editor
+            .execute(Command::PasteClips {
+                clipboard: one,
+                track: target,
+                frame: 306_000,
+                insert: true,
+            })
+            .unwrap()
+        else {
+            panic!("one pasted clip reports Created::Clip")
+        };
+        let destination = editor.project().track(target).unwrap();
+        assert_eq!(
+            destination
+                .clips()
+                .iter()
+                .find(|c| c.start() == 306_000)
+                .map(|c| c.id()),
+            Some(clip)
+        );
+        let fragments: Vec<ClipId> = destination
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .filter(|id| !before.contains(id) && *id != clip)
+            .collect();
+        assert!(!fragments.is_empty(), "insert split the gap clip");
+        assert!(fragments.iter().all(|id| *id < clip));
+        assert!(editor.project().clip(gap).is_some());
+        assert_eq!(
+            clips_in(editor.project(), clip, clip),
+            BTreeSet::from([clip])
+        );
     }
 }

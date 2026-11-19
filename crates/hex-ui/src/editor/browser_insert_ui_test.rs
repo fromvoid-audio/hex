@@ -1,9 +1,11 @@
 //! Real Enter routing into the canonical worker, using bounded private startup roots.
 use super::*;
+use crate::editor::browser::BrowserItemKey;
+use gpui::size;
 use hex_session::service::Request;
 
 fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, initial: bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             if view.tick(cx) {
@@ -130,6 +132,242 @@ fn select_sample(
 }
 
 #[gpui::test]
+fn project_sample_drag_places_resident_asset_on_arrangement(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1400.0), px(900.0)));
+    let track = select_sample(&editor, visual);
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    let asset = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .assets()
+            .next()
+            .unwrap()
+            .id()
+    });
+    let source = visual.debug_bounds("browser-project-samples").unwrap();
+    visual.simulate_click(source.center(), Modifiers::default());
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("browser-project-sample-0")
+        .unwrap()
+        .center();
+    let selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let lane = visual.debug_bounds(selector).unwrap();
+    let target = gpui::point(
+        lane.origin.x + lane.size.width * 0.7,
+        lane.origin.y + lane.size.height / 2.0,
+    );
+    std::fs::remove_file(path).unwrap();
+    visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        gpui::point(source.x + px(12.0), source.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_browser_audio_drag
+            .as_ref()
+            .expect("project sample drag");
+        assert_eq!(drag.project_asset, Some(asset));
+        assert!(drag.preview.get().is_some());
+    });
+    let before = visual
+        .debug_bounds("clip-drop-preview")
+        .expect("held preview");
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = editor.update(&mut *visual, |view, cx| {
+        assert!(view.pending_sample_drop.is_some());
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            if let Ok(event) = view.service.try_event() {
+                if event.request_complete {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    cx.notify();
+                    break event;
+                }
+                view.receive(event);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "project sample terminal"
+            );
+            std::thread::yield_now();
+        }
+    });
+    for _ in 0..2 {
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("clip-drop-preview"), Some(before));
+    }
+    editor.update(&mut *visual, |view, cx| {
+        view.receive(terminal);
+        assert!(view.pending_sample_drop.is_none());
+        cx.notify();
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.assets().count(), 1);
+        let clips = project.track(track).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().all(|clip| clip.asset() == asset));
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips()
+                .len(),
+            1
+        )
+    });
+}
+
+#[gpui::test]
+fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContext) {
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1400.0), px(900.0)));
+    let track = select_sample(&editor, visual);
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    let (asset, revision, generation) = editor.update(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let asset = state.project.assets().next().unwrap().id();
+        assert_eq!(state.project.assets().count(), 1);
+        let revision = state.revision;
+        let generation = view.project_generation;
+        view.offline_cursor = 100;
+        (asset, revision, generation)
+    });
+    editor.update(cx, |view, _| {
+        view.set_auto_warp_imports_for_test(true);
+        let captured = view.capture_audio_import_policy(Request::InsertProjectSample {
+            project_generation: generation,
+            revision,
+            asset,
+            destination: hex_session::import_batch::AudioBatchDestination::Track {
+                track,
+                start: 100,
+            },
+            new_track_gain: None,
+            warp: hex_project::AudioImportWarp::Off,
+            audition_timing: None,
+        });
+        assert!(matches!(
+            captured,
+            Ok(Request::InsertProjectSample {
+                warp: hex_project::AudioImportWarp::Beats,
+                ..
+            })
+        ));
+        view.set_auto_warp_imports_for_test(false);
+    });
+    let source = visual.debug_bounds("browser-project-samples").unwrap();
+    visual.simulate_click(source.center(), Modifiers::default());
+    visual.run_until_parked();
+    let search = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(search.center(), Modifiers::default());
+    visual.simulate_input("absent");
+    visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::ProjectSamples);
+        assert!(view.browser_project_samples(cx).is_empty());
+    });
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("Loop");
+    visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::ProjectSamples);
+        let rows = view.browser_project_samples(cx);
+        assert_eq!(
+            rows.len(),
+            1,
+            "project sample search should retain the asset"
+        );
+        assert_eq!(rows[0].name, "Loop.WAV");
+        assert_eq!(rows[0].asset, asset);
+    });
+    let key = BrowserItemKey::ProjectSample(generation, revision, asset);
+    let row = visual.debug_bounds("browser-project-sample-0").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser_selected_item(cx).as_ref(), Some(&key));
+        assert!(view.project_sample_waveform(&key).is_some());
+    });
+    for selector in ["browser-section-devices", "browser-history-back"] {
+        let bounds = visual.debug_bounds(selector).unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::ProjectSamples);
+        assert_eq!(view.browser_selected_item(cx).as_ref(), Some(&key));
+    });
+    let row = visual.debug_bounds("browser-project-sample-0").unwrap();
+    visual.simulate_click(row.center(), Modifiers::default());
+    // Placement owns the retained project asset and must not reopen the source path.
+    std::fs::remove_file(&path).unwrap();
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.assets().count(), 1);
+        let clips = project.track(track).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().all(|clip| clip.asset() == asset));
+        assert_eq!(clips[1].start(), 100);
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive_worker(&editor, cx, false);
+    let before = editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser_selected_item(cx).as_ref(), Some(&key));
+        view.state.as_ref().unwrap().clone()
+    });
+    visual.simulate_keystrokes("enter");
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        let after = view.state.as_ref().unwrap();
+        assert_eq!(after.project, before.project);
+        assert_eq!(after.revision, before.revision);
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("project changed"))
+        );
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    receive_worker(&editor, cx, false);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips()
+                .len(),
+            2
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.assets().count(), 1);
+    });
+}
+
+#[gpui::test]
 fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite(
     cx: &mut TestAppContext,
 ) {
@@ -217,12 +455,14 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
         let track = select_sample(&editor, visual);
         if quantized {
             let toggle = visual.debug_bounds("browser-insert-grid").unwrap();
-            assert_eq!(f32::from(toggle.size.width), 22.0);
             visual.simulate_click(toggle.center(), Modifiers::default());
             select_sample(&editor, visual);
         }
         editor.update(visual, |view, _| {
-            assert_eq!(view.browser.insert_quantized, quantized);
+            assert_eq!(
+                view.input_quantization != hex_project::InputQuantization::Off,
+                quantized
+            );
             view.snap_grid = SnapGrid::Quarter;
             view.offline_cursor = candidate;
         });
@@ -233,7 +473,11 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
                 expected
             );
             view.snap_grid = SnapGrid::Off;
-            view.browser.insert_quantized = !quantized;
+            view.input_quantization = if !quantized {
+                hex_project::InputQuantization::Adaptive
+            } else {
+                hex_project::InputQuantization::Off
+            };
             view.offline_cursor = 123_456;
         });
         receive_worker(&editor, cx, false);
@@ -274,7 +518,7 @@ fn browser_insert_adaptive_grid_uses_tempo_meter_and_current_viewport(cx: &mut T
         let visual = &mut VisualTestContext::from_window(handle, cx);
         let track = select_sample(&editor, visual);
         let expected = editor.update(visual, |view, _| {
-            view.browser.insert_quantized = true;
+            view.input_quantization = hex_project::InputQuantization::Adaptive;
             view.snap_grid = SnapGrid::Adaptive;
             view.viewport = Some(crate::editor::Viewport {
                 start: 0,
@@ -334,11 +578,11 @@ fn browser_insert_refuses_stale_target_busy_session_grid_and_missing_file_atomic
                 2 => view.opening_project = true,
                 3 => view.mode = crate::editor::EditorMode::Session,
                 4 => {
-                    view.browser.insert_quantized = true;
+                    view.input_quantization = hex_project::InputQuantization::Adaptive;
                     view.snap_grid = SnapGrid::Off;
                 }
                 5 => {
-                    view.browser.insert_quantized = true;
+                    view.input_quantization = hex_project::InputQuantization::Adaptive;
                     view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
                 }
                 6 => std::fs::remove_file(&path).unwrap(),
@@ -428,7 +672,7 @@ fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppCon
         std::iter::once(SnapGrid::Off).chain(AdaptiveGridDensity::ALL.map(SnapGrid::OffDensity))
     {
         editor.update(visual, |view, _| {
-            view.browser.insert_quantized = true;
+            view.input_quantization = hex_project::InputQuantization::Adaptive;
             view.snap_grid = grid;
             view.offline_cursor = 25_000;
             view.error = None;
@@ -477,7 +721,11 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
     for density in AdaptiveGridDensity::ALL {
         for quantized in [true, false] {
             let expected = editor.update(visual, |view, _| {
-                view.browser.insert_quantized = quantized;
+                view.input_quantization = if quantized {
+                    hex_project::InputQuantization::Adaptive
+                } else {
+                    hex_project::InputQuantization::Off
+                };
                 view.snap_grid = if quantized {
                     SnapGrid::AdaptiveDensity(density)
                 } else {
@@ -552,4 +800,79 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
             eprintln!("ACTUAL_DENSITY_INPUT {density:?} quantized={quantized} frame={expected}");
         }
     }
+}
+
+#[gpui::test]
+fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_policy(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(visual, |view, cx| {
+        view.set_input_quantization(hex_project::InputQuantization::Adaptive);
+        cx.notify();
+    });
+    for width in [880.0, 1_000.0, 1_280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(540.0)));
+        visual.run_until_parked();
+        for id in ["input-quantization", "arrange-zoom-back"] {
+            let bounds = visual.debug_bounds(id).unwrap();
+            assert!(
+                f32::from(bounds.origin.x) >= 0.0
+                    && f32::from(bounds.origin.x + bounds.size.width) <= width,
+                "{id} must remain inside the toolbar at {width}: {bounds:?}"
+            );
+        }
+    }
+    editor.update(visual, |view, cx| {
+        view.set_input_quantization(hex_project::InputQuantization::Off);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let control = visual.debug_bounds("input-quantization").unwrap();
+    visual.simulate_mouse_down(control.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(control.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(visual, |view, _| {
+        let menu = view.context_menu.as_ref().unwrap();
+        assert_eq!(
+            menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+            ["off", "1/4", "1/8", "1/16", "adaptive"]
+        );
+        assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+    });
+    visual.simulate_keystrokes("down down enter");
+    let track = select_sample(&editor, visual);
+    editor.update(visual, |view, _| {
+        assert_eq!(
+            view.input_quantization,
+            hex_project::InputQuantization::Eighth
+        );
+        view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
+        view.offline_cursor = 15_600;
+    });
+    visual.simulate_keystrokes("enter");
+    editor.update(visual, |view, _| {
+        assert_eq!(
+            view.last_enqueued_import_to_track.as_ref().unwrap().2,
+            12_000
+        );
+        view.set_input_quantization(hex_project::InputQuantization::Sixteenth);
+        view.offline_cursor = 99_999;
+    });
+    receive_worker(&editor, visual, false);
+    editor.read_with(visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .clips()[0]
+                .start(),
+            12_000
+        );
+    });
 }

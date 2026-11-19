@@ -1,5 +1,103 @@
 use super::*;
 
+#[gpui::test]
+fn power_toggle_stays_visible_during_delayed_terminals_and_orders_rapid_clicks(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let click = bounds(&mut visual, "device-bypass", device).center();
+    visual.simulate_click(click, Modifiers::default());
+    assert_power_paint(&mut visual, device, false);
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .bypassed()
+        );
+    });
+    visual.simulate_click(click, Modifiers::default());
+    assert_power_paint(&mut visual, device, true);
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_power_paint(&mut visual, device, true);
+    }
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.worker_requests_pending, 2);
+    });
+    for expected_canonical in [true, false] {
+        editor.update(cx, |view, cx| {
+            let event = receive_service_event(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .bypassed(),
+                expected_canonical
+            );
+            cx.notify();
+        });
+        assert_power_paint(&mut visual, device, true);
+    }
+}
+
+#[gpui::test]
+fn rejected_power_toggle_retires_its_pending_display(cx: &mut TestAppContext) {
+    let (project, track, _, _) = crate::editor::clip_drag_ui_test::midi_project();
+    let mut controller = Editor::new(project, 8).unwrap();
+    let state = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    controller
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let device = controller.project().track(track).unwrap().devices()[0].id();
+    // This fixture's actual worker starts with an empty project, so the stale
+    // displayed device is rejected by the real project command.
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        controller.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        let _ = receive_service_event(&view.service);
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let click = bounds(&mut visual, "device-bypass", device).center();
+    visual.simulate_click(click, Modifiers::default());
+    assert_power_paint(&mut visual, device, false);
+    editor.update(cx, |view, cx| {
+        let event = receive_service_event(&view.service);
+        assert!(event.request_complete && event.error.is_some());
+        view.receive(event);
+        assert!(!view.device_panel.bypass.displayed(device, false));
+        cx.notify();
+    });
+}
+
 fn bounds(visual: &mut VisualTestContext, prefix: &str, device: DeviceId) -> Bounds<Pixels> {
     visual
         .debug_bounds(Box::leak(
@@ -8,11 +106,89 @@ fn bounds(visual: &mut VisualTestContext, prefix: &str, device: DeviceId) -> Bou
         .unwrap_or_else(|| panic!("visible {prefix} for {device:?}"))
 }
 
+pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceId, enabled: bool) {
+    // Inspect completed idle paint, independently of the hover/click position.
+    visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    let selector = Box::leak(format!("device-bypass-{}", device.value()).into_boxed_str());
+    let indicator =
+        Box::leak(format!("device-bypass-{}-indicator", device.value()).into_boxed_str());
+    let target = visual.debug_bounds(selector).expect("power hit target");
+    let indicator_bounds = visual.debug_bounds(indicator).expect("power indicator");
+    assert_eq!(target.size, size(px(12.0), px(12.0)));
+    assert_eq!(indicator_bounds.size, size(px(8.0), px(8.0)));
+    assert_eq!(indicator_bounds.center(), target.center());
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry(indicator)
+            .unwrap()
+            .0
+            .top_left,
+        px(hex_widgets::TOGGLE_CORNER_RADIUS).scale(scale)
+    );
+    assert_eq!(
+        visual.rendered_background(selector),
+        None,
+        "no painted surrounding box"
+    );
+    assert_eq!(
+        visual.rendered_border(selector),
+        None,
+        "no surrounding border"
+    );
+    assert_eq!(
+        visual.rendered_background(indicator),
+        Some(
+            rgb(theme::color(if enabled {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Border
+            }))
+            .into()
+        ),
+        "canonical power state must keep its semantic fill regardless of header selection"
+    );
+}
+
+#[gpui::test]
+fn header_power_toggle_hover_feedback_and_cancelled_press_keep_canonical_state(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let before = state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert_power_paint(&mut visual, device, true);
+    let selector = Box::leak(format!("device-bypass-{}", device.value()).into_boxed_str());
+    let indicator =
+        Box::leak(format!("device-bypass-{}-indicator", device.value()).into_boxed_str());
+    let target = visual.debug_bounds(selector).unwrap();
+    let paint = visual.rendered_background(indicator);
+    visual.simulate_mouse_move(target.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), None);
+    assert_ne!(visual.rendered_background(indicator), paint);
+    visual.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), None);
+    assert_ne!(visual.rendered_background(indicator), paint);
+    visual.simulate_mouse_up(
+        point(px(0.0), px(0.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+}
+
 fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {
     let title = bounds(visual, "device-drag-title", device);
     let bypass = bounds(visual, "device-bypass", device);
-    let save = bounds(visual, "device-preset-save", device);
-    let load = bounds(visual, "device-preset-load", device);
+    let menu = bounds(visual, "device-preset-menu", device);
     let remove = bounds(visual, remove_prefix, device);
     let frame = bounds(
         visual,
@@ -25,38 +201,26 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
     );
     let inset =
         px(hex_widgets::DEVICE_FRAME_HEADER_PADDING + hex_widgets::DEVICE_FRAME_BORDER_WIDTH);
-    assert_eq!(
-        bypass.left() - frame.left(),
-        inset,
-        "toggle is the far-left control"
-    );
-    assert_eq!(
-        frame.right() - px(gain_meters::WIDTH) - remove.right(),
-        inset,
-        "X occupies the right inset"
-    );
     assert!(
-        load.right() <= save.left(),
-        "load precedes save without overlap"
+        bypass.bottom() <= menu.top(),
+        "menu follows power without overlap"
     );
 
     assert!(
-        bypass.right() <= title.left(),
+        bypass.bottom() <= title.top(),
         "bypass must precede the name"
     );
     assert!(
-        title.size.width >= px(24.0),
+        title.size.height >= px(24.0),
         "compact name retains useful space"
     );
-    assert!(title.right() <= save.left().min(load.left()));
-    assert!(
-        save.right() <= remove.left() && load.right() <= remove.left(),
-        "X is last"
-    );
-    for action in [bypass, save, load, remove] {
+    assert!(remove.bottom() <= title.top());
+    assert!(menu.bottom() <= remove.top(), "X is last");
+    for action in [bypass, menu, remove] {
         assert!(action.size.width >= px(12.0));
         assert_eq!(action.size.height, px(12.0));
-        assert!(action.top() >= title.top() && action.bottom() <= title.bottom());
+        assert!(action.left() >= frame.left() + inset);
+        assert!(action.right() <= frame.left() + px(hex_widgets::DEVICE_FRAME_HEADER_WIDTH));
     }
     for prefix in [
         "device-up",
@@ -73,6 +237,41 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
             "movement buttons removed, title drag remains"
         );
     }
+}
+
+fn assert_action_rounding(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {
+    let scale = visual.update(|window, _| window.scale_factor());
+    for prefix in ["device-preset-menu", remove_prefix] {
+        let selector = Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str());
+        assert_eq!(
+            visual
+                .rendered_surface_geometry(selector)
+                .unwrap()
+                .0
+                .top_left,
+            px(hex_widgets::DEVICE_HEADER_ACTION_SIZE / 2.0).scale(scale),
+            "production one-shot header action is circular at its established density"
+        );
+    }
+}
+
+#[gpui::test]
+fn visible_production_actions_are_circular_at_existing_header_density(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    // Paint is clipped at the viewport; compact layout is checked separately.
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    assert_action_rounding(&mut visual, effect, "device-remove");
+    assert_action_rounding(&mut visual, instrument, "instrument-remove");
 }
 
 #[gpui::test]
@@ -116,6 +315,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
     assert_order(&mut visual, device, "return-device-remove");
+    assert_power_paint(&mut visual, device, true);
     let bypass = bounds(&mut visual, "device-bypass", device);
     visual.simulate_click(bypass.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
@@ -127,6 +327,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
             .unwrap()
             .bypassed()
     });
+    assert_power_paint(&mut visual, device, false);
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device));
         assert!(view.active_native_device_drag.is_none());
@@ -140,6 +341,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
         view.state.as_ref().unwrap().project == before
     });
     visual.run_until_parked();
+    assert_power_paint(&mut visual, device, true);
     let remove = bounds(&mut visual, "return-device-remove", device);
     visual.simulate_click(remove.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
@@ -173,6 +375,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     for (device, remove_prefix) in [(effect, "device-remove"), (instrument, "instrument-remove")] {
+        assert_power_paint(&mut visual, device, true);
         let bypass = bounds(&mut visual, "device-bypass", device);
         visual.simulate_click(bypass.center(), Modifiers::default());
         pump_until(&editor, cx, |view| {
@@ -184,6 +387,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
                 .unwrap()
                 .bypassed()
         });
+        assert_power_paint(&mut visual, device, false);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.device_panel.selected_device, Some(device));
             assert!(view.active_native_device_drag.is_none());
@@ -204,6 +408,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
             view.state.as_ref().unwrap().project == before
         });
         visual.run_until_parked();
+        assert_power_paint(&mut visual, device, true);
         let remove = bounds(&mut visual, remove_prefix, device);
         visual.simulate_click(remove.center(), Modifiers::default());
         pump_until(&editor, cx, |view| {
@@ -211,8 +416,32 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
                 .as_ref()
                 .unwrap()
                 .project
-                .device(device)
-                .is_none()
+                .track(track)
+                .unwrap()
+                .ordered_device_chain()
+                .all(|node| match node {
+                    hex_project::TrackDeviceRef::Instrument(item)
+                    | hex_project::TrackDeviceRef::Effect(item) => item.id() != device,
+                })
+        });
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.device(device).is_some(), device == instrument);
+            let mut expected_sources = before.snapshot().native_sources;
+            if device == instrument {
+                let source_id = before.track(track).unwrap().source_id().unwrap().value();
+                let source = expected_sources
+                    .iter_mut()
+                    .find(|source| source.id == source_id)
+                    .expect("instrument source remains in the inventory");
+                assert_eq!(source.receiver, Some(track.value()));
+                source.receiver = None;
+            }
+            assert_eq!(
+                project.snapshot().native_sources,
+                expected_sources,
+                "removing an instrument unlinks only its source receiver"
+            );
         });
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
         pump_until(&editor, cx, |view| {

@@ -5,6 +5,14 @@
 #include <cstring>
 #include <unistd.h>
 #include <sys/wait.h>
+#if defined(HEX_LAUNCH_IGNORED_DYLIB)
+// Isolated test-driver injection after exec: Darwin can reset SA_NOCLDWAIT
+// across exec, so inherited SIG_IGN alone is not an un-waitable negative case.
+__attribute__((constructor)) static void ignored_driver() {
+ struct sigaction ignored{};ignored.sa_handler=SIG_IGN;ignored.sa_flags=SA_NOCLDWAIT;
+ if(sigaction(SIGCHLD,&ignored,nullptr)!=0)_exit(71);
+}
+#else
 int main(int argc,char** argv) {
  if(argc<2)return 2;
  struct sigaction ignored{};ignored.sa_handler=SIG_IGN;ignored.sa_flags=SA_NOCLDWAIT;
@@ -16,3 +24,5 @@ int main(int argc,char** argv) {
  }
  execv(argv[1],argv+1);return 6;
 }
+
+#endif

@@ -69,7 +69,30 @@ pub(super) fn edit_command(
     clip: hex_project::ClipId,
     values: SourceValues,
 ) -> Option<hex_project::Command> {
-    if project.midi_clip(clip).is_some() {
+    if let Some(arrangement) = project.midi_clip(clip) {
+        // A forward one-shot's start marker moves its region, keeping notes at
+        // their song beats; every other source edit replaces the source fields.
+        let current = SourceValues::from_source(
+            project.midi_source(clip)?,
+            arrangement.start().raw(),
+            arrangement.length().raw(),
+        );
+        if !arrangement.looping()
+            && arrangement.content_view().is_none()
+            && values.source_start != current.source_start
+            && values
+                == (SourceValues {
+                    source_start: values.source_start,
+                    ..current
+                })
+        {
+            return Some(hex_project::Command::ResizeMidiClipView {
+                clip,
+                operation: hex_project::MidiViewResizeOperation::PlayStart {
+                    source_start: hex_project::BeatTime::from_raw(values.source_start),
+                },
+            });
+        }
         Some(hex_project::Command::SetMidiClipSource {
             clip,
             source_length: hex_project::BeatTime::from_raw(values.source_length),
@@ -138,7 +161,7 @@ pub(super) fn adjust(
                 return Err("source length cannot exclude authored notes");
             }
             if values.loop_end > length {
-                return Err("source length cannot exclude retained loop markers");
+                return Err("source length cannot exclude retained scope markers");
             }
             values.source_length = length;
         }
@@ -157,20 +180,20 @@ pub(super) fn adjust(
         }
         SourceField::LoopStart => {
             let start =
-                update(values.loop_start, direction).ok_or("loop start exceeds the beat range")?;
+                update(values.loop_start, direction).ok_or("scope start exceeds the beat range")?;
             if start >= values.loop_end {
-                return Err("loop start must precede loop end");
+                return Err("scope start must precede scope end");
             }
             values.loop_start = start;
         }
         SourceField::LoopEnd => {
             let end =
-                update(values.loop_end, direction).ok_or("loop end exceeds the beat range")?;
+                update(values.loop_end, direction).ok_or("scope end exceeds the beat range")?;
             if end <= values.loop_start || end > values.source_length {
-                return Err("loop end must stay inside the source after loop start");
+                return Err("scope end must stay inside the source after scope start");
             }
             if values.looping && values.source_start >= end {
-                return Err("loop end must stay after source start while looping");
+                return Err("scope end must stay after source start while looping");
             }
             values.loop_end = end;
         }
@@ -190,7 +213,7 @@ pub(super) fn adjust(
     Ok((values != original).then_some(values))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-unit-tier"))]
 mod tests {
     use super::*;
 
@@ -252,7 +275,7 @@ mod tests {
         );
         assert_eq!(
             adjust(values(), SourceField::SourceLength, -1, 6, 0),
-            Err("source length cannot exclude retained loop markers")
+            Err("source length cannot exclude retained scope markers")
         );
     }
 
@@ -260,18 +283,18 @@ mod tests {
     fn loop_markers_and_start_obey_half_open_bounds() {
         assert_eq!(
             adjust(values(), SourceField::LoopStart, 1, 4, 0),
-            Err("loop start must precede loop end")
+            Err("scope start must precede scope end")
         );
         assert_eq!(
             adjust(values(), SourceField::LoopEnd, -1, 4, 0),
-            Err("loop end must stay inside the source after loop start")
+            Err("scope end must stay inside the source after scope start")
         );
         let mut looping = values();
         looping.looping = true;
         looping.source_start = 6;
         assert_eq!(
             adjust(looping, SourceField::LoopEnd, -1, 2, 0),
-            Err("loop end must stay after source start while looping")
+            Err("scope end must stay after source start while looping")
         );
         assert_eq!(
             adjust(values(), SourceField::SourceStart, 1, 10, 0),

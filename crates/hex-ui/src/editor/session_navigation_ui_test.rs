@@ -95,6 +95,7 @@ fn session_window(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -252,10 +253,96 @@ fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &m
 }
 
 #[gpui::test]
+fn session_cell_delete_and_undo_respect_piano_focus(cx: &mut TestAppContext) {
+    let (handle, editor) = worker_session_window(cx);
+    submit_edit_and_wait(
+        cx,
+        handle,
+        &editor,
+        Command::AddMidiTrack {
+            name: "instrument".into(),
+        },
+    );
+    let track = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    submit_edit_and_wait(
+        cx,
+        handle,
+        &editor,
+        Command::AddScene {
+            name: "scene".into(),
+        },
+    );
+    let scene = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.scenes()[0].id()
+    });
+    submit_edit_and_wait(
+        cx,
+        handle,
+        &editor,
+        Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "pattern".into(),
+            source_length: BeatTime::from_quarters(4).unwrap(),
+        },
+    );
+    let original = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, _| {
+            view.select_session_cell(track, scene);
+            view.midi_focus.focus(window);
+            assert!(view.midi_focus.is_focused(window));
+        });
+    })
+    .unwrap();
+    cx.simulate_keystrokes(handle, "backspace");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+    });
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, _| {
+            view.focus.focus(window);
+            assert!(view.focus.is_focused(window));
+        });
+    })
+    .unwrap();
+    cx.simulate_keystrokes(handle, "backspace");
+    wait_for_worker(cx, handle, &editor, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.session_cell(track, scene).is_none())
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.track(track).is_some());
+        assert!(project.scenes().iter().any(|item| item.id() == scene));
+    });
+    cx.simulate_keystrokes(handle, "cmd-z");
+    wait_for_worker(cx, handle, &editor, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|state| state.project.snapshot() == original)
+    });
+}
+
+#[gpui::test]
 fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &mut TestAppContext) {
     let (handle, _, _, _) = session_window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    for width in [880.0, 1440.0] {
+    for width in [640.0, 880.0, 1440.0] {
         visual.simulate_resize(size(px(width), px(700.0)));
         visual.run_until_parked();
         let header = visual
@@ -265,11 +352,46 @@ fn scene_column_stays_pinned_and_aligned_at_small_and_large_window_widths(cx: &m
             .debug_bounds("session-scene-column")
             .expect("scene row bounds");
         let window = visual.update(|window, _| window.bounds());
-        let window_right = window.origin.x + window.size.width;
+        let window_right = window.origin.x + window.size.width - px(4.0);
+        assert_eq!(header.size.width, px(110.0));
         assert!(near(header.origin.x, row.origin.x));
         assert!(near(header.origin.x + header.size.width, window_right));
         assert!(near(row.origin.x + row.size.width, window_right));
     }
+}
+
+#[gpui::test]
+fn scene_launch_leads_the_caption_and_uses_the_guarded_offline_action(cx: &mut TestAppContext) {
+    let (handle, editor, _, scene) = session_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(700.0)));
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    let launch = visual
+        .debug_bounds(Box::leak(
+            format!("console-launch-scene-{}", scene.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let caption = visual
+        .debug_bounds(Box::leak(
+            format!("console-scene-menu-{}", scene.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(launch.right() < caption.left());
+    visual.simulate_click(launch.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_scene, Some(scene));
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+        assert_eq!(
+            view.error.as_deref(),
+            Some("session playback requires an audio output")
+        );
+    });
 }
 
 #[gpui::test]
@@ -540,18 +662,19 @@ fn computer_keyboard_dispatch_reserves_notes_and_toggle_without_edit_shortcuts(
     visual.run_until_parked();
     visual.simulate_keystrokes("m");
     editor.read_with(&visual, |view, _| assert!(view.computer_keyboard.enabled));
-    for key in ["s", "l"] {
+    for key in ["s", "l", "w"] {
         visual.simulate_event(gpui::KeyDownEvent {
             keystroke: gpui::Keystroke::parse(key).unwrap(),
             is_held: false,
         });
     }
     editor.read_with(&visual, |view, _| {
+        assert_eq!(view.computer_keyboard.held()[1].unwrap().pitch, 61);
         assert_eq!(view.computer_keyboard.held()[2].unwrap().pitch, 62);
         assert_eq!(view.computer_keyboard.held()[14].unwrap().pitch, 74);
         assert!(
             view.last_enqueued_edit.is_none(),
-            "s and l must not solo or change the loop"
+            "s, l and w must remain notes without solo or loop edits"
         );
     });
     visual.simulate_event(gpui::KeyDownEvent {
@@ -618,7 +741,7 @@ fn computer_keyboard_preserves_text_focus_and_cancels_on_focus_loss(cx: &mut Tes
             view.computer_keyboard.enabled,
             "typing m must not toggle the keyboard"
         );
-        assert_eq!(view.browser.search.read(cx).content, "asmzcv");
+        assert_eq!(view.browser.search.read(cx).text(), "asmzcv");
         assert_eq!(
             (
                 view.computer_keyboard.base_pitch,

@@ -1,8 +1,11 @@
 //! Profile canonical edit and control-side compilation for a dense arrangement.
 //! This excludes fixture construction, PCM decoding, GPUI, queues, and audio devices.
+//! `--return-feed` adds two silent Return buses and a feed to exercise routing
+//! admission with the same clip workload/output oracle; this does not benchmark
+//! audible Return mixing.
 use hex_engine::{Frame, Renderer, compile};
 use hex_project::{
-    AssetSnapshot, ClipSnapshot, Command, Editor, IDENTITY_CONVERSION, Project, Snapshot,
+    AssetSnapshot, ClipSnapshot, Command, Created, Editor, IDENTITY_CONVERSION, Project, Snapshot,
     TrackSnapshot,
 };
 use std::{collections::BTreeMap, error::Error, hint::black_box, path::PathBuf, time::Instant};
@@ -29,12 +32,10 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                     let start = if active {
                         0
                     } else {
-                        20_000
-                            + ((track_index * 1_619
-                                + clip_index * 4_093
-                                + track_index * clip_index * 31)
-                                as u64
-                                % (ARRANGEMENT_FRAMES - 20_000))
+                        // Canonical Arrangement clips cannot overlap on a track.
+                        // Keep sparse clips after the sustained loop, spaced
+                        // beyond their maximum 64-frame duration.
+                        ARRANGEMENT_FRAMES + clip_index as u64 * 128
                     };
                     let duration = if active {
                         ARRANGEMENT_FRAMES
@@ -46,6 +47,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         }
                     };
                     Ok(ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,
@@ -63,6 +65,10 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
+                group_output_mutes: Vec::new(),
+                tags: Vec::new(),
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -82,15 +88,24 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, hex_project::Invalid>>()?;
     let snapshot = Snapshot {
+        automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
+        aliases: Default::default(),
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
+        arrangement_locators: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
+        sample_rate_mode: Default::default(),
         next_id: 102 + clips_total,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: PathBuf::from("profile-source.wav"),
             source_sample_rate: RATE,
@@ -158,8 +173,30 @@ fn report(label: &str, samples: &mut [u128]) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let routed = match arguments.as_slice() {
+        [] => false,
+        [argument] if argument == "--return-feed" => true,
+        _ => return Err("usage: profile_compile [--return-feed]".into()),
+    };
     let project = fixture()?;
     let mut editor = Editor::new(project, 32)?;
+    if routed {
+        let mut returns = Vec::new();
+        for name in ["first", "second"] {
+            let Created::ReturnTrack(id) =
+                editor.execute(Command::AddReturnTrack { name: name.into() })?
+            else {
+                return Err("expected fixture return".into());
+            };
+            returns.push(id);
+        }
+        editor.execute(Command::SetReturnFeed {
+            source: returns[0],
+            destination: returns[1],
+            gain: 0.5,
+        })?;
+    }
     let media_id = editor
         .project()
         .assets()
@@ -183,8 +220,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .id();
 
     let run_mutations = |editor: &mut Editor, iteration: usize| -> Result<(), Box<dyn Error>> {
-        let gain = if iteration % 2 == 0 { 0.75 } else { 0.5 };
-        let start = if iteration % 2 == 0 { 1 } else { 0 };
+        let gain = if iteration.is_multiple_of(2) {
+            0.75
+        } else {
+            0.5
+        };
+        let start = if iteration.is_multiple_of(2) { 1 } else { 0 };
         editor.execute(Command::Gain { track, gain })?;
         editor.execute(Command::MoveClip { clip, track, start })?;
         Ok(())
@@ -225,6 +266,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::consts::ARCH,
         std::env::consts::OS
     );
+    println!("return feed mode: {routed}; returns receive no source signal");
     report("canonical edits", &mut edit_times);
     report("control-side compile", &mut compile_times);
     Ok(())

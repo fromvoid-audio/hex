@@ -1,28 +1,46 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
+//! Selection is view state: `selected` drives the footer controls and a
+//! marquee `group` holds a multi-selection. A blank click clears selection,
+//! a blank drag draws a marquee, and a double-click creates a node. Holding
+//! the second press lets the user position it. Shift-cmd toggles marquee hits.
+//! Shift-press on a node adds it to the group. Dragging a grouped
+//! node moves the group as one parameter-snapshot gesture, and removal deletes
+//! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
 use gpui::{Entity, Subscription};
 use hex_engine::eq::{self, EqState, Node, NodeId, NodeParameter};
 use hex_lattice_contract::ParameterId;
-use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
+use hex_session::device_gesture::{
+    EqNodeCreationSnapshot, GestureKey, GesturePhase, GestureTarget, ParameterPairValue,
+};
 use hex_widgets::{
-    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraph, ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase,
 };
 
 mod axes;
 mod gestures;
+mod group_move;
+mod state_edit;
+use group_move::{frequency_from_x, q_from_y};
+mod node_geometry;
+use node_geometry::{creation_kind, node_position};
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
+mod sampling;
+mod selection;
+mod slope;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
+pub(super) use spectrum::{
+    is_eq as is_spectrum_eq, result as spectrum_result, sync_visible as sync_visible_spectra,
+    toggle as spectrum_toggle,
+};
 
-// Outer five percent of the inset logarithmic plot; existing node hits win.
-const CUT_CREATION_EDGE: f32 = 0.05;
-
-// Content geometry only: preserve shared device-action paint and tooltip/input
-// behavior, while giving complete labels their intrinsic width and padding.
+// Commands and latched settings share text geometry, retaining distinct paint.
 fn text_action_button(
     id: String,
     label: &'static str,
@@ -30,7 +48,21 @@ fn text_action_button(
     role: theme::DeviceActionRole,
     selected: bool,
 ) -> Stateful<Div> {
-    action_button(id, label, tooltip, role, selected)
+    text_button(action_button(id, label, tooltip, role, selected))
+}
+
+fn text_segment_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    text_button(segment_button(id, label, tooltip, role, selected))
+}
+
+fn text_button(surface: Stateful<Div>) -> Stateful<Div> {
+    surface
         .w_auto()
         .min_w(px(hex_widgets::DEVICE_HEADER_ACTION_SIZE))
         .px(px(3.0))
@@ -43,9 +75,15 @@ pub(super) struct Panel {
     entity: Entity<ResponseGraph>,
     _subscription: Subscription,
     _scroll_subscription: Subscription,
+    _marquee_subscription: Subscription,
     generation: u64,
     authored_state: NativeDeviceState,
     selected: Option<NodeId>,
+    /// Marquee multi-selection (two or more nodes, including `selected`).
+    group: Vec<NodeId>,
+    /// A stationary press on a grouped node collapses the group on release.
+    collapse: Option<NodeId>,
+    group_drag: Option<gestures::GroupDrag>,
     armed: bool,
     show_input: bool,
     focus_subscription: Option<Subscription>,
@@ -55,11 +93,13 @@ pub(super) struct Panel {
     scroll_blur_subscription: Option<Subscription>,
     bank: u8,
     creation: Option<Creation>,
-    creation_selection: Option<CreationSelection>,
+    cancel_creation_capture: bool,
     response: Option<(NativeDeviceState, u32, response::Curves)>,
 }
 
 struct Creation {
+    key: GestureKey,
+    terminal: Option<(GesturePhase, u64)>,
     expected: NativeDeviceState,
     expected_variant: hex_project::DeviceVariant,
     state: EqState,
@@ -69,23 +109,29 @@ struct Creation {
     sample_rate: u32,
 }
 
-struct CreationSelection {
-    state: NativeDeviceState,
-    id: NodeId,
-    previous: Option<NodeId>,
-    bank: u8,
-}
-
 impl Creation {
     fn update(&mut self, position: [f32; 2]) {
         if let Some(node) = self.state.nodes.iter_mut().find(|node| node.id == self.id) {
-            node.frequency_hz = frequency_from_x(position[0], self.sample_rate);
-            if matches!(node.kind, eq::NodeKind::LowCut | eq::NodeKind::HighCut) {
-                node.q = q_from_y(position[1]);
-            } else {
-                node.gain_db = position[1] * 48.0 - 24.0;
-            }
+            update_creation_node(node, position, self.sample_rate);
         }
+    }
+    fn snapshot(&self) -> Result<EqNodeCreationSnapshot, &'static str> {
+        let node = *self
+            .state
+            .node(self.id)
+            .map_err(|_| "eq creation node is missing")?;
+        EqNodeCreationSnapshot::new(node, self.expected_variant, self.next_id)
+    }
+}
+fn update_creation_node(node: &mut Node, position: [f32; 2], sample_rate: u32) {
+    node.frequency_hz = frequency_from_x(position[0], sample_rate);
+    if matches!(
+        node.kind,
+        eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
+    ) {
+        node.q = q_from_y(position[1]);
+    } else {
+        node.gain_db = position[1] * 48.0 - 24.0;
     }
 }
 
@@ -116,9 +162,11 @@ pub(super) fn render_body(
         let entity = cx.new(|cx| {
             let mut graph =
                 ResponseGraph::new(cx, format!("eq-response-{}", device.value()), style);
+            graph.set_circular_nodes(true, cx);
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
+            graph.set_blank_marquee_enabled(true, cx);
             graph.set_backspace_removal(true);
             graph
         });
@@ -132,15 +180,25 @@ pub(super) fn render_body(
                 gestures::scroll_event(view, cx, device, generation, *event);
             },
         );
+        let marquee_subscription = cx.subscribe(
+            &entity,
+            move |view, _, event: &ResponseGraphMarqueeEvent, cx| {
+                marquee_event(view, cx, device, generation, event);
+            },
+        );
         view.device_panel.eq_panels.insert(
             device,
             Panel {
                 entity,
                 _subscription: subscription,
                 _scroll_subscription: scroll_subscription,
+                _marquee_subscription: marquee_subscription,
                 generation,
                 authored_state: canonical.clone(),
                 selected: state.nodes.first().map(|n| n.id),
+                group: Vec::new(),
+                collapse: None,
+                group_drag: None,
                 armed: false,
                 show_input: true,
                 focus_subscription: None,
@@ -150,66 +208,66 @@ pub(super) fn render_body(
                 scroll_blur_subscription: None,
                 bank: 0,
                 creation: None,
-                creation_selection: None,
+                cancel_creation_capture: false,
                 response: None,
             },
         );
     }
-    let next_id = view.state.as_ref().map(|s| s.project.next_identity());
-    let edits_idle = view.worker_requests_pending == 0
+    reconcile_creation(view, device, canonical);
+    let creation_idle = !view.opening_project
+        && !view.close_prompt_open
+        && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.device_gesture_barriers.is_empty();
+        && view.device_gesture_barriers.is_empty()
+        && view.device_gesture.snapshot().is_none()
+        && !view.device_panel.has_pending_draft(cx);
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return div().id("eq-unavailable");
     };
-    if let Some(selection) = panel.creation_selection.take() {
-        if &selection.state == canonical {
-            if panel.selected == selection.previous && panel.bank == selection.bank {
-                panel.selected = Some(selection.id);
-            }
-        } else if !edits_idle && &panel.authored_state == canonical {
-            panel.creation_selection = Some(selection);
+    if panel.cancel_creation_capture {
+        panel.cancel_creation_capture = false;
+        if panel
+            .creation
+            .as_ref()
+            .is_none_or(|creation| creation.terminal.is_some())
+            && panel.pair_drag.is_none()
+            && panel.slope_scroll.is_none()
+        {
+            panel.entity.update(cx, |graph, cx| graph.cancel(cx));
         }
     }
-    if panel.creation.as_ref().is_some_and(|creation| {
-        &creation.expected != canonical
-            || Some(creation.next_id) != next_id
-            || panel.selected != Some(creation.id)
-            || creation
-                .state
-                .node(creation.id)
-                .is_ok_and(|n| n.bank != panel.bank)
-    }) {
-        if let Some(creation) = panel.creation.take() {
-            if panel.selected == Some(creation.id) {
-                panel.selected = creation.selected_before;
-            }
-        }
-        panel.entity.update(cx, |graph, cx| graph.cancel(cx));
-    }
+    // Canonical replacement retires held drafts through the keyed worker event.
+    // A released draft remains frozen until its exact terminal is installed.
     if &panel.authored_state != canonical {
         panel.authored_state = canonical.clone();
         // Events share this persistent mode with rendering. Repair only when
         // canonical state changes: a newly created node is selected optimistically
         // before its ID appears in the worker's published state.
         panel.selected = panel.selected.filter(|id| state.node(*id).is_ok());
+        panel.group.retain(|id| state.node(*id).is_ok());
+        if panel.group.len() < 2 {
+            panel.group.clear();
+        }
     }
     let displayed = panel
         .creation
         .as_ref()
-        .map_or(&state, |creation| &creation.state)
+        .map(|creation| &creation.state)
+        .unwrap_or(&state)
         .clone();
     let selected = panel.selected.filter(|id| displayed.node(*id).is_ok());
+    let show_creation_hint =
+        creation_idle && displayed.nodes.len() < eq::MAX_NODES && panel.creation.is_none();
     let bank = panel.bank;
+    let group = panel.group.clone();
     let entity = panel.entity.clone();
-    spectrum::sync_selected(view, device, owner);
     let model = response_model(
         view,
         device,
         &displayed,
         device_view,
         sample_rate,
-        (bank, selected),
+        (bank, selected, &group),
         owner,
     );
     let scroll_nodes = gestures::scroll_nodes(view, device, &displayed, cx);
@@ -222,6 +280,10 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(true);
+            graph.set_creation_hint_resolver(
+                show_creation_hint.then_some(node_geometry::creation_hint),
+                cx,
+            );
             let _ = graph.set_axes(Some(axes::frequency_axes(sample_rate)), cx);
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_scroll_nodes(scroll_nodes, cx);
@@ -268,7 +330,7 @@ pub(super) fn render_body(
     ));
     for (index, label) in ["st", "l", "r", "m", "s"].into_iter().enumerate() {
         toolbar = toolbar.child(
-            text_action_button(
+            text_segment_button(
                 format!("eq-bank-{}-{index}", device.value()),
                 label,
                 "select authored channel bank",
@@ -276,10 +338,11 @@ pub(super) fn render_body(
                 index as u8 == bank,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                        p.bank = index as u8;
-                    }
+                if finalize_controls(view, cx)
+                    && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+                {
+                    p.bank = index as u8;
+                    p.group.clear();
                 }
                 cx.notify();
             })),
@@ -287,7 +350,7 @@ pub(super) fn render_body(
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
     toolbar = {
-        let control = spectrum::toggle(view, cx, device, owner);
+        let control = spectrum::toggle(view, cx, device, owner, eq::EQ_TYPE_ID);
         toolbar.child(control)
     };
     let show_input = view
@@ -296,7 +359,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|panel| panel.show_input);
     toolbar = toolbar.child(
-        text_action_button(
+        text_segment_button(
             format!("eq-spectrum-input-{}", device.value()),
             "input",
             "show actual pre-eq input spectrum; output stays visible",
@@ -316,7 +379,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|p| p.armed);
     toolbar = toolbar.child(
-        text_action_button(
+        text_segment_button(
             format!("eq-audition-{}", device.value()),
             "listen",
             "hold a node to audition its filter",
@@ -364,21 +427,22 @@ pub(super) fn render_body(
                 ));
             }
         }
+        let removed = if group.len() > 1 { group } else { vec![id] };
         actions = actions.child(
             text_action_button(
                 format!("eq-remove-{}", device.value()),
                 "remove",
-                "remove selected node and its automation",
+                "remove selected nodes and their automation",
                 theme::DeviceActionRole::Normal,
                 true,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                edit(view, cx, device, 0, move |s, _| s.remove(id));
+                remove_nodes(view, cx, device, removed.clone());
             })),
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click the response to add a node · select and drag to edit",
+            "double-click to add · hold second click to drag · drag empty space to select",
         ));
     }
     let body = bottom;
@@ -541,6 +605,17 @@ fn submit(
     else {
         return;
     };
+    let Some(entry) = project.device(device) else {
+        return;
+    };
+    let (state, automation) = match state_edit::prepare(entry, &expected, state) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            view.device_panel.message = Some(format!("eq edit refused · {error}"));
+            cx.notify();
+            return;
+        }
+    };
     let reserved_ids = if reserve == 0 {
         0
     } else {
@@ -550,6 +625,7 @@ fn submit(
     };
     view.enqueue_device_barrier(Request::Edit(
         Command::ReplaceDeviceStateWithIdentityReservation {
+            automation,
             device,
             expected_state: expected,
             expected_variant,
@@ -628,19 +704,20 @@ fn response_model(
     state: &EqState,
     device_view: &NativeDeviceView,
     rate: u32,
-    selection: (u8, Option<NodeId>),
+    selection: (u8, Option<NodeId>, &[NodeId]),
     owner: hex_engine::ProcessorChainOwner,
 ) -> Option<ResponseGraphModel> {
-    let (bank, selected) = selection;
+    let (bank, selected, group) = selection;
     let mut authored = state.encode().ok()?;
     for parameter in &device_view.parameters {
-        let effective = effective_parameter_value(
+        let effective = super::eq_automation::effective_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            parameter.value,
+            device_view.type_id,
+            parameter,
         );
         if effective != parameter.value {
             authored = hex_engine::patch_native_device_parameter_for_class(
@@ -685,77 +762,50 @@ fn response_model(
         .filter(|n| n.bank == bank)
         .map(|n| ResponseGraphNode {
             id: n.id.value(),
-            position: [
-                axes::x(n.frequency_hz, rate),
-                if matches!(
-                    n.kind,
-                    eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
-                ) {
-                    (n.q / 0.1).ln() / (18.0_f32 / 0.1).ln()
-                } else {
-                    (n.gain_db + 24.0) / 48.0
-                },
-            ],
+            position: node_position(n, rate),
             enabled: n.enabled,
-            selected: selected == Some(n.id),
+            selected: selected == Some(n.id) || group.contains(&n.id),
         })
         .collect();
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    let spectra = view.device_panel.spectrum_result.as_ref().filter(|result| {
-        view.audio
-            .as_ref()
-            .and_then(|audio| audio.control.spectrum_desired())
-            .is_some_and(|target| {
-                target.identity == identity
-                    && target.token == result.output.stamp.target
-                    && target.project_generation == result.output.stamp.generation
-                    && target.sample_rate_hz == result.output.stamp.sample_rate_hz
-                    && result.output.stamp.applied_revision >= target.activation_floor
-            })
-    });
+    let spectra = spectrum::result(view, identity);
     let show_input = view
         .device_panel
         .eq_panels
         .get(&device)
         .is_some_and(|panel| panel.show_input);
-    let (analyzer, input_analyzer) = spectrum_layers(spectra, show_input, upper);
+    let (analyzer, input_analyzer, analyzer_peak) = spectrum_layers(spectra, show_input, upper);
     Some(ResponseGraphModel {
         primary,
         secondary,
         analyzer,
         input_analyzer,
+        analyzer_peak,
         nodes,
     })
 }
 type SpectrumCurve = Vec<[f32; 2]>;
 
+/// Output level, optional input level and output held-peak curves.
 fn spectrum_layers(
     spectra: Option<&hex_audio::spectrum_worker::PublishedSpectra>,
     show_input: bool,
     upper: f32,
-) -> (Option<SpectrumCurve>, Option<SpectrumCurve>) {
-    let curve = |frame: &hex_audio::spectrum::SpectrumFrame| {
-        frame
-            .bins_dbfs
-            .iter()
-            .enumerate()
-            .map(|(index, db)| {
-                let (low, high) = hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)
-                    .unwrap_or((20.0, 20000.0));
-                [
-                    axes::x_with_upper((low * high).sqrt(), upper),
-                    super::spectrum_display::level(*db),
-                ]
-            })
-            .collect()
-    };
-    (
-        spectra.map(|pair| curve(&pair.output.frame)),
-        spectra
-            .and_then(|pair| pair.input.as_ref())
-            .filter(|_| show_input)
-            .map(curve),
-    )
+) -> (
+    Option<SpectrumCurve>,
+    Option<SpectrumCurve>,
+    Option<SpectrumCurve>,
+) {
+    let x = |hz| axes::x_with_upper(hz, upper);
+    let output = spectra.map(|pair| super::spectrum_display::curves(&pair.output.frame, x));
+    let input = spectra
+        .and_then(|pair| pair.input.as_ref())
+        .filter(|_| show_input)
+        .map(|frame| super::spectrum_display::curves(frame, x).level);
+    match output {
+        Some(curves) => (Some(curves.level), input, Some(curves.peak)),
+        None => (None, input, None),
+    }
 }
 
 fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
@@ -825,22 +875,89 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
         }
     }
 }
-fn frequency_from_x(x: f32, rate: u32) -> f32 {
-    let upper = (rate as f32 * 0.49).clamp(20.0, 20000.0);
-    (20.0 * ((upper / 20.0).ln() * x.clamp(0.0, 1.0)).exp()).clamp(20.0, upper)
+/// Removes `ids` in one atomic replacement, so one Undo restores them all.
+fn remove_nodes(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    ids: Vec<NodeId>,
+) {
+    edit(view, cx, device, 0, move |state, _| {
+        ids.iter().try_for_each(|id| state.remove(*id))
+    });
 }
-fn q_from_y(y: f32) -> f32 {
-    (0.1 * ((18.0_f32 / 0.1).ln() * y.clamp(0.0, 1.0)).exp()).clamp(0.1, 18.0)
+fn marquee_event(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    generation: u64,
+    event: &ResponseGraphMarqueeEvent,
+) {
+    if generation != view.project_generation || !finalize_controls(view, cx) {
+        return;
+    }
+    let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
+        return;
+    };
+    selection::apply_marquee(&mut panel.selected, &mut panel.group, &event.selected);
+    panel.collapse = None;
+    cx.notify();
 }
-fn creation_kind(x: f32) -> eq::NodeKind {
-    if x <= CUT_CREATION_EDGE {
-        eq::NodeKind::LowCut
-    } else if x >= 1.0 - CUT_CREATION_EDGE {
-        eq::NodeKind::HighCut
-    } else {
-        eq::NodeKind::Bell
+// Input cancellation is separate from admitted preview custody. The last
+// geometry stays with its key until the terminal/canonical installation event.
+fn reconcile_creation(view: &mut EditorView, device: DeviceId, canonical: &NativeDeviceState) {
+    let Some((key, valid, finishing)) =
+        view.device_panel.eq_panels.get(&device).and_then(|panel| {
+            panel.creation.as_ref().map(|creation| {
+                (
+                    creation.key,
+                    &creation.expected == canonical
+                        && panel.selected == Some(creation.id)
+                        && view.state.as_ref().is_some_and(|state| {
+                            state.project.next_identity() == creation.next_id
+                                && state.project.device(device).is_some_and(|entry| {
+                                    entry.active_variant() == creation.expected_variant
+                                })
+                        })
+                        && creation
+                            .state
+                            .node(creation.id)
+                            .is_ok_and(|node| node.bank == panel.bank),
+                    creation.terminal.is_some(),
+                )
+            })
+        })
+    else {
+        return;
+    };
+    let owns_key = view
+        .device_gesture
+        .snapshot()
+        .is_some_and(|snapshot| snapshot.key == key);
+    if owns_key && finishing {
+        return;
+    }
+    if owns_key && valid && view.device_gesture.terminal().is_none() {
+        return;
+    }
+    if owns_key && !valid && !view.device_gesture.has_pending_terminal() {
+        let _ = view.cancel_device_gesture();
+    }
+    let terminal = view.device_gesture.terminal();
+    if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+        panel.cancel_creation_capture = true;
+        if owns_key {
+            if let Some(creation) = panel.creation.as_mut() {
+                creation.terminal = terminal;
+            }
+        } else if let Some(creation) = panel.creation.take()
+            && panel.selected == Some(creation.id)
+        {
+            panel.selected = creation.selected_before;
+        }
     }
 }
+
 fn begin_creation(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -848,6 +965,12 @@ fn begin_creation(
     position: [f32; 2],
     bank: u8,
 ) {
+    if view.device_gesture.is_recovery_pending() && view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device)) {
+        let _ = view.cancel_eq_creation();
+        view.device_panel.message = Some("previous eq edit is canceling · retry after it finishes".into());
+        cx.notify();
+        return;
+    }
     if !ready(view, cx) {
         return;
     }
@@ -865,12 +988,29 @@ fn begin_creation(
         return;
     };
     let sample_rate = project.sample_rate();
-    let result = EqState::decode(&expected).and_then(|mut state| {
-        let id = NodeId::new(next_id.max(u64::from(state.next_node_id)))?;
-        let mut node = Node::new(id, frequency_from_x(position[0], sample_rate), 0.0, bank)?;
-        node.kind = creation_kind(position[0]);
-        state.add(node)?;
-        let mut creation = Creation {
+    let result: Result<Creation, String> = (|| {
+        let mut state = EqState::decode(&expected).map_err(|e| e.to_string())?;
+        let id =
+            NodeId::new(next_id.max(u64::from(state.next_node_id))).map_err(|e| e.to_string())?;
+        let mut node = Node::new(id, frequency_from_x(position[0], sample_rate), 0.0, bank)
+            .map_err(|e| e.to_string())?;
+        node.kind = creation_kind(position);
+        update_creation_node(&mut node, position, sample_rate);
+        state.add(node).map_err(|e| e.to_string())?;
+        state.encode().map_err(|e| e.to_string())?;
+        let snapshot =
+            EqNodeCreationSnapshot::new(node, expected_variant, next_id).map_err(str::to_owned)?;
+        let key = view
+            .device_gesture
+            .begin_eq_creation(view.project_generation, device, snapshot)
+            .map_err(str::to_owned)?;
+        if let Err(error) = view.device_gesture.change_eq_creation(snapshot) {
+            let _ = view.cancel_device_gesture();
+            return Err(error.to_owned());
+        }
+        Ok(Creation {
+            key,
+            terminal: None,
             expected,
             expected_variant,
             state,
@@ -878,30 +1018,28 @@ fn begin_creation(
             id,
             selected_before: None,
             sample_rate,
-        };
-        creation.update(position);
-        creation.state.encode()?;
-        Ok(creation)
-    });
+        })
+    })();
     match result {
         Ok(mut creation) => {
             if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
                 creation.selected_before = panel.selected;
                 panel.selected = Some(creation.id);
+                panel.cancel_creation_capture = false;
                 panel.creation = Some(creation);
             }
         }
         Err(error) => {
             view.device_panel.message = Some(format!(
                 "eq edit refused · {error} · limit: 64 nodes; identity space is finite"
-            ));
+            ))
         }
     }
     cx.notify();
 }
 
-// The widget keeps node_id zero for this entire pointer stream. It cannot turn
-// into a canonical node drag after release, publication, deletion or ID reuse.
+// Node ID zero belongs to this whole pointer stream. It can never address an
+// ordinary node drag after release, cancellation, publication or ID reuse.
 fn creation_event(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -916,7 +1054,16 @@ fn creation_event(
     else {
         return;
     };
-    let valid = current(view, device).as_ref() == Some(&creation.expected)
+    if creation.terminal.is_some() {
+        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+            panel.creation = Some(creation);
+        }
+        return;
+    }
+    let owns_key = view.device_gesture.snapshot().is_some_and(|snapshot| snapshot.key == creation.key
+        && matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device));
+    let valid = owns_key
+        && current(view, device).as_ref() == Some(&creation.expected)
         && view.state.as_ref().is_some_and(|s| {
             s.project.next_identity() == creation.next_id
                 && s.project
@@ -935,9 +1082,16 @@ fn creation_event(
                         .is_ok_and(|node| node.bank == panel.bank)
             });
     if !valid || event.phase == ResponseGraphPhase::Cancel {
+        if owns_key && !view.device_gesture.has_pending_terminal() {
+            let _ = view.cancel_device_gesture();
+        }
+        creation.terminal = view.device_gesture.terminal();
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             if panel.selected == Some(creation.id) {
                 panel.selected = creation.selected_before;
+            }
+            if owns_key && creation.terminal.is_some() {
+                panel.creation = Some(creation);
             }
         }
         if !valid {
@@ -949,44 +1103,29 @@ fn creation_event(
             | ResponseGraphPhase::Release
             | ResponseGraphPhase::ReleaseOutside
     ) {
-        // Stationary releases retain the press position; dragging commits its
-        // final clamped pointer, including a release outside the graph.
-        creation.update(event.position);
-        // Restore the prior canonical selection even when admission or worker
-        // validation fails. Select the new ID only after that exact state is
-        // published, and only if the user has not changed selection meanwhile.
-        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-            panel.selected = creation.selected_before;
-        }
-        if ready(view, cx) {
-            if let Ok(state) = creation.state.encode() {
-                let selected_state = state.clone();
-                let admitted = view.enqueue_device_barrier(Request::Edit(
-                    Command::ReplaceDeviceStateWithIdentityReservation {
-                        device,
-                        expected_state: creation.expected,
-                        expected_variant: creation.expected_variant,
-                        state,
-                        expected_next_id: creation.next_id,
-                        reserved_ids: u64::from(creation.state.next_node_id)
-                            .saturating_sub(creation.next_id),
-                    },
-                ));
-                if admitted {
-                    if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-                        panel.creation_selection = Some(CreationSelection {
-                            state: selected_state,
-                            id: creation.id,
-                            previous: creation.selected_before,
-                            bank: panel.bank,
-                        });
-                    }
-                }
+        if !view.device_gesture.has_pending_terminal() {
+            creation.update(event.position);
+            let result = creation
+                .snapshot()
+                .and_then(|snapshot| view.device_gesture.finish_eq_creation(snapshot));
+            if let Err(error) = result {
+                view.device_panel.message = Some(error.into());
             }
         }
+        creation.terminal = view.device_gesture.terminal();
+        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+            panel.creation = Some(creation);
+        }
     } else {
-        if event.phase == ResponseGraphPhase::Change {
+        if event.phase == ResponseGraphPhase::Change && !view.device_gesture.has_pending_terminal()
+        {
             creation.update(event.position);
+            let result = creation
+                .snapshot()
+                .and_then(|snapshot| view.device_gesture.change_eq_creation(snapshot));
+            if let Err(error) = result {
+                view.device_panel.message = Some(error.into());
+            }
         }
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.creation = Some(creation);
@@ -1008,15 +1147,18 @@ fn handle_event(
         return;
     };
     let (selected, bank) = (panel.selected, panel.bank);
+    let group = panel.group.clone();
     if event.phase == ResponseGraphPhase::Remove {
-        if panel.creation.is_some()
-            || panel.creation_selection.is_some()
+        if view.selection_delete_blocked()
+            || panel.creation.is_some()
             || current(view, device).as_ref() != Some(&panel.authored_state)
         {
             return;
         }
-        if let Some(id) = selected.filter(|id| id.value() == event.node_id) {
-            edit(view, cx, device, 0, move |state, _| state.remove(id));
+        if group.len() > 1 {
+            remove_nodes(view, cx, device, group);
+        } else if let Some(id) = selected.filter(|id| id.value() == event.node_id) {
+            remove_nodes(view, cx, device, vec![id]);
         }
         return;
     }
@@ -1055,6 +1197,11 @@ fn handle_event(
             if let Some(audio) = view.audio.as_mut() {
                 let _ = audio.control.audition_release();
             }
+            if let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+                && p.collapse.take() == Some(id)
+            {
+                p.group.clear();
+            }
         }
         ResponseGraphPhase::ReleaseOutside => {
             if let Some(audio) = view.audio.as_mut() {
@@ -1062,17 +1209,39 @@ fn handle_event(
             }
         }
         ResponseGraphPhase::Select => {
-            if finalize_controls(view, cx) {
-                if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                    p.selected = Some(id);
-                }
+            if finalize_controls(view, cx)
+                && let Some(p) = view.device_panel.eq_panels.get_mut(&device)
+            {
+                selection::select_node(
+                    &mut p.selected,
+                    &mut p.group,
+                    &mut p.collapse,
+                    id,
+                    event.modifiers.shift,
+                );
             }
         }
-        ResponseGraphPhase::Begin
-        | ResponseGraphPhase::Change
-        | ResponseGraphPhase::Commit
-        | ResponseGraphPhase::Cancel => {
-            gestures::paired_event(view, device, *node, event);
+        ResponseGraphPhase::Begin => {
+            if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
+                p.collapse = None;
+            }
+            if group.len() > 1 && group.contains(&id) {
+                gestures::group_event(view, cx, device, *node, &group, event);
+            } else {
+                gestures::paired_event(view, cx, device, *node, event);
+            }
+        }
+        ResponseGraphPhase::Change | ResponseGraphPhase::Commit | ResponseGraphPhase::Cancel => {
+            if view
+                .device_panel
+                .eq_panels
+                .get(&device)
+                .is_some_and(|p| p.group_drag.is_some())
+            {
+                gestures::group_event(view, cx, device, *node, &group, event);
+            } else {
+                gestures::paired_event(view, cx, device, *node, event);
+            }
         }
         _ => {}
     }
@@ -1094,11 +1263,151 @@ pub(super) fn queued_scrolls_for_test(view: &EditorView, device: DeviceId) -> (u
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn selection_for_test(
+    view: &EditorView,
+    device: DeviceId,
+) -> (Option<NodeId>, Vec<NodeId>) {
+    let panel = &view.device_panel.eq_panels[&device];
+    (panel.selected, panel.group.clone())
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn graph_for_test(view: &EditorView, device: DeviceId) -> Entity<ResponseGraph> {
     view.device_panel.eq_panels[&device].entity.clone()
 }
 
-#[cfg(test)]
+impl EditorView {
+    pub(in crate::editor) fn cancel_eq_creation(&mut self) -> bool {
+        let Some(snapshot) = self.device_gesture.snapshot() else {
+            return false;
+        };
+        let GestureTarget::EqNodeCreation { device } = snapshot.target else {
+            return false;
+        };
+        if !self.device_gesture.has_pending_terminal() {
+            let _ = self.cancel_device_gesture();
+        }
+        let terminal = self.device_gesture.terminal();
+        if let Some(panel) = self.device_panel.eq_panels.get_mut(&device)
+            && let Some(creation) = panel
+                .creation
+                .as_mut()
+                .filter(|creation| creation.key == snapshot.key)
+        {
+            creation.terminal = terminal;
+            panel.cancel_creation_capture = true;
+            if panel.selected == Some(creation.id) {
+                panel.selected = creation.selected_before;
+            }
+        }
+        true
+    }
+
+    pub(in crate::editor) fn eq_creation_request_complete(
+        &mut self,
+        event: &hex_session::service::Event,
+    ) {
+        let terminal = self.device_gesture.terminal();
+        let client_key = self.device_gesture.snapshot().map(|snapshot| snapshot.key);
+        for (device, panel) in &mut self.device_panel.eq_panels {
+            let Some(mut creation) = panel.creation.take() else {
+                continue;
+            };
+            if event.project_replaced {
+                panel.cancel_creation_capture = true;
+                if panel.selected == Some(creation.id) {
+                    panel.selected = creation.selected_before;
+                }
+                continue;
+            }
+            let Some(ack) = event
+                .gesture_ack
+                .as_ref()
+                .filter(|ack| ack.key == creation.key)
+            else {
+                panel.creation = Some(creation);
+                continue;
+            };
+            let expected = if client_key == Some(creation.key) {
+                terminal.or(creation.terminal)
+            } else {
+                creation.terminal
+            };
+            let refused_begin = ack.phase == GesturePhase::Begin && !ack.accepted;
+            let replaced_source = event
+                .state
+                .project
+                .device(*device)
+                .is_none_or(|entry| entry.state() != &creation.expected)
+                || event.state.project.next_identity() != creation.next_id;
+            let exact_terminal = expected == Some((ack.phase, ack.sequence));
+            let retires_creation = refused_begin
+                || exact_terminal
+                || (replaced_source && ack.phase == GesturePhase::Cancel);
+            if !retires_creation {
+                panel.creation = Some(creation);
+                continue;
+            }
+            panel.cancel_creation_capture = true;
+            if ack.preview_retained {
+                let accepted = event
+                    .device_preview
+                    .as_ref()
+                    .map(|preview| &preview.state.project)
+                    .unwrap_or(&event.state.project);
+                if let Some(entry) = accepted.device(*device)
+                    && let Ok(state) = EqState::decode(entry.state())
+                {
+                    creation.state = state;
+                }
+                if panel.selected == Some(creation.id) && creation.state.node(creation.id).is_err()
+                {
+                    panel.selected = creation.selected_before;
+                }
+                creation.terminal = Some((ack.phase, ack.sequence));
+                panel.creation = Some(creation);
+                continue;
+            }
+            let committed = ack.accepted
+                && ack.phase == GesturePhase::Commit
+                && event
+                    .state
+                    .project
+                    .device(*device)
+                    .and_then(|entry| EqState::decode(entry.state()).ok())
+                    .is_some_and(|state| state == creation.state);
+            if committed {
+                if panel.bank
+                    == creation
+                        .state
+                        .node(creation.id)
+                        .map_or(panel.bank, |node| node.bank)
+                    && (panel.selected == creation.selected_before
+                        || panel.selected == Some(creation.id))
+                {
+                    panel.selected = Some(creation.id);
+                }
+            } else if panel.selected == Some(creation.id) {
+                panel.selected = creation.selected_before;
+            }
+        }
+    }
+    pub(in crate::editor) fn retire_all_eq_creations(&mut self) -> bool {
+        let mut retired = false;
+        for panel in self.device_panel.eq_panels.values_mut() {
+            if let Some(creation) = panel.creation.take() {
+                panel.cancel_creation_capture = true;
+                if panel.selected == Some(creation.id) {
+                    panel.selected = creation.selected_before;
+                }
+                retired = true;
+            }
+        }
+        retired
+    }
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 
@@ -1113,6 +1422,7 @@ mod tests {
         let frame = SpectrumFrame {
             sample_rate_hz: 48_000,
             bins_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
+            peak_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
         };
         let pair = PublishedSpectra {
             input: Some(frame.clone()),
@@ -1133,24 +1443,48 @@ mod tests {
         let hidden = spectrum_layers(Some(&pair), false, 20_000.0);
         assert_eq!(hidden.0, shown.0, "input visibility cannot hide output");
         assert!(hidden.1.is_none());
-        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None));
+        assert_eq!(hidden.2, shown.2, "the held peak follows the output");
+        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None, None));
     }
 
     #[test]
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
-        assert_eq!(creation_kind(0.0), eq::NodeKind::LowCut);
-        assert_eq!(creation_kind(CUT_CREATION_EDGE), eq::NodeKind::LowCut);
-        assert_eq!(creation_kind(CUT_CREATION_EDGE + 0.001), eq::NodeKind::Bell);
-        assert_eq!(creation_kind(0.5), eq::NodeKind::Bell);
+        assert_eq!(creation_kind([0.0, 0.5]), eq::NodeKind::LowCut);
         assert_eq!(
-            creation_kind(1.0 - CUT_CREATION_EDGE - 0.001),
+            creation_kind([node_geometry::CUT_CREATION_EDGE, 0.5]),
+            eq::NodeKind::LowCut
+        );
+        assert_eq!(
+            creation_kind([node_geometry::CUT_CREATION_EDGE + 0.001, 0.5]),
+            eq::NodeKind::Bell
+        );
+        assert_eq!(creation_kind([0.5, 0.5]), eq::NodeKind::Bell);
+        assert_eq!(
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE - 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(
-            creation_kind(1.0 - CUT_CREATION_EDGE),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::HighCut
         );
-        assert_eq!(creation_kind(1.0), eq::NodeKind::HighCut);
+        assert_eq!(creation_kind([1.0, 0.5]), eq::NodeKind::HighCut);
+        for x in [0.0, node_geometry::CUT_CREATION_EDGE] {
+            assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::LowCut);
+        }
+        for x in [1.0 - node_geometry::CUT_CREATION_EDGE, 1.0] {
+            assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::HighCut);
+        }
+        for y in [0.0, node_geometry::CUT_CREATION_EDGE] {
+            assert_eq!(creation_kind([0.5, y]), eq::NodeKind::Notch);
+            assert_eq!(node_geometry::creation_hint([0.5, y]).id, "notch");
+        }
+        assert_eq!(
+            creation_kind([0.5, node_geometry::CUT_CREATION_EDGE + 0.001]),
+            eq::NodeKind::Bell
+        );
+        assert_eq!(node_geometry::creation_hint([0.0, 0.0]).id, "low-cut");
+        assert_eq!(node_geometry::creation_hint([1.0, 0.0]).id, "high-cut");
+        assert_eq!(node_geometry::creation_hint([0.5, 0.5]).id, "bell");
         assert_eq!(q_from_y(-1.0), 0.1);
         assert!((q_from_y(2.0) - 18.0).abs() < 0.0001);
     }

@@ -14,15 +14,36 @@ pub(super) fn graph_entity(
         .or_insert_with(|| {
             let style = theme::device_style(theme::DeviceStyleRole::Display);
             let entity = cx.new(|graph_cx| {
-                ResponseGraph::new(graph_cx, format!("eq8-response-{}", device.value()), style)
+                let mut graph =
+                    ResponseGraph::new(graph_cx, format!("eq8-response-{}", device.value()), style);
+                graph.set_editable(true, graph_cx);
+                graph.set_marquee_enabled(true, graph_cx);
+                graph.set_backspace_removal(true);
+                graph
             });
+            let generation = view.project_generation;
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
-                    handle_graph_event(view, device, owner, *event, cx);
+                    if view.project_generation == generation {
+                        handle_graph_event(view, device, owner, *event, cx);
+                    }
                 });
+            let marquee = cx.subscribe(
+                &entity,
+                move |view, _, event: &hex_widgets::ResponseGraphMarqueeEvent, cx| {
+                    if view.project_generation == generation && finalize_controls(view, cx) {
+                        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+                            selection::marquee_event(panel, event);
+                        }
+                        cx.notify();
+                    }
+                },
+            );
             GraphControl {
                 entity,
                 _subscription: subscription,
+                _marquee_subscription: marquee,
+                group_drag: None,
             }
         });
     let Some(graph) = view.device_panel.eq8_graphs.get(&device) else {
@@ -67,9 +88,13 @@ fn handle_graph_event(
             return;
         }
         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
-            panel.selected_band = band;
+            selection::select(panel, band, event.modifiers.shift);
         }
         cx.notify();
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Remove {
+        group::disable(view, device, cx);
         return;
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Press {
@@ -77,6 +102,9 @@ fn handle_graph_event(
         return;
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Release {
+        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+            selection::release(panel, band);
+        }
         if view
             .device_panel
             .eq8_panels
@@ -112,6 +140,37 @@ fn handle_graph_event(
     // may still be awaiting the worker-backed gesture barrier.
     if event.phase == hex_widgets::ResponseGraphPhase::ReleaseOutside {
         return;
+    }
+    let selected = view
+        .device_panel
+        .eq8_panels
+        .get(&device)
+        .map_or(0, selection::mask);
+    let group_active = view
+        .device_panel
+        .eq8_graphs
+        .get(&device)
+        .is_some_and(|graph| graph.group_drag.is_some());
+    if (event.phase == hex_widgets::ResponseGraphPhase::Begin
+        && selected.count_ones() > 1
+        && selected & (1 << band) != 0)
+        || group_active
+    {
+        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+            panel.collapse_band = None;
+        }
+        group::event(view, device, selected, event, cx);
+        cx.notify();
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Begin {
+        if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
+            panel.collapse_band = None;
+        }
+        if view.device_gesture.snapshot().is_some() {
+            view.device_panel.message = Some("wait for the current device edit, then retry".into());
+            return;
+        }
     }
     let Some(snapshot) = view.device_gesture.snapshot() else {
         if event.phase != hex_widgets::ResponseGraphPhase::Begin {
@@ -196,6 +255,13 @@ fn handle_graph_event(
                     1.0
                 },
                 q_by_delta,
+                touch: super::super::eq_automation::DragTouch::new(
+                    event.position,
+                    view.device_panel
+                        .eq8_graphs
+                        .get(&device)
+                        .and_then(|graph| graph.entity.read(cx).plot_bounds()),
+                ),
             },
         );
         cx.notify();
@@ -270,19 +336,23 @@ fn handle_graph_event(
         },
         pair.second,
     );
-    match event.phase {
-        hex_widgets::ResponseGraphPhase::Change => {
-            if let Err(error) = view.change_device_pair_gesture(pair) {
-                view.device_panel.message = Some(error.to_owned());
-            }
-        }
-        hex_widgets::ResponseGraphPhase::Commit => {
-            if let Err(error) = view.finish_device_pair_gesture(pair) {
-                view.device_panel.message = Some(error.to_owned());
-            }
-            view.device_panel.eq8_graph_gestures.remove(&device);
-        }
-        _ => {}
+    let result = match event.phase {
+        hex_widgets::ResponseGraphPhase::Change => view.change_device_pair_gesture(pair),
+        hex_widgets::ResponseGraphPhase::Commit => view.finish_device_pair_gesture(pair),
+        _ => return,
+    };
+    if let Err(error) = result {
+        view.device_panel.message = Some(error.to_owned());
+    } else if let Some(target) = view
+        .device_panel
+        .eq8_graph_gestures
+        .get_mut(&device)
+        .and_then(|plan| plan.touch.moved(event.position, Some(first), second))
+    {
+        view.remember_automation_parameter(device, target);
+    }
+    if event.phase == hex_widgets::ResponseGraphPhase::Commit {
+        view.device_panel.eq8_graph_gestures.remove(&device);
     }
     cx.notify();
 }
@@ -465,55 +535,29 @@ pub(super) fn graph_model(
                 id: band as u32,
                 position: [log_position(frequency, MIN_HZ, sample_rate_max), y],
                 enabled,
-                selected: band == selected_band,
+                selected: view.device_panel.eq8_panels.get(&device).map_or_else(
+                    || band == selected_band,
+                    |panel| selection::mask(panel) & (1 << band) != 0,
+                ),
             }
         })
         .collect();
     let target_identity =
         hex_engine::PostNodeIdentity::new(owner, device.value(), device_view.type_id);
-    let analyzer = view
-        .device_panel
-        .spectrum_result
-        .as_ref()
-        .filter(|result| {
-            view.audio
-                .as_ref()
-                .and_then(|audio| audio.control.spectrum_desired())
-                .is_some_and(|target| {
-                    target.identity == target_identity
-                        && target.token == result.output.stamp.target
-                        && target.project_generation == result.output.stamp.generation
-                        && target.sample_rate_hz == result.output.stamp.sample_rate_hz
-                        && result.output.stamp.applied_revision >= target.activation_floor
-                })
-        })
-        .map(|result| {
-            result
-                .output
-                .frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .map(|(index, dbfs)| {
-                    let (low, high) = hex_audio::spectrum::band_bounds_hz(
-                        result.output.frame.sample_rate_hz,
-                        index,
-                    )
-                    .unwrap_or((MIN_HZ, MAX_HZ));
-                    let center = (low * high).sqrt();
-                    let upper = MAX_HZ.min(result.output.frame.sample_rate_hz as f32 * 0.49);
-                    [
-                        log_position(center, MIN_HZ, upper),
-                        super::super::spectrum_display::level(*dbfs),
-                    ]
-                })
-                .collect()
-        });
+    let output = super::super::eq_panel::spectrum_result(view, target_identity).map(|result| {
+        let frame = &result.output.frame;
+        let upper = MAX_HZ.min(frame.sample_rate_hz as f32 * 0.49);
+        super::super::spectrum_display::curves(frame, |hz| log_position(hz, MIN_HZ, upper))
+    });
+    let (analyzer, analyzer_peak) = output.map_or((None, None), |curves| {
+        (Some(curves.level), Some(curves.peak))
+    });
     Some(ResponseGraphModel {
         primary,
         secondary,
         analyzer,
         input_analyzer: None,
+        analyzer_peak,
         nodes,
     })
 }
@@ -526,13 +570,14 @@ fn effective_state(
 ) -> Option<NativeDeviceState> {
     let mut state = canonical_state.clone();
     for parameter in &device_view.parameters {
-        let effective = effective_parameter_value(
+        let effective = super::super::eq_automation::effective_value(
             view,
             ParameterKey {
                 device,
                 parameter: parameter.descriptor.id,
             },
-            parameter.value,
+            device_view.type_id,
+            parameter,
         );
         if effective != parameter.value {
             state = hex_engine::patch_native_device_parameter_for_class(
@@ -572,13 +617,14 @@ pub(super) fn value(
     parameter_id: ParameterId,
 ) -> Option<ParameterValue> {
     let parameter = parameter(device_view.parameters.as_slice(), parameter_id)?;
-    Some(effective_parameter_value(
+    Some(super::super::eq_automation::effective_value(
         view,
         ParameterKey {
             device,
             parameter: parameter_id,
         },
-        parameter.value,
+        device_view.type_id,
+        parameter,
     ))
 }
 
@@ -609,7 +655,7 @@ pub(super) fn logarithmic_frequencies(min: f32, max: f32, count: usize) -> Optio
     Some(output)
 }
 
-fn log_position(value: f32, min: f32, max: f32) -> f32 {
+pub(super) fn log_position(value: f32, min: f32, max: f32) -> f32 {
     if value <= min {
         return 0.0;
     }
@@ -628,7 +674,7 @@ pub(super) fn gain_from_y(y: f32) -> f32 {
     MIN_GAIN_DB + (MAX_GAIN_DB - MIN_GAIN_DB) * y.clamp(0.0, 1.0)
 }
 
-fn q_from_y(y: f32) -> f32 {
+pub(super) fn q_from_y(y: f32) -> f32 {
     MIN_Q * ((MAX_Q / MIN_Q).ln() * y.clamp(0.0, 1.0)).exp()
 }
 
@@ -641,7 +687,7 @@ fn magnitude_to_y(magnitude: f32) -> f32 {
     ((db - MIN_GAIN_DB) / (MAX_GAIN_DB - MIN_GAIN_DB)).clamp(0.0, 1.0)
 }
 
-fn float(value: ParameterValue) -> Option<f32> {
+pub(super) fn float(value: ParameterValue) -> Option<f32> {
     match value {
         ParameterValue::Float(value) if value.is_finite() => Some(value),
         _ => None,
@@ -662,7 +708,7 @@ fn boolean(value: ParameterValue) -> Option<bool> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
 

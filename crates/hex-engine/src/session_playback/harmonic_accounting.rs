@@ -39,6 +39,8 @@ fn inventory_shape(
         .unwrap();
     let mut snapshot = editor.project().snapshot();
     let template = snapshot.tracks.remove(0);
+    // Synthetic inventory below assigns every source/device identity afresh.
+    snapshot.native_sources.clear();
     let operator = crate::operator_legacy_test::legacy_operator_state();
     let operator = crate::patch_native_device_parameter_for_class(
         crate::NativeDeviceClass::Instrument,
@@ -74,6 +76,9 @@ fn inventory_shape(
         }
         for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: if eq && effect + 1 == effect_count {
@@ -89,6 +94,11 @@ fn inventory_shape(
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    content_view: None,
+                    active: true,
+                    playback_offset_raw: 0,
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                    volume: hex_project::MidiClipVolume::default(),
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: next,
@@ -100,6 +110,7 @@ fn inventory_shape(
                     loop_end_raw: 8 << 32,
                     looping: false,
                     notes: vec![hex_project::MidiNoteSnapshot {
+                        active: true,
                         id: next + 1,
                         start_raw: 0,
                         duration_raw: 8 << 32,
@@ -119,6 +130,9 @@ fn inventory_shape(
         let mut devices = Vec::new();
         for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
             devices.push(hex_project::DeviceSnapshot {
+                modulation: Default::default(),
+                parent: None,
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: utility.clone(),
@@ -137,7 +151,7 @@ fn inventory_shape(
             });
     }
     snapshot.next_id = next;
-    let project = Project::from_snapshot(snapshot)?;
+    let project = Project::from_legacy_snapshot(snapshot)?;
     Ok(Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),

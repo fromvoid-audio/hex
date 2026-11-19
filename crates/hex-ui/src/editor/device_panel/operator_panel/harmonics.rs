@@ -2,7 +2,7 @@
 use super::super::*;
 use super::id;
 use hex_lattice_contract::DeviceParameterSnapshot;
-use hex_widgets::{BarEditor, BarEditorEvent, BarEditorPhase};
+use hex_widgets::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 
 type Key = (DeviceId, usize);
 pub(in crate::editor::device_panel) struct Control {
@@ -322,6 +322,24 @@ pub(super) fn graph(
     (painter, overview)
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor::device_panel) fn displayed_cycle(
+    view: &EditorView,
+    device: DeviceId,
+    operator: usize,
+) -> Option<&[[f32; 2]; 256]> {
+    Some(
+        &view
+            .device_panel
+            .operator_harmonics
+            .get(&(device, operator))?
+            .overview
+            .points
+            .as_ref()?
+            .points,
+    )
+}
+
 fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
     let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
         return div();
@@ -334,7 +352,10 @@ fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
     style.border = style.background;
     style.rail = style.background;
     match control.overview.points {
-        Some(points) => hex_widgets::curve_plot(points.points, style).unwrap_or_else(div),
+        Some(points) => {
+            hex_widgets::curve_plot(points.points, style, hex_widgets::CurvePlotGrid::Horizontal)
+                .unwrap_or_else(div)
+        }
         None => div(),
     }
 }
@@ -619,7 +640,19 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
     if event.phase == BarEditorPhase::Cancel {
         let _ = view.cancel_device_gesture();
     } else {
-        paint(&mut stroke, event.position);
+        if matches!(event.mode, BarEditorMode::Clear) {
+            // Clearing addresses every traversed visible column, independently
+            // of paint interpolation, Shift-single mode and odd/even paint masks.
+            let [first, last] = event.columns;
+            if first > last || last >= stroke.count {
+                let _ = view.cancel_device_gesture();
+                return;
+            }
+            stroke.values[first..=last].fill(0.0);
+            stroke.last = event.position;
+        } else {
+            paint(&mut stroke, event.position);
+        }
         let Ok(values) = snapshot(key.1, stroke.values) else {
             let _ = view.cancel_device_gesture();
             return;
@@ -690,7 +723,7 @@ pub(in crate::editor::device_panel) fn retire(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     fn overview_input() -> OverviewInput {

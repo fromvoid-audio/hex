@@ -25,10 +25,18 @@ pub(super) struct OperatorLfoFactory {
     base: [u8; FEEDBACK_PAYLOAD_BYTES],
     lfo: LfoSettings,
     enabled: super::enable::EnableSettings,
+    // Validated once on control by `prepare_factory`.
     feedback: [f64; 4],
     release: u64,
     rate: u32,
     filter: Option<crate::operator_filter::Prepared>,
+}
+
+impl OperatorLfoFactory {
+    fn feedback_parameters(&self) -> crate::fm4::OperatorFeedbackParameters {
+        self.configuration
+            .validated_feedback_parameters(self.feedback)
+    }
 }
 
 pub(super) fn prepare_factory(
@@ -44,6 +52,10 @@ pub(super) fn prepare_factory(
         return Ok(None);
     }
     let state = settings.to_state()?;
+    let feedback = settings.effective_feedback().map(f64::from);
+    configuration
+        .feedback_parameters(feedback)
+        .map_err(|_| DeviceContractError::InvalidParameterValue)?;
     Ok(Some(OperatorLfoFactory {
         release: configuration.release_frames(),
         configuration,
@@ -53,7 +65,7 @@ pub(super) fn prepare_factory(
             .map_err(|_| DeviceContractError::MalformedState)?,
         lfo: settings.lfo,
         enabled: settings.enabled,
-        feedback: settings.effective_feedback().map(f64::from),
+        feedback,
         rate,
         filter: settings
             .filter
@@ -246,6 +258,12 @@ impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
     fn max_events_per_block(&self) -> usize {
         256
     }
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
     fn max_active_occurrences(&self) -> usize {
         if self.large() { 64 } else { VOICES }
     }
@@ -282,15 +300,11 @@ impl<const N: usize> Runtime<N> {
         self.enable_ramp.map_or(target, |r| r.levels(target))
     }
     fn current_parameters(&self) -> crate::fm4::OperatorFeedbackParameters {
-        let p = self.filter.as_ref().and_then(|b| b.parameters).map_or_else(
-            || {
-                self.factory
-                    .configuration
-                    .feedback_parameters(self.factory.feedback)
-                    .expect("validated factory parameters")
-            },
-            ParameterRamp::value,
-        );
+        let p = self
+            .filter
+            .as_ref()
+            .and_then(|b| b.parameters)
+            .map_or_else(|| self.factory.feedback_parameters(), ParameterRamp::value);
         if self.enable_ramp.is_some() {
             p.with_oscillator_levels(self.current_levels())
         } else {
@@ -298,16 +312,8 @@ impl<const N: usize> Runtime<N> {
         }
     }
     fn copy(&mut self, other: &Self) {
-        let target = self
-            .factory
-            .configuration
-            .feedback_parameters(self.factory.feedback)
-            .expect("validated target parameters");
-        let old_target = other
-            .factory
-            .configuration
-            .feedback_parameters(other.factory.feedback)
-            .expect("validated source parameters");
+        let target = self.factory.feedback_parameters();
+        let old_target = other.factory.feedback_parameters();
         let parameters = if target == old_target {
             if let Some(ramp) = other.enable_ramp {
                 Some(ParameterRamp {
@@ -373,6 +379,9 @@ impl<const N: usize> Runtime<N> {
     }
     fn apply(&mut self, event: NativeInstrumentEvent) -> Result<(), Error> {
         match event {
+            NativeInstrumentEvent::NotePressure { .. } => {
+                return Err(Error::UnsupportedNotePressure);
+            }
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -427,6 +436,26 @@ impl<const N: usize> Runtime<N> {
 }
 
 impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(
+        &self,
+        output: &mut [u64],
+    ) -> Result<usize, hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::active_ids(self.voices.iter().map(|v| v.id), output)
+    }
+    fn preflight_occurrence_gains(
+        &self,
+        events: &[NativeInstrumentEvent],
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::preflight(self.voices.iter().map(|v| v.id), events, gains)
+    }
+
     fn can_import_analytic(&self, notes: &[hex_lattice::NativeInstrumentAnalyticSeed]) -> bool {
         self.factory.large()
             && self.filter.is_some()
@@ -492,11 +521,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         };
         let mut offset = 0;
         for event in events {
-            let next = match *event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-            };
+            let next = event.frame_offset();
             if next < offset || next >= frames {
                 return Err(Error::InvalidEventBatch);
             }
@@ -543,15 +568,21 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         clock: Option<&dyn NativeInstrumentClock>,
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        self.process_block_with_clock_and_occurrence_gains(events, frames, clock, &[], _resources);
+    }
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let law = self.factory.lfo;
         let mut event = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {
             while let Some(next) = events.get(event) {
-                let at = match *next {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
-                };
+                let at = next.frame_offset();
                 if at != offset {
                     break;
                 }
@@ -626,6 +657,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                         voice.previous,
                     )
                 };
+                let sample = super::occurrence_gain::sample(sample, voice.id, offset, gains);
                 frame[0] += sample;
                 frame[1] += sample;
                 voice.previous = previous;
@@ -776,11 +808,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                     old.filter_parameter_boundary()
                         .map(|(start, frames)| ParameterRamp {
                             start,
-                            target: self
-                                .factory
-                                .configuration
-                                .feedback_parameters(self.factory.feedback)
-                                .expect("validated target"),
+                            target: self.factory.feedback_parameters(),
                             elapsed: 0,
                             frames,
                         });
@@ -861,13 +889,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
         base[super::LFO_PAYLOAD_BYTES + i * 4..super::LFO_PAYLOAD_BYTES + i * 4 + 4]
             .copy_from_slice(&u32::from(*enabled).to_le_bytes());
     }
-    let parameters = parameter_words(
-        runtime
-            .factory
-            .configuration
-            .feedback_parameters(runtime.factory.feedback)
-            .ok()?,
-    );
+    let parameters = parameter_words(runtime.factory.feedback_parameters());
     let mut ramp = runtime.enable_ramp.map(|r| ParameterRamp {
         source: std::array::from_fn(|i| if i < 4 { r.start[i] } else { parameters[i] }),
         elapsed: r.elapsed,
@@ -892,6 +914,8 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        fine_offsets: runtime.factory.configuration.fine_offsets_hz(),
+        pitch_keytrack: runtime.factory.configuration.pitch_keytrack_percent(),
         tuning: None,
         rate: runtime.factory.rate,
         companion: super::companion::Settings::default(),
@@ -1012,6 +1036,9 @@ mod tests {
             ] {
                 if (start..end).contains(&at) {
                     events.push(match event {
+                        NativeInstrumentEvent::NotePressure { .. } => {
+                            panic!("unexpected test note pressure")
+                        }
                         NativeInstrumentEvent::Expression { expression, .. } => {
                             NativeInstrumentEvent::Expression {
                                 frame_offset: at - start,
@@ -1312,7 +1339,7 @@ mod tests {
         assert!(
             edited
                 .preflight_events(&high, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
-                .is_err()
+                .is_ok()
         );
     }
 }

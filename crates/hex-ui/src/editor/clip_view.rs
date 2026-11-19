@@ -1,7 +1,7 @@
 //! Shared compact detail pane for Arrangement and Session audio/MIDI selections.
 use super::{EditorMode, EditorView};
 use crate::theme;
-use gpui::{Context, Div, div, prelude::*, px, rgb};
+use gpui::{Context, Div, canvas, div, prelude::*, px, rgb};
 
 pub(super) const CLIP_DETAIL_BODY_HEIGHT: f32 = 228.0;
 
@@ -13,6 +13,168 @@ fn cancel_eq8_audition(view: &mut EditorView) {
 }
 
 impl EditorView {
+    /// One shared picker in the status bar, leaving the editor surface for content.
+    pub(super) fn clip_detail_controls(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let open = self.clip_view_open;
+        let mut row = div()
+            .id("clip-view-toggle-row")
+            .h(px(18.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .relative()
+            .text_xs()
+            .debug_selector(|| "clip-view-toggle-row".into());
+        row = row.child(
+            div()
+                .id("clip-detail-tab")
+                .debug_selector(|| "clip-detail-tab".into())
+                .h(px(18.0))
+                .rounded(px(2.0))
+                .px(px(5.0))
+                .flex()
+                .items_center()
+                .text_color(rgb(if self.device_panel_active {
+                    theme::color(theme::PaletteRole::Muted)
+                } else {
+                    theme::color(theme::PaletteRole::Secondary)
+                }))
+                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+                .cursor(gpui::CursorStyle::PointingHand)
+                .child(theme::text("clip"))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if view.focus_clip_details(window, cx) {
+                        view.clip_view_open = true;
+                    }
+                    cx.notify();
+                })),
+        );
+        row = row.child(
+            div()
+                .id("device-detail-tab")
+                .debug_selector(|| "device-detail-tab".into())
+                .h(px(18.0))
+                .rounded(px(2.0))
+                .px(px(5.0))
+                .flex()
+                .items_center()
+                .text_color(rgb(if self.device_panel_active {
+                    theme::color(theme::PaletteRole::SecondaryText)
+                } else {
+                    theme::color(theme::PaletteRole::Muted)
+                }))
+                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+                .cursor(gpui::CursorStyle::PointingHand)
+                .child(theme::text("devices"))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if super::device_panel::finalize_controls(view, cx) {
+                        if let Some(owner) = view.focused_return {
+                            view.focus_return_details(owner, window, cx);
+                        } else {
+                            view.focus_track_details(window);
+                        }
+                        view.clip_view_open = true;
+                    }
+                    cx.notify();
+                })),
+        );
+        row = row.child(
+            div()
+                .id("device-panel-bottom-toggle")
+                .debug_selector(|| "device-panel-bottom-toggle".into())
+                .child(
+                    div()
+                        .id("clip-view-toggle")
+                        .size(px(18.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+                        .debug_selector(|| "clip-view-toggle".into())
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
+                                description: if open { "hide editor" } else { "show editor" }
+                                    .into(),
+                            })
+                            .into()
+                        })
+                        .child(theme::text(if open { "⌄" } else { "⌃" }))
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            if view.clip_view_open
+                                && !super::device_panel::finalize_controls(view, cx)
+                            {
+                                cx.notify();
+                                return;
+                            }
+                            view.clip_view_open = !view.clip_view_open;
+                            if !view.clip_view_open {
+                                view.audio_event_editor.gesture = None;
+                                view.cancel_midi_note_gesture();
+                                cancel_eq8_audition(view);
+                                if view.midi_focus.is_focused(window)
+                                    || view.audio_event_focus.is_focused(window)
+                                {
+                                    view.focus.focus(window);
+                                }
+                            }
+                            view.device_panel.navigation.cancel();
+                            if view.device_panel_active {
+                                view.focus.focus(window);
+                            }
+                            cx.notify();
+                        })),
+                ),
+        );
+        let entity = cx.entity();
+        row.child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, _, cx| {
+                    entity.update(cx, |view, _| {
+                        view.device_panel.navigation.detail_controls_bounds = Some(bounds);
+                    });
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+    }
+
+    /// Clip editor Arrangement audio subject (`detail_clip_id`) and
+    /// start/duration/source offset/length in project frames. Workspace
+    /// selection remains a separate query.
+    pub(super) fn detail_audio_clip_data(
+        &self,
+    ) -> Option<(
+        hex_project::TrackId,
+        hex_project::ClipId,
+        u64,
+        u64,
+        u64,
+        u64,
+    )> {
+        if self.selected_clip.is_some() {
+            return self.selected_clip_data();
+        }
+        let clip_id = self.detail_clip_id()?;
+        let state = self.state.as_ref()?;
+        state.project.tracks().iter().find_map(|track| {
+            let clip = track.clips().iter().find(|clip| clip.id() == clip_id)?;
+            Some((
+                track.id(),
+                clip_id,
+                clip.start(),
+                clip.duration(),
+                clip.source_offset(),
+                clip.source_length(),
+            ))
+        })
+    }
+
     /// Change the detail content in response to explicit clip focus. Pane
     /// visibility is a separate user choice and is intentionally untouched.
     pub(super) fn focus_clip_details(
@@ -38,6 +200,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = None;
         self.device_panel_active = true;
+        self.detail_context = None;
         if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
@@ -71,26 +234,10 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.focus_clip_details(window, cx)
-    }
-
-    fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
-        let project = &self.state.as_ref()?.project;
-        if self.mode == EditorMode::Session {
-            let (track, scene) = self.selected_cell?;
-            match project.session_cell(track, scene)? {
-                hex_project::SessionCellContent::Midi(clip) => Some((clip.id(), true)),
-                hex_project::SessionCellContent::Audio(clip) => Some((clip.id(), false)),
-                hex_project::SessionCellContent::Stop => None,
-            }
-        } else {
-            let clip = self.selected_clip?;
-            if project.midi_clip(clip).is_some() {
-                Some((clip, true))
-            } else {
-                project.clip(clip).map(|_| (clip, false))
-            }
+        if !self.focus_clip_details(window, cx) {
+            return false;
         }
+        true
     }
 
     pub(super) fn clip_detail_view(
@@ -98,11 +245,28 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        self.device_panel.compressor_sidechains.clear_visible();
+        self.reconcile_clip_detail_resize(window, cx);
+        self.reconcile_velocity_size(window, cx);
+        self.reconcile_piano_pitch_zoom(window, cx);
+        self.reconcile_piano_pan();
+        self.reconcile_midi_ruler();
+        self.reconcile_audio_loop();
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
-            self.selected_clip
+            self.detail_clip_id()
                 .is_some_and(|clip| state.project.midi_source(clip).is_some())
         });
+        // A conversion can retain ClipId while changing its source kind. Retire
+        // that MIDI viewport too, even when no new MIDI editor is rendered.
+        if self.piano_view_clip.is_some_and(|(generation, clip)| {
+            generation != self.project_generation
+                || self.detail_clip_id() != Some(clip)
+                || !selected_midi
+        }) {
+            self.piano_view_clip = None;
+            self.piano_zoom_wheel_accum = 0.0;
+        }
         let has_session_audio = self.mode == EditorMode::Session
             && self.selected_cell.is_some_and(|(track, scene)| {
                 self.state.as_ref().is_some_and(|state| {
@@ -112,6 +276,34 @@ impl EditorView {
                     )
                 })
             });
+        let natural = if has_session_audio {
+            super::session_audio_panel::DETAIL_HEIGHT
+        } else if selected_midi {
+            CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
+        } else {
+            CLIP_DETAIL_BODY_HEIGHT
+        };
+        let minimum = if has_session_audio {
+            super::session_audio_panel::DETAIL_HEIGHT
+        } else {
+            super::clip_detail_resize::MIN_HEIGHT
+                + if selected_midi {
+                    self.midi_velocity.visible_height()
+                } else {
+                    0.0
+                }
+        };
+        let preferred = self.clip_detail_resize.preferred(natural, minimum);
+        self.project_spectrum.detail_height = open.then_some(if self.device_panel_active {
+            super::device_panel::DEVICE_PANEL_HEIGHT
+        } else {
+            preferred
+        });
+        // Below a useful content size, keep real controls/canvas intact in the
+        // existing scroll viewport rather than letting intrinsic children crush tracks.
+        self.clip_detail_body_height = self
+            .project_spectrum_detail_height(window, preferred)
+            .max(minimum);
         let detail = if open {
             if self.device_panel_active {
                 Some(
@@ -121,218 +313,30 @@ impl EditorView {
             } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {
-                self.midi_editor(cx).map(|element| div().child(element))
+                self.midi_editor(window, cx)
+                    .map(|element| div().child(element))
             } else if self.mode == EditorMode::Arrangement {
-                super::arrangement_audio_panel::view(self, cx).map(|element| div().child(element))
+                super::arrangement_audio_panel::view(self, window, cx)
+                    .map(|element| div().child(element))
             } else {
                 None
             }
         } else {
             None
         };
-        if detail.is_some() && !self.device_panel_active {
-            self.clip_detail_body_height = if has_session_audio {
-                super::session_audio_panel::DETAIL_HEIGHT
-            } else {
-                CLIP_DETAIL_BODY_HEIGHT
-            };
+        if detail.is_none() {
+            self.project_spectrum.detail_height = None;
+            self.clip_detail_body_height = self.project_spectrum_detail_height(window, preferred);
         }
-        self.project_spectrum.detail_height = detail.as_ref().map(|_| {
-            if self.device_panel_active {
-                super::device_panel::DEVICE_PANEL_HEIGHT
-            } else {
-                self.clip_detail_body_height
-            }
-        });
-        let label = if self.device_panel_active {
-            "devices"
-        } else if !open {
-            "clip view"
-        } else if has_session_audio {
-            "session audio"
-        } else if selected_midi {
-            "midi clip"
-        } else if self.mode == EditorMode::Arrangement && self.selected_clip.is_some() {
-            "audio clip"
-        } else {
-            "clip view · no clip selected"
-        };
-        let mut row = div()
-            .id("clip-view-toggle-row")
-            .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .px(px(5.0))
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .border_t_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .text_xs()
-            .debug_selector(|| "clip-view-toggle-row".into());
-        row = row.child(
-            div()
-                .id("clip-view-toggle")
-                .size(px(18.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                .debug_selector(|| "clip-view-toggle".into())
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
-                        description: if open {
-                            "hide clip view"
-                        } else {
-                            "show selected clip details"
-                        }
-                        .into(),
-                    })
-                    .into()
-                })
-                .child(theme::text(if open { "⌄" } else { "⌃" }))
-                .on_click(cx.listener(|view, _, window, cx| {
-                    if view.clip_view_open && !super::device_panel::finalize_controls(view, cx) {
-                        cx.notify();
-                        return;
-                    }
-                    view.clip_view_open = !view.clip_view_open;
-                    if !view.clip_view_open {
-                        view.audio_event_editor.gesture = None;
-                        view.cancel_midi_note_gesture();
-                        cancel_eq8_audition(view);
-                        if view.midi_focus.is_focused(window)
-                            || view.audio_event_focus.is_focused(window)
-                        {
-                            view.focus.focus(window);
-                        }
-                    }
-                    cx.notify();
-                })),
-        );
-        row = row.child(
-            div()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(label)),
-        );
-        if !self.device_panel_active
-            && let Some((clip, to_audio)) = self.conversion_selection()
-        {
-            let enabled = !self.edit_pending();
-            let generation = self.project_generation;
-            let revision = self.state.as_ref().map_or(0, |state| state.revision);
-            row = row.child(
-                div()
-                    .id("convert-clip")
-                    .debug_selector(|| "convert-clip".into())
-                    .h(px(18.0))
-                    .px(px(5.0))
-                    .flex()
-                    .items_center()
-                    .text_color(rgb(theme::color(if enabled {
-                        theme::PaletteRole::SecondaryText
-                    } else {
-                        theme::PaletteRole::Muted
-                    })))
-                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                    .child(theme::text(if to_audio { "→ audio" } else { "→ midi" }))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| super::transport::MiniTooltip {
-                            description: if to_audio {
-                                "bounce clip to audio in place"
-                            } else {
-                                "convert to empty editable midi clip"
-                            }
-                            .into(),
-                        })
-                        .into()
-                    })
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        if !enabled
-                            || view.edit_pending()
-                            || view.project_generation != generation
-                            || view.conversion_selection() != Some((clip, to_audio))
-                        {
-                            return;
-                        }
-                        if !view.focus_clip_details(window, cx) {
-                            return;
-                        }
-                        view.cancel_time_selection_gesture();
-                        view.clip_view_open = true;
-                        if view.enqueue(hex_session::service::Request::ConvertClip {
-                            project_generation: generation,
-                            revision,
-                            clip,
-                            to_audio,
-                        }) {
-                            view.status = if to_audio {
-                                "bouncing clip to audio"
-                            } else {
-                                "converting clip to midi"
-                            }
-                            .into();
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        row = row.child(
-            div()
-                .id("clip-detail-tab")
-                .debug_selector(|| "clip-detail-tab".into())
-                .h(px(18.0))
-                .px(px(5.0))
-                .flex()
-                .items_center()
-                .text_color(rgb(if self.device_panel_active {
-                    theme::color(theme::PaletteRole::Muted)
-                } else {
-                    theme::color(theme::PaletteRole::Secondary)
-                }))
-                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                .cursor(gpui::CursorStyle::PointingHand)
-                .child(theme::text("clip"))
-                .on_click(cx.listener(|view, _, window, cx| {
-                    if view.focus_clip_details(window, cx) {
-                        view.clip_view_open = true;
-                    }
-                    cx.notify();
-                })),
-        );
-        row = row.child(
-            div()
-                .id("device-detail-tab")
-                .debug_selector(|| "device-detail-tab".into())
-                .h(px(18.0))
-                .px(px(5.0))
-                .flex()
-                .items_center()
-                .text_color(rgb(if self.device_panel_active {
-                    theme::color(theme::PaletteRole::SecondaryText)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                }))
-                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                .cursor(gpui::CursorStyle::PointingHand)
-                .child(theme::text("devices"))
-                .on_click(cx.listener(|view, _, window, cx| {
-                    if super::device_panel::finalize_controls(view, cx) {
-                        view.focus_track_details(window);
-                        view.clip_view_open = true;
-                    }
-                    cx.notify();
-                })),
-        );
         let mut panel = div()
             .w_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .child(row)
+            .children(
+                (open && !self.device_panel_active).then(|| self.clip_detail_resize_handle(cx)),
+            )
             .debug_selector(|| "clip-view".into());
         if open {
             if let Some(detail) = detail {
@@ -376,3 +380,7 @@ impl EditorView {
         panel
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_view_resize_tests.rs"]
+mod resize_tests;

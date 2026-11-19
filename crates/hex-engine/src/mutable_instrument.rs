@@ -1,8 +1,22 @@
 //! Bounded engine event ownership for prepared mutable note runtimes.
 //!
 //! The lattice owns each runtime's fixed voice state. This module owns the
-//! authored occurrence proof and performance deadlines needed to pair source
-//! spans with checked event IDs across render partitions and graph handoffs.
+//! source-owned authored/live projections of one native ID space. Authored
+//! gates follow musical performance time; released shared occurrences and live
+//! gates use an advancing DSP age while Pause freezes both transport clocks.
+//! The existing pair owns synthesis and transactional history; input schedulers
+//! retain their own ingress/capture acknowledgements, never another instrument.
+
+pub(crate) mod authored_gate;
+mod automation;
+pub(crate) mod frozen_parameters;
+mod live;
+pub(crate) mod output_trim;
+#[cfg(test)]
+mod steal_tests;
+mod volume;
+pub(crate) use live::{ImportedLiveOccurrence, LiveInputId};
+pub(crate) use volume::{VolumeLookup, VolumeSlice};
 
 use crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 use crate::midi_template::MidiOccurrenceSuppression;
@@ -31,13 +45,26 @@ const MAX_MUTABLE_TAIL_SECONDS: u64 = 600;
 pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
     u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
 }
+pub(crate) fn runtime_limits(
+    sample_rate: u32,
+) -> Result<NativeInstrumentRuntimeLimits, crate::Invalid> {
+    Ok(NativeInstrumentRuntimeLimits {
+        max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
+        max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
+        max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+        max_tail_frames: max_mutable_tail_frames(sample_rate)
+            .ok_or(crate::Invalid("mutable instrument tail budget overflow"))?,
+    })
+}
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
-/// Combined declared DSP storage for committed/scratch pairs in one active
-/// graph or one retained-tail bank. Variable-size instrument requirements draw
-/// from this pool; the separate 64 KiB effect-twin limit is not an instrument cap.
-/// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
+/// Per-instrument committed/scratch storage limit. Effect limits are separate;
+/// the combined graph/tail pool below charges all providers and owned buffers.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
+/// Complete declared DSP pair pool, including owned time-effect rings. Host
+/// ledgers/checkpoints and the existing complete candidate cap remain independent.
+pub(crate) const MAX_GRAPH_RUNTIME_PAIR_BYTES: usize =
+    2 * hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES;
 /// Retarget proof storage is independent of effect runtime payload size.
 pub(crate) const MAX_INSTRUMENT_RETARGET_PROOF_BYTES: usize = 4_096;
 
@@ -60,6 +87,23 @@ pub(crate) struct MutableNoteOnset {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    /// An explicitly admitted source-bound onset requiring a 5 ms fade-in.
+    pub(crate) contributor_fade_in: bool,
+}
+
+/// A bounded 5 ms fade for a source-owned onset, derived from its project rate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContributorFadeIn(std::num::NonZeroU16);
+impl ContributorFadeIn {
+    pub(crate) fn new(sample_rate: u32) -> Option<Self> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return None;
+        }
+        std::num::NonZeroU16::new(u16::try_from(sample_rate.div_ceil(200)).ok()?).map(Self)
+    }
+    fn frames(self) -> u64 {
+        u64::from(self.0.get())
+    }
 }
 
 /// Owned proof that this exact authored occurrence was dispatched by a
@@ -127,7 +171,31 @@ pub(crate) struct MutableOccurrence {
     pub(crate) onset_frame: u64,
     pub(crate) gate_end_frame: u64,
     pub(crate) quiet_deadline_frame: u64,
+    /// Shared sources expire released proofs on their advancing DSP clock.
+    pub(crate) quiet_deadline_age: Option<u64>,
     pub(crate) note_off_sent: bool,
+    /// Fixed left-limit gain survives source/graph retirement without a curve owner.
+    pub(crate) gain_at_end_bits: u64,
+    pub(crate) gain_frozen: bool,
+    pub(crate) contributor_fade: Option<ContributorFade>,
+}
+
+/// Source-age attenuation for an already sounding authored contributor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContributorFade {
+    start_age: u64,
+    frames: u64,
+    start_bits: u64,
+    muted: bool,
+}
+
+impl ContributorFade {
+    fn value(self, age: u64) -> f64 {
+        let elapsed = age.saturating_sub(self.start_age).min(self.frames);
+        let start = f64::from_bits(self.start_bits);
+        let target = if self.muted { 0.0 } else { 1.0 };
+        start + (target - start) * elapsed as f64 / self.frames as f64
+    }
 }
 
 /// One source query's maximum admitted sounding intervals. This is shared by
@@ -136,6 +204,7 @@ pub(crate) struct MutableOccurrence {
 pub(crate) struct MutableOnsetBuffer {
     spans: [Option<MutableNoteOnset>; MAX_MUTABLE_SPANS_PER_QUERY],
     len: usize,
+    has_contributor_fade_in: bool,
 }
 
 impl Default for MutableOnsetBuffer {
@@ -143,17 +212,23 @@ impl Default for MutableOnsetBuffer {
         Self {
             spans: [None; MAX_MUTABLE_SPANS_PER_QUERY],
             len: 0,
+            has_contributor_fade_in: false,
         }
     }
 }
 
 impl MutableOnsetBuffer {
     pub(crate) fn candidate_storage_empty(&self) -> bool {
-        let Self { spans, len } = self;
-        *len == 0 && spans.iter().all(Option::is_none)
+        let Self {
+            spans,
+            len,
+            has_contributor_fade_in,
+        } = self;
+        *len == 0 && !has_contributor_fade_in && spans.iter().all(Option::is_none)
     }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
+        self.has_contributor_fade_in = false;
     }
 
     pub(crate) fn push(&mut self, onset: MutableNoteOnset) -> Result<(), ()> {
@@ -162,6 +237,7 @@ impl MutableOnsetBuffer {
         };
         *slot = Some(onset);
         self.len += 1;
+        self.has_contributor_fade_in |= onset.contributor_fade_in;
         Ok(())
     }
 
@@ -208,12 +284,18 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    sample_rate: u32,
+    frozen_parameters: frozen_parameters::FrozenParameters,
+    modulation: Option<Box<hex_lattice::ModulationRuntime>>,
+    output_trim: Option<output_trim::OutputTrim>,
+    pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
     scratch: Vec<MutableOccurrence>,
     next_id: u64,
     next_id_scratch: u64,
+    live: Option<Box<live::LiveLedger>>,
 }
 
 /// A moved mutable instrument owner and its captured route identity. Tail
@@ -221,9 +303,96 @@ pub(crate) struct MutableInstrumentTrackRuntime {
 pub(crate) struct MutableInstrumentTail {
     pub(crate) track_id: TrackId,
     pub(crate) runtime: MutableInstrumentTrackRuntime,
+    pub(crate) sends: DetachedSourceSends,
+}
+
+/// Post-fader Return destinations for one detached source release. Stable
+/// Return IDs survive unrelated graph reordering. The fixed array carries no
+/// callback resource or additional processor owner.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DetachedSourceSends(
+    [Option<(hex_project::ReturnId, f32)>; hex_project::MAX_RETURN_TRACKS],
+);
+
+impl DetachedSourceSends {
+    pub(crate) fn from_track(track: &crate::Track, returns: &[crate::ReturnBus]) -> Option<Self> {
+        let mut result = Self::default();
+        if track.sends().len() > result.0.len() {
+            return None;
+        }
+        for (destination, send) in result.0.iter_mut().zip(track.sends()) {
+            *destination = Some((returns.get(send.return_index)?.id, send.gain));
+        }
+        Some(result)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (hex_project::ReturnId, f32)> + '_ {
+        self.0.iter().copied().map_while(std::convert::identity)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.iter().next().is_none()
+    }
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn is_concrete_current_sampler(&self) -> bool {
+        self.resources.is_none()
+            && self.expression.is_none()
+            && self.frozen_parameters.empty()
+            && self.modulation.is_none()
+            && self.output_trim.is_none()
+            && self
+                .pair
+                .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+                .is_some()
+    }
+    pub(crate) fn visit_current_sampler_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            sample_rate: _,
+            frozen_parameters,
+            modulation,
+            output_trim,
+            resources,
+            expression_identity: _,
+            expression,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+            live,
+        } = self;
+        if live.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        if expression.is_some()
+            || resources.is_some()
+            || modulation.is_some()
+            || output_trim.is_some()
+        {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        let (first, second) = pair
+            .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        frozen_parameters.visit_empty(ledger)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-primary", 0),
+            first,
+        )?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-scratch", 0),
+            second,
+        )
+    }
     /// Conservative checkpoint charge derived from the prepared declaration
     /// and both fixed occurrence-ledger buffers. Call before `new` so a store
     /// can reject count/aggregate overages before invoking the runtime factory.
@@ -247,7 +416,11 @@ impl MutableInstrumentTrackRuntime {
         let ledger_bytes = MAX_MUTABLE_OCCURRENCE_PROOFS
             .checked_mul(std::mem::size_of::<MutableOccurrence>())?
             .checked_mul(2)?;
-        pair_bytes.checked_add(ledger_bytes)
+        pair_bytes.checked_add(ledger_bytes)?.checked_add(
+            frozen_parameters::FrozenParameters::quote(
+                prepared.parameter_automation_descriptors().len(),
+            )?,
+        )
     }
 
     pub(crate) fn new(
@@ -256,6 +429,10 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let max_tail_frames =
             max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
+        frozen_parameters::FrozenParameters::quote(
+            prepared.parameter_automation_descriptors().len(),
+        )
+        .ok_or(MutableInstrumentRuntimeError::Budget)?;
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
@@ -272,6 +449,8 @@ impl MutableInstrumentTrackRuntime {
         if pair_bytes > pair.declared_pair_bytes() {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
+        let frozen_parameters =
+            frozen_parameters::FrozenParameters::new(prepared.parameter_automation_descriptors())?;
         let mut primary = Vec::new();
         primary
             .try_reserve_exact(MAX_MUTABLE_OCCURRENCE_PROOFS)
@@ -287,70 +466,81 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            sample_rate,
+            frozen_parameters,
+            modulation: None,
+            output_trim: None,
+            resources: None,
             expression_identity: None,
             expression: None,
             primary,
             scratch,
             next_id: 0,
             next_id_scratch: 0,
+            live: None,
         })
     }
 
     pub(crate) fn supports_live_expression(&self) -> bool {
+        let resources = self.resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            crate::native_device_resources::PreparedDeviceResourceLease::resources,
+        );
         self.pair.max_events_per_block() >= MAX_MUTABLE_EVENTS_PER_QUERY
             && self
                 .pair
                 .preflight_event_batch(
                     &crate::live_expression::Snapshot::default().events(),
                     1,
-                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    resources,
                 )
                 .is_ok()
     }
 
-    pub(crate) fn can_import_harmonics(
-        &self,
-        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
-        occurrences: &[Option<MutableOccurrence>],
-    ) -> bool {
-        occurrences.len() == history.voices.len()
-            && occurrences.len() <= self.primary.capacity()
-            && occurrences
-                .iter()
-                .zip(history.voices)
-                .all(|(occurrence, voice)| occurrence.is_some_and(|o| o.id == voice.occurrence_id))
-            && self.primary.is_empty()
-            && self.pair.can_import_analytic_history(history)
-    }
-    pub(crate) fn import_harmonics(
+    pub(crate) fn install_modulation(
         &mut self,
-        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
-        occurrences: &[Option<MutableOccurrence>],
+        declaration: &hex_lattice::PreparedModulationState,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if !self.can_import_harmonics(history, occurrences) {
+        let quote = declaration
+            .quoted_runtime_heap_bytes()
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        let runtime = declaration
+            .prepare()
+            .map_err(|_| MutableInstrumentRuntimeError::Budget)?;
+        if runtime
+            .heap_storage_bytes()
+            .is_none_or(|actual| actual > quote)
+        {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
-        self.pair
-            .import_analytic_history(history)
-            .map_err(map_runtime_error)?;
-        self.primary.clear();
-        self.primary.extend(occurrences.iter().flatten().copied());
-        self.scratch.clear();
-        self.scratch.extend_from_slice(&self.primary);
-        self.next_id = self.primary.iter().map(|o| o.id).max().unwrap_or(0);
-        self.next_id_scratch = self.next_id;
+        self.output_trim = declaration
+            .program()
+            .host_output_gain_base()
+            .map(output_trim::OutputTrim::new);
+        self.modulation = Some(Box::new(runtime));
         Ok(())
     }
 
     pub(crate) fn begin_block(&mut self) {
         self.pair.begin_block();
+        if let Some(trim) = &mut self.output_trim {
+            trim.scratch = trim.committed;
+        }
+        if let Some(modulation) = &mut self.modulation {
+            modulation.begin();
+        }
         self.scratch.clear();
         self.scratch.extend_from_slice(&self.primary);
         self.next_id_scratch = self.next_id;
+        if let Some(live) = &mut self.live {
+            live.begin();
+        }
     }
 
     pub(crate) fn committed_is_quiescent(&self) -> bool {
-        self.primary.is_empty() && self.pair.committed_is_quiescent()
+        self.primary.is_empty()
+            && !self.has_committed_live_occurrences()
+            && self.pair.committed_is_quiescent()
     }
 
     pub(crate) fn committed_state_available(&self) -> bool {
@@ -423,8 +613,10 @@ impl MutableInstrumentTrackRuntime {
     /// owner. The canonical revision descriptor and route checks remain the
     /// caller's responsibility.
     pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
+            && (previous.live.is_none() || self.live.is_some())
             && self.pair.can_inherit_from(&previous.pair)
     }
 
@@ -435,17 +627,20 @@ impl MutableInstrumentTrackRuntime {
         &mut self,
         previous: &Self,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if self.primary.capacity() < previous.primary.len()
+        if !self.resource_history_matches(previous)
+            || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
-            || !self.pair.can_inherit_from(&previous.pair)
+            || (previous.live.is_some() && self.live.is_none())
         {
             return Err(MutableInstrumentRuntimeError::Runtime(
                 NativeInstrumentRuntimeError::IncompatibleHistory,
             ));
         }
+        // The pair validates both twins before it copies either history.
         self.pair
             .inherit_from(&previous.pair)
             .map_err(map_runtime_error)?;
+        self.inherit_modulation(previous);
         self.primary.clear();
         self.primary.extend_from_slice(&previous.primary);
         self.scratch.clear();
@@ -455,9 +650,26 @@ impl MutableInstrumentTrackRuntime {
             .filter(|_| self.supports_live_expression());
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
+        if let Some((next, old)) = self.live.as_mut().zip(previous.live.as_ref()) {
+            next.primary = old.primary;
+            next.scratch = old.primary;
+            next.age = old.age;
+            next.scratch_age = old.age;
+            next.monitor_anchor = old.monitor_anchor;
+            next.scratch_monitor_anchor = old.monitor_anchor;
+            next.pending_len = 0;
+        }
         Ok(())
     }
 
+    /// Runtime history may carry only the same physical original-source bindings.
+    fn resource_history_matches(&self, previous: &Self) -> bool {
+        match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.compatible(previous),
+            _ => false,
+        }
+    }
     /// Read-only preflight for a prepared instrument-state retarget. The
     /// candidate inventory owns `proof` until control retires this graph.
     pub(crate) fn can_retarget_from(
@@ -465,8 +677,10 @@ impl MutableInstrumentTrackRuntime {
         previous: &Self,
         proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
     ) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
+            && (previous.live.is_none() || self.live.is_some())
             && self.pair.can_retarget_from(&previous.pair, proof)
     }
 
@@ -485,6 +699,7 @@ impl MutableInstrumentTrackRuntime {
         self.pair
             .retarget_from(&previous.pair, proof)
             .map_err(map_runtime_error)?;
+        self.inherit_modulation(previous);
         self.primary.clear();
         self.primary.extend_from_slice(&previous.primary);
         self.scratch.clear();
@@ -494,7 +709,29 @@ impl MutableInstrumentTrackRuntime {
             .filter(|_| self.supports_live_expression());
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
+        if let Some((next, old)) = self.live.as_mut().zip(previous.live.as_ref()) {
+            next.primary = old.primary;
+            next.scratch = old.primary;
+            next.age = old.age;
+            next.scratch_age = old.age;
+            next.monitor_anchor = old.monitor_anchor;
+            next.scratch_monitor_anchor = old.monitor_anchor;
+            next.pending_len = 0;
+        }
         Ok(())
+    }
+
+    fn inherit_modulation(&mut self, previous: &Self) {
+        if self.expression_identity.is_some()
+            && self.expression_identity == previous.expression_identity
+            && let (Some(current), Some(old)) = (&mut self.modulation, &previous.modulation)
+        {
+            current.inherit_graph_committed(old);
+            if let (Some(trim), Some(old)) = (&mut self.output_trim, previous.output_trim) {
+                trim.committed = old.committed;
+                trim.scratch = old.committed;
+            }
+        }
     }
 
     #[cfg(test)]
@@ -510,12 +747,32 @@ impl MutableInstrumentTrackRuntime {
         self.pair.fixed_storage_pair_bytes()
     }
 
+    #[cfg(test)]
+    pub(crate) fn proof_auxiliary_storage_bytes(&self) -> Option<(usize, usize)> {
+        Some((
+            self.frozen_parameters.storage_bytes()?,
+            self.modulation_bytes()?,
+        ))
+    }
+
     pub(crate) fn speculative_is_quiescent(&self) -> bool {
-        self.pair.speculative_is_quiescent()
+        // Logical live origins still owe scoped terminal processing even when
+        // a one-shot provider has already become acoustically quiet.
+        self.live.as_ref().is_none_or(|ledger| {
+            ledger.pending_len == 0 && ledger.scratch.iter().all(Option::is_none)
+        }) && self.pair.speculative_is_quiescent()
     }
 
     pub(crate) fn declared_pair_bytes(&self) -> usize {
-        self.pair.declared_pair_bytes()
+        self.pair
+            .declared_pair_bytes()
+            .saturating_add(self.modulation_bytes().unwrap_or(usize::MAX))
+    }
+
+    fn modulation_bytes(&self) -> Option<usize> {
+        self.modulation
+            .as_ref()
+            .map_or(Some(0), |runtime| runtime.storage_bytes())
     }
 
     /// Account this control-owned runtime and both reserved occurrence ledgers.
@@ -529,11 +786,94 @@ impl MutableInstrumentTrackRuntime {
                     .checked_add(self.scratch.capacity())?
                     .checked_mul(std::mem::size_of::<MutableOccurrence>())?,
             )?
-            .checked_add(self.pair.fixed_storage_pair_bytes()?)
+            .checked_add(self.pair.fixed_storage_pair_bytes()?)?
+            .checked_add(self.frozen_parameters.storage_bytes()?)?
+            .checked_add(self.modulation_bytes()?)?
+            .checked_add(
+                self.live
+                    .as_ref()
+                    .map_or(0, |_| std::mem::size_of::<live::LiveLedger>()),
+            )
+    }
+
+    pub(crate) fn transition_proofs(&self, speculative: bool) -> &[MutableOccurrence] {
+        if speculative {
+            &self.scratch
+        } else {
+            &self.primary
+        }
+    }
+    pub(crate) fn transition_proof_capacity(&self) -> usize {
+        self.primary.capacity().min(self.scratch.capacity())
+    }
+    pub(crate) fn max_events_per_block(&self) -> usize {
+        self.pair.max_events_per_block()
+    }
+    pub(crate) fn cut_speculative_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.scratch {
+            occurrence.gain_frozen = true;
+        }
+        let tail = self.max_release_tail_frames();
+        for occurrence in &mut self.scratch {
+            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
+                occurrence.gate_end_frame = performance_frame;
+                occurrence.quiet_deadline_frame = performance_frame.saturating_add(tail);
+            }
+        }
+    }
+    /// Release one contributor in the existing source kernel. Other tracks'
+    /// occurrences and feedback state remain owned by this same runtime.
+    pub(crate) fn cut_contributor_speculative_at(&mut self, track: TrackId, frame: u64) {
+        let tail = self.max_release_tail_frames();
+        for occurrence in &mut self.scratch {
+            if occurrence.signature.key().track == track {
+                occurrence.gain_frozen = true;
+                if !occurrence.note_off_sent && occurrence.gate_end_frame > frame {
+                    occurrence.gate_end_frame = frame;
+                    occurrence.quiet_deadline_frame = frame.saturating_add(tail);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn cut_contributor_at(&mut self, track: TrackId, frame: u64) {
+        for occurrence in &mut self.primary {
+            if occurrence.signature.key().track == track {
+                occurrence.gain_frozen = true;
+            }
+        }
+        self.reconcile_gate_deadlines_at(frame, |signature| {
+            (signature.key().track == track).then_some(frame)
+        });
+    }
+
+    pub(crate) fn can_admit_contributor_chase(&self) -> bool {
+        self.can_admit_contributor_chases(1)
+    }
+
+    pub(crate) fn can_admit_contributor_chases(&self, additional: usize) -> bool {
+        self.is_source_owner()
+            && self.pair.supports_occurrence_gain()
+            && self
+                .primary
+                .len()
+                .checked_add(self.transition_live_count(false))
+                .and_then(|used| used.checked_add(additional))
+                .is_some_and(|needed| {
+                    needed
+                        <= self
+                            .max_active_occurrences()
+                            .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
+                })
     }
 
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
+    }
+
+    /// The pair's admission-time `steals_releasing_voices` declaration.
+    pub(crate) const fn steals_releasing_voices(&self) -> bool {
+        self.pair.steals_releasing_voices()
     }
 
     pub(crate) fn max_release_tail_frames(&self) -> u64 {
@@ -544,18 +884,101 @@ impl MutableInstrumentTrackRuntime {
         self.primary.iter().copied()
     }
 
+    /// Retarget held authored occurrences without creating a second source.
+    /// The source-owned age advances even while stopped monitoring renders.
+    pub(crate) fn retarget_authored_contributor(
+        &mut self,
+        track: TrackId,
+        muted: bool,
+        sample_rate: u32,
+    ) -> bool {
+        let Some(age) = self.live.as_ref().map(|live| live.age) else {
+            return false;
+        };
+        if !self.pair.supports_occurrence_gain() || sample_rate == 0 {
+            return false;
+        }
+        let frames = u64::from(sample_rate.div_ceil(200).max(1));
+        for occurrence in &mut self.primary {
+            if occurrence.signature.key().track != track || (!muted && occurrence.note_off_sent) {
+                continue;
+            }
+            let current = occurrence
+                .contributor_fade
+                .map_or(1.0, |fade| fade.value(age));
+            occurrence.contributor_fade = Some(ContributorFade {
+                start_age: age,
+                frames,
+                start_bits: current.to_bits(),
+                muted,
+            });
+            if !muted {
+                occurrence.gain_frozen = false;
+            }
+        }
+        true
+    }
+
+    /// Retain held live IDs through the same source-age contributor ramp.
+    pub(crate) fn retarget_live_contributor(
+        &mut self,
+        track: TrackId,
+        muted: bool,
+        sample_rate: u32,
+    ) -> bool {
+        if !self.pair.supports_occurrence_gain() || sample_rate == 0 {
+            return false;
+        }
+        let Some(live) = &mut self.live else {
+            return false;
+        };
+        let frames = u64::from(sample_rate.div_ceil(200).max(1));
+        for voice in live.primary.iter_mut().flatten() {
+            if voice.input.track != track || voice.quiet_age.is_some() || voice.release_requested {
+                continue;
+            }
+            let current = voice
+                .contributor_fade
+                .map_or(1.0, |fade| fade.value(live.age));
+            voice.contributor_fade = Some(ContributorFade {
+                start_age: live.age,
+                frames,
+                start_bits: current.to_bits(),
+                muted,
+            });
+        }
+        true
+    }
+
     /// Cut still-gated occurrences at a publication boundary when the
     /// candidate has no enabled instrument. The runtime receives the matching
     /// frame-zero NoteOff in its next segment; feedback and release state stay
     /// owned and are not reset.
     pub(crate) fn cut_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.primary {
+            occurrence.gain_frozen = true;
+        }
+        self.reconcile_gate_deadlines_at(performance_frame, |_| Some(performance_frame));
+    }
+
+    /// Apply admitted per-occurrence gate cuts without resetting voices or
+    /// changing their dispatch identity. The existing event path emits the
+    /// NoteOff at the exact future offset, or zero at a publication cutoff.
+    pub(crate) fn reconcile_gate_deadlines_at(
+        &mut self,
+        performance_frame: u64,
+        mut cutoff: impl FnMut(MutableOccurrenceSignature) -> Option<u64>,
+    ) {
         let release_tail_frames = self.max_release_tail_frames();
         for occurrence in &mut self.primary {
-            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
-                occurrence.gate_end_frame = performance_frame;
-                occurrence.note_off_sent = false;
-                occurrence.quiet_deadline_frame =
-                    performance_frame.saturating_add(release_tail_frames);
+            if !occurrence.note_off_sent
+                && occurrence.gate_end_frame > performance_frame
+                && let Some(deadline) = cutoff(occurrence.signature)
+                    .map(|deadline| deadline.max(performance_frame))
+                    .filter(|deadline| *deadline < occurrence.gate_end_frame)
+            {
+                occurrence.gate_end_frame = deadline;
+                occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
             }
         }
     }
@@ -596,169 +1019,342 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_resources(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_segment_with_resources(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if self
+            .scratch
+            .iter()
+            .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
+        {
+            return self.process_volume_scope(
+                Some(track),
+                performance_start,
+                source_start,
+                frames,
+                onsets,
+                suppressions,
+                events,
+                clock,
+                resources,
+                None,
+                automation,
+            );
+        }
+        self.process_segment_inner(
+            Some(track),
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            resources,
+            None,
+            automation,
+        )
+    }
+
+    /// One source-owned event stream; onsets retain their contributor identities
+    /// but use performance-frame offsets in this shared segment.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_source_segment(
+        &mut self,
+        performance_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        volume: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if self
+            .scratch
+            .iter()
+            .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
+            || self.live.as_ref().is_some_and(|live| {
+                live.scratch
+                    .iter()
+                    .flatten()
+                    .any(|voice| voice.contributor_fade.is_some())
+            })
+        {
+            return self.process_volume_scope(
+                None,
+                performance_start,
+                performance_start,
+                frames,
+                onsets,
+                suppressions,
+                events,
+                clock,
+                resources,
+                volume,
+                automation,
+            );
+        }
+        self.process_segment_inner(
+            None,
+            performance_start,
+            performance_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            resources,
+            volume,
+            automation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Same bounded segment with a borrowed volume lookup.
+    fn process_segment_inner(
+        &mut self,
+        track: Option<TrackId>,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        volume: Option<&mut VolumeLookup<'_>>,
+        automation: Option<&dyn hex_lattice::NativeParameterAutomation>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        automation::validate_width(automation, frames.len())?;
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-        let performance_end = performance_start
-            .checked_add(width)
-            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
         events.clear();
+        let source_age = self.live.as_ref().map(|live| live.scratch_age);
+        if let Some(live) = &mut self.live {
+            if clock.and_then(|clock| clock.transport_is_running()) == Some(true) {
+                live.scratch_monitor_anchor = None;
+            }
+            live.expire();
+            live.emit_requested(self.pair.max_release_tail_frames())?;
+            for event in live.pending[..live.pending_len].iter().flatten() {
+                push_event(events, *event)?;
+            }
+            live.pending_len = 0;
+        }
         if let Some(expression) = self.expression {
             events.extend(expression.events());
         }
-        onsets.sort_canonically();
-
-        self.scratch.retain(|occurrence| {
-            !occurrence.note_off_sent || occurrence.quiet_deadline_frame > performance_start
-        });
-        for occurrence in &mut self.scratch {
-            if !occurrence.note_off_sent && occurrence.gate_end_frame < performance_start {
-                return Err(MutableInstrumentRuntimeError::OrphanedGate);
-            }
-            if !occurrence.note_off_sent && occurrence.gate_end_frame < performance_end {
-                let offset = usize::try_from(occurrence.gate_end_frame - performance_start)
-                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-                push_event(
-                    events,
-                    NativeInstrumentEvent::NoteOff {
-                        frame_offset: offset,
-                        occurrence_id: occurrence.id,
-                    },
-                )?;
-                occurrence.note_off_sent = true;
-            }
-        }
-
-        for (onset_index, onset) in onsets.iter().enumerate() {
-            if onset.key.track != track || onset.source_start < source_start {
-                continue;
-            }
-            let Some(onset_delta) = onset.source_start.checked_sub(source_start) else {
-                continue;
-            };
-            if onset_delta >= width {
-                continue;
-            }
-            let onset_frame = performance_start
-                .checked_add(onset_delta)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            let signature = MutableOccurrenceSignature::new(onset);
-            if has_mutable_suppression(suppressions, signature, onset_frame) {
-                continue;
-            }
-            self.scratch
-                .retain(|proof| !proof.note_off_sent || proof.quiet_deadline_frame > onset_frame);
-            if self
-                .scratch
-                .iter()
-                .any(|active| active.signature.key == onset.key)
-                || onsets.iter().take(onset_index).any(|previous| {
-                    previous.key == onset.key
-                        && !has_mutable_suppression(
-                            suppressions,
-                            MutableOccurrenceSignature::new(previous),
-                            performance_start
-                                .saturating_add(previous.source_start.saturating_sub(source_start)),
-                        )
-                })
-            {
-                return Err(MutableInstrumentRuntimeError::DuplicateOccurrence);
-            }
-            self.next_id_scratch = self
-                .next_id_scratch
-                .checked_add(1)
-                .ok_or(MutableInstrumentRuntimeError::IdentityExhausted)?;
-            let gate_delta = onset
-                .source_gate_end
-                .checked_sub(source_start)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            let gate_end_frame = performance_start
-                .checked_add(gate_delta)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            if gate_end_frame <= onset_frame {
-                return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
-            }
-            let onset_offset = usize::try_from(onset_delta)
-                .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-            let id = self.next_id_scratch;
-            push_event(
-                events,
-                NativeInstrumentEvent::NoteOn {
-                    frame_offset: onset_offset,
-                    occurrence_id: id,
-                    pitch: onset.pitch,
-                    velocity: onset.velocity,
-                },
-            )?;
-            let note_off_sent = gate_end_frame < performance_end;
-            if note_off_sent {
-                let offset = usize::try_from(gate_end_frame - performance_start)
-                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
-                push_event(
-                    events,
-                    NativeInstrumentEvent::NoteOff {
-                        frame_offset: offset,
-                        occurrence_id: id,
-                    },
-                )?;
-            } else {
-                // Gateoffs at the exclusive block end are emitted at offset
-                // zero of the next segment, preserving half-open semantics.
-            }
-            if self.scratch.len() >= MAX_MUTABLE_OCCURRENCE_PROOFS {
-                return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
-            }
-            let quiet_deadline_frame = gate_end_frame
-                .checked_add(self.max_release_tail_frames())
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-            self.scratch.push(MutableOccurrence {
-                signature,
-                id,
-                onset_frame,
-                gate_end_frame,
-                quiet_deadline_frame,
-                note_off_sent,
-            });
-        }
+        let context = authored_gate::AuthoredGateContext {
+            track,
+            performance_start,
+            source_start,
+            width,
+            source_age,
+            contributor_fade_rate: self
+                .pair
+                .supports_occurrence_gain()
+                .then_some(self.sample_rate),
+            tail_frames: self.max_release_tail_frames(),
+            max_active: self.max_active_occurrences(),
+            steals_releasing: self.steals_releasing_voices(),
+            live: self.source_live_count(),
+            suppressions,
+        };
+        authored_gate::stage_authored_gates(
+            &mut self.scratch,
+            &mut self.next_id_scratch,
+            onsets,
+            context,
+            |gate| push_event(events, gate.into()),
+        )?;
 
         events.sort_unstable_by_key(|event| {
-            let (offset, is_on, occurrence_id) = match *event {
-                NativeInstrumentEvent::Expression { frame_offset, .. } => (frame_offset, false, 0),
-                NativeInstrumentEvent::NoteOff {
-                    frame_offset,
-                    occurrence_id,
-                } => (frame_offset, false, occurrence_id),
-                NativeInstrumentEvent::NoteOn {
-                    frame_offset,
-                    occurrence_id,
-                    ..
-                } => (frame_offset, true, occurrence_id),
+            let (rank, occurrence_id) = match *event {
+                NativeInstrumentEvent::Expression { .. } => (0, 0),
+                NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
+                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
+                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
+                    (3, occurrence_id.get())
+                }
             };
-            (offset, is_on, occurrence_id)
+            (event.frame_offset(), rank, occurrence_id)
         });
-        self.pair
-            .process_block_with_clock(events, frames, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
-            .map_err(map_runtime_error)
+        let gains = volume::gains_for_segment(
+            &self.pair,
+            &mut self.scratch,
+            self.live
+                .as_mut()
+                .map(|live| &mut live.scratch[..])
+                .unwrap_or(&mut []),
+            events,
+            performance_start,
+            source_age,
+            frames.len(),
+            volume,
+        )?;
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
+        if let Some(modulation) = &mut self.modulation {
+            let mut processed = Ok(());
+            modulation
+                .render_instrument_chunk(frames.len(), automation, clock, events, |values| {
+                    let mut render = |frames: &mut [hex_lattice::StereoFrame]| {
+                        self.pair.process_block_with_clock_and_automation(
+                            events,
+                            frames,
+                            clock,
+                            gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                            values,
+                            resources,
+                        )
+                    };
+                    if let Some(trim) = &mut self.output_trim {
+                        use crate::device_modulation::INSTRUMENT_MODULATION_CHUNK_FRAMES;
+                        use hex_lattice_contract::{DeviceContractError, HostGain};
+                        let mut output_gains = [HostGain::ZERO; INSTRUMENT_MODULATION_CHUNK_FRAMES];
+                        let output_gains = output_gains
+                            .get_mut(..frames.len())
+                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                        for (offset, gain) in output_gains.iter_mut().enumerate() {
+                            *gain = values.instrument_output_gain_at(offset)?;
+                        }
+                        processed = output_trim::render_contribution(
+                            frames,
+                            |offset| output_gains[offset].linear(),
+                            NativeInstrumentRuntimeError::InvalidParameterAutomation,
+                            render,
+                        );
+                        if processed.is_ok()
+                            && let Some(&last) = output_gains.last()
+                        {
+                            trim.scratch = last;
+                        }
+                    } else {
+                        processed = render(frames);
+                    }
+                    Ok(())
+                })
+                .map_err(|_| {
+                    map_runtime_error(NativeInstrumentRuntimeError::InvalidParameterAutomation)
+                })?;
+            if processed.is_err() {
+                modulation.rollback();
+            }
+            processed
+        } else if let Some(values) = automation {
+            self.pair.process_block_with_clock_and_automation(
+                events,
+                frames,
+                clock,
+                gains.as_ref().map_or(&[], |gains| gains.as_slice()),
+                values,
+                resources,
+            )
+        } else {
+            match gains {
+                Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+                    events,
+                    frames,
+                    clock,
+                    gains.as_slice(),
+                    resources,
+                ),
+                None => self
+                    .pair
+                    .process_block_with_clock(events, frames, clock, resources),
+            }
+        }
+        .map_err(map_runtime_error)?;
+        if let Some(live) = &mut self.live {
+            live.scratch_age = live
+                .scratch_age
+                .checked_add(width)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn commit_block(&mut self) {
         self.pair.commit_block();
+        if let Some(trim) = &mut self.output_trim {
+            trim.committed = trim.scratch;
+        }
+        if let Some(modulation) = &mut self.modulation {
+            let _ = modulation.commit();
+        }
         std::mem::swap(&mut self.primary, &mut self.scratch);
         self.next_id = self.next_id_scratch;
+        if let Some(live) = &mut self.live {
+            live.primary = live.scratch;
+            live.age = live.scratch_age;
+            live.monitor_anchor = live.scratch_monitor_anchor;
+        }
         if self.pair.committed_is_quiescent() {
             self.primary.clear();
+            if let Some(live) = &mut self.live {
+                live.primary.fill(None);
+            }
         }
     }
 
     pub(crate) fn rollback_block(&mut self) {
         self.pair.rollback_block();
+        if let Some(modulation) = &mut self.modulation {
+            modulation.rollback();
+        }
     }
 
     pub(crate) fn reset(&mut self) {
         self.pair.reset();
+        if let Some(trim) = &mut self.output_trim {
+            *trim = output_trim::OutputTrim::new(trim.base);
+        }
+        if let Some(modulation) = &mut self.modulation {
+            modulation.reset_all();
+        }
+        self.frozen_parameters.reset();
         self.primary.clear();
         self.scratch.clear();
         self.next_id = 0;
         self.next_id_scratch = 0;
+        if let Some(live) = &mut self.live {
+            **live = Default::default();
+        }
     }
 }
 
@@ -792,9 +1388,19 @@ pub(crate) fn host_storage_upper_bound(track_count: usize) -> Option<usize> {
         .checked_add(active_ledger_entries)?
         .checked_add(tail_owner_slots)?
         .checked_add(tail_ledger_entries)?
+        .checked_add(track_count.checked_add(tail_slots)?.checked_mul(
+            frozen_parameters::FrozenParameters::quote(
+                hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE,
+            )?,
+        )?)?
         .checked_add(std::mem::size_of::<MutableOnsetBuffer>())?
         .checked_add(events)?
-        .checked_add(vector_headers)
+        .checked_add(vector_headers)?
+        .checked_add(
+            track_count
+                .checked_add(tail_slots)?
+                .checked_mul(std::mem::size_of::<live::LiveLedger>())?,
+        )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -909,7 +1515,7 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances. Effects retain their separate 64 KiB
+/// admits at most 256 stateful instances. Effects retain their separate 256 KiB
 /// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
@@ -924,7 +1530,7 @@ pub(crate) fn validate_mutable_graph_budget(
         .checked_add(pair_bytes)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if total_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-        || total_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
+        || total_bytes > MAX_GRAPH_RUNTIME_PAIR_BYTES
     {
         return Err(MutableInstrumentRuntimeError::Budget);
     }
@@ -996,6 +1602,18 @@ pub(crate) fn validate_prepared_graph_budget(
                         .ok_or(MutableInstrumentRuntimeError::Budget)?,
                 )
                 .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            if let Some(modulation) = session.instrument_modulation(track_id) {
+                mutable_bytes = mutable_bytes
+                    .checked_add(
+                        modulation
+                            .quoted_runtime_heap_bytes()
+                            .ok_or(MutableInstrumentRuntimeError::Budget)?,
+                    )
+                    .and_then(|bytes| {
+                        bytes.checked_add(std::mem::size_of::<hex_lattice::ModulationRuntime>())
+                    })
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            }
         }
     }
 

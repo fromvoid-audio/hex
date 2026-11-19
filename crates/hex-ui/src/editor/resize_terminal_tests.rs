@@ -4,7 +4,7 @@ use crate::editor::{EditorView, external_audio_drop_ui_test::BatchFiles, viewpor
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipId, Command, TrackId, TrimEdge};
 use hex_session::service::{Event, Request, Service};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 struct Fixture {
     _files: BatchFiles,
@@ -14,12 +14,15 @@ struct Fixture {
     clip: ClipId,
 }
 fn event(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "event: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -73,7 +76,7 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
 }
 const OWNED: Viewport = Viewport {
     start: 28_800,
-    length: 384_000,
+    length: 672_000,
 };
 fn install(v: &mut EditorView, clip: ClipId) -> Request {
     // Controlled UI queue seam. The separate resize_pan_tests prove real
@@ -392,6 +395,7 @@ fn terminal_uses_current_loop_and_open_gain_lane_display_extent(cx: &mut TestApp
                 Command::UpsertTrackGainPoint {
                     track: f.track,
                     point: hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: BeatTime::from_quarters(20).unwrap(),
                         gain: 1.0,
                         outgoing: hex_project::GainInterpolation::Step,
@@ -472,7 +476,8 @@ fn restart_offline_pending_work_blocks_actual_resize_capture_until_completion(
         event
     });
     let selector = Box::leak(format!("clip-trim-right-{}", f.clip.value()).into_boxed_str());
-    let down = visual.debug_bounds(selector).unwrap().center();
+    let down =
+        crate::editor::clip_drag_ui_test::trim_grab_point(visual.debug_bounds(selector).unwrap());
     let moved = gpui::point(down.x - gpui::px(12.0), down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());

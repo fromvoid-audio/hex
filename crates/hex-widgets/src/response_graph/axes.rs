@@ -52,7 +52,7 @@ impl ResponseGraphAxes {
             .right(px(34.0))
             .top(px(8.0))
             .bottom(px(20.0));
-        let mut end = -1.0;
+        let mut end = None;
         for (index, (x, label)) in self.horizontal.iter().enumerate() {
             if label.is_empty() {
                 continue;
@@ -72,10 +72,10 @@ impl ResponseGraphAxes {
                     .width,
             );
             let left = (x * width - measured / 2.0).clamp(0.0, (width - measured).max(0.0));
-            if left < end + 5.0 {
+            if end.is_some_and(|end| left < end + 5.0) {
                 continue;
             }
-            end = left + measured;
+            end = Some(left + measured);
             let key = format!("{id}-axis-x-{index}");
             labels = labels.child(
                 div()

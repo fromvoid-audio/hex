@@ -8,8 +8,55 @@ pub(super) struct TrackSelection {
 }
 
 impl TrackSelection {
+    /// Replace with the authoritative ordered births from a committed snapshot.
+    pub(super) fn replace(&mut self, ids: &[TrackId]) {
+        self.ids = ids.iter().copied().collect();
+        self.anchor = ids.first().copied();
+    }
+    /// A label selects a canonical cohort, including hidden/folded members.
+    /// Plain replaces, shift adds, primary modifier toggles the whole cohort.
+    pub(super) fn select_tag(
+        &mut self,
+        project: &Project,
+        tag: &hex_project::TrackTag,
+        add: bool,
+        toggle: bool,
+        preferred: Option<TrackId>,
+    ) {
+        self.reconcile(project);
+        let matching: Vec<_> = project
+            .tracks()
+            .iter()
+            .filter(|track| track.has_tag(tag))
+            .map(|track| track.id())
+            .collect();
+        // Combined shift+primary keeps the existing additive selection law.
+        if toggle && !add {
+            let remove = matching.iter().all(|id| self.ids.contains(id));
+            for id in &matching {
+                if remove {
+                    self.ids.remove(id);
+                } else {
+                    self.ids.insert(*id);
+                }
+            }
+        } else {
+            if !add {
+                self.ids.clear();
+            }
+            self.ids.extend(matching.iter().copied());
+        }
+        self.anchor = preferred
+            .filter(|id| self.ids.contains(id))
+            .or_else(|| matching.into_iter().find(|id| self.ids.contains(id)))
+            .or_else(|| self.ordered(project).first().copied());
+    }
     pub(super) fn contains(&self, track: TrackId) -> bool {
         self.ids.contains(&track)
+    }
+
+    pub(super) fn only_or_empty(&self, track: TrackId) -> bool {
+        self.ids.is_empty() || (self.ids.len() == 1 && self.ids.contains(&track))
     }
 
     pub(super) fn ordered(&self, project: &Project) -> Vec<TrackId> {
@@ -69,6 +116,61 @@ impl TrackSelection {
 }
 
 impl super::EditorView {
+    /// Direct lane focus selects one track without changing the independently
+    /// owned cursor/time range or running header-navigation focus transitions.
+    pub(super) fn select_lane_track(&mut self, track: TrackId) {
+        // Time drags update on every frame; rebuild membership only on a change.
+        if self.selected_track == Some(track)
+            && self.track_selection.ids.len() == 1
+            && self.track_selection.contains(track)
+        {
+            return;
+        }
+        if let Some(state) = self.state.as_ref()
+            && self
+                .track_selection
+                .select(&state.project, track, false, false)
+        {
+            self.selected_track = Some(track);
+            self.arrangement_focus.observe_active_track(Some(track));
+            self.update_track_selection_status();
+        }
+    }
+
+    /// Painting an ordinary lane range explicitly selects its visible track span.
+    /// Time geometry remains separately owned; unchanged horizontal motion keeps
+    /// this membership allocation and the stable drag anchor intact.
+    pub(super) fn select_lane_span(&mut self, anchor: TrackId, end: TrackId) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let tracks = state.project.tracks();
+        let Some(first) = tracks.iter().position(|track| track.id() == anchor) else {
+            return;
+        };
+        let Some(last) = tracks.iter().position(|track| track.id() == end) else {
+            return;
+        };
+        let visible = tracks[first.min(last)..=first.max(last)]
+            .iter()
+            .filter(|track| self.arrangement_track_visible(track.id()));
+        if self.selected_track == Some(end)
+            && self.track_selection.anchor == Some(anchor)
+            && visible.clone().count() == self.track_selection.ids.len()
+            && visible
+                .clone()
+                .all(|track| self.track_selection.contains(track.id()))
+        {
+            return;
+        }
+        let ids = visible.map(|track| track.id()).collect();
+        self.track_selection.ids = ids;
+        self.track_selection.anchor = Some(anchor);
+        self.selected_track = Some(end);
+        self.arrangement_focus.observe_active_track(Some(end));
+        self.update_track_selection_status();
+    }
+
     pub(super) fn update_track_selection_status(&mut self) {
         self.status = match self.selected_track_ids().len() {
             0 => "no tracks selected".into(),
@@ -83,17 +185,84 @@ impl super::EditorView {
         modifiers: gpui::Modifiers,
         window: &mut gpui::Window,
     ) {
+        if super::device_panel::source_sampler_edit_active(self) {
+            self.error = Some("finish the sampler edit before changing the source view".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };
+        // Additive ranges retain explicit hidden members, while new range
+        // members are limited to visible Console columns.
+        let previous =
+            (self.mode == super::EditorMode::Session && modifiers.shift && modifiers.platform)
+                .then(|| self.track_selection.ids.clone());
         if self
             .track_selection
             .select(&state.project, track, modifiers.shift, modifiers.platform)
         {
+            if modifiers.shift && self.mode == super::EditorMode::Session {
+                let visible: std::collections::BTreeSet<_> = self
+                    .arrangement_focus
+                    .projection
+                    .console_indices
+                    .iter()
+                    .filter_map(|index| state.project.tracks().get(*index).map(|track| track.id()))
+                    .collect();
+                self.track_selection.ids.retain(|id| {
+                    visible.contains(id) || previous.as_ref().is_some_and(|ids| ids.contains(id))
+                });
+            }
+            if modifiers.shift
+                && self.mode == super::EditorMode::Arrangement
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
+            {
+                let ids = self
+                    .track_selection
+                    .ids
+                    .iter()
+                    .copied()
+                    .filter(|id| self.arrangement_track_visible(*id))
+                    .collect();
+                self.track_selection.ids = ids;
+            }
             self.focus_selected_track(track, window);
         }
     }
 
+    pub(super) fn select_tag_tracks(
+        &mut self,
+        tag: &hex_project::TrackTag,
+        modifiers: gpui::Modifiers,
+        preferred: Option<TrackId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if !self.track_view_change_available(cx) {
+            return;
+        }
+        let Some(state) = &self.state else { return };
+        self.track_selection.select_tag(
+            &state.project,
+            tag,
+            modifiers.shift,
+            modifiers.platform,
+            preferred,
+        );
+        let ids = self.track_selection.ordered(&state.project);
+        let active = preferred
+            .filter(|id| ids.contains(id))
+            .or_else(|| self.selected_track.filter(|id| ids.contains(id)))
+            .or_else(|| ids.first().copied());
+        if let Some(active) = active {
+            self.focus_selected_track(active, window);
+        } else {
+            self.selected_track = None;
+            self.update_track_selection_status();
+        }
+        cx.notify();
+    }
     /// Every consumer receives explicit members in canonical order; time range
     /// and focused-clip state never promote unrelated tracks into this selection.
     pub(super) fn selected_track_ids(&self) -> Vec<TrackId> {
@@ -105,11 +274,17 @@ impl super::EditorView {
 
 /// Keep a valid selected clip attached to its canonical owner after edits,
 /// undo, redo or worker-side project changes.
+/// An explicitly empty clip selection stays empty across acknowledgements;
+/// only a stale non-empty selection falls back to another clip.
+/// Initial project population is handled separately by the view owner.
 pub(super) fn reconcile(
     project: &Project,
     current_track: Option<TrackId>,
     current_clip: Option<ClipId>,
 ) -> (Option<TrackId>, Option<ClipId>) {
+    if current_track.is_none() && current_clip.is_none() {
+        return (None, None);
+    }
     if let Some(clip_id) = current_clip
         && let Some(track) = project.tracks().iter().find(|track| {
             track.clips().iter().any(|clip| clip.id() == clip_id)
@@ -125,6 +300,9 @@ pub(super) fn reconcile(
     let track = current_track
         .filter(|id| project.track(*id).is_some())
         .or_else(|| project.tracks().first().map(|track| track.id()));
+    if current_clip.is_none() {
+        return (track, None);
+    }
     let clip = track.and_then(|id| {
         let track = project.track(id)?;
         track
@@ -162,7 +340,7 @@ pub(super) fn neighbor(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor};
@@ -254,6 +432,11 @@ mod tests {
             reconcile(editor.project(), Some(source), Some(clip)),
             (Some(source), Some(clip))
         );
+        assert_eq!(
+            reconcile(editor.project(), Some(source), None),
+            (Some(source), None)
+        );
+        assert_eq!(reconcile(editor.project(), None, None), (None, None));
         editor
             .execute(Command::MoveClip {
                 clip,

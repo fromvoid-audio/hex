@@ -1,348 +1,548 @@
-//! Bounded, asynchronous per-session diagnostic logging.
+//! # Purpose
+//! Own bounded asynchronous per-session diagnostic logging and recent retention.
+//!
+//! # Dependencies
+//! Standard library only. Desktop owns startup and shutdown; control producers
+//! enqueue bounded records. Producers may wait for another producer's bounded,
+//! allocation-free enqueue critical section, so they must never be called from
+//! a realtime/audio thread.
+//!
+//! # Does not own
+//! No audio/project authority, action replay, source admission or musical ACK.
+//! Enqueue success is not durable delivery. Producer wall/monotonic times and
+//! sequence precede writing; loss and truncation are explicit. Sequence orders
+//! enqueue attempts, not independent actions on different threads. New files
+//! use schema 3: event rows include fixed lowercase `level` and `category`
+//! tokens before the schema-2 timestamp, sequence, truncation and quoted message
+//! fields. The legacy `record` entry point assigns info/uncategorised; older
+//! schema-2 files have no classification and are not rewritten. Recent files
+//! roll at 8 MiB with four segments/session and ten retained sessions (320 MiB
+//! for new-format files, plus a bounded rollover header per session); older
+//! unbounded logs expire through normal retention.
+//! Startup and shutdown use two-second writer waits. Shutdown closes admission,
+//! observes the last enqueue, then drains at most 64 accepted records. Stalled
+//! OS I/O may outlive a reported timeout
+//! on its detached worker; it never blocks audio or owns project/media files.
 
+mod event;
+pub mod reader;
+mod rolling;
+
+use event::{Context, Record};
 use std::{
     env,
-    fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub const EVENT_CAPACITY: usize = 64;
 pub const MAX_EVENT_BYTES: usize = 4096;
 pub const RETAINED_SESSIONS: usize = 10;
+pub const MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
+pub const RETAINED_SEGMENTS: usize = 4;
 
-const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
-const SESSION_NAME_ATTEMPTS: usize = 64;
-
-/// Resolve Hex's per-user diagnostic directory without touching the filesystem.
-pub fn default_directory() -> Result<PathBuf, String> {
-    let home = env::var_os("HOME").filter(|value| !value.is_empty());
-    let Some(home) = home else {
-        return Err("home directory is unavailable".to_owned());
-    };
-    let home = PathBuf::from(home);
-    if cfg!(target_os = "macos") {
-        Ok(home.join("Library").join("Logs").join("hex"))
-    } else {
-        Ok(home.join(".local").join("state").join("hex").join("logs"))
+/// Severity of a control-side diagnostic event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
     }
 }
 
-/// The result of submitting one event to the bounded worker queue.
+/// Stable, bounded subsystem names for diagnostic filtering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    Uncategorised,
+    Startup,
+    Ui,
+    Session,
+    Audio,
+    Transport,
+    Persistence,
+    Plugin,
+    Media,
+}
+impl Category {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Uncategorised => "uncategorised",
+            Self::Startup => "startup",
+            Self::Ui => "ui",
+            Self::Session => "session",
+            Self::Audio => "audio",
+            Self::Transport => "transport",
+            Self::Persistence => "persistence",
+            Self::Plugin => "plugin",
+            Self::Media => "media",
+        }
+    }
+}
+const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub fn default_directory() -> Result<PathBuf, String> {
+    let home = env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "home directory is unavailable".to_owned())?;
+    let home = PathBuf::from(home);
+    Ok(if cfg!(target_os = "macos") {
+        home.join("Library").join("Logs").join("hex")
+    } else {
+        home.join(".local").join("state").join("hex").join("logs")
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishError {
-    /// The worker queue already contains its maximum number of events.
     Full,
-    /// The session owner is shutting down or the worker has exited.
     Closed,
 }
 
+/// Cumulative observations, not a coherent transactional snapshot. Counts
+/// include rejected attempts; a footer covers only activity before shutdown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogStatistics {
+    pub last_sequence: u64,
+    pub written: u64,
+    pub queue_full: u64,
+    pub closed: u64,
+    pub truncated: u64,
+    pub write_failed: u64,
+    pub abandoned: u64,
+}
 struct Shared {
+    started: Instant,
+    started_unix: u128,
     closing: AtomicBool,
-    overflow_count: AtomicU64,
+    failed: AtomicBool,
+    written: AtomicU64,
+    admission: Mutex<()>,
+    sequence: AtomicU64,
+    queue_full: AtomicU64,
+    closed: AtomicU64,
+    truncated: AtomicU64,
+    write_failed: AtomicU64,
+    abandoned: AtomicU64,
     last_error: Mutex<Option<String>>,
 }
+impl Shared {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            started_unix: unix_nanos(),
+            closing: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+            written: AtomicU64::new(0),
+            admission: Mutex::new(()),
+            sequence: AtomicU64::new(0),
+            queue_full: AtomicU64::new(0),
+            closed: AtomicU64::new(0),
+            truncated: AtomicU64::new(0),
+            write_failed: AtomicU64::new(0),
+            abandoned: AtomicU64::new(0),
+            last_error: Mutex::new(None),
+        }
+    }
+    fn next_sequence(&self) -> Option<u64> {
+        self.sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .ok()
+            .and_then(|previous| previous.checked_add(1))
+    }
+    fn statistics(&self) -> LogStatistics {
+        LogStatistics {
+            last_sequence: self.sequence.load(Ordering::Relaxed),
+            written: self.written.load(Ordering::Relaxed),
+            queue_full: self.queue_full.load(Ordering::Relaxed),
+            closed: self.closed.load(Ordering::Relaxed),
+            truncated: self.truncated.load(Ordering::Relaxed),
+            write_failed: self.write_failed.load(Ordering::Relaxed),
+            abandoned: self.abandoned.load(Ordering::Relaxed),
+        }
+    }
+    fn fail(&self, message: String) {
+        self.closing.store(true, Ordering::Release);
+        if let Ok(mut error) = self.last_error.try_lock() {
+            *error = Some(event::bounded(&message).to_owned());
+        }
+        self.failed.store(true, Ordering::Release);
+    }
+}
 
-/// Cloneable producer handle. Publishing truncates at a UTF-8 boundary and
-/// never waits for filesystem work or queue capacity.
+/// Control-only producer: at most 4096 UTF-8 message bytes, a 64-record queue
+/// and explicit rejection when it is full. Concurrent producers wait for the
+/// enqueue gate instead of dropping records; its critical section performs no
+/// allocation, formatting or I/O and never blocks on the queue. Never format or
+/// call on a realtime/audio thread.
 #[derive(Clone)]
 pub struct DiagnosticsHandle {
-    sender: SyncSender<String>,
+    sender: SyncSender<Record>,
     shared: Arc<Shared>,
     path: Arc<PathBuf>,
 }
-
 impl DiagnosticsHandle {
-    /// Queue one diagnostic event. The worker escapes line breaks before writing.
+    /// Record a legacy unclassified message. This is control-side only.
     pub fn record(&self, message: &str) -> Result<(), PublishError> {
-        if self.shared.closing.load(Ordering::Acquire) {
-            return Err(PublishError::Closed);
-        }
-        let mut end = message.len().min(MAX_EVENT_BYTES);
-        while !message.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        let bounded = message[..end].to_owned();
-        match self.sender.try_send(bounded) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => {
-                self.shared.overflow_count.fetch_add(1, Ordering::Relaxed);
-                Err(PublishError::Full)
-            }
-            Err(TrySendError::Disconnected(_)) => Err(PublishError::Closed),
-        }
+        self.record_typed(Level::Info, Category::Uncategorised, message)
     }
 
-    /// Path for the current session file, known after `SessionLog::start` returns.
+    /// Record an explicitly classified message. Never call from the audio thread.
+    pub fn record_typed(
+        &self,
+        level: Level,
+        category: Category,
+        message: &str,
+    ) -> Result<(), PublishError> {
+        if self.shared.closing.load(Ordering::Acquire) {
+            self.shared.closed.fetch_add(1, Ordering::Relaxed);
+            return Err(PublishError::Closed);
+        }
+        // Allocate before admission: neither another producer nor shutdown
+        // waits on formatting/I/O while this producer holds the gate.
+        let bounded = event::bounded(message).to_owned();
+        // Waiting is bounded by another producer's short, allocation-free
+        // section. Dropping instead lost lifecycle records whenever a holder
+        // was preempted (#4204). The shutdown drain still only try-locks.
+        let Ok(_admission) = self.shared.admission.lock() else {
+            self.shared.fail("session log admission failed".into());
+            return Err(PublishError::Closed);
+        };
+        if self.shared.closing.load(Ordering::Acquire) {
+            self.shared.closed.fetch_add(1, Ordering::Relaxed);
+            return Err(PublishError::Closed);
+        }
+        let Some(sequence) = self.shared.next_sequence() else {
+            self.shared.fail("session log sequence exhausted".into());
+            return Err(PublishError::Closed);
+        };
+        if bounded.len() < message.len() {
+            self.shared.truncated.fetch_add(1, Ordering::Relaxed);
+        }
+        let record = Record {
+            level,
+            category,
+            sequence,
+            unix_nanos: unix_nanos(),
+            elapsed_nanos: self.shared.started.elapsed().as_nanos(),
+            original_bytes: message.len(),
+            message: bounded,
+        };
+        match self.sender.try_send(record) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                self.shared.queue_full.fetch_add(1, Ordering::Relaxed);
+                Err(PublishError::Full)
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.shared.closed.fetch_add(1, Ordering::Relaxed);
+                self.shared.fail("session log worker is unavailable".into());
+                Err(PublishError::Closed)
+            }
+        }
+    }
+    /// Stable active filename. Older recent segments use .1.log through .3.log.
     pub fn path(&self) -> PathBuf {
         self.path.as_ref().clone()
     }
-
-    /// Number of producer submissions rejected because the queue was full.
+    /// Backpressure losses from a full queue.
     pub fn overflow_count(&self) -> u64 {
-        self.shared.overflow_count.load(Ordering::Relaxed)
+        self.shared.queue_full.load(Ordering::Relaxed)
     }
-
-    /// Return the latest worker error when the snapshot lock is immediately
-    /// available. `None` means there is no error or the worker is updating it.
+    pub fn statistics(&self) -> LogStatistics {
+        self.shared.statistics()
+    }
     pub fn failure(&self) -> Option<String> {
-        self.shared.last_error.try_lock().ok()?.clone()
+        self.shared
+            .last_error
+            .try_lock()
+            .ok()
+            .and_then(|error| error.clone())
+            .or_else(|| {
+                self.shared
+                    .failed
+                    .load(Ordering::Acquire)
+                    .then(|| "session log failure · details unavailable".into())
+            })
     }
 }
 
-/// Session owner. Keep this on the application composition side and shut it
-/// down after UI/control producers have stopped; joining can wait for disk I/O.
+/// Desktop/control owner. Stop producers before shutdown. A failed/timed-out
+/// shutdown reports incomplete logging; detached disk work owns only its files.
 pub struct SessionLog {
     handle: DiagnosticsHandle,
     worker: Option<JoinHandle<()>>,
+    completed: Receiver<()>,
 }
-
 impl SessionLog {
-    /// Start a worker, create a fresh log, and prune older Hex session logs.
-    /// All directory and file operations run on the worker thread.
     pub fn start(directory: PathBuf) -> Result<Self, String> {
+        Self::start_with_context(directory, "")
+    }
+    /// Immutable bounded build/configuration context is repeated on every
+    /// segment, so a rolling capture retains provenance without the first file.
+    pub fn start_with_context(directory: PathBuf, context: &str) -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
-        let shared = Arc::new(Shared {
-            closing: AtomicBool::new(false),
-            overflow_count: AtomicU64::new(0),
-            last_error: Mutex::new(None),
-        });
+        let (done_sender, completed) = mpsc::sync_channel(1);
+        let shared = Arc::new(Shared::new());
         let worker_shared = Arc::clone(&shared);
+        let context = Context::new(context);
         let worker = thread::Builder::new()
-            .name("hex-diagnostics".to_owned())
-            .spawn(move || run_worker(directory, receiver, startup_sender, worker_shared))
+            .name("hex-diagnostics".into())
+            .spawn(move || {
+                run_worker(directory, context, receiver, startup_sender, worker_shared);
+                let _ = done_sender.try_send(());
+            })
             .map_err(|error| format!("could not start session log worker: {error}"))?;
-
-        let path = match startup_receiver.recv() {
-            Ok(Ok(path)) => path,
-            Ok(Err(reason)) => {
-                let _ = worker.join();
-                return Err(format!("could not start session log: {reason}"));
-            }
-            Err(_) => {
-                let _ = worker.join();
-                return Err("session log worker exited before creating the session file".to_owned());
-            }
-        };
-        let handle = DiagnosticsHandle {
-            sender,
-            shared,
-            path: Arc::new(path),
-        };
+        let (path, worker) = await_startup(startup_receiver, worker, &shared, SHUTDOWN_TIMEOUT)?;
         Ok(Self {
-            handle,
+            handle: DiagnosticsHandle {
+                sender,
+                shared,
+                path: Arc::new(path),
+            },
             worker: Some(worker),
+            completed,
         })
     }
-
     pub fn handle(&self) -> DiagnosticsHandle {
         self.handle.clone()
     }
-
     pub fn path(&self) -> PathBuf {
         self.handle.path()
     }
-
-    /// Close the worker and wait for its bounded drain and final flush.
     pub fn shutdown(&mut self) -> Result<(), String> {
-        self.handle.shared.closing.store(true, Ordering::Release);
+        self.shutdown_with_timeout(SHUTDOWN_TIMEOUT)
+    }
+    fn shutdown_with_timeout(&mut self, timeout: Duration) -> Result<(), String> {
         if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| "session log worker stopped unexpectedly".to_owned())?;
+            let deadline = Instant::now() + timeout;
+            self.handle.shared.closing.store(true, Ordering::Release);
+            match self
+                .completed
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                    if worker.join().is_err() {
+                        self.handle
+                            .shared
+                            .fail("session log worker stopped unexpectedly".into());
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.handle.shared.fail(
+                        "session log shutdown timed out · final records may be missing".into(),
+                    );
+                    drop(worker);
+                    return Err(
+                        "session log shutdown timed out · final records may be missing".into(),
+                    );
+                }
+            }
         }
-        match self.handle.failure() {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        self.handle.failure().map_or(Ok(()), Err)
     }
 }
-
 impl Drop for SessionLog {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
 }
 
+/// A slow filesystem must not hold the application composition thread forever.
+/// On timeout, closing prevents the detached startup worker from pruning logs
+/// or accepting records when it eventually makes progress.
+fn await_startup(
+    receiver: Receiver<Result<PathBuf, String>>,
+    worker: JoinHandle<()>,
+    shared: &Shared,
+    timeout: Duration,
+) -> Result<(PathBuf, JoinHandle<()>), String> {
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(path)) => Ok((path, worker)),
+        Ok(Err(reason)) => {
+            let _ = worker.join();
+            Err(format!("could not start session log: {reason}"))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = worker.join();
+            Err("session log worker exited before creating the session file".into())
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            shared.fail("session log startup timed out · logging is unavailable".into());
+            drop(worker);
+            Err("session log startup timed out · logging is unavailable".into())
+        }
+    }
+}
+
+trait LogWriter {
+    fn line(&mut self, value: &str) -> std::io::Result<()>;
+}
 fn run_worker(
     directory: PathBuf,
-    receiver: Receiver<String>,
+    context: Context,
+    receiver: Receiver<Record>,
     startup: SyncSender<Result<PathBuf, String>>,
     shared: Arc<Shared>,
 ) {
-    let (path, mut writer) = match create_session(&directory) {
-        Ok(session) => session,
+    if shared.closing.load(Ordering::Acquire) {
+        return;
+    }
+    let mut writer = match rolling::SessionWriter::create(&directory, context, &shared) {
+        Ok(writer) => writer,
         Err(error) => {
             let _ = startup.send(Err(error.to_string()));
             return;
         }
     };
-    let retention_error = prune_old_sessions(&directory, &path).err();
-    if let Err(error) = write_header(&mut writer) {
-        let _ = startup.send(Err(error.to_string()));
+    if shared.closing.load(Ordering::Acquire) {
         return;
     }
-    if let Some(error) = retention_error {
-        set_error(&shared, format!("session log retention failed: {error}"));
+    if let Err(error) = rolling::prune(&directory, writer.path()) {
+        shared.fail(format!("session log retention failed: {error}"));
     }
-    if startup.send(Ok(path)).is_err() {
+    if startup.send(Ok(writer.path().to_owned())).is_err() {
         return;
     }
-
-    let mut reported_overflow = 0_u64;
+    run_records(&mut writer, &receiver, &shared);
+}
+fn run_records(writer: &mut impl LogWriter, receiver: &Receiver<Record>, shared: &Shared) {
+    let mut reported = LogStatistics::default();
     loop {
-        if shared.closing.load(Ordering::Acquire) {
-            drain_bounded(&receiver, &mut writer, &shared, &mut reported_overflow);
-            write_overflow_delta(&mut writer, &shared, &mut reported_overflow);
-            break;
+        // A producer may have passed the closing check while holding the
+        // enqueue gate. Only the worker's observation of that gate released
+        // authorizes the final bounded drain; new producers recheck closing.
+        let closed = if shared.closing.load(Ordering::Acquire) {
+            match shared.admission.try_lock() {
+                Ok(_gate) => true,
+                Err(TryLockError::WouldBlock) => false,
+                Err(TryLockError::Poisoned(_)) => {
+                    shared.fail("session log admission failed during drain".into());
+                    true
+                }
+            }
+        } else {
+            false
+        };
+        if closed {
+            for _ in 0..EVENT_CAPACITY {
+                match receiver.try_recv() {
+                    Ok(record) => {
+                        if !write_record(writer, &record, shared) {
+                            abandon(receiver, shared);
+                            return;
+                        }
+                    }
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                }
+            }
+            let _ = write_statistics(writer, shared, "session_finished", &mut reported, true);
+            return;
         }
         match receiver.recv_timeout(RECEIVE_INTERVAL) {
-            Ok(message) => write_event(&mut writer, &message, &shared),
+            Ok(record) => {
+                if !write_record(writer, &record, shared) {
+                    abandon(receiver, shared);
+                    return;
+                }
+            }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        write_overflow_delta(&mut writer, &shared, &mut reported_overflow);
-    }
-}
-
-fn create_session(directory: &Path) -> io::Result<(PathBuf, BufWriter<File>)> {
-    fs::create_dir_all(directory)?;
-    let mut timestamp = unix_nanos();
-    for _ in 0..SESSION_NAME_ATTEMPTS {
-        let path = directory.join(format!("session-{timestamp}-{}.log", std::process::id()));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => return Ok((path, BufWriter::new(file))),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                timestamp = timestamp.saturating_add(1);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve a unique session log name",
-    ))
-}
-
-fn write_header(writer: &mut BufWriter<File>) -> io::Result<()> {
-    writeln!(
-        writer,
-        "session_started unix_nanos={} pid={} hex_version={}",
-        unix_nanos(),
-        std::process::id(),
-        env!("CARGO_PKG_VERSION")
-    )?;
-    writer.flush()
-}
-
-fn write_event(writer: &mut impl Write, message: &str, shared: &Shared) {
-    let result = (|| -> io::Result<()> {
-        write!(writer, "event unix_nanos={} ", unix_nanos())?;
-        for byte in message.bytes() {
-            match byte {
-                b'\n' => writer.write_all(b"\\n")?,
-                b'\r' => writer.write_all(b"\\r")?,
-                _ => writer.write_all(&[byte])?,
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = write_statistics(writer, shared, "session_finished", &mut reported, true);
+                return;
             }
         }
-        writer.write_all(b"\n")?;
-        writer.flush()
-    })();
-    if let Err(error) = result {
-        set_error(shared, format!("session log write failed: {error}"));
-    }
-}
-
-fn write_overflow_delta(writer: &mut impl Write, shared: &Shared, reported: &mut u64) {
-    let total = shared.overflow_count.load(Ordering::Relaxed);
-    if total <= *reported {
-        return;
-    }
-    let result =
-        writeln!(writer, "diagnostics_overflow total={total}").and_then(|()| writer.flush());
-    if let Err(error) = result {
-        set_error(
-            shared,
-            format!("session log overflow write failed: {error}"),
-        );
-    }
-    *reported = total;
-}
-
-fn drain_bounded(
-    receiver: &Receiver<String>,
-    writer: &mut impl Write,
-    shared: &Shared,
-    reported_overflow: &mut u64,
-) {
-    for _ in 0..EVENT_CAPACITY {
-        match receiver.try_recv() {
-            Ok(message) => write_event(writer, &message, shared),
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+        if !write_statistics(writer, shared, "diagnostics_loss", &mut reported, false) {
+            abandon(receiver, shared);
+            return;
         }
     }
-    write_overflow_delta(writer, shared, reported_overflow);
 }
-
-fn prune_old_sessions(directory: &Path, current: &Path) -> io::Result<()> {
-    let mut sessions = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let Some(timestamp) = session_timestamp(&entry.file_name()) else {
-            continue;
-        };
-        sessions.push((timestamp, entry.path()));
-    }
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.0));
-
-    let mut first_error = None;
-    let current_index = sessions.iter().position(|(_, path)| path == current);
-    let retained_noncurrent = if current_index.is_some_and(|index| index >= RETAINED_SESSIONS) {
-        RETAINED_SESSIONS.saturating_sub(1)
+fn write_record(writer: &mut impl LogWriter, record: &Record, shared: &Shared) -> bool {
+    if let Err(error) = writer.line(&record.line()) {
+        shared.write_failed.fetch_add(1, Ordering::Relaxed);
+        shared.fail(format!("session log write failed: {error}"));
+        false
     } else {
-        RETAINED_SESSIONS
-    };
-    for (index, (_, path)) in sessions.into_iter().enumerate() {
-        if path == current || index < retained_noncurrent {
-            continue;
-        }
-        if let Err(error) = fs::remove_file(path) {
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
-        }
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
+        shared.written.fetch_add(1, Ordering::Relaxed);
+        true
     }
 }
-
-fn session_timestamp(name: &std::ffi::OsStr) -> Option<u128> {
-    let name = name.to_str()?;
-    let body = name.strip_prefix("session-")?.strip_suffix(".log")?;
-    let (timestamp, pid) = body.split_once('-')?;
-    if timestamp.is_empty()
-        || !timestamp.bytes().all(|byte| byte.is_ascii_digit())
-        || pid.is_empty()
-        || !pid.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
+fn write_statistics(
+    writer: &mut impl LogWriter,
+    shared: &Shared,
+    stage: &str,
+    reported: &mut LogStatistics,
+    force: bool,
+) -> bool {
+    let stats = shared.statistics();
+    let changed = stats.queue_full != reported.queue_full
+        || stats.truncated != reported.truncated
+        || stats.closed != reported.closed;
+    if !force && !changed {
+        return true;
     }
-    timestamp.parse().ok()
+    let mut line = format!(
+        "{stage} writer_unix_nanos={} elapsed_nanos={} failed={} statistics={stats:?} failure=",
+        unix_nanos(),
+        shared.started.elapsed().as_nanos(),
+        shared.failed.load(Ordering::Acquire)
+    );
+    let failure = shared
+        .last_error
+        .try_lock()
+        .ok()
+        .and_then(|error| error.clone());
+    let detail = failure
+        .as_deref()
+        .unwrap_or(if shared.failed.load(Ordering::Acquire) {
+            "details unavailable"
+        } else {
+            "none"
+        });
+    event::quoted(&mut line, detail);
+    line.push('\n');
+    match writer.line(&line) {
+        Ok(()) => {
+            *reported = stats;
+            true
+        }
+        Err(error) => {
+            shared.write_failed.fetch_add(1, Ordering::Relaxed);
+            shared.fail(format!("session log status write failed: {error}"));
+            false
+        }
+    }
 }
-
+fn abandon(receiver: &Receiver<Record>, shared: &Shared) {
+    for _ in 0..EVENT_CAPACITY {
+        if receiver.try_recv().is_err() {
+            break;
+        }
+        shared.abandoned.fetch_add(1, Ordering::Relaxed);
+    }
+}
 fn unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -350,200 +550,5 @@ fn unix_nanos() -> u128 {
         .as_nanos()
 }
 
-fn set_error(shared: &Shared, message: String) {
-    if let Ok(mut error) = shared.last_error.lock() {
-        *error = Some(message);
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        fs,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
-    fn fixture() -> PathBuf {
-        let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-        let path =
-            env::temp_dir().join(format!("hex-diagnostics-test-{}-{id}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("fixture directory");
-        path
-    }
-
-    fn session_files(directory: &Path) -> Vec<PathBuf> {
-        fs::read_dir(directory)
-            .expect("list fixture")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                fs::symlink_metadata(path)
-                    .map(|metadata| metadata.file_type().is_file())
-                    .unwrap_or(false)
-                    && path
-                        .file_name()
-                        .and_then(std::ffi::OsStr::to_str)
-                        .and_then(|name| session_timestamp(std::ffi::OsStr::new(name)))
-                        .is_some()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn creates_a_fresh_file_for_each_session_and_escapes_bounded_utf8_events() {
-        let directory = fixture();
-        let first_path;
-        {
-            let mut log = SessionLog::start(directory.clone()).expect("start first session");
-            first_path = log.path();
-            let handle = log.handle();
-            let oversized = "€".repeat(MAX_EVENT_BYTES);
-            handle.record(&oversized).expect("queue bounded utf8");
-            handle
-                .record("first\nsecond\rthird")
-                .expect("queue multiline");
-            log.shutdown().expect("shutdown first session");
-            assert_eq!(handle.record("after close"), Err(PublishError::Closed));
-        }
-        let contents = fs::read_to_string(&first_path).expect("read first session");
-        let bounded_line = contents
-            .lines()
-            .find(|line| line.starts_with("event unix_nanos="))
-            .expect("bounded event line");
-        let (timestamp, bounded_message) = bounded_line
-            .strip_prefix("event unix_nanos=")
-            .and_then(|line| line.split_once(' '))
-            .expect("event timestamp and message");
-        assert!(timestamp.parse::<u128>().is_ok());
-        assert_eq!(bounded_message.len(), MAX_EVENT_BYTES - 1);
-        assert!(contents.lines().any(|line| {
-            line.strip_prefix("event unix_nanos=")
-                .and_then(|line| line.split_once(' '))
-                .is_some_and(|(_, message)| message == "first\\nsecond\\rthird")
-        }));
-
-        let second_path;
-        {
-            let mut log = SessionLog::start(directory.clone()).expect("start second session");
-            second_path = log.path();
-            log.shutdown().expect("shutdown second session");
-        }
-        assert_ne!(first_path, second_path);
-        assert_eq!(session_files(&directory).len(), 2);
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn retains_ten_owned_regular_logs_and_preserves_unrelated_files_and_symlinks() {
-        let directory = fixture();
-        for timestamp in 1..=11 {
-            fs::write(
-                directory.join(format!("session-{timestamp}-7.log")),
-                b"old session",
-            )
-            .expect("seed old session");
-        }
-        let unrelated = directory.join("session-not-ours.log");
-        fs::write(&unrelated, b"preserve").expect("seed unrelated file");
-        let link = directory.join("session-500-7.log");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(directory.join("session-1-7.log"), &link).expect("seed symlink");
-
-        let mut log = SessionLog::start(directory.clone()).expect("start logger");
-        log.shutdown().expect("shutdown logger");
-
-        assert_eq!(session_files(&directory).len(), RETAINED_SESSIONS);
-        assert!(unrelated.exists());
-        #[cfg(unix)]
-        assert!(
-            fs::symlink_metadata(&link)
-                .expect("inspect preserved symlink")
-                .file_type()
-                .is_symlink()
-        );
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn reports_startup_failures() {
-        let parent = fixture();
-        let file = parent.join("not-a-directory");
-        fs::write(&file, b"occupied").expect("create blocking file");
-        assert!(SessionLog::start(file.join("logs")).is_err());
-        let _ = fs::remove_dir_all(parent);
-    }
-
-    #[test]
-    fn full_queue_is_counted_without_a_consumer_and_overflow_line_is_written() {
-        let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
-        let shared = Arc::new(Shared {
-            closing: AtomicBool::new(false),
-            overflow_count: AtomicU64::new(0),
-            last_error: Mutex::new(None),
-        });
-        let handle = DiagnosticsHandle {
-            sender,
-            shared: Arc::clone(&shared),
-            path: Arc::new(PathBuf::new()),
-        };
-        for _ in 0..EVENT_CAPACITY {
-            assert_eq!(handle.record("queued"), Ok(()));
-        }
-        assert_eq!(handle.record("overflow"), Err(PublishError::Full));
-        assert_eq!(handle.overflow_count(), 1);
-
-        let mut output = Vec::new();
-        let mut reported = 0;
-        write_overflow_delta(&mut output, &shared, &mut reported);
-        assert_eq!(output, b"diagnostics_overflow total=1\n");
-        assert_eq!(reported, 1);
-        drop(receiver);
-    }
-
-    #[test]
-    fn event_write_failures_are_exposed_to_the_session_owner() {
-        struct FailingWriter;
-
-        impl Write for FailingWriter {
-            fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
-                Err(io::Error::other("fixture write failure"))
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let shared = Arc::new(Shared {
-            closing: AtomicBool::new(false),
-            overflow_count: AtomicU64::new(0),
-            last_error: Mutex::new(None),
-        });
-        write_event(&mut FailingWriter, "reproduction event", &shared);
-        assert!(
-            shared
-                .last_error
-                .lock()
-                .expect("read worker failure")
-                .as_deref()
-                .is_some_and(|message| message.contains("fixture write failure"))
-        );
-
-        let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
-        drop(receiver);
-        let handle = DiagnosticsHandle {
-            sender,
-            shared,
-            path: Arc::new(PathBuf::new()),
-        };
-        let mut owner = SessionLog {
-            handle,
-            worker: Some(thread::spawn(|| {})),
-        };
-        assert!(owner.shutdown().is_err());
-    }
-}
+mod tests;

@@ -2,6 +2,8 @@
 //! arrangement timeline. Canonical clips persist independent source/start/loop
 //! metadata; ongoing Session templates require a separate scheduling contract.
 use crate::{BeatTime, Invalid};
+#[path = "midi_playback_ranges.rs"]
+mod ranges;
 
 /// Beat-based source and arrangement mapping for one MIDI playback region.
 ///
@@ -13,8 +15,11 @@ use crate::{BeatTime, Invalid};
 pub struct MidiSourcePlayback {
     source_length: BeatTime,
     source_start: BeatTime,
+    initial_end: BeatTime,
     loop_range: Option<(BeatTime, BeatTime)>,
     arrangement_duration: BeatTime,
+    playback_offset: BeatTime,
+    reversed: bool,
 }
 
 impl MidiSourcePlayback {
@@ -23,6 +28,26 @@ impl MidiSourcePlayback {
         source_start: BeatTime,
         loop_range: Option<(BeatTime, BeatTime)>,
         arrangement_duration: BeatTime,
+    ) -> Result<Self, Invalid> {
+        Self::new_with_initial_end(
+            source_length,
+            source_start,
+            loop_range,
+            arrangement_duration,
+            loop_range.map_or(source_length, |(_, end)| end),
+        )
+    }
+
+    /// Retain the full authored source for validation while limiting the first
+    /// audible pass. With no loop this permits a captured cycle to play once
+    /// then become silent, without deleting notes outside that cycle.
+    /// Repeating mappings require the initial end to equal their loop end.
+    pub fn new_with_initial_end(
+        source_length: BeatTime,
+        source_start: BeatTime,
+        loop_range: Option<(BeatTime, BeatTime)>,
+        arrangement_duration: BeatTime,
+        initial_end: BeatTime,
     ) -> Result<Self, Invalid> {
         if source_length == BeatTime::ZERO || arrangement_duration == BeatTime::ZERO {
             return Err(Invalid(
@@ -39,12 +64,65 @@ impl MidiSourcePlayback {
         } else if source_start >= source_length {
             return Err(Invalid("midi source start must be inside its source"));
         }
+        if initial_end > source_length || source_start >= initial_end {
+            return Err(Invalid(
+                "midi initial playback end must follow its start inside the source",
+            ));
+        }
+        if loop_range.is_some_and(|(_, end)| end != initial_end) {
+            return Err(Invalid(
+                "midi repeating initial end must equal its loop end",
+            ));
+        }
         Ok(Self {
             source_length,
             source_start,
+            initial_end,
             loop_range,
             arrangement_duration,
+            playback_offset: BeatTime::ZERO,
+            reversed: false,
         })
+    }
+
+    /// Select a finite elapsed window without rewriting the authored source law.
+    /// Crossing gates are chased at local zero with only their remaining duration.
+    pub fn with_playback_offset(mut self, offset: BeatTime) -> Result<Self, Invalid> {
+        offset
+            .raw()
+            .checked_add(self.arrangement_duration.raw())
+            .ok_or(Invalid("midi playback window end overflow"))?;
+        self.playback_offset = offset;
+        Ok(self)
+    }
+    /// Read a directed finite window of the unchanged first-pass/loop law.
+    /// Ongoing Session templates do not use this finite-only operation.
+    pub fn with_content_window(mut self, window: crate::ContentWindow) -> Result<Self, Invalid> {
+        if window.length()? != self.arrangement_duration.raw() {
+            return Err(Invalid(
+                "midi content window differs from arrangement duration",
+            ));
+        }
+        self.playback_offset = BeatTime::from_raw(window.start);
+        self.reversed = window.reversed;
+        Ok(self)
+    }
+    /// Internal normalization for owners materializing a finite directed view.
+    /// Preserves source identity/clock geometry; no notes are rewritten here.
+    pub(crate) fn unreversed(mut self) -> Option<Self> {
+        if !self.reversed {
+            return None;
+        }
+        self.reversed = false;
+        Some(self)
+    }
+    pub fn playback_offset(self) -> BeatTime {
+        self.playback_offset
+    }
+    /// Direction of the finite retained read window; ongoing Console playback
+    /// remains forward. This query does not rewrite or materialize note data.
+    pub fn playback_reversed(self) -> bool {
+        self.reversed
     }
 
     /// Construct the current canonical one-shot mapping for a clip.
@@ -60,12 +138,84 @@ impl MidiSourcePlayback {
         self.source_start
     }
 
+    pub fn initial_end(self) -> BeatTime {
+        self.initial_end
+    }
+
     pub fn loop_range(self) -> Option<(BeatTime, BeatTime)> {
         self.loop_range
     }
 
     pub fn arrangement_duration(self) -> BeatTime {
         self.arrangement_duration
+    }
+
+    /// Internal loop seams in the finite audible order; the first-pass
+    /// introduction is not repeated when it becomes a reversed tail.
+    pub fn repeat_boundaries(self) -> Result<Option<crate::RepeatBoundaryPlan>, Invalid> {
+        Ok(self.repeat_cycles()?.and_then(crate::RepeatCycles::seams))
+    }
+    /// Complete cycle geometry for a finite Arrangement read, in raw beats.
+    pub fn repeat_cycles(self) -> Result<Option<crate::RepeatCycles>, Invalid> {
+        let Some((start, end)) = self.loop_range else {
+            return Ok(None);
+        };
+        let end_of_window = self
+            .playback_offset
+            .raw()
+            .checked_add(self.arrangement_duration.raw())
+            .ok_or(Invalid("midi repeat window overflow"))?;
+        crate::ContentWindow::new(self.playback_offset.raw(), end_of_window, self.reversed)?
+            .repeat_cycles(end.raw() - self.source_start.raw(), end.raw() - start.raw())
+            .map(Some)
+    }
+    /// Source phase at an elapsed clip beat, independent of note content. An
+    /// ongoing Session loop can repeat beyond `arrangement_duration`; finite
+    /// placement consumers must check their placement duration separately.
+    /// Ongoing loops reduce retained offsets and elapsed time without overflowing.
+    /// One-shot sources return `None` at their exclusive end. No note is chased.
+    pub fn source_phase_at_elapsed(self, elapsed: BeatTime) -> Option<BeatTime> {
+        let elapsed = if self.reversed {
+            BeatTime::from_raw(
+                self.arrangement_duration
+                    .raw()
+                    .checked_sub(elapsed.raw())?
+                    .checked_sub(1)?,
+            )
+        } else {
+            elapsed
+        };
+        let raw = match self.playback_offset.raw().checked_add(elapsed.raw()) {
+            Some(raw) => raw,
+            None => {
+                // Only ongoing queries can exceed the validated finite window.
+                // Retain the ordinary 64-bit path; normalize this larger loop
+                // clock before narrowing back to a representable source phase.
+                let (start, end) = self.loop_range?;
+                let raw = u128::from(self.playback_offset.raw()) + u128::from(elapsed.raw());
+                let first_pass = u128::from(end.raw() - self.source_start.raw());
+                let phase = u128::from(start.raw())
+                    + (raw - first_pass) % u128::from(end.raw() - start.raw());
+                return u64::try_from(phase).ok().map(BeatTime::from_raw);
+            }
+        };
+        if let Some((start, end)) = self.loop_range {
+            let first_pass = end.raw() - self.source_start.raw();
+            let phase = if raw < first_pass {
+                self.source_start.raw().checked_add(raw)?
+            } else {
+                start
+                    .raw()
+                    .checked_add((raw - first_pass) % (end.raw() - start.raw()))?
+            };
+            Some(BeatTime::from_raw(phase))
+        } else {
+            self.source_start
+                .raw()
+                .checked_add(raw)
+                .filter(|phase| *phase < self.initial_end.raw())
+                .map(BeatTime::from_raw)
+        }
     }
 
     /// Build a constant-time plan for a validated source-local note.
@@ -85,7 +235,10 @@ impl MidiSourcePlayback {
             return Err(Invalid("midi note exceeds its source"));
         }
 
-        let timeline_limit = self.arrangement_duration.raw();
+        let window_start = self.playback_offset.raw();
+        let timeline_limit = window_start
+            .checked_add(self.arrangement_duration.raw())
+            .ok_or(Invalid("midi playback window end overflow"))?;
         let mut initial = None;
         let mut repeats = 0_u64;
         let mut first_repeat = 0_u64;
@@ -127,13 +280,13 @@ impl MidiSourcePlayback {
                 }
             }
         } else if note_start.raw() >= self.source_start.raw()
-            && note_start.raw() < self.source_length.raw()
+            && note_start.raw() < self.initial_end.raw()
         {
             let timeline_start = note_start.raw() - self.source_start.raw();
             if timeline_start < timeline_limit {
                 let gate = note_duration
                     .raw()
-                    .min(self.source_length.raw() - note_start.raw())
+                    .min(self.initial_end.raw() - note_start.raw())
                     .min(timeline_limit - timeline_start);
                 if gate > 0 {
                     initial = Some(MidiNoteOccurrence {
@@ -145,7 +298,40 @@ impl MidiSourcePlayback {
             }
         }
 
+        initial = initial.and_then(|occurrence| {
+            let start = occurrence.timeline_start.raw();
+            let end = start.checked_add(occurrence.gate_duration.raw())?;
+            (end > window_start).then(|| MidiNoteOccurrence {
+                iteration: 0,
+                timeline_start: BeatTime::from_raw(start.saturating_sub(window_start)),
+                gate_duration: BeatTime::from_raw(end - start.max(window_start)),
+            })
+        });
+        let mut repeat_iteration_offset = 0;
+        if repeats != 0
+            && first_repeat <= window_start
+            && repeat_source_gate <= window_start - first_repeat
+        {
+            let skipped = (window_start - first_repeat - repeat_source_gate) / period + 1;
+            if skipped >= repeats {
+                repeats = 0;
+            } else {
+                first_repeat = first_repeat
+                    .checked_add(
+                        skipped
+                            .checked_mul(period)
+                            .ok_or(Invalid("midi playback repeat overflow"))?,
+                    )
+                    .ok_or(Invalid("midi playback repeat overflow"))?;
+                repeats -= skipped;
+                repeat_iteration_offset = skipped;
+            }
+        }
         Ok(MidiNoteOccurrencePlan {
+            reversed: self.reversed,
+            duration: self.arrangement_duration.raw(),
+            window_start,
+            repeat_iteration_offset,
             initial,
             first_repeat,
             period,
@@ -182,6 +368,10 @@ impl MidiNoteOccurrence {
 /// O(1)-sized arithmetic plan for a single note's finite occurrences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiNoteOccurrencePlan {
+    reversed: bool,
+    duration: u64,
+    window_start: u64,
+    repeat_iteration_offset: u64,
     initial: Option<MidiNoteOccurrence>,
     first_repeat: u64,
     period: u64,
@@ -215,32 +405,58 @@ pub struct MidiNoteOccurrenceIter {
 impl Iterator for MidiNoteOccurrenceIter {
     type Item = MidiNoteOccurrence;
 
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.ordinal = self.ordinal.checked_add(u64::try_from(n).ok()?)?;
+        self.next()
+    }
+
     fn next(&mut self) -> Option<Self::Item> {
-        let initial_offset = u64::from(self.plan.initial.is_some());
-        if let Some(initial) = self.plan.initial {
-            if self.ordinal == 0 {
-                self.ordinal = 1;
-                return Some(initial);
-            }
-        }
-        let repeat_index = self.ordinal.checked_sub(initial_offset)?;
-        if repeat_index >= self.plan.repeats {
+        if self.ordinal >= self.plan.count() {
             return None;
         }
-        let timeline_start = self
-            .plan
-            .first_repeat
-            .checked_add(repeat_index.checked_mul(self.plan.period)?)?;
-        let gate_duration = self
-            .plan
-            .repeat_source_gate
-            .min(self.plan.timeline_limit - timeline_start);
+        let ordinal = if self.plan.reversed {
+            self.plan.count() - 1 - self.ordinal
+        } else {
+            self.ordinal
+        };
         self.ordinal = self.ordinal.checked_add(1)?;
-        Some(MidiNoteOccurrence {
-            iteration: repeat_index.checked_add(1)?,
-            timeline_start: BeatTime::from_raw(timeline_start),
-            gate_duration: BeatTime::from_raw(gate_duration),
-        })
+        let initial_offset = u64::from(self.plan.initial.is_some());
+        let mut occurrence = if ordinal < initial_offset {
+            self.plan.initial?
+        } else {
+            let repeat_index = ordinal.checked_sub(initial_offset)?;
+            let start = self
+                .plan
+                .first_repeat
+                .checked_add(repeat_index.checked_mul(self.plan.period)?)?;
+            let end = start.checked_add(
+                self.plan
+                    .repeat_source_gate
+                    .min(self.plan.timeline_limit - start),
+            )?;
+            MidiNoteOccurrence {
+                iteration: self
+                    .plan
+                    .repeat_iteration_offset
+                    .checked_add(repeat_index)?
+                    .checked_add(1)?,
+                timeline_start: BeatTime::from_raw(start.saturating_sub(self.plan.window_start)),
+                gate_duration: BeatTime::from_raw(
+                    end.checked_sub(start.max(self.plan.window_start))?,
+                ),
+            }
+        };
+        if self.plan.reversed {
+            occurrence.timeline_start = BeatTime::from_raw(
+                self.plan.duration.checked_sub(
+                    occurrence
+                        .timeline_start
+                        .raw()
+                        .checked_add(occurrence.gate_duration.raw())?,
+                )?,
+            );
+        }
+        Some(occurrence)
     }
 }
 
@@ -281,6 +497,44 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn directed_finite_midi_reverses_intro_repeats_and_partial_gates_without_new_ids() {
+        let forward =
+            MidiSourcePlayback::new(beat(12), beat(1), Some((beat(3), beat(9))), beat(17))
+                .unwrap()
+                .with_playback_offset(beat(4))
+                .unwrap();
+        let reversed = forward
+            .with_content_window(crate::ContentWindow::new(4, 21, true).unwrap())
+            .unwrap();
+        for (start, gate) in [(1, 2), (3, 4), (7, 4), (10, 2)] {
+            let original = forward.note_occurrences(beat(start), beat(gate)).unwrap();
+            let actual = reversed.note_occurrences(beat(start), beat(gate)).unwrap();
+            assert_eq!(original.count(), actual.count());
+            let mut oracle = tuples(original)
+                .into_iter()
+                .map(|(iteration, start, gate)| (iteration, 17 - start - gate, gate))
+                .collect::<Vec<_>>();
+            oracle.reverse();
+            assert_eq!(tuples(actual), oracle);
+        }
+        for elapsed in 0..17 {
+            assert_eq!(
+                reversed.source_phase_at_elapsed(beat(elapsed)),
+                forward.source_phase_at_elapsed(beat(16 - elapsed))
+            );
+        }
+        assert_eq!(
+            reversed.source_ranges_at_elapsed(beat(2)..beat(8)).unwrap(),
+            forward.source_ranges_at_elapsed(beat(9)..beat(15)).unwrap()
+        );
+        assert!(
+            reversed
+                .with_content_window(crate::ContentWindow::new(0, 1, true).unwrap())
+                .is_err()
+        );
     }
 
     struct Segment {
@@ -372,6 +626,37 @@ mod tests {
             );
         }
         output
+    }
+
+    #[test]
+    fn source_phase_preserves_intro_loop_seam_and_exclusive_one_shot_end() {
+        let b = BeatTime::from_raw;
+        let one = MidiSourcePlayback::new(b(10), b(3), None, b(20)).unwrap();
+        assert_eq!(one.source_phase_at_elapsed(b(0)), Some(b(3)));
+        assert_eq!(one.source_phase_at_elapsed(b(6)), Some(b(9)));
+        assert_eq!(one.source_phase_at_elapsed(b(7)), None);
+        assert_eq!(one.source_phase_at_elapsed(b(u64::MAX)), None);
+        let looped = MidiSourcePlayback::new(b(10), b(1), Some((b(3), b(7))), b(2)).unwrap();
+        let actual: Vec<_> = (0..=11)
+            .map(|e| looped.source_phase_at_elapsed(b(e)).unwrap().raw())
+            .collect();
+        assert_eq!(actual, [1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);
+        assert_eq!(looped.source_phase_at_elapsed(b(u64::MAX)), Some(b(4)));
+        let inside = MidiSourcePlayback::new(b(10), b(5), Some((b(3), b(7))), b(2)).unwrap();
+        assert_eq!(inside.source_phase_at_elapsed(b(1)), Some(b(6)));
+        assert_eq!(inside.source_phase_at_elapsed(b(2)), Some(b(3)));
+    }
+
+    #[test]
+    fn ongoing_loop_phase_retains_large_playback_windows_without_sum_overflow() {
+        let b = BeatTime::from_raw;
+        let playback = MidiSourcePlayback::new(b(10), b(0), Some((b(2), b(5))), b(1))
+            .unwrap()
+            .with_playback_offset(b(u64::MAX - 1))
+            .unwrap();
+        assert_eq!(playback.source_phase_at_elapsed(b(0)), Some(b(2)));
+        assert_eq!(playback.source_phase_at_elapsed(b(5)), Some(b(4)));
+        assert_eq!(playback.source_phase_at_elapsed(b(u64::MAX)), Some(b(2)));
     }
 
     #[test]

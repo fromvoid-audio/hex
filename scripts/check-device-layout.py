@@ -102,7 +102,7 @@ def chrome_errors(stream: list[Token], label: str, *, paint: bool = True) -> lis
         while type_start >= 2 and stream[type_start - 1].text == "::":
             type_start -= 2
         return_type = type_start > 0 and stream[type_start - 1].text == ">"
-        if token.text in {"ControlStyle", "DeviceFrameStyle", "DeviceActionStyle", "StyleRefinement"} and following == "{" and not return_type:
+        if token.text in {"ControlStyle", "DeviceFrameStyle", "ActionStyle", "StyleRefinement"} and following == "{" and not return_type:
             errors.append(f"{label}:{token.line}: resolve device styles in theme/device.rs")
         if token.text.startswith("0x"):
             errors.append(f"{label}:{token.line}: device-local color literal; use a semantic theme role")
@@ -127,7 +127,7 @@ ENTRY_POINTS = {
         "render_effect": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
         "render_instrument": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
         "action_button": ("hex_widgets::device_action", "theme::device_header_action_style"),
-        "control_style": ("theme::device_style",),
+        "control_style": ("theme::control_style",),
         "device_layout_style": ("theme::device_style",),
     },
     PANEL / "bindings.rs": {
@@ -205,15 +205,14 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
     errors.extend(chrome_errors(read(preview), str(preview)))
 
     if gallery:
-        entry = Path("crates/hex-ui/examples/layout_review.rs")
-        # This example deliberately includes the owning source module, rather
-        # than a gallery copy with matching function names. Keep that explicit
-        # module boundary reviewable; this is not general Rust name resolution.
-        source = (root / entry).read_text() if (root / entry).is_file() else ""
-        pattern = r'#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:#\[allow\(dead_code\)\]\s*)?mod\s+device_composition\s*;'
-        reference = re.search(pattern, source)
-        if not reference or (root / entry.parent / reference.group(1)).resolve() != (root / UI / "device_composition.rs").resolve():
-            errors.append(f"{entry}: include the owning src/device_composition.rs module")
+        # Both launch targets must mount the production owner, not a gallery copy.
+        # This checks the explicit module boundary, not general Rust resolution.
+        for entry in (Path("crates/hex-ui/examples/layout_review.rs"), Path("crates/hex-sandbox/src/main.rs")):
+            source = (root / entry).read_text() if (root / entry).is_file() else ""
+            pattern = r'#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:#\[allow\(dead_code\)\]\s*)?mod\s+device_composition\s*;'
+            reference = re.search(pattern, source)
+            if not reference or (root / entry.parent / reference.group(1)).resolve() != (root / UI / "device_composition.rs").resolve():
+                errors.append(f"{entry}: include the owning src/device_composition.rs module")
         path = Path("crates/hex-ui/examples/layout_review/compositions.rs")
         stream = read(path)
         errors.extend(chrome_errors(stream, str(path)))

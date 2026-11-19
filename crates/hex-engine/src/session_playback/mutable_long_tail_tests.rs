@@ -80,6 +80,7 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
                 let position = match event {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
                     | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                    | NativeInstrumentEvent::NotePressure { frame_offset, .. }
                     | NativeInstrumentEvent::Expression { frame_offset, .. } => *frame_offset,
                 };
                 if position != offset {
@@ -183,6 +184,7 @@ fn longest_mutable_tail_keeps_audio_and_occurrence_until_exact_quiescence_with_r
             pitch: 60,
             channel: 0,
             velocity: 100,
+            contributor_fade_in: false,
         })
         .unwrap();
     let mut events = Vec::with_capacity(256);

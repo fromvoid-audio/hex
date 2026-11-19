@@ -1,6 +1,42 @@
 use super::*;
 use crate::audio_only_inputs::{OwnedAudioSource, SourceKind};
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual PCM capacity only. This does not upgrade a legacy Audio handle to
+    /// constructor-paired Arc provenance or attest its reclamation. Native banks
+    /// use the identical backing/location declaration, so aliases share one row.
+    pub(crate) fn resident_capacity(
+        &mut self,
+        audio: &'a crate::Audio,
+    ) -> Result<(), AudioStorageError> {
+        let capacity = audio.frames.values.capacity();
+        self.data(
+            Owner::shared(&audio.frames),
+            Location("resident-buffer", 0),
+            Declaration {
+                bytes: capacity
+                    .checked_mul(std::mem::size_of::<crate::Frame>())
+                    .ok_or(AudioStorageError::Overflow)?,
+                capacity,
+                element_bytes: std::mem::size_of::<crate::Frame>(),
+                overhead: 0,
+            },
+            None,
+        )
+    }
+    pub(crate) fn resident_capacity_frames(&self) -> Result<u64, AudioStorageError> {
+        self.summary()?;
+        self.data
+            .iter()
+            .filter(|row| row.location == Location("resident-buffer", 0))
+            .try_fold(0_u64, |frames, row| {
+                frames
+                    .checked_add(
+                        u64::try_from(row.declaration.capacity)
+                            .map_err(|_| AudioStorageError::Overflow)?,
+                    )
+                    .ok_or(AudioStorageError::Overflow)
+            })
+    }
     pub(crate) fn inputs(&mut self, inputs: &'a OwnedAudioInputs) -> Result<(), AudioStorageError> {
         self.vec(&inputs.sources)?;
         self.vec(&inputs.aliases)?;

@@ -65,6 +65,7 @@ struct CellRow {
     track: TrackId,
     scene: SceneId,
     audio: Option<SessionAudioBinding>,
+    midi: Option<hex_project::ClipId>,
 }
 #[derive(Clone, Copy)]
 struct SceneRange {
@@ -260,6 +261,21 @@ impl SessionStructureConstruction {
         project: &Project,
         sources: &SessionSourceConstruction,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_scoped(project, sources, false)
+    }
+    pub(crate) fn reserve_current_sampler(
+        &mut self,
+        project: &Project,
+        sources: &SessionSourceConstruction,
+    ) -> Result<(), AudioStorageError> {
+        self.reserve_scoped(project, sources, true)
+    }
+    fn reserve_scoped(
+        &mut self,
+        project: &Project,
+        sources: &SessionSourceConstruction,
+        current_sampler: bool,
+    ) -> Result<(), AudioStorageError> {
         if !self.scenes.is_empty()
             || !self.tracks.is_empty()
             || !self.cells.is_empty()
@@ -391,12 +407,17 @@ impl SessionStructureConstruction {
                 SessionCellContent::Audio(clip) => {
                     Some(sources.binding_for(cell.track(), cell.scene(), clip.id())?)
                 }
+                SessionCellContent::Midi(_) if current_sampler => None,
                 SessionCellContent::Midi(_) => return Err(AudioStorageError::UnsupportedGraph),
             };
             self.cells.push(CellRow {
                 track: cell.track(),
                 scene: cell.scene(),
                 audio,
+                midi: match cell.content() {
+                    SessionCellContent::Midi(clip) => Some(clip.id()),
+                    _ => None,
+                },
             });
         }
         self.scene_index.extend(0..self.cells.len());
@@ -543,7 +564,11 @@ impl SessionStructureConstruction {
             scene_names: self.scenes.iter().map(|r| r.value.name.as_str()).collect(),
             track_names: self.tracks.iter().map(|r| r.value.name.as_str()).collect(),
             ranges: self.ranges.iter().map(|r| (r.id, r.start, r.end)).collect(),
-            stop_cells: self.cells.iter().filter(|c| c.audio.is_none()).count(),
+            stop_cells: self
+                .cells
+                .iter()
+                .filter(|c| c.audio.is_none() && c.midi.is_none())
+                .count(),
         }
     }
     #[cfg(test)]

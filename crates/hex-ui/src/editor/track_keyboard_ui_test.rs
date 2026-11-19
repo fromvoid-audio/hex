@@ -24,6 +24,7 @@ fn publish(view: &mut EditorView, project: hex_project::Project) {
             .and_then(|state| state.comparison_audio.clone()),
         project: Arc::new(project),
         waveforms: Default::default(),
+        source_overviews: Default::default(),
         audio_clip_waveforms: Default::default(),
         midi_preview: Arc::default(),
         gain_preview: Ok(Arc::default()),
@@ -66,7 +67,7 @@ fn editor_window(
 }
 
 #[gpui::test]
-fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppContext) {
+fn t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let directory = TrackTestDirectory::new();
     let (project, _, _, _) = audio_project();
@@ -75,11 +76,15 @@ fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppCont
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-t");
+    visual.simulate_keystrokes("t");
     let command = editor.read_with(&visual, |view, _| {
-        assert!(
-            matches!(&view.last_enqueued_edit, Some(Command::AddTrack {name}) if name == "audio 3")
-        );
+        assert!(matches!(
+            &view.last_enqueued_edit,
+            Some(Command::InsertDefaultTrackWithGain {
+                before_track: None,
+                ..
+            })
+        ));
         view.last_enqueued_edit.clone().unwrap()
     });
     let mut canonical = Editor::new(original.clone(), 8).unwrap();
@@ -87,7 +92,8 @@ fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppCont
         panic!("track result")
     };
     assert_eq!(canonical.project().tracks().len(), 3);
-    assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    assert_eq!(canonical.project().track(id).unwrap().name(), "track 3");
+    assert!(canonical.project().track(id).unwrap().name_is_automatic());
     let created = canonical.project().track(id).unwrap();
     assert!(created.instrument().is_none());
     assert!(created.devices().is_empty());
@@ -137,11 +143,11 @@ fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppCont
     assert_eq!(canonical.project().snapshot(), expected);
     assert!(!canonical.undo());
     assert!(canonical.redo());
-    assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    assert_eq!(canonical.project().track(id).unwrap().name(), "track 3");
 }
 
 #[gpui::test]
-fn command_t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext) {
+fn t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     for clip_name in [false, true] {
         let directory = TrackTestDirectory::new();
@@ -160,7 +166,7 @@ fn command_t_preserves_browser_and_clip_name_text_focus(cx: &mut TestAppContext)
         });
         visual.run_until_parked();
         let focus = visual.update(|window, cx| window.focused(cx).unwrap());
-        visual.simulate_keystrokes("cmd-t");
+        visual.simulate_keystrokes("t");
         visual.update(|window, _| assert!(focus.is_focused(window)));
         editor.read_with(&visual, |view, _| {
             assert!(view.last_enqueued_edit.is_none());
@@ -235,7 +241,7 @@ fn empty_track_fixture_catalog_job_owns_same_root_after_view_and_caller_drop(
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(std::time::Instant::now() < until, "owned root cleanup");
         std::thread::yield_now();

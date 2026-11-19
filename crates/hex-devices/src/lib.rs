@@ -1,13 +1,44 @@
-//! Original native DSP: registered instruments and native Lattice effects.
+//! # Purpose
+//! Own original native instrument/effect algorithms, state codecs and registered definitions.
+//!
+//! # Dependencies
+//! Uses hex-dsp for mathematical kernels and hex-lattice/hex-lattice-contract for processing,
+//! metadata and versioned state.
+//!
+//! # Does not own
+//! Does not schedule projects, access devices/files, retain host resource ownership or host
+//! foreign plugins. Preparation is control work; processing borrows validated inputs and must
+//! remain bounded and allocation-free.
+//!
+//! # Subnormal policy
+//! Hex does not configure flush-to-zero or denormals-are-zero and does not assume
+//! the floating-point mode inherited from a host or platform. Several recursive
+//! paths explicitly clear near-silent or subnormal state, including reverb, EQ,
+//! utility, delay and the operator lowpass. Performance effects depend on the
+//! hardware and workload and require measurement.
+#[cfg(test)]
+mod bypass_transition_tests;
+mod oversampling;
+mod parameter_binding;
+mod response;
+
+pub use response::{NativeResponseError, native_effect_frequency_response};
+
 pub mod auto_pan;
 pub mod compressor;
+pub mod delay;
 pub mod eq8;
 pub use eq8::flexible as eq;
 pub mod fm4;
 pub mod gate;
+pub mod limiter;
+pub mod modulation;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
+pub mod overdrive;
+pub mod rattle;
+pub mod reverb;
 pub mod sampler;
 pub mod saturator;
 pub mod tuning_audition;
@@ -30,22 +61,35 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 7] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 12] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
     &saturator::SATURATOR_DEFINITION,
     &compressor::COMPRESSOR_DEFINITION,
     &gate::GATE_DEFINITION,
+    &limiter::DEFINITION,
     &auto_pan::AUTO_PAN_DEFINITION,
+    &reverb::REVERB_DEFINITION,
+    &overdrive::OVERDRIVE_DEFINITION,
+    &delay::DEFINITION,
+    &rattle::RATTLE_DEFINITION,
 ];
-static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 3] = [
+static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
     &SINE_INSTRUMENT,
+    &sampler::catalog::DEFINITION,
     &fm4::device::FM4_DEFINITION,
     &operator_state::OPERATOR_METADATA,
 ];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
+
+// Conservative Arc overhead for the inline payload of a prepared source factory.
+fn source_effect_arc_bytes<T>() -> usize {
+    std::mem::size_of::<T>()
+        + 2 * std::mem::size_of::<usize>()
+        + 2 * std::mem::align_of::<T>().max(std::mem::align_of::<usize>())
+}
 
 /// The immutable catalog of original built-in native effects.
 pub fn native_registry()

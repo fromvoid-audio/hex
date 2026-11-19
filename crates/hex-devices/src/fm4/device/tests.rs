@@ -199,6 +199,16 @@ fn cross_field_cycles_and_invalid_patches_leave_prior_bytes_unchanged() {
         ParameterValue::Float(0.2),
     );
     assert_eq!(cyclic, Err(DeviceContractError::InvalidParameterValue));
+    let semantics = |parameter| {
+        FM4_DEFINITION
+            .parameter_semantics_for_state(&first_edge, parameter)
+            .unwrap()
+    };
+    assert_eq!(
+        semantics(parameter::modulation(1, 2)).unwrap().modulation,
+        hex_lattice_contract::ParameterModulation::SampleRate
+    );
+    assert_eq!(semantics(parameter::modulation(2, 1)), None);
     assert_eq!(
         FM4_DEFINITION.read_parameter(&first_edge, parameter::modulation(1, 2)),
         Ok(ParameterValue::Float(0.2))
@@ -295,5 +305,126 @@ fn definition_is_admitted_by_builtin_and_explicit_registries() {
             .definition(crate::operator_state::OPERATOR_TYPE_ID)
             .is_some()
     );
-    assert_eq!(builtins.definitions().len(), 3);
+    assert_eq!(builtins.definitions().len(), 4);
+}
+
+#[test]
+fn registered_definition_supplies_bounded_mutable_playback_matching_its_inline_oracle() {
+    let state = FM4_DEFINITION.default_state().unwrap();
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 48000,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let prepared = explicit_registry()
+        .prepare_instrument(&state, &context)
+        .unwrap();
+    let factory = prepared
+        .prepare_mutable_runtime()
+        .unwrap()
+        .expect("registered FM4 mutable factory");
+    let limits = hex_lattice::NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 259,
+        max_active_occurrences: 64,
+        max_tail_frames: 48000 * 120,
+    };
+    let bytes = factory.resource_factory_inline_bytes().unwrap();
+    assert_eq!(bytes, std::mem::size_of_val(factory.as_ref()));
+    assert!(bytes <= FM4_DEFINITION.resource_factory_inline_bound().unwrap());
+    assert_eq!(
+        factory.algorithmic_latency_frames(),
+        prepared.algorithmic_latency_frames()
+    );
+    let mut runtime =
+        hex_lattice::NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+    assert!(runtime.supports_active_occurrence_ids());
+    assert!(runtime.supports_occurrence_gain());
+    let note = prepared.prepare_note(60, 93).unwrap();
+    runtime.begin_block();
+    let mut output = [[0.0; 2]; 64];
+    runtime
+        .process_block(
+            &[
+                hex_lattice::NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 7,
+                    pitch: 60,
+                    velocity: 93,
+                },
+                hex_lattice::NativeInstrumentEvent::NoteOff {
+                    frame_offset: 32,
+                    occurrence_id: 7,
+                },
+            ],
+            &mut output,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    runtime.commit_block();
+    for (age, actual) in output.iter().enumerate() {
+        assert_eq!(
+            *actual,
+            note.sample(age as u64, 32, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        );
+    }
+}
+
+#[test]
+fn registered_event_validation_matches_inline_pitch_and_velocity_domain() {
+    let tuning = hex_lattice::TuningTable::default();
+    for sample_rate in [8000, 48000, 192000] {
+        let context = hex_lattice::DevicePreparationContext {
+            sample_rate,
+            tuning: &tuning,
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        let prepared = FM4_DEFINITION
+            .prepare_instrument(&FM4_DEFINITION.default_state().unwrap(), &context)
+            .unwrap();
+        for pitch in 0..=u8::MAX {
+            for velocity in [0, 1, 127, 128, 255] {
+                assert_eq!(
+                    prepared.validate_event_note(pitch, velocity).is_ok(),
+                    prepared.prepare_note(pitch, velocity).is_ok(),
+                    "rate {sample_rate}, pitch {pitch}, velocity {velocity}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn default_state_grants_oscillator_levels_phases_and_carriers() {
+    let state = FM4_DEFINITION.default_state().unwrap();
+    for descriptor in PARAMETERS {
+        let semantics = hex_lattice_contract::validated_parameter_semantics(
+            &FM4_DEFINITION,
+            &state,
+            descriptor.id,
+        )
+        .unwrap();
+        assert_eq!(
+            semantics.is_some(),
+            matches!(
+                descriptor.id.value(),
+                2 | 3 | 5 | 6 | 8 | 9 | 11 | 12 | 29..=32
+            )
+        );
+        if let Some(semantics) = semantics {
+            assert_eq!(
+                semantics.automation,
+                hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+            );
+            assert_eq!(
+                semantics.smoothing,
+                if (29..=32).contains(&descriptor.id.value()) {
+                    hex_lattice_contract::ParameterSmoothing::DeviceManaged
+                } else {
+                    hex_lattice_contract::ParameterSmoothing::None
+                }
+            );
+        }
+    }
 }

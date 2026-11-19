@@ -127,6 +127,7 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
         | CursorStyle::ResizeLeftBracket
         | CursorStyle::ResizeRightBracket
         | CursorStyle::ResizeLeftRight
+        | CursorStyle::Loop
         | CursorStyle::ResizeColumn => (&SIZEWE, IDC_SIZEWE),
         CursorStyle::ResizeUp
         | CursorStyle::ResizeDown

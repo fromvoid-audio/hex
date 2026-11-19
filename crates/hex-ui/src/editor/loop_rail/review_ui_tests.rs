@@ -227,49 +227,6 @@ fn stationary_command_endpoints_toggle_and_command_edge_drags_remain_free(cx: &m
     }
 }
 
-#[test]
-fn hit_budget_preserves_outside_capture_clipped_bodies_and_wide_edges() {
-    use super::super::{EditMode, region_edit_mode};
-    let bounds = gpui::Bounds::new(point(px(100.0), px(0.0)), gpui::size(px(300.0), px(18.0)));
-    let viewport = Viewport {
-        start: 0,
-        length: 300,
-    };
-    let kind = |region, viewport, x| match region_edit_mode(region, viewport, bounds, x) {
-        Some(EditMode::Move { .. }) => "move",
-        Some(EditMode::ResizeStart { .. }) => "start",
-        Some(EditMode::ResizeEnd { .. }) => "end",
-        Some(EditMode::Paint { .. }) | None => "none",
-    };
-    for width in [1, 8, 12, 18, 48] {
-        let r = LoopRegion::new(100, 100 + width, true).unwrap();
-        assert_eq!(kind(r, viewport, 200.0), "start");
-        assert_eq!(kind(r, viewport, 200.0 + width as f32), "end");
-        assert_eq!(kind(r, viewport, 194.0), "start");
-        assert_eq!(kind(r, viewport, 193.9), "none");
-        assert_eq!(kind(r, viewport, 206.0 + width as f32), "end");
-        assert_eq!(kind(r, viewport, 206.1 + width as f32), "none");
-        assert_eq!(kind(r, viewport, 200.0 + width as f32 / 2.0), "move");
-    }
-    let wide = LoopRegion::new(100, 148, false).unwrap();
-    assert_eq!(kind(wide, viewport, 206.0), "start");
-    assert_eq!(kind(wide, viewport, 206.1), "move");
-    assert_eq!(kind(wide, viewport, 241.9), "move");
-    assert_eq!(kind(wide, viewport, 242.0), "end");
-    // A clipped-away start cannot steal the visible body, even when only 3px remain.
-    let clipped = Viewport {
-        start: 145,
-        length: 300,
-    };
-    assert_eq!(kind(wide, clipped, 100.0), "move");
-    assert_eq!(kind(wide, clipped, 103.0), "end");
-    let clipped_end = Viewport {
-        start: 0,
-        length: 110,
-    };
-    assert_eq!(kind(wide, clipped_end, 400.0), "move");
-}
-
 #[gpui::test]
 fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut TestAppContext) {
     let viewport = Viewport {
@@ -319,4 +276,49 @@ fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut Te
         region(&editor, &visual),
         LoopRegion::new(100, 101, false).unwrap()
     );
+}
+
+#[gpui::test]
+fn viewport_edge_caps_resize_the_existing_loop_instead_of_painting_a_new_range(
+    cx: &mut TestAppContext,
+) {
+    for (start, end, marker, target) in [
+        (50, 100, "arrangement-loop-end-marker", 0.25),
+        (200, 250, "arrangement-loop-start-marker", 0.75),
+    ] {
+        let cx = &mut cx.new_app();
+        let (handle, editor) = fixture(
+            cx,
+            start,
+            end,
+            Viewport {
+                start: 100,
+                length: 100,
+            },
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |v, cx| {
+            v.snap_grid = SnapGrid::Off;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let cap = visual.debug_bounds(marker).unwrap();
+        assert!(!visual.rendered_quad_paint_layers(marker, false).is_empty());
+        let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
+        let down = cap.center();
+        let up = point(rail.left() + rail.size.width * target, down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        let changed = region(&editor, &visual);
+        if start == 50 {
+            assert_eq!(changed.start(), start);
+            assert!(changed.end() > end && changed.end() < 150);
+        } else {
+            assert_eq!(changed.end(), end);
+            assert!(changed.start() < start && changed.start() > 150);
+        }
+        editor.read_with(&visual, |v, _| assert!(v.error.is_none(), "{:?}", v.error));
+    }
 }

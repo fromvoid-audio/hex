@@ -1,18 +1,19 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
+use super::super::{
+    device_action_owner::device_in_panel, native_automation_recording::automation_target,
+};
 use super::gesture_adapter::{
-    NumericGestureLease, dispatch_bound_numeric_gesture, owns_numeric_gesture,
+    NumericGestureLease, dispatch_bound_numeric_gesture, owns_native_automation,
+    owns_numeric_gesture,
 };
 use super::*;
 use std::{cell::Cell, rc::Rc};
 
-pub(super) type NumericBeginHook =
-    Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
 pub(super) struct BindingPolicy {
     pub(super) tab_navigation: bool,
-    pub(super) toggle_appearance: DiscreteControlAppearance,
+    pub(super) toggle_appearance: ToggleAppearance,
     pub(super) choice_order: Option<Vec<u32>>,
-    pub(super) numeric_begin: Option<NumericBeginHook>,
 }
 
 pub(super) type BindingPolicyFactory = fn(
@@ -41,6 +42,14 @@ pub(super) struct CapturedBinding {
 }
 
 impl CapturedBinding {
+    fn accepts_event(self, view: &EditorView, require_enabled: bool) -> bool {
+        self.current(view, require_enabled)
+            && (!matches!(self.owner, Some(DevicePanelOwner::Source(_)))
+                || view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| super::selected_owner(view, state) == self.owner))
+    }
     pub(super) fn current(self, view: &EditorView, require_enabled: bool) -> bool {
         if self.generation != view.project_generation || self.owner != view.device_panel.owner {
             return false;
@@ -48,49 +57,28 @@ impl CapturedBinding {
         let Some(state) = view.state.as_ref() else {
             return false;
         };
-        let device = match (self.owner, self.identity.class) {
-            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Instrument) => state
-                .project
-                .track(id)
-                .and_then(|track| track.instrument())
-                .filter(|device| device.id() == self.key.device),
-            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Effect) => {
-                state.project.track(id).and_then(|track| {
-                    track
-                        .devices()
-                        .iter()
-                        .find(|device| device.id() == self.key.device)
-                })
-            }
-            (Some(DevicePanelOwner::Return(id)), NativeDeviceClass::Effect) => state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|track| track.id() == id)
-                .and_then(|track| {
-                    track
-                        .devices()
-                        .iter()
-                        .find(|device| device.id() == self.key.device)
-                }),
-            (Some(DevicePanelOwner::Main), NativeDeviceClass::Effect) => state
-                .project
-                .main_devices()
-                .iter()
-                .find(|device| device.id() == self.key.device),
-            _ => None,
-        };
-        let Some(device) = device else {
+        let Some(device) = self.owner.and_then(|owner| {
+            device_in_panel(owner, &state.project, self.key.device, self.identity.class)
+        }) else {
             return false;
         };
         if device.state().type_id() != self.identity.type_id {
             return false;
         }
-        if self.key.parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_INPUT_GAIN;
-        }
-        if self.key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_OUTPUT_GAIN;
+        // Reserved trims are owned by the host and are absent from the
+        // provider descriptor inventory.
+        let kind = automation_target(self.key.parameter);
+        if matches!(
+            kind,
+            hex_lattice_contract::DeviceAutomationTarget::HostInputGain
+                | hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+        ) {
+            return hex_engine::native_parameter_input_target(
+                &state.project,
+                self.key.device,
+                kind,
+            )
+            .is_ok();
         }
         if let Some((class, cached_state, cached_view)) =
             view.device_panel.views.get(&self.key.device)
@@ -183,13 +171,17 @@ fn parameter_style(presentation: ControlPresentation) -> ControlStyle {
 pub(super) enum ControlPresentation {
     Standard,
     CompactDial,
-    MiniDial,
     MicroDial,
+    FilledSlider,
+    FilledVerticalSlider,
     InlineValue,
-    DeviceMeters,
+    MeterFader,
+    ChoiceDial,
     CompactButton,
     CompactSelector,
+    CompactConfirmSelector,
     CompactWideSelector,
+    CompactSegments { columns: usize },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -203,6 +195,24 @@ pub(crate) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
+    parameter_display_override(view, key).unwrap_or(canonical_value)
+}
+
+/// The in-flight gesture value, else the admitted manual value awaiting its
+/// barrier. Bound controls and automation lanes share this display source.
+pub(crate) fn parameter_display_override(
+    view: &mut EditorView,
+    key: ParameterKey,
+) -> Option<ParameterValue> {
+    if let Some(value) = view
+        .native_automation_recorder
+        .value(GestureTarget::DeviceParameter {
+            device: key.device,
+            parameter: key.parameter,
+        })
+    {
+        return Some(value);
+    }
     let gesture_value = view
         .device_gesture
         .snapshot()
@@ -244,13 +254,7 @@ pub(crate) fn effective_parameter_value(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.unwrap_or_else(|| {
-        view.device_panel
-            .pending_values
-            .get(&key)
-            .copied()
-            .unwrap_or(canonical_value)
-    })
+    gesture_value.or_else(|| view.device_panel.pending_values.get(&key).copied())
 }
 
 pub(super) fn render_parameter(
@@ -275,7 +279,13 @@ pub(super) fn render_parameter(
         parameter: parameter.descriptor.id,
     };
     let descriptor = parameter.descriptor;
-    let value = effective_parameter_value(view, key, parameter.value);
+    let value = if identity.type_id == hex_engine::eq::EQ_TYPE_ID
+        || identity.type_id.as_str() == Ok("hex.eq8")
+    {
+        super::eq_automation::effective_value(view, key, identity.type_id, parameter)
+    } else {
+        effective_parameter_value(view, key, parameter.value)
+    };
     let enabled = parameter.enabled;
     let compatible = matches!(
         (descriptor.kind, value),
@@ -337,24 +347,24 @@ pub(super) fn render_parameter(
             })
             .unwrap_or(false)
     });
-    match view.device_panel.controls.get(&key) {
+    let rendered = match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
@@ -363,32 +373,40 @@ pub(super) fn render_parameter(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
                 });
             }
             let (width, height) = match presentation {
-                ControlPresentation::CompactDial => (64.0, 52.0),
-                ControlPresentation::MiniDial | ControlPresentation::MicroDial => (
+                ControlPresentation::CompactDial => (
+                    hex_widgets::COMPACT_DIAL_WIDTH,
+                    hex_widgets::COMPACT_DIAL_HEIGHT,
+                ),
+                ControlPresentation::MicroDial => (
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
-                ControlPresentation::InlineValue => (46.0, 14.0),
-                ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
+                ControlPresentation::InlineValue => (
+                    hex_widgets::INLINE_VALUE_WIDTH,
+                    hex_widgets::INLINE_VALUE_HEIGHT,
+                ),
+                ControlPresentation::MeterFader => (60.0, 154.0),
+                ControlPresentation::FilledSlider => (60.0, 18.0),
+                ControlPresentation::FilledVerticalSlider => (12.0, 32.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -462,6 +480,10 @@ pub(super) fn render_parameter(
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
+                    control.set_confirm_on_enter(
+                        presentation == ControlPresentation::CompactConfirmSelector,
+                        cx,
+                    );
                     if let Some(index) = values.iter().position(|candidate| *candidate == value) {
                         let _ = control.set_selected(index, cx);
                     }
@@ -488,17 +510,54 @@ pub(super) fn render_parameter(
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
+                    control.set_confirm_on_enter(
+                        presentation == ControlPresentation::CompactConfirmSelector,
+                        cx,
+                    );
                 });
             }
             let (width, height) = match presentation {
-                ControlPresentation::CompactSelector => (64.0, 14.0),
+                ControlPresentation::ChoiceDial => (64.0, 52.0),
+                ControlPresentation::CompactSelector
+                | ControlPresentation::CompactConfirmSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
+                ControlPresentation::CompactSegments { columns } => (
+                    64.0,
+                    values.len().div_ceil(columns.max(1)) as f32 * 16.0 - 2.0,
+                ),
                 _ => (136.0, 22.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
         None => unsupported_parameter(descriptor.label),
-    }
+    };
+    let menu_binding = CapturedBinding {
+        generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
+    rendered.capture_any_mouse_down(cx.listener(
+        move |view, event: &gpui::MouseDownEvent, window, cx| {
+            if event.button == gpui::MouseButton::Right
+                && menu_binding.accepts_event(view, false)
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision)
+                && view.open_parameter_automation_menu(
+                    event.position,
+                    key.device,
+                    automation_target(key.parameter),
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        },
+    ))
 }
 
 fn create_parameter_control(
@@ -529,7 +588,6 @@ fn create_parameter_control(
         tab_navigation,
         toggle_appearance,
         choice_order,
-        numeric_begin,
     } = policy(view, key, identity, descriptor, presentation, display);
     let style = parameter_style(presentation);
     let ControlText {
@@ -544,7 +602,7 @@ fn create_parameter_control(
     match (descriptor.kind, value) {
         (ParameterKind::Float { min, max, unit }, ParameterValue::Float(value)) if min < max => {
             let default = match descriptor.default {
-                ParameterValue::Float(default) => f64::from(default),
+                ParameterValue::Float(default) => default,
                 _ => return None,
             };
             let scale = match descriptor.presentation {
@@ -552,12 +610,18 @@ fn create_parameter_control(
                     NumericScale::LinearAmplitudeDecibels
                 }
                 ParameterPresentation::Logarithmic => NumericScale::Logarithmic,
-                ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
+                ParameterPresentation::Linear
+                    if min < 0.0
+                        && max > 0.0
+                        && presentation != ControlPresentation::FilledSlider =>
+                {
+                    NumericScale::Bipolar
+                }
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
-            let mut spec = NumericSpec::new(
-                f64::from(min),
-                f64::from(max),
+            let mut spec = NumericSpec::new_f32(
+                min,
+                max,
                 default,
                 scale,
                 2,
@@ -567,31 +631,26 @@ fn create_parameter_control(
             if let Some(codec) = display_codec {
                 spec = codec.apply(spec);
             }
-            let kind = match presentation {
-                ControlPresentation::CompactDial
-                | ControlPresentation::MiniDial
-                | ControlPresentation::MicroDial => NumericControlKind::Knob,
-                ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
-                _ => NumericControlKind::HorizontalSlider,
-            };
             let appearance = match presentation {
-                ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
-                ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
-                ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
-                ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
-                ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,
-                _ => NumericControlAppearance::Standard,
+                ControlPresentation::CompactDial => NumericControlPresentation::CompactDial,
+                ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
+                ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
+                ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
+                ControlPresentation::FilledSlider => NumericControlPresentation::FilledSlider,
+                ControlPresentation::FilledVerticalSlider => {
+                    NumericControlPresentation::FilledVerticalSlider
+                }
+                _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
                 id,
                 theme::text(display_label.unwrap_or(descriptor.label)),
-                kind,
+                appearance,
                 spec,
                 f64::from(value),
                 style,
             )
             .ok()?
-            .with_appearance(appearance)
             .with_dial_layout(
                 if display_codec == Some(numeric_display::NumericDisplayCodec::Balance) {
                     DialLayout::Pan
@@ -600,6 +659,7 @@ fn create_parameter_control(
                 },
             );
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+            entity.update(cx, |control, _| control.set_commit_unchanged_text(true));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,
                 parameter: key.parameter,
@@ -613,7 +673,11 @@ fn create_parameter_control(
                 move |view, emitter, event: &NumericControlEvent, cx| {
                     let is_current = |view: &EditorView| {
                         event_fence.get() == 0
-                            && binding.current(view, event.phase != NumericEventPhase::Cancel)
+                            && (if event.phase == NumericEventPhase::Cancel {
+                                binding.current(view, false)
+                            } else {
+                                binding.accepts_event(view, true)
+                            })
                             && matches!(view.device_panel.controls.get(&key),
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
@@ -621,15 +685,27 @@ fn create_parameter_control(
                     if !is_current(view) {
                         return;
                     }
-                    if event.phase == NumericEventPhase::Begin
-                        && let Some(hook) = numeric_begin.as_ref()
-                    {
-                        hook(view, cx, key);
-                    }
-                    if !is_current(view) {
-                        return;
+                    if event.phase == NumericEventPhase::Begin {
+                        view.remember_automation_parameter(
+                            key.device,
+                            automation_target(key.parameter),
+                        );
                     }
                     let value = ParameterValue::Float(event.value as f32);
+                    if event.phase == NumericEventPhase::Commit
+                        && event_lease.get().is_none()
+                        && view.device_gesture.snapshot().is_none()
+                    {
+                        let result = view
+                            .begin_device_gesture(target, value)
+                            .and_then(|_| view.change_device_gesture(value))
+                            .and_then(|_| view.finish_device_gesture(value));
+                        if let Err(error) = result {
+                            view.error = Some(error.into());
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if let Err(error) = dispatch_bound_numeric_gesture(
                         view,
                         target,
@@ -669,7 +745,7 @@ fn create_parameter_control(
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
             let subscription = cx.subscribe(&entity, move |view, emitter, event: &ToggleChanged, cx| {
-                if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                if !binding.accepts_event(view, true) || !matches!(view.device_panel.controls.get(&key),
                     Some(ParameterControl::Bool { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                 // A discrete control may hide a numeric field (for example,
                 // switching Operator tuning to fixed frequency). Do not let
@@ -703,14 +779,41 @@ fn create_parameter_control(
                     }
                     return;
                 }
-                let value = ParameterValue::Bool(event.checked);
-                view.device_panel.pending_values.insert(target, value);
-                if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                    device: target.device,
-                    parameter: target.parameter,
-                    value,
-                }) {
-                    view.device_panel.pending_values.remove(&target);
+                view.remember_automation_parameter(key.device, automation_target(key.parameter));
+                let source_matrix_switch = matches!(key.parameter, super::utility_panel::MID_SIDE_ENABLED | super::utility_panel::MONO | super::utility_panel::MUTE | super::utility_panel::INVERT_LEFT | super::utility_panel::INVERT_RIGHT)
+                    && view.state.as_ref().is_some_and(|state| {
+                        state.project.device_location(key.device).is_some_and(|location|
+                            matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                                && location.device.state().type_id().as_str() == Ok("hex.utility"))
+                    });
+                if source_matrix_switch {
+                    let eligible = view.state.as_ref().is_some_and(|state| {
+                        if key.parameter == super::utility_panel::MUTE {
+                            hex_engine::project_source_utility_mute_edit_supported(&state.project, key.device)
+                        } else {
+                            hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter)
+                        }
+                    });
+                    let value = ParameterValue::Bool(event.checked);
+                    let target = GestureTarget::DeviceParameter { device: key.device, parameter: key.parameter };
+                    let result = if eligible {
+                        match view.begin_device_gesture(target, value) {
+                            Ok(()) => {
+                                let result = view.change_device_gesture(value)
+                                    .and_then(|_| view.finish_device_gesture(value));
+                                if result.is_err() { let _ = view.cancel_device_gesture(); }
+                                result
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        Err("source control is no longer available")
+                    };
+                    if let Err(error) = result {
+                        view.error = Some(error.into());
+                    }
+                } else {
+                    apply_discrete_parameter(view, target, ParameterValue::Bool(event.checked));
                 }
                 cx.notify();
             });
@@ -741,22 +844,31 @@ fn create_parameter_control(
                 .map(|index| theme::text(labels[*index as usize]));
             let appearance = if matches!(
                 presentation,
-                ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
+                ControlPresentation::CompactSelector
+                    | ControlPresentation::CompactConfirmSelector
+                    | ControlPresentation::CompactWideSelector
             ) {
-                DiscreteControlAppearance::CompactSelector
+                SelectorAppearance::CompactSelector
+            } else if presentation == ControlPresentation::ChoiceDial {
+                SelectorAppearance::CompactDial
             } else {
-                DiscreteControlAppearance::Standard
+                SelectorAppearance::Standard
             };
             let config = SelectorConfig::new(id, choices, selected, style)
                 .ok()?
                 .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
                 .with_appearance(appearance);
+            let config = if let ControlPresentation::CompactSegments { columns } = presentation {
+                config.with_segment_columns(columns).ok()?
+            } else {
+                config
+            };
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
             let event_values = values.clone();
             let subscription =
                 cx.subscribe(&entity, move |view, emitter, event: &SelectorChanged, cx| {
-                    if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                    if !binding.accepts_event(view, true) || !matches!(view.device_panel.controls.get(&key),
                         Some(ParameterControl::Choice { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                     let Some(&value) = event_values.get(event.index) else {
                         return;
@@ -764,14 +876,31 @@ fn create_parameter_control(
                     if !finalize_controls(view, cx) {
                         return;
                     }
-                    let value = ParameterValue::Choice(value);
-                    view.device_panel.pending_values.insert(target, value);
-                    if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                        device: target.device,
-                        parameter: target.parameter,
-                        value,
-                    }) {
-                        view.device_panel.pending_values.remove(&target);
+                    view.remember_automation_parameter(key.device, automation_target(key.parameter));
+                    let source_channel = key.parameter == super::utility_panel::CHANNEL
+                        && view.state.as_ref().is_some_and(|state| state.project.device_location(key.device).is_some_and(|location|
+                            matches!(location.owner, hex_project::DeviceOwner::Source(_))
+                                && location.device.state().type_id().as_str() == Ok("hex.utility")));
+                    if source_channel {
+                        let eligible = view.state.as_ref().is_some_and(|state|
+                            hex_engine::project_source_utility_matrix_edit_supported(&state.project, key.device, key.parameter));
+                        let value = ParameterValue::Choice(value);
+                        let target = GestureTarget::DeviceParameter { device: key.device, parameter: key.parameter };
+                        let result = if eligible {
+                            match view.begin_device_gesture(target, value) {
+                                Ok(()) => {
+                                    let result = view.change_device_gesture(value).and_then(|_| view.finish_device_gesture(value));
+                                    if result.is_err() { let _ = view.cancel_device_gesture(); }
+                                    result
+                                }
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            Err("source control is no longer available")
+                        };
+                        if let Err(error) = result { view.error = Some(error.into()); }
+                    } else {
+                        apply_discrete_parameter(view, target, ParameterValue::Choice(value));
                     }
                     cx.notify();
                 });
@@ -788,6 +917,28 @@ fn create_parameter_control(
             Some(())
         }
         _ => None,
+    }
+}
+
+fn apply_discrete_parameter(view: &mut EditorView, target: ParameterKey, value: ParameterValue) {
+    let gesture = GestureTarget::DeviceParameter {
+        device: target.device,
+        parameter: target.parameter,
+    };
+    match view.begin_native_automation_step(gesture, value) {
+        Ok(true) => return,
+        Err(reason) => {
+            view.error = Some(reason.into());
+            return;
+        }
+        Ok(false) => {}
+    }
+    view.device_panel.pending_values.insert(target, value);
+    if !view
+        .manual_device_parameter_request(target.device, target.parameter, value)
+        .is_ok_and(|request| view.enqueue_device_barrier(request))
+    {
+        view.device_panel.pending_values.remove(&target);
     }
 }
 
@@ -845,12 +996,15 @@ pub(super) fn cancel_control(
             device: key.device,
             parameter: key.parameter,
         };
+        let owns_native = owns_native_automation(view, target, lease);
         let owns = owns_numeric_gesture(view, target, lease);
         // Revoke before local cancellation can enqueue a subscription event.
         lease.set(None);
         delivery_fence.set(delivery_fence.get().wrapping_add(1).max(1));
         entity.update(cx, |control, cx| control.cancel(cx));
-        if owns {
+        if owns_native {
+            view.cancel_native_automation_touch();
+        } else if owns {
             let _ = view.cancel_device_gesture();
         }
     }

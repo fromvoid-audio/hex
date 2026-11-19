@@ -1,11 +1,12 @@
-//! GPUI-independent MIDI draw stroke admission and coordinate mapping.
+//! Control-side MIDI draw stroke admission and coordinate mapping.
+//! Pure resolution and accepted display custody retain their existing owners.
 use super::{EditorView, midi_drag};
 use super::{midi_stroke, midi_stroke::StrokeContext};
-use gpui::Window;
-#[cfg(test)]
-use hex_project::BeatTime;
+use gpui::{Context, Window};
+
+#[path = "midi_draw_pointer.rs"]
+mod pointer;
 use hex_project::{ClipId, MidiNote, NoteId};
-use hex_session::service::Request;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,6 +32,7 @@ impl EditorView {
         hit: Option<NoteId>,
         modifiers: StrokeModifiers,
         window: &mut Window,
+        cx: &Context<Self>,
     ) -> bool {
         let Some(context) = self.current_stroke_context(rendered.bounds, modifiers) else {
             return false;
@@ -38,6 +40,7 @@ impl EditorView {
         if !same_rendered_frame(context, rendered)
             || !self.midi_draw_mode
             || self.edit_pending()
+            || self.midi_stroke.is_some()
             || self.project_generation != rendered.generation
         {
             return false;
@@ -77,10 +80,12 @@ impl EditorView {
             hit,
         ) {
             Ok(stroke) => {
+                if !self.capture_midi_draw_pointer(&stroke, window, cx) {
+                    return false;
+                }
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
-                self.midi_marquee = None;
-                self.midi_selection.clear();
+                self.cancel_all_midi_marquees();
                 self.midi_focus.focus(window);
                 self.midi_stroke = Some(stroke);
                 true
@@ -150,9 +155,16 @@ impl EditorView {
             stroke.cancel();
             return true;
         }
+        // finish retires the working stroke and clears its own preview. Keep
+        // the final shared geometry before that, then transfer only on admission.
+        let preview = stroke.shared_preview();
         match stroke.finish(context, pending) {
             Ok(Some(command)) => {
-                self.enqueue(Request::Edit(command));
+                self.submit_midi_drag_preview(
+                    context.clip,
+                    super::midi_pending_drag::Frozen::Stroke(preview),
+                    command,
+                );
             }
             Ok(None) => {}
             Err(error) => self.error = Some(stroke_error(error).into()),
@@ -169,26 +181,28 @@ impl EditorView {
         }
     }
 
-    fn current_stroke_context(
+    pub(super) fn current_stroke_context(
         &self,
         bounds: midi_stroke::CanvasBounds,
         modifiers: StrokeModifiers,
     ) -> Option<StrokeContext> {
         let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
+        let clip_id = self.detail_clip_id()?;
         let clip = state.project.midi_source(clip_id)?;
         Some(StrokeContext {
             generation: self.project_generation,
             revision: state.revision,
             clip: clip_id,
             clip_length: clip.source_length().raw(),
+            minimum_gate: self.midi_minimum_creation_gate()?,
             grid: self.midi_snap_grid,
             effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
             snap_modifier: modifiers.snap,
             pitch_modifier: modifiers.pitch,
-            view_start: self.piano_beat_start.raw(),
+            view_start: self.piano_beat_start,
             view_span: self.piano_beat_span.raw(),
             pitch_low: self.piano_pitch_low,
+            pitch_rows: self.piano_pitch_rows,
             bounds,
             pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
             draw_mode: self.midi_draw_mode,
@@ -196,7 +210,7 @@ impl EditorView {
     }
 }
 
-fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool {
+pub(super) fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool {
     current.generation == rendered.generation
         && current.revision == rendered.revision
         && current.clip == rendered.clip
@@ -205,12 +219,13 @@ fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool 
         && current.view_start == rendered.view_start
         && current.view_span == rendered.view_span
         && current.pitch_low == rendered.pitch_low
+        && current.pitch_rows == rendered.pitch_rows
         && current.bounds == rendered.bounds
         && current.pitch_locked == (rendered.pitch_locked ^ current.pitch_modifier)
         && current.draw_mode == rendered.draw_mode
 }
 
-fn canvas_bounds(bounds: [f32; 4]) -> midi_stroke::CanvasBounds {
+pub(super) fn canvas_bounds(bounds: [f32; 4]) -> midi_stroke::CanvasBounds {
     midi_stroke::CanvasBounds {
         x: bounds[0],
         y: bounds[1],
@@ -242,12 +257,22 @@ fn stroke_point(
     }
     let fraction = f64::from(local_x / bounds.width);
     let offset = (fraction * context.view_span as f64) as u64;
-    let beat_raw = context
-        .view_start
-        .checked_add(offset)?
-        .min(context.clip_length.saturating_sub(1));
-    let row = ((local_y / bounds.height * 24.0).floor() as u8).min(23);
-    let pitch = context.pitch_low.checked_add(23)?.checked_sub(row)?;
+    let beat_raw = u64::try_from(context.view_start.checked_add(i128::from(offset))?).ok()?;
+    let length = context.authoring_length()?;
+    let beat_raw = if clamp_to_bounds {
+        beat_raw.min(length.checked_sub(1)?)
+    } else {
+        if beat_raw >= length {
+            return None;
+        }
+        beat_raw
+    };
+    let row = ((local_y / bounds.height * f32::from(context.pitch_rows)).floor() as u8)
+        .min(context.pitch_rows.checked_sub(1)?);
+    let pitch = context
+        .pitch_low
+        .checked_add(context.pitch_rows.checked_sub(1)?)?
+        .checked_sub(row)?;
     Some(midi_stroke::StrokePoint { beat_raw, pitch })
 }
 
@@ -290,13 +315,16 @@ pub(super) fn created_range_ids(
         let id = note.id();
         (id >= first && id <= last).then_some(id)
     }));
+    if created.len() != range_len {
+        return Err("created midi note range is incomplete");
+    }
     Ok(Some(created))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
-    use hex_project::{Command, Created, Editor, Project};
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
 
     #[test]
     fn draw_coordinate_mapping_clamps_during_motion_and_rejects_offroll_release() {
@@ -324,6 +352,7 @@ mod tests {
             revision: 2,
             clip,
             clip_length: BeatTime::ONE.raw() * 4,
+            minimum_gate: 1,
             grid: midi_drag::MidiGrid::Sixteenth,
             effective_grid: midi_drag::MidiGrid::Sixteenth,
             snap_modifier: false,
@@ -331,6 +360,7 @@ mod tests {
             view_start: 0,
             view_span: BeatTime::ONE.raw() * 4,
             pitch_low: 48,
+            pitch_rows: 24,
             bounds: midi_stroke::CanvasBounds {
                 x: 10.0,
                 y: 20.0,
@@ -372,6 +402,7 @@ mod tests {
         let mut insert = Vec::new();
         for pitch in [60, 61, 62] {
             insert.push(hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::from_quarters(pitch as u64 - 60).unwrap(),
                 duration: BeatTime::ONE,
                 pitch,

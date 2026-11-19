@@ -1,4 +1,23 @@
-//! Controlled discovery records only; no plugin loading or audio-host API.
+//! # Purpose
+//! Own controlled native plugin-discovery records, protocols and helper supervision.
+//! Original macOS helper fixtures also exercise a native-only persistent component/controller
+//! lifecycle and bounded host message/controller-metadata transactions. No foreign interface
+//! pointer enters this Rust API; controller metadata is not canonical/audio application.
+//! The original copied-stream fixture retains one SDK instance across bounded PCM packets;
+//! MIDI bytes there are transport metadata, not SDK event translation. The realtime endpoint
+//! and joining transport worker belong to hex-audio.
+//! A distinct minimal ordinary-instance executable selects an exact bundle/class/hash,
+//! captures bounded stopped state and processes copied Float32 main-bus packets. Its
+//! artifact/package role is verified here; graph admission and supervision remain consumers.
+//!
+//! # Dependencies
+//! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported
+//! helper process.
+//!
+//! # Does not own
+//! Does not expose an app-side plugin loader, product instance admission or realtime audio bridge. Exact
+//! helper/artifact identity and bounded protocol validation remain required.
+pub mod macos;
 pub mod offline_protocol;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -45,8 +64,19 @@ pub struct Receipt {
     pub build_closure: BTreeMap<String, String>,
     pub licenses: BTreeMap<String, License>,
 }
+// SHA output arrays no longer implement LowerHex; keep durable 64-byte text.
+fn digest_hex(digest: [u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    output
+}
+
 pub fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    digest_hex(Sha256::digest(bytes).into())
 }
 pub fn source_hash() -> String {
     let mut h = Sha256::new();
@@ -65,7 +95,7 @@ pub fn source_hash() -> String {
         h.update(bytes);
         h.update([0]);
     }
-    format!("{h:x}", h = h.finalize())
+    digest_hex(h.finalize().into())
 }
 pub fn file_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !fs::symlink_metadata(path)
@@ -256,6 +286,8 @@ pub struct Class {
     pub category: String,
     pub name: String,
     pub class_flags: Option<u32>,
+    pub subcategories: Option<String>,
+    pub class_vendor: Option<String>,
     pub class_version: Option<String>,
     pub class_sdk_version: Option<String>,
 }
@@ -298,10 +330,22 @@ impl<'a> Decoder<'a> {
         if n > limit {
             return Err("metadata string bound".into());
         }
-        String::from_utf8(self.take(n)?.to_vec()).map_err(|_| "invalid metadata encoding".into())
+        let value =
+            String::from_utf8(self.take(n)?.to_vec()).map_err(|_| "invalid metadata encoding")?;
+        if value.contains('\0') {
+            return Err("embedded metadata null".into());
+        }
+        Ok(value)
     }
 }
 pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
+    decode_packet_for_platform(bytes, request, platform())
+}
+fn decode_packet_for_platform(
+    bytes: &[u8],
+    request: u64,
+    expected_platform: &str,
+) -> Result<Discovery, String> {
     if bytes.len() < 12 || bytes.len() > MAX_PACKET + 12 || &bytes[..8] != b"HVSCAN01" {
         return Err("invalid packet header".into());
     }
@@ -310,8 +354,9 @@ pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
     if n != bytes.len() - 12 {
         return Err("packet length mismatch".into());
     }
-    if d.take(2)? != [1, 0] {
-        return Err("unknown protocol version".into());
+    let extended = expected_platform == "darwin-arm64";
+    if d.take(2)? != [if extended { 2 } else { 1 }, 0] {
+        return Err("unknown protocol version for platform".into());
     }
     let id = u64::from_le_bytes(d.take(8)?.try_into().map_err(|_| "request width")?);
     if id != request || id == 0 {
@@ -320,7 +365,7 @@ pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
     let sdk = d.text(40)?;
     let public_sdk = d.text(40)?;
     let platform_id = d.text(32)?;
-    if sdk != SDK || public_sdk != PUBLIC_SDK || platform_id != platform() {
+    if sdk != SDK || public_sdk != PUBLIC_SDK || platform_id != expected_platform {
         return Err("helper claim differs from pinned identity".into());
     }
     let factory_flags = d.u32()?;
@@ -335,21 +380,52 @@ pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
     let mut ids = BTreeSet::new();
     for _ in 0..count {
         let cid: [u8; 16] = d.take(16)?.try_into().map_err(|_| "class id width")?;
-        if cid == [0; 16] || !ids.insert(cid) {
-            return Err("invalid or duplicate class identity".into());
-        }
         let cardinality = d.u32()? as i32;
         if cardinality < 0 {
             return Err("invalid cardinality".into());
         }
+        let category = d.text(32)?;
+        // The VST3 compatibility service may share the processor's CID. It
+        // supplies migration metadata and is outside Hex's discovery catalog.
+        let compatibility = extended && category == "Plugin Compatibility Class";
+        if cid == [0; 16] || (!compatibility && !ids.insert(cid)) {
+            return Err("invalid or duplicate class identity".into());
+        }
+        let name = d.text(64)?;
+        let has_extension = if extended {
+            match d.take(1)? {
+                [0] => false,
+                [1] => true,
+                _ => return Err("invalid optional factory marker".into()),
+            }
+        } else {
+            false
+        };
+        let (class_flags, subcategories, class_vendor, class_version, class_sdk_version) =
+            if has_extension {
+                (
+                    Some(d.u32()?),
+                    Some(d.text(128)?),
+                    Some(d.text(64)?),
+                    Some(d.text(64)?),
+                    Some(d.text(64)?),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
+        if compatibility {
+            continue;
+        }
         classes.push(Class {
             cid,
             cardinality,
-            category: d.text(32)?,
-            name: d.text(64)?,
-            class_flags: None,
-            class_version: None,
-            class_sdk_version: None,
+            category,
+            name,
+            class_flags,
+            subcategories,
+            class_vendor,
+            class_version,
+            class_sdk_version,
         });
     }
     if d.offset != bytes.len() {
@@ -391,6 +467,37 @@ impl Catalog {
                 self.last_error = None;
             }
             Err(error) => self.last_error = Some(error),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "macos/metadata_tests.rs"]
+mod metadata_tests;
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+    #[test]
+    fn hash_text_retains_lowercase_padding_and_sha256_vectors() {
+        for (input, expected) in [
+            (
+                b"".as_slice(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc".as_slice(),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                b"\x03".as_slice(),
+                "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+            ),
+        ] {
+            assert_eq!(hash(input), expected);
+        }
+        for byte in 0..=u8::MAX {
+            assert_eq!(digest_hex([byte; 32]), format!("{byte:02x}").repeat(32));
         }
     }
 }

@@ -1,11 +1,11 @@
 //! Actual verified readers + canonical worker; no native ownership is inferred.
 use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Files(PathBuf);
+pub(super) struct Files(PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-verified-service-{}-{}",
             std::process::id(),
@@ -14,7 +14,7 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
+    pub(super) fn wav(&self, name: &str, rate: u32, frames: u32, value: i16) -> PathBuf {
         let path = self.0.join(name);
         let mut bytes = Vec::from(*b"RIFF");
         bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
@@ -40,7 +40,7 @@ impl Drop for Files {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn reservation(count: usize) -> SourcePlanReservation {
+pub(super) fn reservation(count: usize) -> SourcePlanReservation {
     SourcePlanReservation {
         reader: hex_media::VerifiedWavReaderLimits {
             reader: hex_media::WavReaderLimits {
@@ -56,10 +56,13 @@ fn reservation(count: usize) -> SourcePlanReservation {
         max_manifest_bytes: 4 * 1024 * 1024,
     }
 }
-fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+pub(super) fn next(service: &Service) -> Event {
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
-fn run(service: &Service, request: Request) -> Event {
+pub(super) fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
     let event = next(service);
     assert!(event.error.is_none(), "{:?}", event.error);
@@ -72,6 +75,77 @@ fn verified(snapshot: &CanonicalAudioSourceSnapshot) -> &crate::VerifiedAudioFil
     };
     source
 }
+#[test]
+fn ordinary_batch_exceeds_working_pcm_without_partial_commit_and_keeps_one_undo() {
+    let files = Files::new();
+    let a = files.wav("ordinary-a.wav", 24000, 3, 8192);
+    let b = files.wav("ordinary-b.wav", 48000, 7, -8192);
+    let bad = files.0.join("invalid.wav");
+    fs::write(&bad, b"invalid wave").unwrap();
+    let mut session = Session::new_with_audio_mode(
+        48000,
+        16,
+        4,
+        DocumentAudioMode::Resident,
+        Some(reservation(4)),
+    )
+    .unwrap();
+    let before = session.project().clone();
+    let context = AudioBatchContext {
+        project_generation: 0,
+        revision: 0,
+        active_gesture: false,
+    };
+    let destination = AudioBatchDestination::NewTracks {
+        before_track: None,
+        start: 8,
+    };
+    let rejected =
+        AudioBatchImport::capture(vec![a.clone(), bad], destination, &session, context).unwrap();
+    assert!(rejected.run(&mut session, None, || context).is_err());
+    assert_eq!(session.project(), &before);
+    assert!(session.verified_sources.is_empty());
+    assert!(session.waveforms().is_empty());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(!session.editor.can_undo());
+
+    let batch = AudioBatchImport::capture(vec![a, b], destination, &session, context).unwrap();
+    let control = batch.control();
+    let (_, prepared) = batch.run(&mut session, None, || context).unwrap();
+    assert_eq!(
+        control.progress().phase,
+        crate::import_batch_decode::AudioBatchPhase::Completed
+    );
+    assert_eq!(session.audio_mode(), DocumentAudioMode::Resident);
+    assert!(prepared.arrangement().contains_streamed_sources());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(session.media.is_empty());
+    assert_eq!(session.waveforms().len(), 2);
+    assert_eq!(
+        session
+            .project()
+            .assets()
+            .map(|asset| asset.playback_frames())
+            .collect::<Vec<_>>(),
+        vec![6, 7]
+    );
+    let committed = session.project().clone();
+    let undone = session
+        .undo_prepared_revision(Some(&prepared))
+        .unwrap()
+        .unwrap();
+    assert!(session.project().tracks().is_empty());
+    assert_eq!(session.project().assets().count(), 0);
+    assert_eq!(session.project().sample_rate(), before.sample_rate());
+    assert!(!session.editor.can_undo());
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project(), &committed);
+    assert!(redone.arrangement().contains_streamed_sources());
+}
+
 #[test]
 fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_epoch_and_bounds() {
     let files = Files::new();
@@ -201,6 +275,84 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
     assert_ne!(fresh.semantic_source_epoch, epoch);
 }
 #[test]
+fn ordinary_document_keeps_placing_complete_samples_past_its_resident_working_set() {
+    let files = Files::new();
+    let a = files.wav("resident-first.wav", 48000, 4, 1000);
+    let b = files.wav("next-complete-source.wav", 48000, 4, 2000);
+    let service = Service::new(48000, 16, 4).unwrap();
+    let _ = next(&service);
+    let new = run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    assert!(new.error.is_none(), "{:?}", new.error);
+    let first = run(&service, Request::Import(a));
+    assert!(first.error.is_none(), "{:?}", first.error);
+    let track = first.state.project.tracks()[0].id();
+    let original = first.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::ImportToTrack {
+            path: b,
+            track,
+            start: 4,
+        })
+        .unwrap();
+    let added = next(&service);
+    assert!(
+        added.error.is_none(),
+        "the ordinary sample drop must use bounded file sources: {:?}",
+        added.error
+    );
+    let clips = added.state.project.track(track).unwrap().clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(clips[0].id(), original);
+    assert_eq!((clips[0].start(), clips[0].duration()), (0, 4));
+    assert_eq!((clips[1].start(), clips[1].duration()), (4, 4));
+    assert_ne!(clips[0].asset(), clips[1].asset());
+    let new_clip = clips[1].id();
+    let snapshot = added.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(snapshot.audio_mode(), DocumentAudioMode::Resident);
+    assert_eq!(snapshot.required_sources().count(), 2);
+    assert!(
+        snapshot
+            .sources()
+            .values()
+            .any(|source| matches!(source, AudioSourceBinding::VerifiedFile(_))),
+        "crossing the PCM working set must not just increase its frame ceiling"
+    );
+    let expected = added.state.project.snapshot();
+    let undone = run(&service, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project.track(track).unwrap().clips().len(), 1);
+    let redone = run(&service, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project.clip(new_clip).unwrap().duration(), 4);
+    let saved = files.0.join("growing-project.hex");
+    let save = run(&service, Request::SaveNew(saved.clone()));
+    assert!(save.error.is_none(), "{:?}", save.error);
+    let reset = run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    assert!(reset.error.is_none(), "{:?}", reset.error);
+    assert!(reset.state.project.tracks().is_empty());
+    let reopened = run(&service, Request::Open(saved));
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert_eq!(
+        reopened.state.project.track(track).unwrap().clips().len(),
+        2
+    );
+    assert_eq!(reopened.state.project.clip(new_clip).unwrap().duration(), 4);
+}
+
+#[test]
 fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explicit_reopen() {
     let files = Files::new();
     let path = files.wav("source.wav", 24000, 1024, 1000);
@@ -301,16 +453,71 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(next(&service).playback.is_none());
     let completion = service
         .export_events
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap();
     assert!(
         completion
             .result
             .unwrap_err()
+            .message()
             .contains("unavailable for verified streaming")
     );
     assert!(!files.0.join("must-not-render.wav").exists());
 }
+
+#[test]
+fn project_sample_request_refuses_verified_streaming_without_history_change() {
+    let files = Files::new();
+    let path = files.wav("verified-project-sample.wav", 48_000, 64, 1000);
+    let service = Service::new(48_000, 16, 0).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(path));
+    let snapshot = imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .expect("verified source snapshot");
+    assert_eq!(snapshot.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    assert!(imported.playback.is_none());
+    let track = imported.state.project.tracks()[0].id();
+    let asset = imported.state.project.assets().next().unwrap().id();
+    assert!(matches!(
+        snapshot.sources().get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    let request = Request::InsertProjectSample {
+        project_generation: snapshot.context().project_generation,
+        revision: imported.state.revision,
+        asset,
+        destination: crate::import_batch::AudioBatchDestination::Track { track, start: 64 },
+        new_track_gain: None,
+        warp: hex_project::AudioImportWarp::Off,
+        audition_timing: None,
+    };
+    service.submit(request).unwrap();
+    let refused = next(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("project sample placement requires resident audio")
+    );
+    assert_eq!(refused.state.revision, imported.state.revision);
+    assert_eq!(refused.state.project, imported.state.project);
+
+    // The refused request must not add an undo entry ahead of the import.
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.tracks().is_empty());
+    assert!(undone.state.project.assets().next().is_none());
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project, imported.state.project);
+}
+
 #[test]
 fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_adoption() {
     let files = Files::new();
@@ -358,7 +565,12 @@ fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_
     .unwrap();
     assert!(refused.verify_import(good).is_err());
     assert_eq!(refused.project().assets().count(), 0);
-    limits.reader.reader.max_source_frames = 8_000_001;
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES;
+    assert!(limits.validate().is_ok());
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES + 1;
+    assert!(limits.validate().is_err());
+    limits.reader.reader.max_source_frames = 8_000_000;
+    limits.reader.reader.max_file_bytes = crate::MAX_STREAMED_FILE_BYTES + 1;
     assert!(limits.validate().is_err());
 }
 
@@ -410,4 +622,1289 @@ fn verified_import_into_existing_track_preserves_its_instrument_and_native_refus
             .candidate_reservation_quote()
             .is_err()
     );
+}
+
+#[test]
+fn verified_bindings_prepare_through_the_ordinary_resource_scope_without_pcm() {
+    let files = Files::new();
+    let source = files.wav("ordinary-scope.wav", 48_000, 8, 1000);
+    let mut session = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::VerifiedStreaming,
+        Some(reservation(4)),
+    )
+    .unwrap();
+    let verified = session.verify_import(source).unwrap();
+    session
+        .import_verified_revision(
+            verified,
+            VerifiedImportDestination::NewTrack {
+                before: None,
+                start: 0,
+            },
+            None,
+        )
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let originals = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+    let resources =
+        hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+            &originals,
+            session.project(),
+            1_000_000,
+            &cancel,
+        )
+        .unwrap();
+    let mut bank = session.media_bank();
+    let prepared = Arc::new(
+        bank.prepare_with_device_resources(
+            session.project(),
+            session.sine_table(),
+            None,
+            &session.audio_transforms,
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    assert!(prepared.contains_streamed_sources());
+    assert!(prepared.requires_device_resources());
+    assert!(hex_engine::SessionPlayback::new(Arc::clone(&prepared)).is_err());
+    assert!(hex_engine::SessionPlayback::new_with_device_resources(prepared, &resources).is_ok());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(bank.resident.is_empty());
+    assert_eq!(bank.verified.len(), 1);
+    assert_eq!(session.project().tracks()[0].clips()[0].duration(), 8);
+    bank.epoch = 0;
+    assert!(
+        bank.prepare_with_device_resources(
+            session.project(),
+            session.sine_table(),
+            None,
+            &session.audio_transforms,
+            &resources,
+            0,
+            &cancel
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn ordinary_reserved_sources_verify_full_files_without_decoding_or_changing_mode() {
+    let files = Files::new();
+    let path = files.wav("metadata-only.wav", 48_000, 32, 1000);
+    let mut session = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::Resident,
+        Some(reservation(1)),
+    )
+    .unwrap();
+    let before = session.project().snapshot();
+    let epoch = session.semantic_source_epoch;
+    let source = session.verify_import(path.clone()).unwrap();
+    assert_eq!(source.playback_frames(), 32);
+    assert_eq!(session.audio_mode(), DocumentAudioMode::Resident);
+    assert_ne!(epoch, 0);
+    assert_eq!(session.resident_frames(), 0);
+    assert!(session.media.is_empty());
+    assert!(
+        session.verified_sources.is_empty(),
+        "verification is not commit authority"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert!(
+        session
+            .verify_import_with_pending(path.clone(), &[source], || false)
+            .is_err(),
+        "metadata capacity remains bounded"
+    );
+    assert!(
+        session
+            .verify_import_with_pending(path, &[], || true)
+            .is_err(),
+        "cancellation refuses before publication"
+    );
+    let other = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::Resident,
+        Some(reservation(1)),
+    )
+    .unwrap();
+    assert_ne!(other.semantic_source_epoch, epoch);
+    session
+        .source_reservation
+        .as_mut()
+        .unwrap()
+        .max_retained_sources = 0;
+    assert!(
+        Session::new_with_audio_mode(
+            48_000,
+            16,
+            0,
+            DocumentAudioMode::Resident,
+            session.source_reservation
+        )
+        .is_err(),
+        "ordinary plans receive the same validation"
+    );
+}
+
+#[test]
+fn ordinary_partial_working_set_places_full_sources_and_bad_files_preserve_history() {
+    let files = Files::new();
+    let a = files.wav("first.wav", 48_000, 4, 1000);
+    let b = files.wav("second.wav", 48_000, 4, 2000);
+    let service = Service::new(48_000, 16, 6).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(a));
+    let track = first.state.project.tracks()[0].id();
+    let added = run(
+        &service,
+        Request::ImportToTrack {
+            path: b,
+            track,
+            start: 4,
+        },
+    );
+    assert_eq!(added.state.project.track(track).unwrap().clips().len(), 2);
+    let snapshot = added.state.canonical_audio_source.as_ref().unwrap();
+    let pcm: usize = snapshot
+        .sources()
+        .values()
+        .map(|source| match source {
+            AudioSourceBinding::Resident(audio) => audio.frames().len(),
+            AudioSourceBinding::VerifiedFile(source) => {
+                assert_eq!(source.playback_frames(), 4);
+                0
+            }
+        })
+        .sum();
+    assert_eq!(
+        pcm, 4,
+        "the second complete source does not consume the partial PCM allowance"
+    );
+    let before = added.state.project.snapshot();
+    let malformed = files.0.join("malformed.wav");
+    fs::write(&malformed, b"not a wave file").unwrap();
+    service
+        .submit(Request::ImportToTrack {
+            path: malformed,
+            track,
+            start: 8,
+        })
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.revision, added.state.revision);
+    assert_eq!(refused.state.project.snapshot(), before);
+    assert_eq!(
+        (refused.state.can_undo, refused.state.can_redo),
+        (added.state.can_undo, added.state.can_redo)
+    );
+}
+
+#[test]
+fn ordinary_small_reopen_retains_source_planning_for_the_next_complete_drop() {
+    let files = Files::new();
+    let a = files.wav("reopen-first.wav", 48_000, 4, 1000);
+    let b = files.wav("reopen-next.wav", 48_000, 4, 2000);
+    let service = Service::new(48_000, 16, 4).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(a));
+    let track = first.state.project.tracks()[0].id();
+    let saved = files.0.join("small.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let opened = run(&service, Request::Open(saved));
+    assert_eq!(opened.state.project.track(track).unwrap().clips().len(), 1);
+    let added = run(
+        &service,
+        Request::ImportToTrack {
+            path: b,
+            track,
+            start: 4,
+        },
+    );
+    assert_eq!(added.state.project.track(track).unwrap().clips().len(), 2);
+    assert_eq!(
+        added
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .audio_mode(),
+        DocumentAudioMode::Resident
+    );
+}
+
+#[test]
+fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_waveforms() {
+    let files = Files::new();
+    let a = files.wav("accepted.wav", 48_000, 4, 1000);
+    let b = files.wav("replacement.wav", 48_000, 8, 2000);
+    let mut session = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::VerifiedStreaming,
+        Some(reservation(4)),
+    )
+    .unwrap();
+    let source = session.verify_import(a).unwrap();
+    let (created, _) = session
+        .import_verified_revision(
+            source,
+            VerifiedImportDestination::NewTrack {
+                before: None,
+                start: 0,
+            },
+            None,
+        )
+        .unwrap();
+    let hex_project::Created::Imported { track, clip, .. } = created else {
+        panic!("seed import")
+    };
+    // Truthful cached peaks for the existing constant file; this display owner must
+    // survive a replacement whose private prepared waveform map drops that clip.
+    let value = 1000.0 / 32768.0;
+    let waveform = Arc::new(
+        hex_media::waveform::Waveform::from_peaks(
+            4,
+            vec![
+                [hex_media::waveform::Peak {
+                    min: value,
+                    max: value,
+                }; 2],
+            ],
+        )
+        .unwrap(),
+    );
+    session.audio_clip_waveforms.get_mut().insert(
+        clip,
+        AudioClipWaveform {
+            waveform: Arc::clone(&waveform),
+            offset: 0,
+            length: 4,
+            preview_root: None,
+        },
+    );
+    let before = session.project().snapshot();
+    let epoch = session.semantic_source_epoch;
+    let history = (session.can_undo(), session.can_redo());
+    let context = AudioBatchContext {
+        project_generation: 1,
+        revision: 1,
+        active_gesture: false,
+    };
+    let batch = AudioBatchImport::capture(
+        vec![b.clone()],
+        AudioBatchDestination::Track { track, start: 0 },
+        &session,
+        context,
+    )
+    .unwrap();
+    let result = batch.run_with_storage_admission_using(
+        &mut session,
+        None,
+        || context,
+        |_, _| Err(SessionError::Invalid("injected storage refusal")),
+        |_, _| panic!("storage refusal precedes preparation"),
+    );
+    assert!(result.is_err());
+    assert_eq!(session.project().snapshot(), before);
+    let batch = AudioBatchImport::capture(
+        vec![b],
+        AudioBatchDestination::Track { track, start: 0 },
+        &session,
+        context,
+    )
+    .unwrap();
+    let called = std::cell::Cell::new(false);
+    let result = batch.run_with_storage_admission_using(
+        &mut session,
+        None,
+        || context,
+        |_, members| {
+            assert!(members.is_empty());
+            Ok(())
+        },
+        |input, admit| {
+            called.set(true);
+            assert_eq!(input.media.verified.len(), 2);
+            let views = input.waveforms;
+            let prepared = crate::import_batch::prepare_asset_free(input, admit)?;
+            assert!(prepared.contains_streamed_sources());
+            assert!(
+                views.borrow().is_empty(),
+                "candidate replacement has no resident waveform root"
+            );
+            Err(SessionError::Invalid("injected publication refusal"))
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        called.get(),
+        "file-backed batches must honor the caller's preparation hook"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!(session.semantic_source_epoch, epoch);
+    assert_eq!(session.verified_sources.len(), 1);
+    assert_eq!(session.resident_frames(), 0);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
+    let retained = session.audio_clip_waveforms().unwrap();
+    assert_eq!(retained.len(), 1);
+    assert!(Arc::ptr_eq(&retained[&clip].waveform, &waveform));
+}
+
+#[test]
+fn file_waveform_peaks_cover_short_bins_and_window_boundaries() {
+    let files = Files::new();
+    for frames in [1_usize, 1023, 1024, 1025, 4097] {
+        let path = files.0.join(format!("segment-{frames}.wav"));
+        let values: Vec<[f32; 2]> = (0..frames)
+            .map(|i| {
+                [
+                    ((i % 31) as f32 - 15.0) / 16.0,
+                    ((i % 17) as f32 - 8.0) / 8.0,
+                ]
+            })
+            .collect();
+        let mut written = 0;
+        hex_export::write_float_wav_new(
+            &path,
+            48_000,
+            frames as u64,
+            &AtomicBool::new(false),
+            |output| {
+                output.copy_from_slice(&values[written..written + output.len()]);
+                written += output.len();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut source =
+            crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false)
+                .unwrap();
+        source.prepare_waveform_on_control(|| false).unwrap();
+        let bins = source.cached_waveform().unwrap().bins();
+        let count = frames.min(1024);
+        assert_eq!(bins.len(), count);
+        let mut start = 0;
+        for (index, bin) in bins.iter().enumerate() {
+            let end = start + frames / count + usize::from(index < frames % count);
+            for (channel, peak) in bin.iter().enumerate() {
+                let expected_min = values[start..end]
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::INFINITY, f32::min);
+                let expected_max = values[start..end]
+                    .iter()
+                    .map(|frame| frame[channel])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                assert_eq!((peak.min, peak.max), (expected_min, expected_max));
+            }
+            start = end;
+        }
+    }
+}
+
+#[test]
+fn ordinary_reopen_reuses_only_the_same_verified_waveform() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let files = Files::new();
+    let path = files.wav("reopen-cache.wav", 48_000, 64, 1000);
+    let service = Service::new(48_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let imported = run(&service, Request::Import(path.clone()));
+    let original = Arc::clone(imported.state.waveforms.values().next().unwrap());
+    let saved = files.0.join("reopen-cache.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    let reopened = run(&service, Request::Open(saved.clone()));
+    assert!(Arc::ptr_eq(
+        &original,
+        reopened.state.waveforms.values().next().unwrap()
+    ));
+
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&(-12_000_i16).to_le_bytes()).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    drop(file);
+    let changed = run(&service, Request::Open(saved));
+    let new_waveform = changed.state.waveforms.values().next().unwrap();
+    assert!(!Arc::ptr_eq(&original, new_waveform));
+    assert_ne!(original.bins(), new_waveform.bins());
+}
+
+#[test]
+fn verified_waveform_reuse_requires_matching_facts_and_complete_reverification() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::time::Duration;
+
+    let files = Files::new();
+    let path = files.wav("reused.wav", 48_000, 4097, 1000);
+    let limits = reservation(1).reader;
+    let mut original =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    original.prepare_waveform_on_control(|| false).unwrap();
+    let mut same =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    assert!(same.reuse_waveform_on_control(&original, || false).unwrap());
+    assert!(Arc::ptr_eq(
+        same.cached_waveform().unwrap(),
+        original.cached_waveform().unwrap()
+    ));
+
+    let other_path = files.0.join("copy.wav");
+    fs::copy(&path, &other_path).unwrap();
+    let mut other =
+        crate::VerifiedAudioFile::inspect(other_path, 48_000, limits, || false).unwrap();
+    assert!(
+        !other
+            .reuse_waveform_on_control(&original, || false)
+            .unwrap()
+    );
+    assert!(other.cached_waveform().is_none());
+    let mut rate =
+        crate::VerifiedAudioFile::inspect(path.clone(), 44_100, limits, || false).unwrap();
+    assert!(!rate.reuse_waveform_on_control(&original, || false).unwrap());
+    let mut v1 = crate::VerifiedAudioFile::inspect_for_conversion(
+        path.clone(),
+        44_100,
+        hex_project::SINC_CONVERSION_V1,
+        limits,
+        || false,
+    )
+    .unwrap();
+    v1.prepare_waveform_on_control(|| false).unwrap();
+    let mut v2 = crate::VerifiedAudioFile::inspect_for_conversion(
+        path.clone(),
+        44_100,
+        hex_project::SINC_CONVERSION_V2,
+        limits,
+        || false,
+    )
+    .unwrap();
+    assert!(!v2.reuse_waveform_on_control(&v1, || false).unwrap());
+    let mut cancelled =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    assert!(
+        cancelled
+            .reuse_waveform_on_control(&original, || true)
+            .is_err()
+    );
+    assert!(cancelled.cached_waveform().is_none());
+
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let original_modified = file.metadata().unwrap().modified().unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(original_modified + Duration::from_secs(2)))
+        .unwrap();
+    let mut metadata_only =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    assert!(
+        !metadata_only
+            .reuse_waveform_on_control(&original, || false)
+            .unwrap()
+    );
+    metadata_only.prepare_waveform_on_control(|| false).unwrap();
+    assert_eq!(
+        metadata_only.cached_waveform().unwrap().bins(),
+        original.cached_waveform().unwrap().bins()
+    );
+    file.set_times(fs::FileTimes::new().set_modified(original_modified))
+        .unwrap();
+    drop(file);
+
+    let mut changed =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(48)).unwrap();
+    file.write_all(&[0x12]).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(
+        changed
+            .reuse_waveform_on_control(&original, || false)
+            .is_err()
+    );
+    assert!(changed.cached_waveform().is_none());
+    file.set_times(fs::FileTimes::new().set_modified(modified + Duration::from_secs(2)))
+        .unwrap();
+    let mut fresh = crate::VerifiedAudioFile::inspect(path, 48_000, limits, || false).unwrap();
+    assert!(
+        !fresh
+            .reuse_waveform_on_control(&original, || false)
+            .unwrap()
+    );
+    assert!(fresh.cached_waveform().is_none());
+}
+
+#[test]
+fn verified_waveform_reuse_refuses_changed_unread_pages_and_missing_files() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let files = Files::new();
+    let path = files.wav("reuse-trailing.wav", 48_000, 64, 1234);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"JUNK");
+    bytes.extend_from_slice(&131_072_u32.to_le_bytes());
+    bytes.resize(bytes.len() + 131_072, 0x5a);
+    let riff_len = u32::try_from(bytes.len() - 8).unwrap();
+    bytes[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    fs::write(&path, bytes).unwrap();
+    let limits = reservation(1).reader;
+    let mut original =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    original.prepare_waveform_on_control(|| false).unwrap();
+    let mut changed =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, limits, || false).unwrap();
+    let mut missing = changed.clone();
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(65_536 + 16)).unwrap();
+    file.write_all(&[0x99]).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(
+        changed
+            .reuse_waveform_on_control(&original, || false)
+            .is_err()
+    );
+    assert!(changed.cached_waveform().is_none());
+    drop(file);
+    fs::remove_file(path).unwrap();
+    assert!(
+        missing
+            .reuse_waveform_on_control(&original, || false)
+            .is_err()
+    );
+    assert!(missing.cached_waveform().is_none());
+    assert!(original.cached_waveform().is_some());
+}
+
+#[test]
+fn identical_file_extrema_do_not_hide_independent_channels() {
+    let files = Files::new();
+    let path = files.0.join("independent.wav");
+    let mut index = 0;
+    hex_export::write_float_wav_new(&path, 48_000, 4096, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = if index % 2 == 0 {
+                [0.8, -0.8]
+            } else {
+                [-0.8, 0.8]
+            };
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path, 48_000, reservation(1).reader, || false).unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    let waveform = source.cached_waveform().unwrap();
+    assert!(waveform.bins().iter().all(|pair| pair[0] == pair[1]));
+    assert!(!waveform.has_identical_channels());
+}
+
+#[test]
+fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm() {
+    let files = Files::new();
+    for (source_rate, project_rate) in [(48_000, 48_000), (44_100, 48_000), (96_000, 44_100)] {
+        let path = files.wav("peaks.wav", source_rate, 5003, 0);
+        let mut bytes = fs::read(&path).unwrap();
+        for (index, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+            let value = if index == 5002 {
+                -32_000
+            } else {
+                ((index % 17) as i16 - 8) * 2000
+            };
+            sample.copy_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        let mut source = crate::VerifiedAudioFile::inspect(
+            path.clone(),
+            project_rate,
+            reservation(1).reader,
+            || false,
+        )
+        .unwrap();
+        let facts = source.clone();
+        if source_rate == project_rate {
+            let mut small = reservation(1).reader;
+            small.reader.max_window_frames = 2;
+            let mut bounded =
+                crate::VerifiedAudioFile::inspect(path.clone(), project_rate, small, || false)
+                    .unwrap();
+            bounded.prepare_waveform_on_control(|| false).unwrap();
+            assert_eq!(bounded.cached_waveform().unwrap().source_frames(), 5003);
+        }
+        assert!(source.cached_waveform().is_none());
+        let decoded = hex_media::decode_wav_file(
+            path.clone(),
+            hex_media::Limits::new(64 * 1024 * 1024, 8192),
+        )
+        .unwrap();
+        let resident = crate::PreparedImport::at_rate(
+            decoded,
+            project_rate,
+            hex_media::ResampleLimits {
+                max_source_frames: 8192,
+                max_output_frames: 16_384,
+            },
+        )
+        .unwrap();
+        let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
+        source.prepare_waveform_on_control(|| false).unwrap();
+        let actual = source.cached_waveform().unwrap();
+        assert!(actual.has_identical_channels());
+        assert_eq!(actual.source_frames(), expected.source_frames());
+        assert_eq!(actual.bins(), expected.bins());
+        assert_eq!(actual.cached_bin_count(), expected.cached_bin_count());
+        assert!(actual.cached_bin_count() <= 2047);
+        assert!(!actual.shares_audio_with(&resident.audio));
+        assert_eq!(
+            source, facts,
+            "derived display data must not refresh file facts"
+        );
+        // Keep the same cancellation point on a source with enough work to
+        // reach it even when contiguous scanning finishes the tiny oracle in
+        // fewer polls. Assert the actual refusal reason, not just any failure.
+        let cancel_path = files.wav("cancel-waveform.wav", source_rate, 65_537, 1000);
+        let mut cancelled = crate::VerifiedAudioFile::inspect(
+            cancel_path,
+            project_rate,
+            reservation(1).reader,
+            || false,
+        )
+        .unwrap();
+        let mut polls = 0;
+        let refusal = cancelled
+            .prepare_waveform_on_control(|| {
+                polls += 1;
+                polls > 10
+            })
+            .unwrap_err();
+        assert!(polls > 10);
+        assert!(refusal.to_string().contains("cancel"), "{refusal}");
+        assert!(cancelled.cached_waveform().is_none());
+        files.wav("peaks.wav", source_rate, 5003, 1234);
+        let mut changed = facts;
+        assert!(changed.prepare_waveform_on_control(|| false).is_err());
+        assert!(changed.cached_waveform().is_none());
+    }
+}
+
+#[test]
+fn waveform_reuses_manifest_but_preserves_full_file_and_metadata_fallback() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::time::Duration;
+
+    let files = Files::new();
+    let path = files.wav("coverage.wav", 48_000, 64, 1234);
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"JUNK");
+    bytes.extend_from_slice(&(131_072_u32).to_le_bytes());
+    bytes.resize(bytes.len() + 131_072, 0x5a);
+    let riff_len = u32::try_from(bytes.len() - 8).unwrap();
+    bytes[4..8].copy_from_slice(&riff_len.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let mut source =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, reservation(1).reader, || false)
+            .unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified + Duration::from_secs(2)))
+        .unwrap();
+    source.prepare_waveform_on_control(|| false).unwrap();
+    assert!(
+        source.cached_waveform().is_some(),
+        "same bytes with a new mtime must fall back"
+    );
+
+    let mut changed =
+        crate::VerifiedAudioFile::inspect(path.clone(), 48_000, reservation(1).reader, || false)
+            .unwrap();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.seek(SeekFrom::Start(65_536 + 16)).unwrap();
+    file.write_all(&[0x99]).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(changed.prepare_waveform_on_control(|| false).is_err());
+    assert!(
+        changed.cached_waveform().is_none(),
+        "unread changed pages cannot publish peaks"
+    );
+}
+
+#[test]
+fn tracked_file_waveform_matches_independent_stereo_peaks_across_windows() {
+    let files = Files::new();
+    let path = files.0.join("stereo-coverage.wav");
+    let mut index = 0u32;
+    hex_export::write_float_wav_new(&path, 48_000, 5_003, &AtomicBool::new(false), |output| {
+        for frame in output {
+            *frame = [
+                ((index % 73) as f32 - 36.0) / 40.0,
+                ((index % 41) as f32 - 20.0) / 24.0,
+            ];
+            index += 1;
+        }
+        Ok(())
+    })
+    .unwrap();
+    for project_rate in [48_000, 44_100] {
+        let decoded = hex_media::decode_wav_file(
+            path.clone(),
+            hex_media::Limits::new(64 * 1024 * 1024, 8_192),
+        )
+        .unwrap();
+        let resident = crate::PreparedImport::at_rate(
+            decoded,
+            project_rate,
+            hex_media::ResampleLimits {
+                max_source_frames: 8_192,
+                max_output_frames: 16_384,
+            },
+        )
+        .unwrap();
+        let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
+        for window in [1024, 4096] {
+            let mut reader_limits = reservation(1).reader;
+            reader_limits.reader.max_window_frames = window;
+            let mut source = crate::VerifiedAudioFile::inspect(
+                path.clone(),
+                project_rate,
+                reader_limits,
+                || false,
+            )
+            .unwrap();
+            source.prepare_waveform_on_control(|| false).unwrap();
+            let actual = source.cached_waveform().unwrap();
+            assert_eq!(
+                actual.bins(),
+                expected.bins(),
+                "rate {project_rate}, window {window}"
+            );
+            assert!(!actual.has_identical_channels());
+        }
+        if project_rate == 44_100 {
+            let mut limits = reservation(1).reader;
+            limits.reader.max_window_frames = 128;
+            let mut source =
+                crate::VerifiedAudioFile::inspect(path.clone(), project_rate, limits, || false)
+                    .unwrap();
+            assert!(source.prepare_waveform_on_control(|| false).is_err());
+            assert!(source.cached_waveform().is_none());
+        }
+    }
+}
+
+#[test]
+fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_refusal() {
+    let files = Files::new();
+    let processed_path = files.wav("processed.wav", 48_000, 8, 8192);
+    let plain_path = files.wav("plain-file.wav", 48_000, 32, 4096);
+    let service = Service::new(48_000, 16, 16).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(processed_path));
+    let processed = first.state.project.tracks()[0].clips()[0].id();
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipPitch {
+            clip: processed,
+            cents: 137,
+        }),
+    );
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipMusical {
+            clip: processed,
+            enabled: true,
+        }),
+    );
+    let imported = run(
+        &service,
+        Request::ImportToNewTrack {
+            path: plain_path,
+            before_track: None,
+            start: 0,
+        },
+    );
+    let plain = imported
+        .state
+        .project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .find(|clip| clip.id() != processed)
+        .unwrap()
+        .id();
+    run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip: plain,
+            fade_in: 2,
+            fade_out: 2,
+        }),
+    );
+    let path = files.0.join("processed-and-file.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    let expected = hex_storage::load(&path).unwrap();
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let opened = run(&service, Request::Open(path));
+    assert!(opened.open_complete);
+    assert_eq!(opened.state.project.as_ref(), &expected);
+    let source = opened.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(source.audio_mode(), DocumentAudioMode::Resident);
+    assert_eq!(
+        source
+            .sources()
+            .values()
+            .filter(|source| matches!(source, AudioSourceBinding::VerifiedFile(_)))
+            .count(),
+        1
+    );
+    assert_eq!(opened.state.waveforms.len(), 2);
+    service
+        .submit(Request::Edit(Command::SetAudioClipPitch {
+            clip: plain,
+            cents: 137,
+        }))
+        .unwrap();
+    let pitched = next(&service);
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    assert_eq!(
+        pitched
+            .state
+            .project
+            .clip(plain)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .pitch_cents,
+        137
+    );
+    let asset = opened.state.project.clip(plain).unwrap().asset();
+    let pitched_source = pitched.state.canonical_audio_source.as_ref().unwrap();
+    let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) = (
+        &source.sources()[&asset],
+        pitched_source.sources().get(&asset),
+    ) else {
+        panic!("verified facts")
+    };
+    assert_eq!(before, after);
+    service
+        .submit(Request::Edit(Command::SetAudioClipPitch {
+            clip: plain,
+            cents: 4_801,
+        }))
+        .unwrap();
+    let refused = next(&service);
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("audio pitch must be within -4800..4800 cents")
+    );
+    assert_eq!(refused.state.project, pitched.state.project);
+    assert_eq!(refused.state.revision, pitched.state.revision);
+    assert_eq!(refused.state.can_undo, pitched.state.can_undo);
+    let after = refused.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(after.context(), pitched_source.context());
+    let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) =
+        (&source.sources()[&asset], after.sources().get(&asset))
+    else {
+        panic!("verified facts")
+    };
+    assert_eq!(before, after);
+}
+
+#[test]
+fn plain_reverse_file_backed_clip_commits_and_reopens_without_resident_pcm() {
+    let files = Files::new();
+    let media = files.wav("reverse.wav", 48_000, 8_000, 4096);
+    let media_bytes = fs::read(&media).unwrap();
+    let service = Service::new(48_000, 16, 16).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(media.clone()));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let reversed = run(&service, Request::Edit(Command::ReverseClips(vec![clip])));
+    let expected = reversed.state.project.snapshot();
+    let asset = reversed.state.project.clip(clip).unwrap().asset();
+    assert!(matches!(
+        reversed
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    assert!(
+        reversed
+            .state
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .content_view
+            .unwrap()
+            .window
+            .reversed
+    );
+    let path = files.0.join("reverse.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let reopened = run(&service, Request::Open(path));
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert!(matches!(
+        reopened
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    assert_eq!(fs::read(media).unwrap(), media_bytes);
+}
+
+#[test]
+fn verified_repitch_edit_commits_and_survives_undo_redo_without_resident_pcm() {
+    let files = Files::new();
+    let source = files.wav("repitch.wav", 16_000, 8_000, 1024);
+    let service = Service::new(16_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(source));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let neutral = run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    let warped = run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }),
+    );
+    let expected = warped.state.project.snapshot();
+    let asset = warped.state.project.clip(clip).unwrap().asset();
+    assert!(matches!(
+        warped
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .get(&asset),
+        Some(AudioSourceBinding::VerifiedFile(_))
+    ));
+    let undo = run(&service, Request::Undo);
+    assert_eq!(
+        undo.state.project.snapshot(),
+        neutral.state.project.snapshot()
+    );
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project.snapshot(), expected);
+    let snapshot = redo.state.canonical_audio_source.as_ref().unwrap();
+    let quote = snapshot.candidate_reservation_quote().unwrap();
+    assert_eq!(quote.source_capacity, 2);
+    assert_eq!(quote.prepared_pcm_frames, 0);
+    let AudioSourceBinding::VerifiedFile(file) = snapshot.sources().get(&asset).unwrap() else {
+        panic!("verified file")
+    };
+    let raw = file.source_metadata(asset, 19).unwrap();
+    let edit = redo.state.project.clip(clip).unwrap().audio_edit().unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        redo.state.project.tempo_map(),
+        raw.playback_frames(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let derived = raw.with_repitch(&map, law).unwrap();
+    let reservation = quote.storage_reservation(4096).unwrap();
+    let mut missing =
+        hex_engine::AudioCandidatePreparation::try_new_on_control(2, reservation).unwrap();
+    missing.add_streamed_source_on_control(raw.clone()).unwrap();
+    assert!(
+        snapshot
+            .prepare_candidate_on_control(19, &mut missing)
+            .is_err()
+    );
+    missing.cleanup_on_control().unwrap();
+    let mut fingerprint = raw.fingerprint();
+    fingerprint[0] ^= 1;
+    let foreign = hex_engine::StreamedSourceMetadata::new(
+        raw.key(),
+        raw.source_rate(),
+        raw.project_rate(),
+        raw.source_frames(),
+        raw.playback_frames(),
+        raw.conversion_version(),
+        fingerprint,
+    )
+    .unwrap()
+    .with_repitch(&map, law)
+    .unwrap();
+    let mut candidate =
+        hex_engine::AudioCandidatePreparation::try_new_on_control(2, reservation).unwrap();
+    candidate.add_streamed_source_on_control(raw).unwrap();
+    assert!(
+        candidate
+            .add_repitch_streamed_source_on_control(foreign)
+            .is_err()
+    );
+    candidate
+        .add_repitch_streamed_source_on_control(derived)
+        .unwrap();
+    snapshot
+        .prepare_candidate_on_control(19, &mut candidate)
+        .unwrap();
+    assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+    candidate.cleanup_on_control().unwrap();
+    let duplicated = run(&service, Request::Edit(Command::DuplicateClip(clip)));
+    let quote = duplicated
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .candidate_reservation_quote()
+        .unwrap();
+    assert_eq!(quote.source_capacity, 2);
+    assert_eq!(quote.prepared_pcm_frames, 0);
+}
+
+#[test]
+fn verified_stream_and_builtin_effect_share_candidate_reservation() {
+    verified_stream_and_effect_share_candidate_reservation(false);
+}
+
+#[test]
+fn verified_stream_and_limiter_share_candidate_reservation() {
+    verified_stream_and_effect_share_candidate_reservation(true);
+}
+
+fn verified_stream_and_effect_share_candidate_reservation(limiter: bool) {
+    let files = Files::new();
+    let source = files.wav("saturator.wav", 16_000, 8_000, 1024);
+    let service = Service::new(16_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(source));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let asset = imported.state.project.clip(clip).unwrap().asset();
+    let neutral = run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }),
+    );
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static(if limiter {
+            "hex.limiter"
+        } else {
+            "hex.saturator"
+        }),
+    )
+    .unwrap();
+    let command = if limiter {
+        Command::InsertDevice {
+            track: neutral.state.project.tracks()[0].id(),
+            before: None,
+            state: effect,
+        }
+    } else {
+        Command::InsertMainDevice {
+            before: None,
+            state: effect,
+        }
+    };
+    let edited = run(&service, Request::Edit(command));
+    let snapshot = edited.state.canonical_audio_source.as_ref().unwrap();
+    let AudioSourceBinding::VerifiedFile(file) = snapshot.sources().get(&asset).unwrap() else {
+        panic!("verified source")
+    };
+    let raw = file.source_metadata(asset, 19).unwrap();
+    let edit = edited
+        .state
+        .project
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        edited.state.project.tempo_map(),
+        raw.playback_frames(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let derived = raw.with_repitch(&map, law).unwrap();
+    hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        let quote = snapshot.reservation_quote_with_effects(effects).unwrap();
+        assert_eq!(quote.source_capacity, 2);
+        assert_eq!(quote.prepared_pcm_frames, 0);
+        assert!(matches!(
+            effects.quote_with_pitched_streams(
+                &edited.state.project,
+                1,
+                &[raw.clone(), derived.clone()]
+            ),
+            Err(hex_engine::AudioStorageError::Capacity)
+        ));
+        let reservation = quote.storage_reservation(0).unwrap();
+        let mut missing = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            reservation,
+        )
+        .unwrap();
+        missing.add_streamed_source_on_control(raw.clone()).unwrap();
+        assert!(
+            snapshot
+                .prepare_candidate_with_effects_on_control(19, &mut missing, effects)
+                .is_err()
+        );
+        missing.cleanup_on_control().unwrap();
+        let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            reservation,
+        )
+        .unwrap();
+        candidate.add_streamed_source_on_control(raw).unwrap();
+        candidate
+            .add_repitch_streamed_source_on_control(derived)
+            .unwrap();
+        snapshot
+            .prepare_candidate_with_effects_on_control(19, &mut candidate, effects)
+            .unwrap();
+        assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+        candidate.cleanup_on_control().unwrap();
+        Ok(())
+    })
+    .unwrap();
 }

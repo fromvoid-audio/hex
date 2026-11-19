@@ -60,6 +60,10 @@ impl EditorView {
         (self.mode == EditorMode::Arrangement
             && !self.edit_pending()
             && self.context_menu.is_none()
+            // The raw ruler handlers also see pointer events over modal overlays.
+            && !self.theme_settings.open
+            && !self.tuning.open
+            && !self.changelog.is_open()
             && !self.opening_project
             && !self.close_prompt_open
             && !self.save_dialog_open
@@ -108,6 +112,7 @@ impl EditorView {
         ) else {
             return false;
         };
+        self.latency_rebuild = None;
         self.scrub.gesture = Some(ScrubGesture {
             context,
             latest: Some(frame),

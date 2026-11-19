@@ -245,7 +245,11 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
             .unwrap();
         custody
             .arrangement_clips
-            .validate_root_sources_at(custody.bank.as_ref().unwrap(), view.arrangement)
+            .validate_root_sources_at(
+                &custody.slots,
+                custody.bank.as_ref().unwrap(),
+                view.arrangement,
+            )
             .unwrap();
         assert!(custody.cancel(&token));
         custody.cleanup_on_control();
@@ -452,7 +456,7 @@ fn child_alias_refusal_retains_partial_extraction_in_persistent_slots() {
             pointers.2
         );
         c.arrangement_clips
-            .validate_root_sources_at(c.bank.as_ref().unwrap(), after.arrangement)
+            .validate_root_sources_at(&c.slots, c.bank.as_ref().unwrap(), after.arrangement)
             .unwrap();
         c.assembly
             .validate_pairs_at(c.bank.as_ref().unwrap(), after.session)
@@ -577,60 +581,52 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
 }
 
 #[test]
-fn new_touch_and_transformed_graphs_refuse_before_source_moves() {
+fn new_touch_graphs_refuse_before_source_moves() {
     if !supported("unsupported_main_graphs") {
         return;
     }
-    for transformed in [false, true] {
-        let (project, bank) = fixture(false);
-        let track = project.tracks()[0].id();
-        let clip = project.tracks()[0].clips()[0].id();
-        let mut editor = Editor::new(project, 8).unwrap();
-        if transformed {
-            editor
-                .execute(Command::SetAudioClipPitch { clip, cents: 100 })
-                .unwrap();
-        } else {
-            let epoch = editor.project().tracks()[0].gain_lane().recording_epoch();
-            editor
-                .execute(Command::SpliceGainTouch {
-                    track,
-                    expected_epoch: epoch,
-                    span: hex_project::GainTouchSpan {
-                        start: hex_project::BeatTime::ZERO,
-                        end: hex_project::BeatTime::from_quarters(1).unwrap(),
-                        context: hex_project::GainTouchContext {
-                            recording_epoch: epoch + 1,
-                            project_generation: 1,
-                            canonical_revision: 1,
-                            audio_revision: 1,
-                            transport_epoch: 1,
-                            gesture_epoch: 1,
-                            gesture_serial: 1,
-                            sample_rate: editor.project().sample_rate(),
-                            loop_pass: 0,
-                        },
-                        steps: vec![hex_project::GainTouchStep {
-                            beat: hex_project::BeatTime::ZERO,
-                            gain: 0.25,
-                            origin_beat: hex_project::BeatTime::ZERO,
-                            source_sequence: 1,
-                        }],
-                    },
-                })
-                .unwrap();
-        }
-        let pointer = bank.sources.as_ptr();
-        let count = bank.owning_handle_count();
-        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
-        crate::owned_shared::reset_clone_count();
-        let refused = begin(&mut custody, editor.project(), bank).err().unwrap();
-        assert_eq!(refused.reason, AudioStorageError::UnsupportedGraph);
-        assert_eq!(refused.inputs.sources.as_ptr(), pointer);
-        assert_eq!(refused.inputs.owning_handle_count(), count);
-        assert_eq!(crate::owned_shared::clone_count(), 0);
-        assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
-    }
+    let (project, bank) = fixture(false);
+    let track = project.tracks()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let epoch = editor.project().tracks()[0].gain_lane().recording_epoch();
+    editor
+        .execute(Command::SpliceGainTouch {
+            track,
+            expected_epoch: epoch,
+            span: hex_project::GainTouchSpan {
+                source_start: hex_project::BeatTime::ZERO,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::from_quarters(1).unwrap(),
+                context: hex_project::GainTouchContext {
+                    recording_epoch: epoch + 1,
+                    project_generation: 1,
+                    canonical_revision: 1,
+                    audio_revision: 1,
+                    transport_epoch: 1,
+                    gesture_epoch: 1,
+                    gesture_serial: 1,
+                    sample_rate: editor.project().sample_rate(),
+                    loop_pass: 0,
+                },
+                steps: vec![hex_project::GainTouchStep {
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 0.25,
+                    origin_beat: hex_project::BeatTime::ZERO,
+                    source_sequence: 1,
+                }],
+            },
+        })
+        .unwrap();
+    let pointer = bank.sources.as_ptr();
+    let count = bank.owning_handle_count();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    crate::owned_shared::reset_clone_count();
+    let refused = begin(&mut custody, editor.project(), bank).err().unwrap();
+    assert_eq!(refused.reason, AudioStorageError::UnsupportedGraph);
+    assert_eq!(refused.inputs.sources.as_ptr(), pointer);
+    assert_eq!(refused.inputs.owning_handle_count(), count);
+    assert_eq!(crate::owned_shared::clone_count(), 0);
+    assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
 }
 
 fn storage_reservation() -> crate::AudioStorageLedgerReservation {

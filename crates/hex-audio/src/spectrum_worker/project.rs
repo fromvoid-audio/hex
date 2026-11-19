@@ -1,5 +1,6 @@
 //! Bounded independent project layers, owned by the existing analyzer worker.
 use super::*;
+use crate::spectrum::FFT_SIZE;
 use hex_engine::{Frame, ProjectSignal};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst};
 
@@ -8,7 +9,10 @@ pub const MAX_PROJECT_LAYERS: usize = MAX_PROJECT_TRACKS + 1;
 /// Includes additive retained-release/tail contributions. Exhaustion rejects
 /// the whole project batch; it never publishes a capped subset of tracks.
 pub const MAX_PROJECT_CONTRIBUTION_FRAMES: usize = MAX_PROJECT_LAYERS * MAX_CAPTURE_FRAMES * 4;
-pub const PROJECT_PACKET_OWNERS: usize = CAPTURE_QUEUE_CAPACITY + 1;
+// Project packets have a separate, larger payload than per-EQ packets.
+// Keep their established pool bound independent of visible-EQ fanout.
+const PROJECT_CAPTURE_QUEUE_CAPACITY: usize = 32;
+pub const PROJECT_PACKET_OWNERS: usize = PROJECT_CAPTURE_QUEUE_CAPACITY + 1;
 pub const MAX_PROJECT_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 pub const PROJECT_DISPLAY_STALE_AFTER: Duration = Duration::from_millis(400);
 
@@ -126,7 +130,7 @@ impl ProjectSelectionMailbox {
     // counters, storage or synchronization to the callback.
     fn read_using(&self, mut load: impl FnMut(&AtomicU64) -> u64) -> Option<ProjectSelection> {
         let token = self.token();
-        if token == 0 || token % 2 != 0 {
+        if token == 0 || !token.is_multiple_of(2) {
             return None;
         }
         let count = self.count.load(SeqCst);
@@ -190,7 +194,7 @@ impl ProjectSelectionMailbox {
     }
     fn publish(&self, mut selection: ProjectSelection) -> Result<ProjectSelection, &'static str> {
         let token = self.token();
-        let Some(next) = token.checked_add(2).filter(|_| token % 2 == 0) else {
+        let Some(next) = token.checked_add(2).filter(|_| token.is_multiple_of(2)) else {
             if token >= u64::MAX - 1 {
                 self.active.store(false, SeqCst);
                 self.version.store(u64::MAX, SeqCst);
@@ -221,13 +225,17 @@ pub struct PublishedProjectSpectrum {
     pub captured_at: Instant,
     pub processed_at: Instant,
     // Keep the fixed maximum payload out of factory, reader and UI stack values.
-    // Construct it through Vec, never Box::new([large inline array]).
-    pub frames: Box<[SpectrumFrame; MAX_PROJECT_LAYERS]>,
+    // A boxed slice clones through the heap; a boxed fixed array would be
+    // copied through the stack in unoptimized builds. Always
+    // `MAX_PROJECT_LAYERS` long when produced by the worker.
+    pub frames: Box<[SpectrumFrame]>,
 }
 impl PublishedProjectSpectrum {
     /// Master first, followed by one independent layer per sorted selected ID.
     pub fn frames(&self) -> &[SpectrumFrame] {
-        &self.frames[..self.selection.layer_count()]
+        self.frames
+            .get(..self.selection.layer_count())
+            .unwrap_or(&self.frames)
     }
     pub fn is_fresh_at(&self, now: Instant) -> bool {
         now.checked_duration_since(self.captured_at)
@@ -289,7 +297,7 @@ impl ProjectCapture {
         let layer = match signal {
             ProjectSignal::Master => 0,
             ProjectSignal::Track(id) => packet.selection.tracks().binary_search(&id).ok()? + 1,
-            ProjectSignal::Unavailable => return None,
+            ProjectSignal::Return(_) | ProjectSignal::Unavailable => return None,
         };
         Some(
             &packet.samples[layer * MAX_CAPTURE_FRAMES..layer * MAX_CAPTURE_FRAMES + self.expected],
@@ -372,6 +380,7 @@ impl ProjectCapture {
                 self.valid = false;
                 return;
             }
+            ProjectSignal::Return(_) => return,
         };
         let destination = &mut packet.samples
             [layer * MAX_CAPTURE_FRAMES + offset..layer * MAX_CAPTURE_FRAMES + end];
@@ -549,9 +558,8 @@ impl ProjectWorker {
 struct ProjectCore {
     rate: u32,
     kernel: SpectrumKernel,
-    rolling: Box<[Frame]>,
-    ordered: Box<[Frame]>,
-    envelopes: Box<[Option<SpectrumFrame>]>,
+    windows: Box<[SpectrumWindow]>,
+    ballistics: Box<[SpectrumBallistics]>,
     selection: Option<ProjectSelection>,
     write: usize,
     filled: usize,
@@ -569,13 +577,16 @@ struct PendingAnalysis {
     result: PublishedProjectSpectrum,
     next_layer: usize,
     at: Instant,
-    decay: f32,
+    elapsed: Duration,
 }
 impl ProjectCore {
     fn clear(&mut self) {
         self.write = 0;
         self.filled = 0;
-        self.envelopes.fill(None);
+        for (window, ballistics) in self.windows.iter_mut().zip(self.ballistics.iter_mut()) {
+            window.clear();
+            ballistics.reset();
+        }
         self.captured_at = None;
         self.envelope_at = None;
         self.dirty = false;
@@ -603,12 +614,13 @@ impl ProjectCore {
         for layer in 0..packet.selection.layer_count() {
             let input = &packet.samples
                 [layer * MAX_CAPTURE_FRAMES..layer * MAX_CAPTURE_FRAMES + packet.frames];
-            if input.iter().flatten().any(|s| !s.is_finite()) {
+            let Some(window) = self.windows.get_mut(layer) else {
                 self.clear();
                 return;
-            }
-            for (offset, frame) in input.iter().enumerate() {
-                self.rolling[layer * FFT_SIZE + (self.write + offset) % FFT_SIZE] = *frame;
+            };
+            if window.push(input).is_err() {
+                self.clear();
+                return;
             }
         }
         self.selection = Some(packet.selection);
@@ -643,9 +655,9 @@ impl ProjectCore {
                 },
                 next_layer: 0,
                 at: now,
-                decay: self.envelope_at.map_or(0.0, |at| {
-                    now.saturating_duration_since(at).as_secs_f32() * DECAY_DB_PER_SECOND
-                }),
+                elapsed: self
+                    .envelope_at
+                    .map_or(Duration::ZERO, |at| now.saturating_duration_since(at)),
             });
             self.analyzed_at = Some(now);
             self.dirty = false;
@@ -654,16 +666,20 @@ impl ProjectCore {
         let end = (pending.next_layer + MAX_PROJECT_LAYERS_PER_POLL)
             .min(pending.result.selection.layer_count());
         for layer in pending.next_layer..end {
-            for (offset, out) in self.ordered.iter_mut().enumerate() {
-                *out = self.rolling[layer * FFT_SIZE + (self.write + offset) % FFT_SIZE];
-            }
-            let Ok(mut frame) = self.kernel.analyze(&self.ordered) else {
+            let (Some(window), Some(ballistics)) =
+                (self.windows.get(layer), self.ballistics.get_mut(layer))
+            else {
                 self.clear();
                 return None;
             };
-            apply_decay(&mut frame, self.envelopes[layer].as_ref(), pending.decay);
-            self.envelopes[layer] = Some(frame.clone());
-            pending.result.frames[layer] = frame;
+            let Ok(mut frame) = self.kernel.analyze(window) else {
+                self.clear();
+                return None;
+            };
+            ballistics.apply(&mut frame, pending.elapsed);
+            if let Some(slot) = pending.result.frames.get_mut(layer) {
+                *slot = frame;
+            }
         }
         pending.next_layer = end;
         if end == pending.result.selection.layer_count() {
@@ -679,9 +695,8 @@ impl ProjectCore {
         let Self {
             rate: _,
             kernel,
-            rolling,
-            ordered,
-            envelopes,
+            windows,
+            ballistics,
             selection: _,
             write: _,
             filled: _,
@@ -693,32 +708,24 @@ impl ProjectCore {
             dirty: _,
             pending: _,
         } = self;
-        std::mem::size_of_val(rolling.as_ref())
-            .checked_add(std::mem::size_of_val(ordered.as_ref()))?
+        windows
+            .iter()
+            .try_fold(std::mem::size_of_val(windows.as_ref()), |sum, window| {
+                sum.checked_add(window.heap_data_bytes()?)
+            })?
             .checked_add(kernel.heap_data_bytes()?)?
-            .checked_add(std::mem::size_of_val(envelopes.as_ref()))?
+            .checked_add(std::mem::size_of_val(ballistics.as_ref()))?
             // Reserve the pending result payload even before analysis starts.
             .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())
     }
 }
-fn project_frames(
-    rate: u32,
-) -> Result<Box<[SpectrumFrame; MAX_PROJECT_LAYERS]>, SpectrumWorkerError> {
+fn project_frames(rate: u32) -> Result<Box<[SpectrumFrame]>, SpectrumWorkerError> {
     let mut frames = Vec::new();
     frames
         .try_reserve_exact(MAX_PROJECT_LAYERS)
         .map_err(|_| SpectrumWorkerError::Allocation)?;
-    frames.resize(
-        MAX_PROJECT_LAYERS,
-        SpectrumFrame {
-            sample_rate_hz: rate,
-            bins_dbfs: [crate::spectrum::FLOOR_DBFS; crate::spectrum::SPECTRUM_BANDS],
-        },
-    );
-    frames
-        .into_boxed_slice()
-        .try_into()
-        .map_err(|_| SpectrumWorkerError::StorageOverflow)
+    frames.resize(MAX_PROJECT_LAYERS, SpectrumFrame::silent(rate));
+    Ok(frames.into_boxed_slice())
 }
 fn zeroed_frames(count: usize) -> Result<Box<[Frame]>, SpectrumWorkerError> {
     let mut frames = Vec::new();
@@ -737,7 +744,7 @@ fn channel_with_return_capacity(
     rate: u32,
     return_capacity: usize,
 ) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
-    let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+    let (producer, consumer) = RingBuffer::new(PROJECT_CAPTURE_QUEUE_CAPACITY);
     let (mut returned, free) = RingBuffer::new(return_capacity);
     let mut packet = None;
     let mut pool_bytes = 0usize;
@@ -771,15 +778,26 @@ fn channel_with_return_capacity(
         rate,
         kernel: SpectrumKernel::new(rate)
             .map_err(|_| SpectrumWorkerError::InvalidSampleRate(rate))?,
-        rolling: zeroed_frames(MAX_PROJECT_LAYERS * FFT_SIZE)?,
-        ordered: zeroed_frames(FFT_SIZE)?,
-        envelopes: {
-            let mut envelopes = Vec::new();
-            envelopes
+        windows: {
+            let mut windows = Vec::new();
+            windows
                 .try_reserve_exact(MAX_PROJECT_LAYERS)
                 .map_err(|_| SpectrumWorkerError::Allocation)?;
-            envelopes.resize(MAX_PROJECT_LAYERS, None);
-            envelopes.into_boxed_slice()
+            for _ in 0..MAX_PROJECT_LAYERS {
+                windows.push(
+                    SpectrumWindow::new(rate)
+                        .map_err(|_| SpectrumWorkerError::InvalidSampleRate(rate))?,
+                );
+            }
+            windows.into_boxed_slice()
+        },
+        ballistics: {
+            let mut ballistics = Vec::new();
+            ballistics
+                .try_reserve_exact(MAX_PROJECT_LAYERS)
+                .map_err(|_| SpectrumWorkerError::Allocation)?;
+            ballistics.resize_with(MAX_PROJECT_LAYERS, SpectrumBallistics::default);
+            ballistics.into_boxed_slice()
         },
         selection: None,
         write: 0,
@@ -828,6 +846,34 @@ fn channel_with_return_capacity(
         },
         worker,
     ))
+}
+
+/// The normal native constructor's fixed packet pool, analysis and result data.
+pub(super) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    let packet = MAX_PROJECT_LAYERS
+        .checked_mul(MAX_CAPTURE_FRAMES)?
+        .checked_mul(std::mem::size_of::<Frame>())?
+        .checked_add(std::mem::size_of::<ProjectPacket>())?;
+    let window =
+        std::mem::size_of::<SpectrumWindow>().checked_add(SpectrumWindow::heap_storage_quote()?)?;
+    let core = MAX_PROJECT_LAYERS
+        .checked_mul(window)?
+        .checked_add(SpectrumKernel::heap_storage_quote()?)?
+        .checked_add(MAX_PROJECT_LAYERS.checked_mul(std::mem::size_of::<SpectrumBallistics>())?)?
+        .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?;
+    let bytes = ChannelStorage::ring_bytes::<Box<ProjectPacket>>(PROJECT_CAPTURE_QUEUE_CAPACITY)?
+        .checked_add(ChannelStorage::ring_bytes::<Box<ProjectPacket>>(
+            PROJECT_PACKET_OWNERS,
+        )?)?
+        .checked_add(std::mem::size_of::<ProjectWorker>())?
+        .checked_add(PROJECT_PACKET_OWNERS.checked_mul(packet)?)?
+        .checked_add(core)?
+        .checked_add(std::mem::size_of::<PublishedProjectSpectrum>())?
+        .checked_add(
+            2usize.checked_mul(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?,
+        )?;
+    (bytes <= MAX_PROJECT_PAYLOAD_BYTES).then_some(bytes)
 }
 
 #[cfg(test)]
@@ -1024,8 +1070,7 @@ mod tests {
             .expect("complete aligned window");
         assert_eq!(result.frames().len(), 3);
         let peak = |frame: &SpectrumFrame| {
-            frame
-                .bins_dbfs
+            crate::spectrum::without_default_slope(frame)
                 .iter()
                 .copied()
                 .fold(f32::NEG_INFINITY, f32::max)
@@ -1138,7 +1183,7 @@ mod tests {
         let selection = selected(&[]);
         let now = Instant::now();
         let block = [[0.25, -0.25]; MAX_CAPTURE_FRAMES];
-        for sequence in 0..CAPTURE_QUEUE_CAPACITY {
+        for sequence in 0..PROJECT_CAPTURE_QUEUE_CAPACITY {
             capture.begin(Some(selection), MAX_CAPTURE_FRAMES, true);
             capture.observe(ProjectSignal::Master, 0, &block);
             assert_eq!(
@@ -1154,7 +1199,7 @@ mod tests {
             capture.finish(now, 11, true),
             Some(CaptureOutcome::QueueFull { sequence: 32 })
         );
-        for _ in 0..CAPTURE_QUEUE_CAPACITY {
+        for _ in 0..PROJECT_CAPTURE_QUEUE_CAPACITY {
             worker.poll(now);
         }
         capture.begin(Some(selection), MAX_CAPTURE_FRAMES, true);
@@ -1242,7 +1287,7 @@ mod tests {
         let result = reader.latest_at(now, selection).unwrap();
         assert_eq!(result.frames().len(), MAX_PROJECT_LAYERS);
         let peak = |f: &SpectrumFrame| {
-            f.bins_dbfs
+            crate::spectrum::without_default_slope(f)
                 .iter()
                 .copied()
                 .fold(f32::NEG_INFINITY, f32::max)

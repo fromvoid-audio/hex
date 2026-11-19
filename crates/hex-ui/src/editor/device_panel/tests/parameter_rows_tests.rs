@@ -71,6 +71,7 @@ fn exercise(
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             project: Arc::new(model.project().clone()),
             waveforms: Default::default(),
+            source_overviews: Default::default(),
             midi_preview: old.midi_preview.clone(),
             gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,
@@ -282,8 +283,10 @@ fn exercise(
             _ => panic!("choice"),
         }
     });
-    let bounds = visual.debug_bounds(row_selector(device, 1)).unwrap();
-    let press = point(bounds.origin.x + px(200.0), bounds.origin.y + px(10.0));
+    let selector = Box::leak(format!("device-{}-parameter-4", device.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).expect("choice selector");
+    // The right side of this wide selector is clipped at the compact window edge.
+    let press = point(bounds.left() + px(20.0), bounds.center().y);
     visual.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();

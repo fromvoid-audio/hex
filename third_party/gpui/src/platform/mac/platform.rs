@@ -35,6 +35,9 @@ use core_foundation::{
     runloop::CFRunLoopRun,
     string::{CFString, CFStringRef},
 };
+use core_foundation_sys::runloop::{
+    CFRunLoopGetMain, CFRunLoopRef, CFRunLoopWakeUp, kCFRunLoopCommonModes,
+};
 use ctor::ctor;
 use futures::channel::oneshot;
 use itertools::Itertools;
@@ -62,6 +65,11 @@ use std::{
 };
 use strum::IntoEnumIterator;
 use util::ResultExt;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRunLoopPerformBlock(run_loop: CFRunLoopRef, mode: CFTypeRef, block: *const c_void);
+}
 
 #[allow(non_upper_case_globals)]
 const NSUTF8StringEncoding: NSUInteger = 4;
@@ -92,64 +100,37 @@ fn make_hidden_cursor() -> Option<StrongPtr> {
     }
 }
 
-/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
-fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
+// Hex owns these editable vectors; GPUI retains native cursor and hotspot custody.
+const LEFT_BRACKET_SVG: &[u8] =
+    include_bytes!("../../../../../assets/cursors/resize-left-bracket.svg");
+const RIGHT_BRACKET_SVG: &[u8] =
+    include_bytes!("../../../../../assets/cursors/resize-right-bracket.svg");
+const LOOP_SVG: &[u8] = include_bytes!("../../../../../assets/cursors/loop.svg");
+
+/// Rasterize the 24-point cursor at 2x, then let NSImage scale it to logical points.
+fn make_vector_cursor(svg: &[u8]) -> Option<StrongPtr> {
+    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+    if tree.size().width() != 24.0 || tree.size().height() != 24.0 {
+        return None;
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(48, 48)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
+        &mut pixmap.as_mut(),
+    );
+    let png = pixmap.encode_png().ok()?;
     unsafe {
-        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
+        let data: id = msg_send![class!(NSData), dataWithBytes: png.as_ptr() length: png.len()];
+        if data == nil {
+            return None;
+        }
+        let image: id = msg_send![NSImage::alloc(nil), initWithData: data];
         if image == nil {
             return None;
         }
         let image = StrongPtr::new(image);
-        let _: () = msg_send![*image, lockFocus];
-        let path: id = msg_send![class!(NSBezierPath), bezierPath];
-        if path == nil {
-            let _: () = msg_send![*image, unlockFocus];
-            return None;
-        }
-
-        let center_x = 12.0;
-        let toward = if points_left { -1.0 } else { 1.0 };
-        let bracket = if points_left { 1.0 } else { -1.0 };
-        let segments = [
-            (NSPoint::new(center_x, 4.0), NSPoint::new(center_x, 20.0)),
-            (
-                NSPoint::new(center_x, 4.0),
-                NSPoint::new(center_x + bracket * 5.0, 4.0),
-            ),
-            (
-                NSPoint::new(center_x, 20.0),
-                NSPoint::new(center_x + bracket * 5.0, 20.0),
-            ),
-            (
-                NSPoint::new(center_x, 12.0),
-                NSPoint::new(center_x + toward * 7.0, 12.0),
-            ),
-            (
-                NSPoint::new(center_x + toward * 7.0, 12.0),
-                NSPoint::new(center_x + toward * 4.0, 15.0),
-            ),
-            (
-                NSPoint::new(center_x + toward * 7.0, 12.0),
-                NSPoint::new(center_x + toward * 4.0, 9.0),
-            ),
-        ];
-        for (start, end) in segments {
-            let _: () = msg_send![path, moveToPoint: start];
-            let _: () = msg_send![path, lineToPoint: end];
-        }
-
-        let white: id = msg_send![class!(NSColor), whiteColor];
-        let _: () = msg_send![white, setStroke];
-        let _: () = msg_send![path, setLineWidth: 4.0_f64];
-        let _: () = msg_send![path, setLineCapStyle: 1_isize];
-        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
-        let _: () = msg_send![path, stroke];
-        let black: id = msg_send![class!(NSColor), blackColor];
-        let _: () = msg_send![black, setStroke];
-        let _: () = msg_send![path, setLineWidth: 1.75_f64];
-        let _: () = msg_send![path, stroke];
-        let _: () = msg_send![*image, unlockFocus];
-
+        let _: () = msg_send![*image, setSize: NSSize::new(24.0, 24.0)];
         let allocated: id = msg_send![class!(NSCursor), alloc];
         let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
         if cursor == nil {
@@ -183,6 +164,10 @@ unsafe fn build_classes() {
             decl.add_method(
                 sel!(applicationShouldHandleReopen:hasVisibleWindows:),
                 should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
+            );
+            decl.add_method(
+                sel!(applicationShouldTerminate:),
+                should_terminate as extern "C" fn(&mut Object, Sel, id) -> NSUInteger,
             );
             decl.add_method(
                 sel!(applicationWillTerminate:),
@@ -258,6 +243,8 @@ pub(crate) struct MacPlatformState {
     reopen: Option<Box<dyn FnMut()>>,
     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
     quit: Option<Box<dyn FnMut()>>,
+    should_quit: Option<Box<dyn FnMut() -> bool>>,
+    quit_request_pending: bool,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     will_open_menu: Option<Box<dyn FnMut()>>,
@@ -270,6 +257,7 @@ pub(crate) struct MacPlatformState {
     hidden_cursor: Option<StrongPtr>,
     resize_left_bracket_cursor: Option<StrongPtr>,
     resize_right_bracket_cursor: Option<StrongPtr>,
+    loop_cursor: Option<StrongPtr>,
 }
 
 impl Default for MacPlatform {
@@ -303,7 +291,7 @@ impl MacPlatform {
         let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
             (None, None)
         } else {
-            (make_bracket_cursor(true), make_bracket_cursor(false))
+            (make_vector_cursor(LEFT_BRACKET_SVG), make_vector_cursor(RIGHT_BRACKET_SVG))
         };
 
         Self(Mutex::new(MacPlatformState {
@@ -317,6 +305,8 @@ impl MacPlatform {
             metadata_pasteboard_type: unsafe { ns_string("zed-metadata") },
             reopen: None,
             quit: None,
+            should_quit: None,
+            quit_request_pending: false,
             menu_command: None,
             validate_menu_command: None,
             will_open_menu: None,
@@ -330,6 +320,7 @@ impl MacPlatform {
             hidden_cursor: if headless { None } else { make_hidden_cursor() },
             resize_left_bracket_cursor,
             resize_right_bracket_cursor,
+            loop_cursor: if headless { None } else { make_vector_cursor(LOOP_SVG) },
         }))
     }
 
@@ -1008,6 +999,39 @@ impl Platform for MacPlatform {
         self.0.lock().quit = Some(callback);
     }
 
+    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.lock().should_quit = Some(callback);
+    }
+
+    fn reply_to_quit(&self, terminate: bool) {
+        let mut lock = self.0.lock();
+        if !std::mem::replace(&mut lock.quit_request_pending, false) {
+            return;
+        }
+        drop(lock);
+        // Termination may already be running on the main dispatch queue, so a
+        // queued dispatch block cannot run while AppKit waits for this reply.
+        // A later main run-loop turn also releases the App borrow before a YES
+        // reply synchronously invokes the quit observers.
+        let reply = ConcreteBlock::new(move || unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            let answer = if terminate { YES } else { NO };
+            let _: () = msg_send![app, replyToApplicationShouldTerminate: answer];
+        })
+        .copy();
+        // Core Foundation copies the block before returning. The main run loop
+        // and its common-modes constant remain valid for the application's life.
+        unsafe {
+            let run_loop = CFRunLoopGetMain();
+            CFRunLoopPerformBlock(
+                run_loop,
+                kCFRunLoopCommonModes as CFTypeRef,
+                &*reply as *const _ as *const c_void,
+            );
+            CFRunLoopWakeUp(run_loop);
+        }
+    }
+
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
         self.0.lock().reopen = Some(callback);
     }
@@ -1106,6 +1130,7 @@ impl Platform for MacPlatform {
             let bracket_cursor = {
                 let state = self.0.lock();
                 match style {
+                    CursorStyle::Loop => state.loop_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::ResizeLeftBracket => state
                         .resize_left_bracket_cursor
@@ -1125,7 +1150,7 @@ impl Platform for MacPlatform {
                 CursorStyle::ClosedHand => msg_send![class!(NSCursor), closedHandCursor],
                 CursorStyle::OpenHand => msg_send![class!(NSCursor), openHandCursor],
                 CursorStyle::PointingHand => msg_send![class!(NSCursor), pointingHandCursor],
-                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
+                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
                 CursorStyle::ResizeUpDown => msg_send![class!(NSCursor), resizeUpDownCursor],
                 CursorStyle::ResizeLeft => msg_send![class!(NSCursor), resizeLeftCursor],
                 CursorStyle::ResizeRight => msg_send![class!(NSCursor), resizeRightCursor],
@@ -1565,6 +1590,36 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
             callback();
             platform.0.lock().reopen.get_or_insert(callback);
         }
+    }
+}
+
+// NSApplicationTerminateReply values.
+const NS_TERMINATE_NOW: NSUInteger = 1;
+const NS_TERMINATE_LATER: NSUInteger = 2;
+
+/// Hex patch: defer termination to the app's should-quit handler when one
+/// answers via `reply_to_quit`; otherwise terminate now, as before.
+extern "C" fn should_terminate(this: &mut Object, _: Sel, _: id) -> NSUInteger {
+    let platform = unsafe { get_mac_platform(this) };
+    let mut lock = platform.0.lock();
+    if lock.quit_request_pending {
+        // AppKit does not re-ask while a reply is outstanding; stay deferred.
+        return NS_TERMINATE_LATER;
+    }
+    let Some(mut callback) = lock.should_quit.take() else {
+        return NS_TERMINATE_NOW;
+    };
+    // Pending first: the handler may request its reply before returning.
+    lock.quit_request_pending = true;
+    drop(lock);
+    let deferred = callback();
+    let mut lock = platform.0.lock();
+    lock.should_quit.get_or_insert(callback);
+    if deferred {
+        NS_TERMINATE_LATER
+    } else {
+        lock.quit_request_pending = false;
+        NS_TERMINATE_NOW
     }
 }
 

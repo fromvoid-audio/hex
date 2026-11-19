@@ -2,11 +2,13 @@
 use super::*;
 pub(super) struct DomainSignal {
     pub(super) return_requested: AtomicBool,
+    pub(super) endpoint_installed: AtomicBool,
 }
 impl DomainSignal {
     pub(super) fn new() -> Self {
         Self {
             return_requested: AtomicBool::new(false),
+            endpoint_installed: AtomicBool::new(false),
         }
     }
 }
@@ -44,11 +46,50 @@ impl DomainEnvelope {
         (self.inner.token.root == root && self.inner.token.slot < 2 && self.inner.loan.is_some())
             .then_some(self.inner.token.slot)
     }
+    pub(crate) fn installed_on_callback(&self) {
+        self.inner
+            .signal
+            .endpoint_installed
+            .store(true, Ordering::Release);
+    }
+    pub(crate) fn departed_callback(&self) {
+        self.inner
+            .signal
+            .endpoint_installed
+            .store(false, Ordering::Release);
+    }
     pub(crate) fn return_requested(&self) -> bool {
         self.inner.signal.return_requested.load(Ordering::Acquire)
     }
+
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_page_loan(
+        &mut self,
+        token: AudioCandidateDomainToken,
+    ) -> Option<&mut hex_stream::ConstructorPageLoan> {
+        if self.inner.token != token {
+            return None;
+        }
+        self.inner.loan.as_mut()
+    }
 }
 impl Custody {
+    pub(in crate::candidate_custody) fn endpoint_installed(
+        &self,
+        token: AudioCandidateDomainToken,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && bank.root == token.root
+            && bank.domains.get(token.slot).is_some_and(|slot| {
+                slot.matches(token)
+                    && slot.phase == Phase::Accepted
+                    && !slot.retiring
+                    && slot.owner.is_some()
+                    && slot.loan_outstanding
+                    && slot.signal.endpoint_installed.load(Ordering::Acquire)
+            })
+    }
     pub(in crate::candidate_custody) fn register_pages(
         &self,
         domain: CandidateDomain,
