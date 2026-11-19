@@ -1,5 +1,6 @@
 use super::return_effect_tails::DeviceEditTailPolicy;
 use super::*;
+use crate::session_inventory::EffectiveSessionMidi;
 use crate::signal_graph::{FreshHistory, TrackOutput};
 use crate::{Invalid, MidiTiming, Track};
 use std::sync::Weak;
@@ -548,6 +549,25 @@ fn same_latency_cut_prefix(
         })
 }
 
+fn mutable_session_clip_matches(
+    previous: EffectiveSessionMidi<'_>,
+    candidate: EffectiveSessionMidi<'_>,
+    track: TrackId,
+    clip: ClipId,
+) -> bool {
+    previous
+        .midi_clip_for_track(clip, track)
+        .zip(candidate.midi_clip_for_track(clip, track))
+        .is_some_and(|(old, new)| {
+            old.id == new.id
+                && old.track == track
+                && new.track == track
+                && old.scene == new.scene
+                && old.source_content_matches(&new)
+                && old.instrument_config_matches(&new)
+        })
+}
+
 impl SessionPlayback {
     /// Retain direct native audio histories through a confirmed reset when
     /// individual chains keep their processing clock. The new graph's
@@ -599,7 +619,7 @@ impl SessionPlayback {
         donors
     }
 
-    /// Copy isolated Arrangement generators at their unchanged input clock.
+    /// Copy isolated native generators at their unchanged input clock.
     /// Only the candidate is touched until every compatible history is staged.
     fn stage_instrument_history_at_latency_cut(
         &mut self,
@@ -639,34 +659,59 @@ impl SessionPlayback {
             ) else {
                 continue;
             };
-            if self
+            let Some((route, old_route)) = self
                 .route_scratch
-                .get(index)
+                .get_mut(index)
                 .zip(previous.routes.get(old_index))
-                .is_some_and(|(next, old)| {
-                    next.owner == RouteOwner::Arrangement && old.owner == RouteOwner::Arrangement
-                })
-                && next.source_id() == old_track.source_id()
-                && next.source_input_enabled() == old_track.source_input_enabled()
-                && next.receives_source_audio() == old_track.receives_source_audio()
-                && !self.revision.source_routing().is_shared(index)
-                && !previous.revision.source_routing().is_shared(old_index)
-                && !old_runtime.has_committed_live_occurrences()
-                && previous
-                    .revision
-                    .mutable_arrangement_track_matches(&self.revision, track)
-                && [old_graph, new_graph].into_iter().all(|graph| {
+            else {
+                continue;
+            };
+            if route.owner != old_route.owner
+                || next.source_id() != old_track.source_id()
+                || next.source_input_enabled() != old_track.source_input_enabled()
+                || next.receives_source_audio() != old_track.receives_source_audio()
+                || self.revision.source_routing().is_shared(index)
+                || previous.revision.source_routing().is_shared(old_index)
+                || old_runtime.has_committed_live_occurrences()
+                || ![old_graph, new_graph].into_iter().all(|graph| {
                     graph
                         .processor_latency(device.value(), Some(track))
                         .is_some_and(|latency| {
                             latency.upstream_frames == 0 && latency.stage_frames == 0
                         })
                 })
-                && runtime.can_inherit_from(old_runtime)
             {
+                continue;
+            }
+            let same_source = match route.owner {
+                RouteOwner::Arrangement => previous
+                    .revision
+                    .mutable_arrangement_track_matches(&self.revision, track),
+                RouteOwner::Session { clip, .. } => {
+                    previous
+                        .revision
+                        .mutable_track_topology_matches(&self.revision, track)
+                        && mutable_session_clip_matches(
+                            EffectiveSessionMidi::new(
+                                previous.revision.session(),
+                                previous.midi_admission.as_ref(),
+                            ),
+                            EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
+                            track,
+                            clip,
+                        )
+                }
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+            };
+            if same_source && runtime.can_inherit_from(old_runtime) {
                 runtime
                     .inherit_at_latency_cut(old_runtime, previous.performance_frame)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                route.current_incarnation = old_route.current_incarnation;
+                route.current_first_frame = old_route.current_first_frame;
                 *retained = true;
             }
         }
@@ -2626,27 +2671,21 @@ impl SessionPlayback {
                         .revision
                         .mutable_arrangement_track_matches(&self.revision, old_route.id),
                     RouteOwner::Session { clip, .. } => {
-                        let old = crate::session_inventory::EffectiveSessionMidi::new(
-                            previous.revision.session(),
-                            previous.midi_admission.as_ref(),
-                        )
-                        .midi_clip_for_track(clip, old_route.id);
-                        let new = crate::session_inventory::EffectiveSessionMidi::new(
-                            self.revision.session(),
-                            self.midi_admission.as_ref(),
-                        )
-                        .midi_clip_for_track(clip, old_route.id);
                         previous
                             .revision
                             .mutable_track_topology_matches(&self.revision, old_route.id)
-                            && old.zip(new).is_some_and(|(old, new)| {
-                                old.id == new.id
-                                    && old.track == old_route.id
-                                    && new.track == old_route.id
-                                    && old.scene == new.scene
-                                    && old.source_content_matches(&new)
-                                    && old.instrument_config_matches(&new)
-                            })
+                            && mutable_session_clip_matches(
+                                EffectiveSessionMidi::new(
+                                    previous.revision.session(),
+                                    previous.midi_admission.as_ref(),
+                                ),
+                                EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                old_route.id,
+                                clip,
+                            )
                     }
                     RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
                 };

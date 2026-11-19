@@ -843,7 +843,7 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
         after.arrangement().main_latency_frames() as usize,
         old_latency + DELAY
     );
-    assert_approved_latency_cut(before, after, |partition, actual, oracle| {
+    assert_approved_latency_cut(before, after, None, |partition, actual, oracle| {
         if !matches!(target, LimiterAppendTarget::Return) {
             assert!(oracle[..CUT].iter().all(|pcm| *pcm == [0.0; 2]));
         }
@@ -875,6 +875,15 @@ fn assert_approved_limiter_append_preserves_repeat(target: LimiterAppendTarget) 
 
 #[test]
 fn approved_latency_cut_preserves_an_independent_native_instrument_voice() {
+    assert_approved_cut_preserves_held_native_note(false);
+}
+
+#[test]
+fn approved_latency_cut_preserves_a_held_native_session_note() {
+    assert_approved_cut_preserves_held_native_note(true);
+}
+
+fn assert_approved_cut_preserves_held_native_note(session: bool) {
     use hex_project::BeatTime;
 
     let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
@@ -895,15 +904,56 @@ fn approved_latency_cut_preserves_an_independent_native_instrument_voice() {
                 .unwrap(),
         })
         .unwrap();
-    let Created::Clip(clip) = editor
-        .execute(Command::PlaceMidiClip {
-            track,
-            start: BeatTime::ZERO,
-            length: BeatTime::ONE,
-        })
-        .unwrap()
-    else {
-        panic!("midi clip");
+    let (clip, launch) = if session {
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "held clip".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let length = BeatTime::from_raw(BeatTime::ONE.raw() / 30);
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "held note".into(),
+                source_length: length,
+            })
+            .unwrap()
+        else {
+            panic!("session clip");
+        };
+        editor
+            .execute(Command::SetSessionMidiClipSource {
+                clip,
+                source_length: length,
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: length,
+                looping: true,
+            })
+            .unwrap();
+        (
+            clip,
+            Some(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            }),
+        )
+    } else {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("arrangement clip");
+        };
+        (clip, None)
     };
     editor
         .execute(Command::AddMidiNote {
@@ -936,13 +986,19 @@ fn approved_latency_cut_preserves_an_independent_native_instrument_voice() {
         2 * DELAY
     );
 
-    assert_approved_latency_cut(before, after, |partition, actual, oracle| {
+    assert_approved_latency_cut(before, after, launch, |partition, actual, oracle| {
         // The approved cut may drain and refill compensation and fade in.
         // Compare PCM through the held note and its subsequent release.
         let settled = CUT + 2 * DELAY + QUANTUM;
         // A 1/32-beat gate at 120 bpm and 48 kHz lasts 750 frames.
         let note_off = 750 + 2 * DELAY;
-        for range in [settled..note_off, note_off..TOTAL] {
+        // The Session clip repeats after 800 frames. Check the release
+        // before that wrap as well as the next iteration at its original phase.
+        let loop_onset = if session { 800 + 2 * DELAY } else { TOTAL };
+        for range in [settled..note_off, note_off..loop_onset, loop_onset..TOTAL] {
+            if range.is_empty() {
+                continue;
+            }
             assert!(oracle[range.clone()].iter().any(|pcm| *pcm != [0.0; 2]));
             let mismatch = actual[range.start - CUT..range.end - CUT]
                 .iter()
@@ -960,13 +1016,24 @@ const TOTAL: usize = 1152;
 fn assert_approved_latency_cut(
     before: Arc<hex_engine::PreparedRevision>,
     after: Arc<hex_engine::PreparedRevision>,
+    launch: Option<SessionPlaybackCommand>,
     check: impl Fn(usize, &[Frame], &[Frame]),
 ) {
     let mut original = Playback::try_from_prepared_with_session(Arc::clone(&before)).unwrap();
+    if let Some(launch) = launch {
+        original
+            .try_apply_action(PlaybackAction::Session(launch))
+            .unwrap();
+    }
     original.apply(PlaybackCommand::Play);
     let mut before_approval = [[0.0; 2]; 2 * QUANTUM];
     original.render(&mut before_approval).unwrap();
     let mut uninterrupted = Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap();
+    if let Some(launch) = launch {
+        uninterrupted
+            .try_apply_action(PlaybackAction::Session(launch))
+            .unwrap();
+    }
     uninterrupted.apply(PlaybackCommand::Play);
     let mut oracle = [[0.0; 2]; TOTAL];
     uninterrupted.render(&mut oracle).unwrap();
@@ -1022,6 +1089,9 @@ fn assert_approved_latency_cut(
             #[cfg(not(feature = "allocation-probe"))]
             render();
         };
+        if let Some(launch) = launch {
+            control.session_command_with_ticket(launch).unwrap();
+        }
         control.command(PlaybackCommand::Play).unwrap();
         let mut scratch = [[0.0; 2]; QUANTUM];
         block(&mut scratch);
