@@ -72,15 +72,21 @@ impl NativeAudioSink {
             .ok_or("verified graph edit needs the installed canonical source")?;
         // Retain the owned gain preview until the removal actually installs.
         // A refused graph edit leaves that preview and its gesture intact.
-        let preview_blocks_edit = match self.verified_preview.as_ref() {
-            None => false,
-            Some(VerifiedSource::Gain(gain)) => !attempt.retiring_gain().is_some_and(|identity| {
-                gain.preview_identity() == Some(identity)
-                    && Arc::ptr_eq(gain.canonical(), canonical)
-            }),
-            Some(_) => true,
+        let retiring_key = match self.verified_preview.as_ref() {
+            None => None,
+            Some(preview @ VerifiedSource::Gain(gain))
+                if attempt.retiring_gain().is_some_and(|identity| {
+                    gain.preview_identity() == Some(identity)
+                        && Arc::ptr_eq(gain.canonical(), canonical)
+                }) =>
+            {
+                Some(preview.key())
+            }
+            Some(_) => {
+                return Err("verified graph edit needs the installed canonical source".into());
+            }
         };
-        if self.sampler.is_some() || preview_blocks_edit {
+        if self.sampler.is_some() {
             return Err("verified graph edit needs the installed canonical source".into());
         }
         let control = self
@@ -88,10 +94,22 @@ impl NativeAudioSink {
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("audio output is unavailable")?;
+        let canonical_key = VerifiedKey::canonical(attempt.predecessor());
+        // A preview and the canonical project can share the editor context.
+        // Only the exact output ACK and its submitted candidate can establish
+        // which is installed. The audio owner still revalidates at callback.
         let predecessor = control
             .status
             .applied_audio_source()
-            .filter(|source| source.context == attempt.predecessor())
+            .filter(|source| {
+                control.output_identity() == Some(source.output_identity)
+                    && self.submitted.iter().flatten().any(|submission| {
+                        submission.source == *source
+                            && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(canonical))
+                            && (submission.key == canonical_key
+                                || Some(submission.key) == retiring_key)
+                    })
+            })
             .ok_or("verified graph edit needs the installed canonical source")?;
         let transition = match (attempt.confirmation(), self.verified_edit.as_ref()) {
             (None, None) if attempt.needs_tempo_cut() => {
@@ -142,8 +160,7 @@ impl NativeAudioSink {
             self.verified_last =
                 Some(VerifiedSource::Canonical(Arc::clone(attempt.source())).key());
             self.last_context = Some(attempt.source().context());
-            // Keep the exact installed source until the Session's canonical
-            // event supplies the committed snapshot at the same revision.
+            // Session publishes this same snapshot when it emits the committed edit.
             self.desired = Some(Arc::clone(attempt.source()));
             self.observe(
                 submission.context,

@@ -623,7 +623,7 @@ impl WorkerAudioSink for ObservedSink {
                 .submitted
                 .iter()
                 .flatten()
-                .find(|s| s.context == context)
+                .find(|s| s.source.context == context)
                 .and_then(|s| s.domain)
             && let Some(control) = self
                 .inner

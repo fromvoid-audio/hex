@@ -79,8 +79,10 @@ impl Domain {
 }
 struct Submitted {
     resident_copy_frames: u64,
-    #[cfg(all(test, feature = "allocation-probe"))]
-    context: AudioSourceContext,
+    // Correlate the actual install ACK with this exact submitted project and
+    // overlay. The weak identity does not retain its media or project payload.
+    source: hex_audio::prepared::AppliedAudioSource,
+    canonical: std::sync::Weak<CanonicalAudioSourceSnapshot>,
     key: VerifiedKey,
     ticket: AudioCandidateTicket,
     domain: Option<AudioCandidateDomainToken>,
@@ -1141,6 +1143,14 @@ impl NativeAudioSink {
             self.observe(context, "busy", EditorPublicationState::Busy);
             return;
         };
+        let Some(output_identity) = control.output_identity() else {
+            self.fail_preparation(
+                control,
+                pending,
+                "verified audio output is unavailable".into(),
+            );
+            return;
+        };
         let submitted = match edit.as_ref() {
             Some(edit) => edit
                 .stage(control, pending.token, context)
@@ -1154,8 +1164,12 @@ impl NativeAudioSink {
                 let revision = control.submitted_revision();
                 self.submitted[index] = Some(Submitted {
                     resident_copy_frames: pending.resident_copy_frames,
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    context,
+                    source: hex_audio::prepared::AppliedAudioSource {
+                        context,
+                        audio_revision: revision,
+                        output_identity,
+                    },
+                    canonical: Arc::downgrade(pending.snapshot.canonical_arc()),
                     key: pending.snapshot.key(),
                     ticket,
                     domain: pending.domain,
