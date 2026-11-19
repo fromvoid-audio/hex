@@ -228,26 +228,69 @@ impl AudioCandidateAnchors {
         loop_state: crate::session_playback::ArrangementLoopState,
         cut_performance_frame: u64,
     ) -> Result<crate::session_playback::PreparedTempoAnchor, crate::SessionPlaybackError> {
+        if successor.owner.phase() != AudioCandidateDisposalPhase::Leased {
+            return Err(crate::SessionPlaybackError::InvalidCommand);
+        }
+        self.prepare_tempo_cut_for_owner(
+            &successor.owner,
+            arrangement_frame,
+            performance_frame,
+            loop_state,
+            cut_performance_frame,
+        )
+    }
+
+    /// Bind the planned cut before publication splits the successor's owner.
+    pub fn prepare_tempo_cut_for_preparation(
+        &self,
+        successor: &AudioCandidateOwner,
+        arrangement_frame: u64,
+        performance_frame: u64,
+        loop_state: crate::session_playback::ArrangementLoopState,
+        cut_performance_frame: u64,
+    ) -> Result<crate::session_playback::PreparedTempoAnchor, crate::SessionPlaybackError> {
+        if successor.phase() != AudioCandidateDisposalPhase::Owned {
+            return Err(crate::SessionPlaybackError::InvalidCommand);
+        }
+        self.prepare_tempo_cut_for_owner(
+            successor,
+            arrangement_frame,
+            performance_frame,
+            loop_state,
+            cut_performance_frame,
+        )
+    }
+
+    fn prepare_tempo_cut_for_owner(
+        &self,
+        successor: &AudioCandidateOwner,
+        arrangement_frame: u64,
+        performance_frame: u64,
+        loop_state: crate::session_playback::ArrangementLoopState,
+        cut_performance_frame: u64,
+    ) -> Result<crate::session_playback::PreparedTempoAnchor, crate::SessionPlaybackError> {
         let invalid = crate::SessionPlaybackError::InvalidCommand;
         if self.identity() == successor.identity()
-            || [self, successor]
-                .into_iter()
-                .any(|anchors| anchors.owner.phase() != AudioCandidateDisposalPhase::Leased)
+            || self.owner.phase() != AudioCandidateDisposalPhase::Leased
         {
             return Err(invalid);
         }
-        let revision = |anchors: &Self| {
-            anchors
-                .owner
+        let revision = |owner: &AudioCandidateOwner| {
+            owner
                 .inner
                 .custody
-                .candidate_root_view(&anchors.owner.inner.token)
+                .candidate_root_view(&owner.inner.token)
                 .map(std::sync::Arc::clone)
                 .map_err(|_| invalid)
         };
+        let previous = revision(&self.owner)?;
+        let candidate = revision(successor)?;
+        if !candidate.can_schedule_ordinary_tempo_edit_from(&previous) {
+            return Err(invalid);
+        }
         crate::session_playback::PreparedTempoAnchor::prepare_from_running_observation(
-            revision(self)?,
-            revision(successor)?,
+            previous,
+            candidate,
             arrangement_frame,
             performance_frame,
             loop_state,

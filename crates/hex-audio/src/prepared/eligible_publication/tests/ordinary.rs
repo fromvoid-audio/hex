@@ -71,7 +71,7 @@ fn measured_block(
     measured_render(data, &mut output);
     output
 }
-fn measured_render(
+pub(super) fn measured_render(
     data: &mut crate::native_callback_owner::Guard<
         crate::native_callback_owner::NativeCallbackOwner,
     >,

@@ -185,11 +185,11 @@ impl Callback {
         {
             next.cancel_stream_readiness(&mut self.domain_pages);
             self.reject_publication(next.revision(), reason);
-            let insert = next.device_insert().is_some();
+            let has_receipt = next.receipt().is_some();
             self.status.publication_pending.store(false, Release);
-            self.return_verified_insert(&next, Some(reason));
+            self.return_verified_receipt(&next, Some(reason));
             self.return_publication(ReturnedPublication::Eligible(next.reject_before_install()));
-            if !insert && let Some(ticket) = self.stream_pending_play.take() {
+            if !has_receipt && let Some(ticket) = self.stream_pending_play.take() {
                 self.status
                     .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
                 self.stage_stream_outcome(

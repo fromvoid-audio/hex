@@ -1,6 +1,6 @@
-//! Exact tempo cuts for the ordinary publication slot. Control owns
-//! the prepared anchor through the graph receipt. The callback borrows it
-//! while inheriting, then returns the original graph through ordinary custody.
+//! Exact tempo cuts in the existing publication slots. Control owns the
+//! anchor through the receipt. The callback borrows it at the cut and returns
+//! the predecessor through the publication path that installed it.
 use super::*;
 
 pub(super) const TEMPO_STREAM_WINDOW_FRAMES: usize = 256;
@@ -9,7 +9,7 @@ pub(super) const TEMPO_STREAM_WINDOW_FRAMES: usize = 256;
 /// Admission moves it into the graph receipt for control-side reclamation.
 #[derive(Debug)]
 pub struct FencedTempoCut {
-    pub(super) anchor: hex_engine::session_playback::PreparedTempoAnchor,
+    pub(crate) anchor: hex_engine::session_playback::PreparedTempoAnchor,
     pub(super) fence: FreshRuntimeFence,
     pub(super) output_identity: u64,
     pub(super) control_generation: u64,
@@ -94,6 +94,70 @@ impl Publication {
 }
 
 impl Callback {
+    pub(super) fn verified_tempo_cut_due(&mut self, frames: Option<usize>) -> bool {
+        if self.held_retirement.is_some() {
+            return false;
+        }
+        let Some(next) = self.deferred_eligible.as_ref() else {
+            return false;
+        };
+        let Some(cut) = next.tempo_cut() else {
+            return false;
+        };
+        let fence = cut.fence;
+        let reason = if let Some(reason) = next.preflight_refusal(&self.candidate_root) {
+            reason
+        } else if next
+            .receipt()
+            .is_some_and(PublicationReceiptOwner::fenced_before_admission)
+        {
+            PlaybackHandoffRejection::FreshRuntimeCancelled
+        } else if let Some(old) = self.active.as_ref().and_then(ActivePublication::current)
+            && old.playback.playing()
+            && old.control_context_generation == cut.control_generation
+            && !Self::runtime_frontier_changed(
+                &self.status,
+                old.revision,
+                old.playback.session_route_state_generation(),
+                fence,
+            )
+            && self.status.consumed_command.load(Acquire) == fence.admitted_command_ticket
+            && self.transport_fade.is_none()
+            && !self.stream_action_pending()
+        {
+            let current = old.playback.performance_frame();
+            if current < cut.performance_frame {
+                if frames.is_some_and(|count| count != 0)
+                    && let Some(ActivePublication::Eligible(old)) = self.active.as_mut()
+                    && let Some(next) = self.deferred_eligible.as_mut()
+                {
+                    next.prewarm_tempo_cut(
+                        old,
+                        crate::candidate_custody::StreamInstall {
+                            domains: &mut self.domain_pages,
+                            pending_play: false,
+                            command_prefix: self.stream_prefix,
+                            frames: TEMPO_STREAM_WINDOW_FRAMES,
+                            fenced_restart: false,
+                            foreign_continuation: false,
+                            confirmed_fade: None,
+                            tempo_cut: None,
+                        },
+                    );
+                }
+                return false;
+            }
+            if current == cut.performance_frame {
+                return frames.is_some_and(|count| count != 0);
+            }
+            PlaybackHandoffRejection::TempoCutMissed
+        } else {
+            PlaybackHandoffRejection::RuntimeFenceChanged
+        };
+        self.reject_pending_eligible_successor(reason);
+        false
+    }
+
     pub(super) fn prewarm_tempo_cut(&mut self) {
         use crate::candidate_custody::TempoStreamWindow;
         let Some(next) = self

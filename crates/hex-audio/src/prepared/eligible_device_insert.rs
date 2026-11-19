@@ -8,7 +8,10 @@ impl Callback {
         let held = matches!(self.active.as_ref(), Some(ActivePublication::Eligible(old))
             if old.runtime().is_some_and(hex_engine::ClaimedAudioCandidateRuntime::device_insert_cut_pending));
         if held && let Some(next) = self.deferred_eligible.take() {
-            self.return_verified_insert(&next, Some(PlaybackHandoffRejection::RuntimeFenceChanged));
+            self.return_verified_receipt(
+                &next,
+                Some(PlaybackHandoffRejection::RuntimeFenceChanged),
+            );
             self.deferred_eligible = Some(next);
         }
     }
@@ -147,12 +150,12 @@ impl Callback {
         }
     }
 
-    pub(super) fn return_verified_insert(
+    pub(super) fn return_verified_receipt(
         &mut self,
         next: &QueuedEligibleCandidate,
         rejection: Option<PlaybackHandoffRejection>,
     ) {
-        let Some(receipt) = next.device_insert() else {
+        let Some(receipt) = next.receipt() else {
             return;
         };
         receipt.returned(rejection);

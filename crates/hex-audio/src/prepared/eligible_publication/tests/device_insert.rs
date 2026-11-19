@@ -1,7 +1,7 @@
 use super::*;
 use crate::prepared::eligible_publication::tests::stream_fixture;
 use hex_engine::{AudioCandidateEffects, AudioSourceContext, Frame};
-use hex_project::{Command, Editor, Project};
+use hex_project::{Command, Editor};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -29,41 +29,6 @@ enum Insert {
     Confirmed,
     StopAtFade,
     PageCapacity,
-}
-
-fn prepare(
-    control: &mut Control,
-    project: &Project,
-    metadata: &hex_engine::StreamedSourceMetadata,
-    domain: crate::AudioCandidateDomainToken,
-    context: AudioSourceContext,
-) -> crate::AudioCandidatePreparationToken {
-    AudioCandidateEffects::with_host_definitions(&[], |effects| {
-        let quote = effects.quote(project, 1).unwrap();
-        let token = control
-            .reserve_audio_candidate_preparation(
-                crate::AudioCandidatePreparationReservation {
-                    source_capacity: quote.source_capacity,
-                    storage: quote.storage_reservation(0).unwrap(),
-                    member_rows: quote.member_rows,
-                    transfer_rows: quote.transfer_rows,
-                    handle_rows: quote.handle_rows,
-                },
-                vec![domain],
-            )
-            .unwrap_or_else(|error| panic!("{}", error.reason));
-        assert_eq!(
-            control
-                .prepare_audio_candidate_on_control(token, |cell| {
-                    cell.add_streamed_source_on_control(metadata.clone())?;
-                    effects.prepare(cell, project, metadata.key().generation(), context, None)
-                })
-                .unwrap(),
-            crate::AudioCandidatePreparationProgress::Ready
-        );
-        Ok(token)
-    })
-    .unwrap()
 }
 
 fn check_insert(insert: Insert) {
@@ -164,7 +129,7 @@ fn check_insert(insert: Insert) {
     let predecessor = control.status.applied_audio_source().unwrap();
     assert_eq!(predecessor.context, active_context);
     active_context.editor_revision += 1;
-    let token = prepare(
+    let token = stream_fixture::prepare_candidate(
         &mut control,
         editor.project(),
         &metadata,
@@ -194,7 +159,7 @@ fn check_insert(insert: Insert) {
         assert_eq!(control.status.applied_audio_source(), Some(predecessor));
         assert_eq!(block(), [[0.25; 2]; 64]);
         drop(recover(&mut control, &ticket));
-        let token = prepare(
+        let token = stream_fixture::prepare_candidate(
             &mut control,
             editor.project(),
             &metadata,

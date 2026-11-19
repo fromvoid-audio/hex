@@ -222,7 +222,7 @@ struct State {
     manifest: Option<AudioCandidateTransfer>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
     streaming: Option<streaming::Workspace>,
-    device_insert: Option<crate::prepared::PublicationReceiptOwner>,
+    receipt: Option<crate::prepared::PublicationReceiptOwner>,
 }
 pub(crate) struct Queued {
     state: Box<State>,
@@ -265,7 +265,7 @@ impl Returned {
 impl Queued {
     /// Called at the actual queue rejection frontier, never at staging time.
     pub(crate) fn reject_before_install(self) -> Returned {
-        if let Some(receipt) = self.state.device_insert.as_ref() {
+        if let Some(receipt) = self.state.receipt.as_ref() {
             receipt.returned(None);
         }
         if let Some(claims) = self.state.claims.as_ref() {
@@ -919,7 +919,7 @@ impl super::Custody {
             manifest: None,
             domain_refs: std::array::from_fn(|index| domains.get(index).copied()),
             streaming: None,
-            device_insert: None,
+            receipt: None,
         })
     }
     fn commit_stage(

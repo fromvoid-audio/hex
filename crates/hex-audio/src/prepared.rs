@@ -3561,7 +3561,7 @@ impl Callback {
             if !self.retired.is_full()
                 && let Some(mut value) = self.deferred_eligible.take()
             {
-                if value.device_insert().is_some() {
+                if value.receipt().is_some() {
                     value.cancel_stream_readiness(&mut self.domain_pages);
                 }
                 self.return_publication(ReturnedPublication::Eligible(
@@ -5610,14 +5610,23 @@ impl Callback {
             });
         }
         let yield_successor = self.yield_stream_successor_once;
-        let scheduled_revision = self.deferred.as_ref().and_then(|next| {
-            matches!(
-                next.policy,
-                PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
-                    | PublicationPolicy::InheritAtTempoCut(_)
-            )
-            .then_some(next.revision)
-        });
+        let scheduled_revision = self
+            .deferred
+            .as_ref()
+            .and_then(|next| {
+                matches!(
+                    next.policy,
+                    PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+                        | PublicationPolicy::InheritAtTempoCut(_)
+                )
+                .then_some(next.revision)
+            })
+            .or_else(|| {
+                self.deferred_eligible
+                    .as_ref()
+                    .filter(|next| next.tempo_cut().is_some())
+                    .map(|next| next.revision())
+            });
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
         }
@@ -5673,7 +5682,7 @@ impl Callback {
         let render_start = if scheduled_revision.is_some_and(|revision| {
             self.active
                 .as_ref()
-                .and_then(ActivePublication::legacy)
+                .and_then(ActivePublication::current)
                 .is_some_and(|active| active.revision == revision)
         }) {
             self.scheduled_transport()

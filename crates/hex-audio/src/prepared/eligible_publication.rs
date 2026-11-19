@@ -376,6 +376,65 @@ impl PublicationControl {
         self.latest_fresh_runtime_cancellation = Some(receipt.clone());
         Ok((ticket, receipt))
     }
+    /// Schedule a cut for this exact constructor preparation on the running
+    /// verified graph. The callback retains the predecessor until the cut
+    /// and acknowledges only a completed ownership and page-role transfer.
+    pub fn stage_verified_tempo_cut(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        predecessor: AppliedAudioSource,
+        cut_performance_frame: u64,
+    ) -> Result<(crate::AudioCandidateTicket, CancellablePublicationReceipt), &'static str> {
+        let stale = "tempo cut requires the exact running verified source";
+        if !self.status.verified_streaming_mode.load(Acquire)
+            || self.status.applied_audio_source() != Some(predecessor)
+            || self.status.recording_source() != Some(predecessor)
+            || predecessor.output_identity != self.candidate_root.root_id()
+            || context.project_generation != predecessor.context.project_generation
+            || context.editor_revision <= predecessor.context.editor_revision
+            || self.output_transport_reaper.is_some()
+        {
+            return Err(stale);
+        }
+        let (observation, fence) = self
+            .capture_running_transport_fence()
+            .filter(|(observation, _)| {
+                observation.audio_revision == predecessor.audio_revision
+                    && observation.control_generation == predecessor.context.project_generation
+                    && observation.performance_frame < cut_performance_frame
+            })
+            .ok_or(stale)?;
+        let anchor =
+            self.candidate_root
+                .prepare_tempo_cut(token, observation, cut_performance_frame)?;
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or("playback revision exhausted")?;
+        let receipt = CancellablePublicationReceipt::new(
+            predecessor.output_identity,
+            Some(context),
+            revision,
+            publication_receipt::ReceiptBasis::TempoCut(FencedTempoCut {
+                anchor,
+                fence,
+                output_identity: predecessor.output_identity,
+                control_generation: observation.control_generation,
+                performance_frame: cut_performance_frame,
+            }),
+            fence.route_state_generation,
+        );
+        let ticket = self.stage_audio_candidate_preparation_inner(
+            token,
+            context.project_generation,
+            None,
+            Some(&receipt),
+        )?;
+        self.latest_fresh_runtime_cancellation = Some(receipt.clone());
+        Ok((ticket, receipt))
+    }
+
     /// Publish the successor of this exact native Stop gate. Root validates the
     /// prepared owner's unchanged canonical context under its original custody.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -405,7 +464,7 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context_generation: u64,
         expected_context: Option<hex_engine::AudioSourceContext>,
-        insert: Option<&CancellablePublicationReceipt>,
+        receipt: Option<&CancellablePublicationReceipt>,
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
@@ -440,10 +499,10 @@ impl PublicationControl {
             token,
             self.rate,
             header,
-            expected_context.or_else(|| insert.and_then(CancellablePublicationReceipt::context)),
+            expected_context.or_else(|| receipt.and_then(CancellablePublicationReceipt::context)),
             |mut queued| {
-                if let Some(receipt) = insert {
-                    queued.bind_device_insert(PublicationReceiptOwner(receipt.clone()));
+                if let Some(receipt) = receipt {
+                    queued.bind_receipt(PublicationReceiptOwner(receipt.clone()));
                 }
                 chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
             },
@@ -589,10 +648,15 @@ impl Callback {
             .device_insert()
             .and_then(|receipt| receipt.0.device_insert_basis())
             .is_some_and(|basis| basis.approved.is_some());
-        if next.streaming_enabled() && frames.is_none() != confirmed_insert {
+        let tempo = next.tempo_cut().is_some();
+        if tempo {
+            if !self.verified_tempo_cut_due(frames) {
+                return;
+            }
+        } else if next.streaming_enabled() && frames.is_none() != confirmed_insert {
             return;
         }
-        if !insert {
+        if !insert && !tempo {
             // An ordinary replacement invalidates the old owner's discontinuity.
             // An insert instead waits for its retained, admitted frontier.
             self.cancel_active_stream_action();
@@ -603,7 +667,7 @@ impl Callback {
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {
             if confirmed_insert && let Some(next) = self.deferred_eligible.take() {
-                self.return_verified_insert(
+                self.return_verified_receipt(
                     &next,
                     Some(PlaybackHandoffRejection::RuntimeFenceChanged),
                 );
@@ -666,14 +730,25 @@ impl Callback {
                     let complete = pins.complete();
                     self.current_quantum_pins = Some(pins);
                     if !complete {
-                        if let Some(next) = self.deferred_eligible.as_mut() {
+                        if tempo {
+                            self.reject_pending_eligible_successor(
+                                PlaybackHandoffRejection::TempoCutMissed,
+                            );
+                        } else if let Some(next) = self.deferred_eligible.as_mut() {
                             next.cancel_stream_readiness(&mut self.domain_pages);
                         }
                         return;
                     }
                 }
                 Ok(None) => {}
-                Err(crate::candidate_custody::QuantumFailure::PendingAction) => return,
+                Err(crate::candidate_custody::QuantumFailure::PendingAction) => {
+                    if tempo {
+                        self.reject_pending_eligible_successor(
+                            PlaybackHandoffRejection::TempoCutMissed,
+                        );
+                    }
+                    return;
+                }
                 Err(crate::candidate_custody::QuantumFailure::Capacity) => {
                     if !self.retry_pending_eligible_capacity() {
                         self.reject_pending_eligible_successor(
@@ -690,7 +765,7 @@ impl Callback {
                 }
             }
         }
-        let frontier = if insert {
+        let frontier = if insert || tempo {
             self.active
                 .as_ref()
                 .and_then(ActivePublication::current)
@@ -720,7 +795,11 @@ impl Callback {
                     domains: &mut self.domain_pages,
                     pending_play: self.stream_pending_play.is_some(),
                     command_prefix: self.stream_prefix,
-                    frames,
+                    frames: if tempo {
+                        TEMPO_STREAM_WINDOW_FRAMES
+                    } else {
+                        frames
+                    },
                     fenced_restart: false,
                     foreign_continuation: false,
                     confirmed_fade: confirmed_insert.then_some(0),
@@ -733,6 +812,11 @@ impl Callback {
                 request.as_mut(),
                 |receipt| {
                     frontier.is_some_and(|(revision, routes)| {
+                        if let Some(cut) = receipt.0.tempo_cut() {
+                            return !Self::runtime_frontier_changed(
+                                status, revision, routes, cut.fence,
+                            );
+                        }
                         receipt.0.device_insert_basis().is_some_and(|basis| {
                             basis.verified_cut_is_current(
                                 status,
@@ -747,7 +831,9 @@ impl Callback {
         } else {
             return;
         };
-        if confirmed_insert && matches!(decision, InstallDecision::Retry(_)) {
+        if tempo && matches!(decision, InstallDecision::Retry(_)) {
+            decision = InstallDecision::Refused(PlaybackHandoffRejection::TempoCutMissed);
+        } else if confirmed_insert && matches!(decision, InstallDecision::Retry(_)) {
             // The old output is already at the held cut. Refuse on a miss so
             // it can resume in this callback, with a bounded interruption.
             decision = InstallDecision::Refused(PlaybackHandoffRejection::StreamedPagesNotReady);
@@ -792,11 +878,14 @@ impl Callback {
                     value.cancel_stream_readiness(&mut self.domain_pages);
                     self.reject_publication(value.revision(), reason);
                     self.status.publication_pending.store(false, Release);
-                    self.return_verified_insert(&value, Some(reason));
+                    self.return_verified_receipt(&value, Some(reason));
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
-                    if !insert && let Some(ticket) = self.stream_pending_play.take() {
+                    if !insert
+                        && !tempo
+                        && let Some(ticket) = self.stream_pending_play.take()
+                    {
                         self.status.publish_rejected_action(
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
@@ -873,7 +962,7 @@ impl Callback {
                     );
                     self.status.publication_pending.store(false, Release);
                     if let Some(ActivePublication::Eligible(active)) = self.active.as_ref() {
-                        active.acknowledge_device_insert();
+                        active.acknowledge_receipt();
                     }
                 }
             }

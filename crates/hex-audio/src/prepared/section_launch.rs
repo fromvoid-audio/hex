@@ -87,18 +87,25 @@ impl Callback {
         &mut self,
         output: &mut [Frame],
     ) -> Result<ScheduledCutRender, Invalid> {
-        let Some((due, tempo)) = self.deferred.as_ref().and_then(|next| match next.policy {
-            PublicationPolicy::InheritAtTempoCut(_) => {
-                next.tempo_cut().map(|cut| (cut.performance_frame, true))
-            }
-            PublicationPolicy::InstallQuantizedSeekWhenReady { .. } => {
-                next.scheduled_cut_frame.map(|frame| (frame, false))
-            }
-            _ => None,
+        let eligible_due = self
+            .deferred_eligible
+            .as_ref()
+            .and_then(|next| next.tempo_cut())
+            .map(|cut| cut.performance_frame);
+        let Some((due, tempo)) = eligible_due.map(|frame| (frame, true)).or_else(|| {
+            self.deferred.as_ref().and_then(|next| match next.policy {
+                PublicationPolicy::InheritAtTempoCut(_) => {
+                    next.tempo_cut().map(|cut| (cut.performance_frame, true))
+                }
+                PublicationPolicy::InstallQuantizedSeekWhenReady { .. } => {
+                    next.scheduled_cut_frame.map(|frame| (frame, false))
+                }
+                _ => None,
+            })
         }) else {
             return Ok(ScheduledCutRender::NotHandled);
         };
-        let Some(old) = self.active.as_ref().and_then(ActivePublication::legacy) else {
+        let Some(old) = self.active.as_ref().and_then(ActivePublication::current) else {
             return Ok(ScheduledCutRender::NotHandled);
         };
         if !old.playback.playing() {
@@ -119,21 +126,22 @@ impl Callback {
         let (old_position, old_performance, old_loop) = (
             old.playback.position(),
             old.playback.performance_frame(),
-            self.active
-                .as_ref()
-                .and_then(ActivePublication::current)
-                .and_then(|graph| graph.playback.audible_timing().1),
+            old.playback.audible_timing().1,
         );
         let (before, after) = output.split_at_mut(prefix);
         self.render_project(before, 0)?;
         // Revalidate immediately before the swap, including a cancellation or
         // priority Stop racing the old prefix. Retired owners keep ordinary
         // fixed return-ring custody, including under backpressure.
-        self.advance_legacy_publication(Some(after.len()));
+        if eligible_due.is_some() {
+            self.advance_eligible_publication(Some(after.len()));
+        } else {
+            self.advance_legacy_publication(Some(after.len()));
+        }
         let switched = self
             .active
             .as_ref()
-            .and_then(ActivePublication::legacy)
+            .and_then(ActivePublication::current)
             .is_some_and(|active| active.revision != old_revision);
         let suffix_start = self.scheduled_transport();
         self.render_project(after, prefix)?;
