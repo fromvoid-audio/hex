@@ -1086,6 +1086,26 @@ fn assert_musical_outer_pcm(
         duration as usize,
         73,
     );
+    let peak_count = 1_024.min(expected_source.len());
+    let width = expected_source.len() / peak_count;
+    let extra = expected_source.len() % peak_count;
+    let expected_peaks: Vec<_> = (0..peak_count)
+        .map(|bin| {
+            let start = bin * width + bin.min(extra);
+            let end = start + width + usize::from(bin < extra);
+            let mut peak = crate::PreparedAudioPeak {
+                min: expected_source[start],
+                max: expected_source[start],
+            };
+            for sample in &expected_source[start + 1..end] {
+                for channel in 0..2 {
+                    peak.min[channel] = peak.min[channel].min(sample[channel]);
+                    peak.max[channel] = peak.max[channel].max(sample[channel]);
+                }
+            }
+            peak
+        })
+        .collect();
     for (fade_in, block) in [(duration / 2, 31), (duration / 6, 256)] {
         let fade = ClipFade::new(duration, 0, fade_in, duration / 3).unwrap();
         let held = clip.projected_outer_fade_preview(tempo, fade).unwrap();
@@ -1097,6 +1117,11 @@ fn assert_musical_outer_pcm(
         snapshot.tracks[0].audio_clips_mut().unwrap()[0] = authored.retained_snapshot();
         let admitted = Editor::new(Project::from_snapshot(snapshot).unwrap(), 1).unwrap();
         let prepared = prepare(&admitted, media, &context);
+        let view = &prepared.arrangement().audio_clip_views()[0];
+        assert!(
+            view.neutral_musical_peaks == expected_peaks,
+            "prepared display peaks must match the independent neutral render"
+        );
         let compiled = &prepared.arrangement().tracks()[0].clips[0];
         if block == 256 {
             assert!(
@@ -1157,17 +1182,35 @@ fn musical_outer_fade_failure_keeps_source_and_releases_reservation() {
     );
     assert!(
         denied
-            .finish_outer_fade(resident.clone(), Some(fade))
+            .capture_musical_peaks(17, || {
+                denied.finish_outer_fade(resident.clone(), Some(fade))
+            })
             .is_err()
     );
     assert_eq!(denied.retained_pcm_bytes(), 0);
 
-    let cancelled = AudioTransformPreparation::new(Arc::new(AtomicBool::new(true)));
+    let bytes = duration as usize * std::mem::size_of::<crate::Frame>();
+    let tight = isolated(bytes, 0, 0);
+    tight.cancel_after_polls.set(Some(2));
     assert!(matches!(
-        cancelled.finish_outer_fade(resident.clone(), Some(fade)),
+        tight.capture_musical_peaks(17, || {
+            tight.finish_outer_fade(resident.clone(), Some(fade))
+        }),
         Err(Invalid("audio preparation cancelled")),
     ));
-    assert_eq!(cancelled.retained_pcm_bytes(), 0);
+    assert_eq!(tight.retained_pcm_bytes(), 0);
+    tight.cancel_after_polls.set(None);
+    for limit in [17, 0] {
+        let (baked, peaks) = tight
+            .capture_musical_peaks(limit, || {
+                tight.finish_outer_fade(resident.clone(), Some(fade))
+            })
+            .unwrap();
+        assert_eq!(peaks.len(), limit);
+        assert_eq!(tight.retained_pcm_bytes(), bytes);
+        drop(baked);
+        assert_eq!(tight.retained_pcm_bytes(), 0);
+    }
 
     let neutral = clip
         .projected_outer_fade_preview(tempo, ClipFade::neutral(duration).unwrap())
