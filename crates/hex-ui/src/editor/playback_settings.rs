@@ -112,8 +112,10 @@ impl EditorView {
         };
         self.deferred_play = None;
         if self.playback_settings.loading {
-            self.cancel_section_launch_wait();
-            self.invalidate_prepared_seek();
+            if matches!(pending.source, StartSource::Applied(_)) {
+                self.cancel_section_launch_wait();
+                self.invalidate_prepared_seek();
+            }
             self.playback_settings.pending = Some(pending);
             self.status = "loading playback settings · playback starts when ready".into();
             self.wake_poll();
