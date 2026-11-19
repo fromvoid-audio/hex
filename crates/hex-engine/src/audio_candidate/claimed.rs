@@ -68,6 +68,16 @@ impl AudioCandidateConstructorClaims<'_> {
         self.anchors.owner.inner.constructor_data
     }
 }
+#[derive(Clone, Copy)]
+pub(crate) enum CandidateHandoff<'a> {
+    Ordinary,
+    ApprovedInsert,
+    Tempo(
+        &'a crate::session_playback::PreparedTempoAnchor,
+        crate::session_playback::ClaimedTempoPair,
+    ),
+}
+
 pub(super) fn reserved_state_bytes() -> usize {
     std::mem::size_of::<ClaimedState>()
 }
@@ -207,6 +217,50 @@ impl AudioCandidateAnchors {
             .and_then(|r| r.playback.prepared_revision())
             .is_some_and(|r| std::sync::Arc::ptr_eq(r, root))
     }
+    /// Prepare a cut from these two actual constructor roots on control.
+    /// The plan borrows their allocation identities weakly; the host still
+    /// owns graph admission, the live transport fence and all page custody.
+    pub fn prepare_tempo_successor_on_control(
+        &self,
+        successor: &Self,
+        arrangement_frame: u64,
+        performance_frame: u64,
+        loop_state: crate::session_playback::ArrangementLoopState,
+        cut_performance_frame: u64,
+    ) -> Result<crate::session_playback::PreparedTempoAnchor, crate::SessionPlaybackError> {
+        let invalid = crate::SessionPlaybackError::InvalidCommand;
+        if self.identity() == successor.identity()
+            || [self, successor]
+                .into_iter()
+                .any(|anchors| anchors.owner.phase() != AudioCandidateDisposalPhase::Leased)
+        {
+            return Err(invalid);
+        }
+        let revision = |anchors: &Self| {
+            anchors
+                .owner
+                .inner
+                .custody
+                .candidate_root_view(&anchors.owner.inner.token)
+                .map(std::sync::Arc::clone)
+                .map_err(|_| invalid)
+        };
+        crate::session_playback::PreparedTempoAnchor::prepare_from_running_observation(
+            revision(self)?,
+            revision(successor)?,
+            arrangement_frame,
+            performance_frame,
+            loop_state,
+            cut_performance_frame,
+        )
+        .map(|anchor| {
+            anchor.bind_claimed_pair(crate::session_playback::ClaimedTempoPair {
+                previous: self.identity(),
+                candidate: successor.identity(),
+            })
+        })
+    }
+
     pub fn original_runtime_disposed(&self) -> bool {
         self.owner.inner.archive.original_disposed
     }
@@ -524,7 +578,7 @@ impl ClaimedAudioCandidateRuntime {
         retired: &mut Option<Self>,
         manifest: &mut Option<AudioCandidateTransfer>,
     ) -> Result<(), crate::PlaybackHandoffError> {
-        self.inherit_and_retire(previous, retired, manifest, false)
+        self.inherit_and_retire(previous, retired, manifest, CandidateHandoff::Ordinary)
     }
 
     /// Install an explicitly approved successor at the predecessor's held
@@ -536,7 +590,39 @@ impl ClaimedAudioCandidateRuntime {
         retired: &mut Option<Self>,
         manifest: &mut Option<AudioCandidateTransfer>,
     ) -> Result<(), crate::PlaybackHandoffError> {
-        self.inherit_and_retire(previous, retired, manifest, true)
+        self.inherit_and_retire(
+            previous,
+            retired,
+            manifest,
+            CandidateHandoff::ApprovedInsert,
+        )
+    }
+
+    /// Install the exact compensated tempo switch and retire the real donor
+    /// through the same constructor transfer journal. A wrong clock, loop or
+    /// revision refuses before changing the donor, manifest or origins. The
+    /// host must still validate the live fence and actual protected pages.
+    pub fn try_inherit_and_retire_at_tempo_cut(
+        &mut self,
+        previous: &mut Option<Self>,
+        retired: &mut Option<Self>,
+        manifest: &mut Option<AudioCandidateTransfer>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<(), crate::PlaybackHandoffError> {
+        let previous_identity = previous
+            .as_ref()
+            .ok_or(crate::PlaybackHandoffError::RuntimeFenceChanged)?
+            .identity();
+        let pair = crate::session_playback::ClaimedTempoPair {
+            previous: previous_identity,
+            candidate: self.identity(),
+        };
+        self.inherit_and_retire(
+            previous,
+            retired,
+            manifest,
+            CandidateHandoff::Tempo(anchor, pair),
+        )
     }
 
     fn inherit_and_retire(
@@ -544,7 +630,7 @@ impl ClaimedAudioCandidateRuntime {
         previous: &mut Option<Self>,
         retired: &mut Option<Self>,
         manifest: &mut Option<AudioCandidateTransfer>,
-        confirmed_insert: bool,
+        handoff: CandidateHandoff<'_>,
     ) -> Result<(), crate::PlaybackHandoffError> {
         let invalid =
             || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
@@ -572,7 +658,7 @@ impl ClaimedAudioCandidateRuntime {
         next_runtime.playback.inherit_candidate_groups(
             &mut old_runtime.playback,
             transfer,
-            confirmed_insert,
+            handoff,
         )?;
         *manifest = Some(AudioCandidateTransfer {
             predecessor: old.identity(),

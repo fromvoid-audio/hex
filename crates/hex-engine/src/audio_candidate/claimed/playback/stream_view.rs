@@ -331,38 +331,65 @@ impl StreamPlayback<'_> {
         }
     }
 
-    /// Forecast ordinary Arrangement demand on the exact revisions before
-    /// the named cut. This may warm pages and grants no authority to commit.
-    pub fn forecast_ordinary_tempo_cut(
-        &self,
-        previous: &StreamPlayback<'_>,
-        maximum_frames: usize,
-        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-        anchor: &crate::session_playback::PreparedTempoAnchor,
-    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
-        match (&self.runtime, &previous.runtime) {
-            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
-                next.forecast_ordinary_tempo_cut(old, maximum_frames, visit, anchor)
-            }
-            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
-        }
-    }
-
-    /// Plan the first page window at the exact prepared tempo cut. The donor
-    /// must already be at the named running frame and loop pass. This checks
-    /// revision identities but leaves transport, DSP and page custody unchanged.
-    pub fn preview_ordinary_tempo_cut(
+    /// Forecast Arrangement demand on the exact revisions before the named
+    /// cut. This may warm pages and grants no authority to commit.
+    pub fn forecast_tempo_cut(
         &mut self,
         previous: &mut StreamPlayback<'_>,
         maximum_frames: usize,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         anchor: &crate::session_playback::PreparedTempoAnchor,
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        let (next, old, claimed) = self.tempo_cut_pair(previous)?;
+        next.forecast_tempo_cut(old, maximum_frames, visit, anchor, claimed)
+    }
+
+    /// Plan the first page window at the exact prepared tempo cut. The donor
+    /// must already be at the named running frame and loop pass. This checks
+    /// revision identities but leaves transport, DSP and page custody unchanged.
+    pub fn preview_tempo_cut(
+        &mut self,
+        previous: &mut StreamPlayback<'_>,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        anchor: &crate::session_playback::PreparedTempoAnchor,
+    ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
+        let (next, old, claimed) = self.tempo_cut_pair(previous)?;
+        next.preview_tempo_cut(old, maximum_frames, visit, anchor, claimed)
+    }
+
+    fn tempo_cut_pair<'next, 'old>(
+        &'next mut self,
+        previous: &'old mut StreamPlayback<'_>,
+    ) -> Result<
+        (
+            &'next mut Playback,
+            &'old mut Playback,
+            Option<crate::session_playback::ClaimedTempoPair>,
+        ),
+        PlaybackHandoffError,
+    > {
+        let unavailable = PlaybackHandoffError::RuntimeFenceChanged;
         match (&mut self.runtime, &mut previous.runtime) {
-            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => {
-                next.preview_ordinary_tempo_cut(old, maximum_frames, visit, anchor)
+            (Runtime::Ordinary(next, _), Runtime::Ordinary(old, _)) => Ok((next, old, None)),
+            (Runtime::Constructor(next), Runtime::Constructor(old))
+                if next.identity() != old.identity() =>
+            {
+                let pair = crate::session_playback::ClaimedTempoPair {
+                    previous: old.identity(),
+                    candidate: next.identity(),
+                };
+                let next = next
+                    .current_runtime_mut()
+                    .filter(|runtime| runtime.sampler_sources.is_none())
+                    .ok_or(unavailable)?;
+                let old = old
+                    .current_runtime_mut()
+                    .filter(|runtime| runtime.sampler_sources.is_none())
+                    .ok_or(unavailable)?;
+                Ok((&mut next.playback, &mut old.playback, Some(pair)))
             }
-            _ => Err(PlaybackHandoffError::RuntimeFenceChanged),
+            _ => Err(unavailable),
         }
     }
 

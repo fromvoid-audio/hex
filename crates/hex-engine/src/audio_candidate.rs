@@ -45,6 +45,7 @@ use crate::{
     AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, AudioStorageError,
     OwnedAudioInputs, playback::Playback,
 };
+pub(crate) use claimed::CandidateHandoff;
 pub use claimed::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateRuntimeStatus,
     AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime, StreamPlayback,

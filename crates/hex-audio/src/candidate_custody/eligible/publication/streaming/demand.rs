@@ -230,10 +230,11 @@ impl StateView<'_> {
                     runtime.preview_device_insert(previous, fade_remaining, frames, &mut visit)
                 } else if let Some(cut) = &request.tempo_cut {
                     match cut {
-                        TempoStreamWindow::Forecast(anchor) => runtime
-                            .forecast_ordinary_tempo_cut(previous, frames, &mut visit, anchor),
+                        TempoStreamWindow::Forecast(anchor) => {
+                            runtime.forecast_tempo_cut(previous, frames, &mut visit, anchor)
+                        }
                         TempoStreamWindow::Exact(anchor) => {
-                            runtime.preview_ordinary_tempo_cut(previous, frames, &mut visit, anchor)
+                            runtime.preview_tempo_cut(previous, frames, &mut visit, anchor)
                         }
                     }
                 } else if request.fenced_restart {
