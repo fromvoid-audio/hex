@@ -15,6 +15,27 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Clip, Invalid> {
+        let fade = clip
+            .projected_outer_fade(tempo_map)?
+            .map(|projection| projection.frame_playback_envelope())
+            .transpose()?;
+        self.compile_content_with_outer_fade(tempo_map, clip, edit, asset, source, fade)
+    }
+
+    /// The checked Frame slot belongs to the prepared clip, after reflection
+    /// and crop. Directed PCM keeps the processing and retained event laws.
+    pub(super) fn compile_content_with_outer_fade(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        fade: Option<hex_project::ClipFade>,
+    ) -> Result<Clip, Invalid> {
+        if fade.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
+            return Err(Invalid("directed fade differs from its processing clock"));
+        }
         edit.content_view
             .ok_or(Invalid("directed audio view missing"))?;
         let projection = AudioViewProjection::new(clip, tempo_map)?;
@@ -33,11 +54,20 @@ impl AudioTransformPreparation {
                 "directed audio preparation currently requires resident media; source changes were not committed",
             ));
         };
+        let finish = |audio: Audio| {
+            let compiled = super::view::placed_clip(audio, clip)?;
+            match fade {
+                Some(fade) => compiled.with_fade(fade),
+                None => Ok(compiled),
+            }
+        };
+        let processing = super::processing_root::unfaded_outer_edit(edit, tempo_map)?;
+        let edit = processing.as_ref();
         let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio) = self.lookup_key(source, asset, |key| {
             key.matches_view(edit, tempo_map, clip.start(), clip.duration())
         })? {
-            return super::view::placed_clip(audio, clip);
+            return finish(audio);
         }
         let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
         let map_bytes = (2 * hex_project::MAX_TEMPO_POINTS + 2)
@@ -142,7 +172,7 @@ impl AudioTransformPreparation {
             prepared: audio.clone(),
             bytes,
         })?;
-        super::view::placed_clip(audio, clip)
+        finish(audio)
     }
     /// Reflect admitted frame-root PCM through the canonical directed view.
     /// Shared by ordinary and composite roots; no intermediate PCM is allocated.
