@@ -169,8 +169,11 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
                             clip,
                             beat_start: view.piano_beat_start,
                             beat_span: view.piano_beat_span.raw(),
-                            pitch_low: view.piano_pitch_low,
-                            pitch_rows: view.piano_pitch_rows,
+                            pitch: crate::editor::PitchViewport::from_rows(
+                                view.piano_pitch_low,
+                                view.piano_pitch_rows,
+                            )
+                            .unwrap(),
                         },
                         bounds: super::midi_stroke::CanvasBounds {
                             x: 0.0,

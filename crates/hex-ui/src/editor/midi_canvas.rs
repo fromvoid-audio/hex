@@ -83,8 +83,7 @@ impl EditorView {
             clip: clip_id,
             beat_start,
             beat_span: beat_span.raw(),
-            pitch_low,
-            pitch_rows,
+            pitch: super::PitchViewport::from_rows(pitch_low, pitch_rows)?,
         };
         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
         let draw_overwrite = match self.midi_overwrite_preview() {

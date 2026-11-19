@@ -26,7 +26,7 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
                     .map(|(start, pitch)| MidiNoteInsert {
                         active: true,
                         start: BeatTime::from_raw(start),
-                        duration: BeatTime::from_raw(beat / 2),
+                        duration: BeatTime::from_raw(if start == 0 { beat / 4 } else { beat / 2 }),
                         pitch,
                         channel: 0,
                         velocity: 100,
@@ -102,6 +102,28 @@ fn midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes(cx: &mut Te
         );
         assert_eq!(v.midi_selection.ids(), &[selected]);
     });
+    editor.update(&mut visual, |v, cx| {
+        let edge = v
+            .midi_clip()
+            .unwrap()
+            .notes()
+            .iter()
+            .find(|n| n.pitch() == 48)
+            .unwrap()
+            .id();
+        v.midi_selection.set_single(edge);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (0, beat / 4 + beat / 16),
+            "left-edge singleton retains the minimum right margin"
+        );
+    });
+    visual.simulate_keystrokes("v");
     editor.update(&mut visual, |v, cx| {
         v.midi_selection.clear();
         cx.notify();
