@@ -1381,7 +1381,7 @@ fn build_waveform_geometry(
             let spans = columns.iter().enumerate().flat_map(|(column, result)| {
                 let start = left + column as f32 * step;
                 let end = start + step;
-                result.into_iter().flat_map(move |result| {
+                result.iter().flat_map(move |result| {
                     [
                         (result.positive[channel], top),
                         (result.negative[channel], bottom),

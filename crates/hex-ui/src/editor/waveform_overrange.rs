@@ -35,7 +35,10 @@ pub(super) struct Request {
     pub columns: Vec<Range<u64>>,
 }
 
+// The queue is capped at eight and already carried Clip inline. Boxing it
+// would add a heap allocation for every ordinary waveform query.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Mapping {
     Clip {
         clip: Clip,
