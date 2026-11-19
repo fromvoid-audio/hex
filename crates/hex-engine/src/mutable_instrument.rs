@@ -336,6 +336,42 @@ impl DetachedSourceSends {
 }
 
 impl MutableInstrumentTrackRuntime {
+    /// Keep the ledger equivalent to scalar processing when no authored onset
+    /// is due. Gates and proof retirement inside the window retain their
+    /// existing per-frame boundary.
+    pub(crate) fn can_batch_held_segment(&self, start: u64, frames: u64) -> bool {
+        let Some(end) = start.checked_add(frames) else {
+            return false;
+        };
+        let last_offset = frames.saturating_sub(1);
+        let source_age = self.live.as_ref().map(|live| live.scratch_age);
+        let live_idle = self.live.as_ref().is_none_or(|live| {
+            live.pending_len == 0
+                && live.scratch.iter().all(Option::is_none)
+                && live
+                    .scratch_age
+                    .checked_add(last_offset)
+                    .and_then(|age| age.checked_add(self.max_release_tail_frames()))
+                    .is_some()
+        });
+        live_idle
+            && self.resources.is_none()
+            && self.expression.is_none()
+            && self.modulation.is_none()
+            && self.output_trim.is_none()
+            && !self.has_volume_gain()
+            && self.scratch.iter().all(|voice| {
+                if voice.note_off_sent {
+                    let (start, quiet) = source_age
+                        .zip(voice.quiet_deadline_age)
+                        .unwrap_or((start, voice.quiet_deadline_frame));
+                    quiet <= start || quiet - start > last_offset
+                } else {
+                    voice.gate_end_frame >= end
+                }
+            })
+    }
+
     pub(crate) fn is_concrete_current_sampler(&self) -> bool {
         self.resources.is_none()
             && self.expression.is_none()

@@ -17,7 +17,7 @@ pub(super) enum ResidentRoute {
 pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
     pub(super) audio: &'a [bool; MAX_TRACKS],
-    pub(super) analytic: &'a [bool; MAX_TRACKS],
+    pub(super) instrument: &'a [bool; MAX_TRACKS],
     pub(super) stamps: Option<&'a [Option<TransportStamp>]>,
     pub(super) aligned: &'a [bool; MAX_TRACKS],
     pub(super) passthrough: &'a [ResidentRoute; MAX_TRACKS],
@@ -26,11 +26,35 @@ pub(super) struct BatchedSources<'a> {
     pub(super) main: Option<Frame>,
 }
 
+pub(super) struct ResidentSourceWindow {
+    pub(super) performance_frame: u64,
+    pub(super) arrangement_frame: u64,
+    pub(super) frames: usize,
+    pub(super) mutable_loop_pass: Option<u64>,
+}
+
 pub(super) fn add_main_track(main: &mut [Frame], track: &[Frame]) {
     for (mixed, sample) in main.iter_mut().zip(track) {
         mixed[0] += sample[0];
         mixed[1] += sample[1];
     }
+}
+
+fn mutable_arrangement_has_no_onset(
+    track: &crate::Track,
+    start: u64,
+    frames: usize,
+) -> Result<bool, SessionPlaybackError> {
+    let end = start
+        .checked_add(frames as u64)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    let mut has_onset = false;
+    track
+        .for_each_mutable_midi_span(start, end, |span| {
+            has_onset |= span.start >= start && span.start < end;
+        })
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    Ok(!has_onset)
 }
 
 fn resident_return_track_taps(
@@ -270,20 +294,24 @@ impl SessionPlayback {
         Ok(())
     }
 
-    /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
-    /// its scratch only when its active route has no local audio source.
-    /// Active suppressions or continuations retain per-frame scheduling. No page provider is read and
-    /// per-frame DSP/routing order is unchanged. The caller bounds each window
-    /// before every transport or route discontinuity.
+    /// Prepare resident audio and eligible instrument PCM. An instrument's
+    /// window must have no local audio in the same scratch. The caller bounds
+    /// windows at route and transport cuts and admits mutable processing only
+    /// on an independent dry graph with no live inputs or observable capture.
+    /// Page demand and downstream DSP still advance through the scalar route.
     pub(super) fn prepare_resident_sources(
         &mut self,
-        performance_frame: u64,
-        arrangement_frame: u64,
-        frames: usize,
+        window: ResidentSourceWindow,
         eligible: &mut [bool; MAX_TRACKS],
-        analytic: &mut [bool; MAX_TRACKS],
+        instruments: &mut [bool; MAX_TRACKS],
         live_track: Option<TrackId>,
     ) -> Result<(), SessionPlaybackError> {
+        let ResidentSourceWindow {
+            performance_frame,
+            arrangement_frame,
+            frames,
+            mutable_loop_pass,
+        } = window;
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -305,10 +333,11 @@ impl SessionPlayback {
                 )
             });
         eligible.fill(false);
-        analytic.fill(false);
+        instruments.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
             && self.analytic_continuations.iter().all(Option::is_none);
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
+        let active_loop = mutable_loop_pass.and_then(|_| self.active_loop_region());
         for (index, (route, scratch)) in self
             .route_scratch
             .iter()
@@ -378,7 +407,7 @@ impl SessionPlayback {
                         arrangement_frame,
                         output,
                     )?;
-                    *analytic
+                    *instruments
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     self.render_work.finish(work_start);
@@ -393,7 +422,58 @@ impl SessionPlayback {
                         .tracks()
                         .get(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    if batch_analytic
+                    if let Some(arrangement_loop_pass) = mutable_loop_pass
+                        && batch_analytic
+                        && track.clips.is_empty()
+                        && track.receives_source_audio()
+                        && track.midi_source_index.is_none()
+                        && !self.revision.source_routing().is_shared(index)
+                        && track
+                            .instrument
+                            .as_ref()
+                            .is_some_and(|device| device.mutable && device.volumes.is_none())
+                        && track.instrument_id.is_some_and(|device| {
+                            self.revision
+                                .session()
+                                .instrument_automation_at(index, device)
+                                .is_none()
+                        })
+                        && self.mutable_instruments[index]
+                            .as_ref()
+                            .is_some_and(|runtime| {
+                                runtime.can_batch_held_segment(performance_frame, frames as u64)
+                            })
+                        && mutable_arrangement_has_no_onset(track, arrangement_frame, frames)?
+                    {
+                        render_mutable_instrument_chunk(
+                            MutableInstrumentChunkContext {
+                                revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                sources: None,
+                                routes: &self.route_scratch,
+                                runtimes: &mut self.mutable_instruments,
+                                onsets: &mut self.mutable_onsets,
+                                suppressions: &self.suppression_scratch,
+                                events: &mut self.mutable_events,
+                                spans: &mut self.spans,
+                                performance_frame,
+                                arrangement_frame,
+                                arrangement_loop_pass,
+                                transient: None,
+                                chase_at_start: false,
+                                pending_shared_chase: None,
+                                loop_region: active_loop,
+                                timing: &timing,
+                            },
+                            index,
+                            output,
+                            None,
+                        )?;
+                        instruments[index] = true;
+                    } else if batch_analytic
                         && track.clips.is_empty()
                         && track.midi_source_index.is_none()
                         && !self.revision.source_routing().is_shared(index)
@@ -416,7 +496,7 @@ impl SessionPlayback {
                                 Some(self.revision.session().timing()),
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                        *analytic
+                        *instruments
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     } else if !track.has_streamed_clips {
@@ -492,7 +572,7 @@ impl SessionPlayback {
                         None,
                         SourceStage::Instrument,
                     )?;
-                    *analytic
+                    *instruments
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                 }
@@ -956,10 +1036,10 @@ impl SessionPlayback {
                         let mut audio = [[0.0; 2]];
                         let mut generator = [[0.0; 2]];
                         if self.playing {
-                            let analytic_index = resident_source
-                                .filter(|batch| batch.analytic.get(index).copied().unwrap_or(false))
+                            let instrument_index = resident_source
+                                .filter(|batch| batch.instrument[index])
                                 .map(|batch| batch.index);
-                            if analytic_index.is_some() {
+                            if instrument_index.is_some() {
                                 // This route has no audio source; its scratch window
                                 // holds the instrument side of the ordered graph.
                             } else if let Some(sample_index) = resident_source
@@ -1006,7 +1086,7 @@ impl SessionPlayback {
                             // source cannot contribute instrument samples. Shared
                             // sources and session routes must still use the normal
                             // scheduler, even when this track has no local instrument.
-                            if let Some(sample_index) = analytic_index {
+                            if let Some(sample_index) = instrument_index {
                                 generator[0] = *self
                                     .resident_source_scratch
                                     .get(index)
@@ -1074,11 +1154,12 @@ impl SessionPlayback {
                                     None,
                                 )?;
                             }
-                            if self
-                                .mutable_instruments
-                                .get(index)
-                                .and_then(Option::as_ref)
-                                .is_some()
+                            if instrument_index.is_none()
+                                && self
+                                    .mutable_instruments
+                                    .get(index)
+                                    .and_then(Option::as_ref)
+                                    .is_some()
                             {
                                 render_mutable_instrument_chunk(
                                     MutableInstrumentChunkContext {

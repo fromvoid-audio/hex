@@ -22,6 +22,122 @@ fn measured(action: impl FnOnce()) {
 }
 
 #[test]
+fn compensated_mutable_arrangement_matches_scalar_gates_without_callback_allocations() {
+    use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata};
+
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let operator = hex_devices::operator_state::OPERATOR_METADATA
+        .default_state()
+        .unwrap();
+    let Created::Track(instrument) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "operator".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: operator,
+        })
+        .unwrap()
+    else {
+        panic!("instrument track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: instrument,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip")
+    };
+    for (start, duration, pitch) in [(0, 960, 48), (509, 345, 60), (940, 450, 70)] {
+        let tempo = editor.project().tempo_map();
+        let start = tempo.frame_to_beat(start).unwrap();
+        let duration = tempo.frame_to_beat(duration).unwrap();
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 96,
+            })
+            .unwrap();
+    }
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "residual audio".into(),
+            path: "memory/companion.wav".into(),
+            source_sample_rate: RATE,
+            source_frames: 1_250,
+            playback_frames: 1_250,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("audio track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 64,
+            end: 1_250,
+            enabled: true,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(RATE, vec![[0.01, -0.01]; 1_250]).unwrap(),
+    )]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    assert_eq!(revision.arrangement().main_latency_frames(), 72);
+    let mut reference = hex_engine::SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 2_048];
+    for frame in expected.chunks_mut(1) {
+        reference.render(frame).unwrap();
+    }
+    // The opposing audio-channel fixture cannot produce this audible mono sum.
+    assert!(
+        expected[200..500]
+            .iter()
+            .any(|frame| (frame[0] + frame[1]).abs() > 0.01)
+    );
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+    control
+        .publish(Playback::try_from_prepared_with_session(revision).unwrap())
+        .unwrap_or_else(|error| panic!("{}", error.reason));
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 2_048];
+    for block in actual.chunks_mut(257) {
+        measured(|| {
+            callback.begin_block();
+            callback.render(block).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+    }
+    for (actual, expected) in actual.into_iter().zip(expected) {
+        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+    }
+    control.stop();
+    control.reclaim();
+}
+
+#[test]
 fn compensated_session_analytic_midi_renders_without_callback_allocations() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
