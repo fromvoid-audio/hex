@@ -4730,6 +4730,121 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
+    use hex_project::{Command, Created};
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_192);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            ))
+    );
+    let (applied, _) = h.applied(applied);
+    let native = |name| {
+        hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(name))
+            .unwrap()
+    };
+    let reverb = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: native("hex.reverb"),
+    }));
+    let Some(Created::Device(removed)) = reverb.created else {
+        panic!("reverb was not inserted");
+    };
+    let (applied, _) = h.applied(applied);
+    let delay = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: native("hex.delay"),
+    }));
+    let Some(Created::Device(surviving)) = delay.created else {
+        panic!("delay was not inserted");
+    };
+    h.applied(applied);
+
+    let status = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let previous = status(&h);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render().iter().flatten().all(|sample| *sample == 0.0) {
+        assert!(
+            Instant::now() < deadline,
+            "verified-file source never played"
+        );
+        std::thread::yield_now();
+    }
+    for _ in 0..64 {
+        h.render();
+    }
+    let cursor = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    h.enable_confirmed_device_inserts();
+    h.service
+        .submit(Request::Edit(Command::RemoveDevice(removed)))
+        .unwrap();
+    let staged = h.next();
+    assert!(staged.error.is_none(), "{:?}", staged.error);
+    assert!(!staged.request_complete);
+    assert_eq!(staged.state.project, delay.state.project);
+    assert_eq!(status(&h), previous);
+
+    h.render();
+    let result = h.next();
+    assert!(
+        result.device_insert_confirmation.is_none(),
+        "fitting verified-file removal offered an interruption"
+    );
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(
+        result.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    let installed = status(&h);
+    assert_eq!(installed.output_identity, previous.output_identity);
+    assert_eq!(installed.context.editor_revision, result.state.revision);
+    assert_ne!(installed.audio_revision, previous.audio_revision);
+    let devices = result.state.project.main_devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].id(), surviving);
+    let audio = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(audio.playing.load(Acquire));
+    assert!(audio.position.load(Acquire) > cursor);
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LimiterEdit {
     Insert,
