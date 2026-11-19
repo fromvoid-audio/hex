@@ -705,14 +705,8 @@ fn transport_runner_with_setup(
                 break;
             };
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            if let Some(deadline) = &mut deadline
-                && let Err(error) = deadline.before_poll()
-            {
-                state.worker.revoke();
-                state.report_native_failure(&published, "deadline", &error);
-                state.native_error = Some(error);
-                fault = Some(Fault::Protocol);
-                break;
+            if let Some(deadline) = &mut deadline {
+                deadline.before_poll();
             }
             match state.worker.receive_request() {
                 Ok(Some(hex_plugin_host::transport::WorkerRequest {
@@ -873,6 +867,16 @@ fn transport_runner_with_setup(
                         thread::park_timeout(OFFLINE_IDLE);
                     } else {
                         let now = Instant::now();
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        if let Some(deadline) = &mut deadline
+                            && let Err(error) = deadline.after_empty_poll(now)
+                        {
+                            state.worker.revoke();
+                            state.report_native_failure(&published, "deadline", &error);
+                            state.native_error = Some(error);
+                            fault = Some(Fault::Protocol);
+                            break;
+                        }
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         if matches!(state.processor, Some(Processor::Native(_))) {
                             last_empty_poll = Some(now);
