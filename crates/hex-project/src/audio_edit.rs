@@ -4,6 +4,8 @@ use crate::{BeatTime, Clip, ClipFade, Invalid, TempoMap, TrimEdge};
 use std::sync::Arc;
 
 mod content;
+mod outer_fade;
+pub use outer_fade::ProjectedOuterAudioFade;
 mod prefix;
 pub(crate) use prefix::extend_frame_left;
 mod timing;
@@ -195,7 +197,12 @@ impl AudioDomainClock {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioFadeProjection {
     pub tempo: TempoMap,
+    /// Outer retains this original author reference through crops and prefixes.
+    /// LegacyRoot keeps its historical captured-root projection semantics.
     pub origin_beat_raw: i128,
+    /// LegacyRoot: root-local fade start. Outer: full consumed raw beat ticks;
+    /// subtract domain.fade_start to get signed unwrapped displacement. For
+    /// Outer at most one of these two unsigned distances may be nonzero.
     pub local_start_raw: u64,
 }
 /// Finite musical source read retained independently of event destinations.
@@ -234,6 +241,25 @@ impl AudioClipContent {
     }
 }
 
+/// Clock that authors an instance-owned clip fade. Historical projects keep
+/// their retained-root law; an outer fade will use unwrapped destination age.
+/// `Outer` is reserved but unsupported until projection, transitions and storage
+/// can preserve it. Capture and edit commands continue to author `LegacyRoot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AudioClipFadeClock {
+    LegacyRoot,
+    Outer,
+}
+impl AudioClipFadeClock {
+    /// Refuse the reserved law before an older consumer can interpret or drop it.
+    pub fn require_supported(self) -> Result<(), Invalid> {
+        match self {
+            Self::LegacyRoot => Ok(()),
+            Self::Outer => Err(Invalid("outer clip fades are not supported yet")),
+        }
+    }
+}
+
 /// Effective processing domain with instance-owned loop and fade settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipDomain {
@@ -241,6 +267,10 @@ pub struct AudioClipDomain {
     pub source_phase: u64,
     pub looping: bool,
     pub fade: ClipFade,
+    pub fade_clock: AudioClipFadeClock,
+    /// LegacyRoot: retained root fade start. Outer: before-envelope distance,
+    /// in frames for a frame domain or raw beat ticks for a musical domain.
+    /// An Outer frame domain never combines a nonzero offset and prefix.
     pub fade_start: u64,
     pub fade_projection: Option<AudioFadeProjection>,
 }
@@ -707,6 +737,7 @@ impl AudioClipEdit {
         &'a self,
         tempo: &'a TempoMap,
     ) -> Result<ProjectedAudioFade<'a>, Invalid> {
+        self.domain.fade_clock.require_supported()?;
         let tempo = self.processing_tempo(tempo);
         let (first, length, _, _) = self.projected_domain(tempo)?;
         let origin = if self.reference_start_raw().is_some() {
@@ -746,6 +777,7 @@ impl AudioClipEdit {
                 source_phase: clip.source_phase,
                 looping: clip.looping,
                 fade: clip.fade,
+                fade_clock: AudioClipFadeClock::LegacyRoot,
                 fade_start: 0,
                 fade_projection: None,
             }),
@@ -1084,6 +1116,7 @@ impl AudioClipEdit {
         tempo: &TempoMap,
         asset_frames: u64,
     ) -> Result<(), Invalid> {
+        self.domain.fade_clock.require_supported()?;
         if let Some(period) = self.repeat_period
             && (self
                 .view_end
@@ -1684,6 +1717,8 @@ pub(crate) fn offset_frame(frame: u64, offset: i8) -> Result<u64, Invalid> {
 
 #[cfg(test)]
 mod content_tests;
+#[cfg(test)]
+mod fade_clock_tests;
 
 #[cfg(test)]
 mod limit_tests {

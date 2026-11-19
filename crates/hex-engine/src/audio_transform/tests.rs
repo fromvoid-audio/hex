@@ -218,7 +218,7 @@ fn pitched_stream_fade_matches_resident_render_at_start_and_seek() {
     }
     assert!(expected[400..528].iter().any(|frame| frame[0].abs() > 0.01));
 }
-fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
+pub(super) fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
     AudioTransformPreparation {
         budget: Arc::new(budget::Budget::new(limit)),
         cache_limit: cache,

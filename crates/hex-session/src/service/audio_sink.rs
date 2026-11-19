@@ -1856,7 +1856,8 @@ impl WorkerEvents {
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
         recording_barrier: &mut super::recording_barrier::State,
         bounded: bool,
-        plugin_effect: Option<&PluginEffectInsertion>,
+        plugin_effect: Option<&plugin_effect::Pending>,
+        device_gesture_active: bool,
         device_insert: Option<&super::resident_audio::device_insert::Pending>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
@@ -2063,13 +2064,14 @@ impl WorkerEvents {
                     document_intent,
                 ));
             }
-            if plugin_effect.is_some_and(|insertion| {
-                insertion.context != context
-                    || insertion.control.is_cancelled()
-                    || self
-                        .audio
-                        .as_ref()
-                        .is_some_and(|audio| audio.plugin_effect_ready())
+            if plugin_effect.is_some_and(|pending| {
+                !pending.matches_context(context)
+                    || pending.insertion.control.is_cancelled()
+                    || (!device_gesture_active
+                        && self
+                            .audio
+                            .as_ref()
+                            .is_some_and(|audio| audio.plugin_effect_ready()))
             }) {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginEffect,

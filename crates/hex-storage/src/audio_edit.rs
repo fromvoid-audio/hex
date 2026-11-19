@@ -1,10 +1,10 @@
 //! Current musical/frozen audio metadata adapter; no DSP or PCM persistence.
 use crate::StorageError;
 use hex_project::{
-    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
-    AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
-    BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
-    WarpResampler, WarpSettings,
+    AudioClipDomain, AudioClipEdit, AudioClipFadeClock, AudioClipTiming, AudioDomainClock,
+    AudioFadeProjection, AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime,
+    BeatsPreserve, BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker,
+    WarpMode, WarpResampler, WarpSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -225,10 +225,14 @@ enum Tail {
     Alternating,
 }
 
-impl From<AudioClipEdit> for AudioEditDto {
-    fn from(edit: AudioClipEdit) -> Self {
+impl TryFrom<AudioClipEdit> for AudioEditDto {
+    type Error = StorageError;
+    fn try_from(edit: AudioClipEdit) -> Result<Self, Self::Error> {
         let d = &edit.domain;
-        Self {
+        d.fade_clock
+            .require_supported()
+            .map_err(|error| StorageError::Invalid(error.0))?;
+        Ok(Self {
             placement_start_offset: edit.placement_start_offset,
             placement_end_offset: edit.placement_end_offset,
             processing_projection: edit.processing_projection.as_ref().map(|p| {
@@ -373,7 +377,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                 },
                 cycle_phase: p.cycle_phase,
             }),
-        }
+        })
     }
 }
 impl TryFrom<AudioEditDto> for AudioClipEdit {
@@ -533,6 +537,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                 source_phase: d.source_phase,
                 looping: d.looping,
                 fade,
+                fade_clock: AudioClipFadeClock::LegacyRoot,
                 fade_start: d.fade_start,
                 fade_projection,
             }),
@@ -586,3 +591,6 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         })
     }
 }
+
+#[cfg(test)]
+mod fade_clock_tests;
