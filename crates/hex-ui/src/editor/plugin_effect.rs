@@ -116,6 +116,7 @@ impl EditorView {
             let title = match offer.operation() {
                 GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
                 GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
+                GraphEditOperation::MoveDevice => "interrupt playback to move devices?",
                 GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
             };
             let answer = window.prompt(

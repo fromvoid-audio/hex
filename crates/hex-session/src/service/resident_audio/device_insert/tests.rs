@@ -84,6 +84,18 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
         true
     }
 
+    fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        self.lock()
+            .unwrap()
+            .active
+            .map_or(ResidentPublicationReadiness::NoOutput, |submission| {
+                ResidentPublicationReadiness::Applied {
+                    submission,
+                    publication_in_flight: false,
+                }
+            })
+    }
+
     fn device_insert_receipt(
         &mut self,
         submission: ResidentGraphSubmission,
@@ -214,6 +226,33 @@ fn receive(service: &Service) -> Event {
         .unwrap();
     assert!(event.error.is_none(), "{:?}", event.error);
     event
+}
+
+fn install_candidate(service: &Service, fixture: &Mutex<Fixture>) -> Event {
+    let submission = {
+        let mut fixture = fixture.lock().unwrap();
+        let receipt = fixture.candidate.as_ref().unwrap();
+        assert_eq!(receipt.state.swap(INSTALLED, Ordering::AcqRel), PENDING);
+        let submission = receipt.submission;
+        fixture.active = Some(ResidentRuntimeLoop {
+            output_identity: submission.output_identity,
+            audio_revision: submission.audio_revision,
+            source_context: Some(submission.context),
+            source_origin: ResidentSourceOrigin::CanonicalCandidate,
+            section_loop: None,
+        });
+        submission
+    };
+    let installed = receive(service);
+    assert!(installed.request_complete);
+    assert_eq!(
+        installed.device_insert_complete,
+        Some(DeviceInsertCompletion {
+            submission,
+            outcome: DeviceInsertOutcome::Installed
+        })
+    );
+    installed
 }
 
 fn insert_utility(service: &Service) -> Event {
@@ -396,6 +435,119 @@ fn browser_device_insertions_wait_for_the_exact_install_receipt() {
             );
         }
     }
+}
+
+#[test]
+fn native_moves_wait_for_the_exact_audio_receipt_and_preserve_noops() {
+    let (service, fixture, _) = service();
+    let run = |request| {
+        service.submit(request).unwrap();
+        receive(&service)
+    };
+    let add_track = |name: &str| {
+        let Created::Track(track) = run(Request::Edit(Command::AddTrack { name: name.into() }))
+            .created
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        track
+    };
+    let source = add_track("source");
+    let destination = add_track("destination");
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let type_id = hex_lattice_contract::DeviceTypeId::from_static("hex.utility");
+    let add = || {
+        assert!(
+            !run(Request::AddNativeDevice {
+                track: source,
+                class,
+                type_id: Box::new(type_id),
+                before: None,
+            })
+            .request_complete
+        );
+        install_candidate(&service, &fixture)
+    };
+    add();
+    let original = add().state;
+    let devices = original.project.track(source).unwrap().devices();
+    let first = devices[0].id();
+    let second = devices[1].id();
+    let reorder = |before| Request::ReorderDevices {
+        project_generation: 0,
+        revision: original.revision,
+        owner: hex_project::DeviceChainOwner::Track(source),
+        selected: hex_project::DeviceSelectionIds::new(&[first]).unwrap(),
+        before,
+    };
+    let pending = run(reorder(None));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, original.project);
+    let predecessor = {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.offer_deadline = Some(Instant::now() + Duration::from_secs(3));
+        fixture
+            .candidate
+            .as_ref()
+            .unwrap()
+            .state
+            .store(REFUSED, Ordering::Release);
+        fixture.active
+    };
+    let offer = receive(&service).device_insert_confirmation.unwrap();
+    assert!(offer.cancel());
+    let cancelled = receive(&service);
+    assert_eq!(
+        cancelled.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(cancelled.state.revision, original.revision);
+    assert_eq!(cancelled.state.project, original.project);
+    assert_eq!(fixture.lock().unwrap().active, predecessor);
+
+    let unchanged = run(reorder(Some(second)));
+    assert!(unchanged.request_complete);
+    assert_eq!(unchanged.state.revision, original.revision);
+    assert_eq!(unchanged.state.project, original.project);
+    assert_eq!(fixture.lock().unwrap().active, predecessor);
+
+    let pending = run(Request::MoveTrackDevices {
+        project_generation: 0,
+        revision: original.revision,
+        source,
+        selected: hex_project::DeviceSelectionIds::new(&[second, first]).unwrap(),
+        destination,
+    });
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, original.project);
+    let moved = install_candidate(&service, &fixture).state;
+    assert_eq!(moved.project.track(destination).unwrap().devices(), devices);
+    assert_eq!(moved.revision, original.revision + 1);
+    assert_eq!(run(Request::Undo).state.project, original.project);
+    assert_eq!(run(Request::Redo).state.project, moved.project);
+
+    let pending = run(Request::DropNativeDevice {
+        project_generation: 0,
+        revision: moved.revision + 2,
+        source: NativeDeviceDropSource::Existing {
+            device: first,
+            class,
+            type_id,
+        },
+        track: source,
+        before: None,
+        replace: None,
+    });
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, moved.project);
+    let dropped = install_candidate(&service, &fixture);
+    assert!(dropped.created.is_none());
+    assert_eq!(
+        dropped.state.project.track(source).unwrap().devices(),
+        &devices[..1]
+    );
+    assert_eq!(run(Request::Undo).state.project, moved.project);
 }
 
 #[test]

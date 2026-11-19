@@ -4591,7 +4591,21 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     let Some(Created::Device(device)) = inserted.created else {
         panic!("utility not created");
     };
-    let removed = apply(&mut h, &inserted.state, Command::RemoveDevice(device));
+    let destination = inserted.state.project.tracks()[0].id();
+    let moved = apply(
+        &mut h,
+        &inserted.state,
+        Command::MoveDevice {
+            device,
+            track: destination,
+            before: None,
+        },
+    );
+    assert_eq!(
+        moved.state.project.track(destination).unwrap().devices()[0].id(),
+        device
+    );
+    let removed = apply(&mut h, &moved.state, Command::RemoveDevice(device));
     assert!(removed.state.project.device(device).is_none());
     let removed = apply(&mut h, &removed.state, Command::RemoveTrack(track));
     assert!(removed.state.project.track(track).is_none());

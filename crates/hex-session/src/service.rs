@@ -6278,6 +6278,7 @@ fn run_worker(
                                     error = Some(match operation.device() {
                                         Some(GraphEditOperation::InsertDevice) => "stop playback to insert this device",
                                         Some(GraphEditOperation::RemoveDevice) => "stop playback to remove this device",
+                                        Some(GraphEditOperation::MoveDevice) => "stop playback to move devices",
                                         Some(GraphEditOperation::RemoveTrack) => "stop playback to remove this track",
                                         None => reason.message(),
                                     }.into());
@@ -6398,19 +6399,17 @@ fn run_worker(
                                             .resident_audio()
                                             .ok_or("native worker unavailable")?;
                                         if sink.confirms_device_inserts() {
-                                            staged_insert = Some(
-                                                session
-                                                    .stage_resident_device_insert(
-                                                        command,
-                                                        context,
-                                                        sink,
-                                                        admission,
-                                                        resident_snapshot.as_ref(),
-                                                        Some(&pending.insertion.control),
-                                                        request_document_intent,
-                                                    )
-                                                    .map_err(|e| e.to_string())?,
-                                            );
+                                            staged_insert = session
+                                                .stage_resident_device_insert(
+                                                    command,
+                                                    context,
+                                                    sink,
+                                                    admission,
+                                                    resident_snapshot.as_ref(),
+                                                    Some(&pending.insertion.control),
+                                                    request_document_intent,
+                                                )
+                                                .map_err(|e| e.to_string())?;
                                             return Ok(None);
                                         }
                                         session
@@ -7226,7 +7225,7 @@ fn run_worker(
                                         ResidentPublicationReadiness::NoOutput
                                     ))
                             {
-                                let mut staged = session.stage_resident_device_insert(
+                                let staged = session.stage_resident_device_insert(
                                     command,
                                     hex_engine::AudioSourceContext {
                                         project_generation,
@@ -7238,9 +7237,11 @@ fn run_worker(
                                     None,
                                     request_document_intent,
                                 )?;
-                                staged.cut_devices = cut_device_clipboard.take();
-                                staged.cut_tracks = cut_clipboard.take();
-                                pending_device_insert = Some(staged);
+                                if let Some(mut staged) = staged {
+                                    staged.cut_devices = cut_device_clipboard.take();
+                                    staged.cut_tracks = cut_clipboard.take();
+                                    pending_device_insert = Some(staged);
+                                }
                                 return Ok(None);
                             }
                             if let Some((_, target)) = adopted_device_draft.as_ref() {
@@ -7264,10 +7265,11 @@ fn run_worker(
                             .map(Some)
                         });
                     match result {
-                        Ok(None) => {
+                        Ok(None) if pending_device_insert.is_some() => {
                             request_complete = false;
                             status = Some("device edit pending · waiting for audio".into());
                         }
+                        Ok(None) => status = Some("no change".into()),
                         Ok(Some((new, snapshot))) => {
                             if failed_plugin_adoption.is_some() {
                                 // Device-take VST3 publication returns only after the exact
