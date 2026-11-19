@@ -1,5 +1,6 @@
 //! Cached source peaks and their accepted clock for live musical event bends.
 use super::waveform_frame::coarse_peaks;
+use hex_engine::PreparedAudioRepeat;
 use hex_engine::audio_transform::{MusicalEventFadePreview, PreparedMusicalEventSourceClock};
 use hex_project::{
     AudioDomainClock, AudioEvent, AudioEvents, Clip, ClipFade, ClipGain, Project, TempoMap,
@@ -18,6 +19,7 @@ pub(super) struct Projection {
     clip: Clip,
     tempo: TempoMap,
     source_clock: PreparedMusicalEventSourceClock,
+    repeat: Option<PreparedAudioRepeat>,
     events: Arc<AudioEvents>,
     gain: ClipGain,
 }
@@ -36,7 +38,6 @@ impl Projection {
         let source_clock = prepared.musical_clock.as_ref()?;
         if project.clip(clip.id())? != clip
             || !matches!(edit.domain.clock, AudioDomainClock::Beats(_))
-            || edit.placement.is_some()
             || edit.content_view.is_some()
         {
             return None;
@@ -55,6 +56,7 @@ impl Projection {
         let projection = Self {
             tempo: project.tempo_map().clone(),
             source_clock: source_clock.clone(),
+            repeat: prepared.repeat,
             events,
             gain: gain.unwrap_or_else(|| clip.gain()),
             clip,
@@ -76,6 +78,7 @@ impl Projection {
             &self.source_clock,
             events,
             self.gain,
+            self.repeat,
         )
         .ok()?
     }

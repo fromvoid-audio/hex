@@ -207,6 +207,8 @@ pub struct AudioEventSourceWaveform {
     pub waveform: Arc<Waveform>,
     /// Source clock for beat-domain peaks, including a retained source origin.
     pub musical_clock: Option<hex_engine::audio_transform::PreparedMusicalEventSourceClock>,
+    /// Verified shared-root loop read before any outer clip fade.
+    pub repeat: Option<hex_engine::PreparedAudioRepeat>,
 }
 
 impl AudioEventSourceWaveform {

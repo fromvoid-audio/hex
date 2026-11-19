@@ -2713,6 +2713,9 @@ pub struct PreparedAudioClipView {
     pub neutral_musical_peaks: Vec<PreparedAudioPeak>,
     /// Single-source transformed processing clock, before event and root fades.
     pub event_source_peaks: Option<Arc<audio_transform::PreparedEventSourcePeaks>>,
+    /// Loop read of those event peaks when all musical occurrences share their
+    /// processing root. This remains available before a baked instance fade.
+    pub event_source_repeat: Option<PreparedAudioRepeat>,
 }
 
 /// Exact extrema of one consecutive stereo destination range before outer
@@ -2727,8 +2730,19 @@ pub struct PreparedAudioPeak {
 /// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreparedAudioRepeat {
+    pub offset: u64,
     pub period: u64,
     pub phase: u64,
+}
+
+impl PreparedAudioRepeat {
+    fn from_clip(clip: &Clip) -> Option<Self> {
+        clip.looping.then(|| Self {
+            offset: clip.source_offset as u64,
+            period: clip.source_length as u64,
+            phase: clip.metadata.as_deref().map_or(0, |m| m.source_phase),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
