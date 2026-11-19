@@ -23,18 +23,29 @@ pub(super) struct WorkerUiFixture {
 
 fn receive(service: &Service, backend: &mut hex_audio::worker_fixture::HeadlessBackend) -> Event {
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
+    let event = loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
-            return event;
+            break event;
         }
         assert!(
             Instant::now() < deadline,
             "fixture canonical event unavailable"
         );
         std::thread::yield_now();
+    };
+    // The worker can send its canonical event after the most recent render.
+    // Drain any admitted graph before submitting the next fixture edit.
+    while backend.ordinary_publication_idle_on_control() != Some(true) {
+        assert!(
+            Instant::now() < deadline,
+            "fixture publication did not finish"
+        );
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        std::thread::yield_now();
     }
+    event
 }
 
 /// Open with authoritative canonical state and an acknowledged ordinary graph.
