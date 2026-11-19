@@ -1456,7 +1456,6 @@ impl NativeRuntimeChain {
                     });
             let supports_power_off = supports_smoothed_bypass
                 && latency == Some(0)
-                && !matches!(instance.owner, ProcessorChainOwner::Source(_))
                 && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
                     if value.supports_power_off());
             let reserved_frames = instance
@@ -2043,6 +2042,22 @@ impl NativeRuntimeChain {
         previous: &Self,
         allow_control_edit: bool,
     ) -> bool {
+        self.can_transfer_source_history_from(previous, allow_control_edit, false)
+    }
+
+    /// Exact source recipe continuation with an authored power edit on one
+    /// or more opted-in native stages. The caller proves live playback and
+    /// the same receiving track, in addition to its normal generator proof.
+    pub fn can_transfer_source_power_edit_from(&self, previous: &Self) -> bool {
+        self.can_transfer_source_history_from(previous, false, true)
+    }
+
+    fn can_transfer_source_history_from(
+        &self,
+        previous: &Self,
+        allow_control_edit: bool,
+        allow_power_edit: bool,
+    ) -> bool {
         // An identity-only final stage adds no signal or control history. Keep
         // the old prefix exact and transfer it to the candidate before use.
         // The candidate's new identity must not alias any donor entry.
@@ -2103,9 +2118,13 @@ impl NativeRuntimeChain {
         self.len() == previous.len()
             && self.entries.iter().zip(&previous.entries).enumerate().all(
                 |(index, (left, right))| {
+                    let power_edit = allow_power_edit
+                        && matches!(left.owner, ProcessorChainOwner::Source(_))
+                        && left.supports_power_off
+                        && right.supports_power_off;
                     !matches!(left.runtime, RuntimeOwnership::Foreign(_))
                         && !matches!(right.runtime, RuntimeOwnership::Foreign(_))
-                        && left.bypassed == right.bypassed
+                        && (left.bypassed == right.bypassed || power_edit)
                         && left.input_gain == right.input_gain
                         && left.output_gain == right.output_gain
                         && left.algorithmic_latency_frames == right.algorithmic_latency_frames
