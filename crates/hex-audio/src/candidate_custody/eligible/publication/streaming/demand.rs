@@ -64,6 +64,7 @@ pub(crate) struct StreamInstall<'a> {
     pub(crate) frames: usize,
     pub(crate) fenced_restart: bool,
     pub(crate) foreign_continuation: bool,
+    pub(crate) confirmed_fade: Option<u32>,
 }
 pub(super) fn envelope(
     domains: &mut [Option<DomainEnvelope>; 2],
@@ -214,7 +215,9 @@ impl StateView<'_> {
                     .runtime
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?;
-                let preview = if request.fenced_restart {
+                let preview = if let Some(fade_remaining) = request.confirmed_fade {
+                    runtime.preview_device_insert(previous, fade_remaining, frames, &mut visit)
+                } else if request.fenced_restart {
                     runtime.preview_ordinary_fenced_restart(
                         previous,
                         frames,
@@ -606,6 +609,7 @@ impl ActiveView<'_> {
             frames: output.len(),
             fenced_restart: false,
             foreign_continuation: false,
+            confirmed_fade: None,
         };
         let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
             super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
@@ -643,6 +647,7 @@ impl ActiveView<'_> {
                 frames: output.len() - committed,
                 fenced_restart: false,
                 foreign_continuation: false,
+                confirmed_fade: None,
             };
             let mut planned =
                 self.state

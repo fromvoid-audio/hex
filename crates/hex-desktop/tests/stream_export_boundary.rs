@@ -9,6 +9,8 @@ mod audio_policy;
 #[allow(dead_code)]
 #[path = "../src/granular_sources.rs"]
 mod granular_sources;
+#[path = "stream_export_boundary/long_stretch.rs"]
+mod long_stretch;
 #[allow(dead_code)]
 #[path = "../src/streamed_export.rs"]
 mod streamed_export;
@@ -79,6 +81,9 @@ impl WorkerAudioSink for OfflineSink {
     fn close(&mut self) {}
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(self.render)
+    }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        Some(streamed_export::bounce)
     }
 }
 fn offline(rate: u32, render: hex_session::service::StreamedExporter) -> Service {

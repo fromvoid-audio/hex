@@ -39,6 +39,8 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        device_insert_confirmation: None,
+        device_insert_complete: None,
         plugin_parameter_observation: false,
         plugin_parameters: None,
         plugin_parameter_conversion: None,

@@ -6,6 +6,106 @@ use hex_session::device_gesture::{
 };
 
 #[test]
+fn verified_editor_insert_commits_only_the_confirmed_graph_and_one_undo() {
+    use hex_session::service::DeviceInsertOutcome;
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.wait = Duration::from_secs(2);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let predecessor = h.applied(h.context.unwrap());
+    let saved = files.0.join("verified-insert.hex");
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    wait_for_audio(&h);
+
+    for proceed in [false, true] {
+        let limiter = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        let staged = h.run(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: limiter,
+        }));
+        assert!(!staged.request_complete);
+        assert_eq!(staged.state.project, imported.state.project);
+        if !proceed {
+            assert!(h.run(Request::SaveNew(saved.clone())).save_complete);
+            assert!(hex_storage::load(&saved).unwrap().main_devices().is_empty());
+        }
+        let offered = h.next_with_audio();
+        assert!(offered.error.is_none(), "{:?}", offered.error);
+        assert_eq!(offered.state.revision, imported.state.revision);
+        let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(
+            offer.submission().output_identity,
+            predecessor.output_identity
+        );
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source(),
+            Some(predecessor)
+        );
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        let decided = if proceed {
+            offer.proceed()
+        } else {
+            offer.cancel()
+        };
+        assert!(decided);
+        let terminal = h.next_with_audio();
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let receipt = terminal.device_insert_complete.unwrap();
+        assert!(terminal.request_complete);
+        if proceed {
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+            assert_ne!(
+                receipt.submission.audio_revision,
+                offer.submission().audio_revision
+            );
+            assert_eq!(receipt.submission.context, offer.submission().context);
+            assert_eq!(terminal.state.revision, imported.state.revision + 1);
+            assert_eq!(terminal.state.project.main_devices().len(), 1);
+            let installed = h.applied(h.context.unwrap());
+            assert_eq!(installed.audio_revision, receipt.submission.audio_revision);
+            assert_eq!(installed.output_identity, predecessor.output_identity);
+        } else {
+            assert_eq!(receipt.outcome, DeviceInsertOutcome::Cancelled);
+            assert_eq!(terminal.state.project, imported.state.project);
+            assert_eq!(terminal.state.revision, imported.state.revision);
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+        }
+    }
+    assert!(h.run(Request::SaveCurrent).save_complete);
+    assert_eq!(hex_storage::load(&saved).unwrap().main_devices().len(), 1);
+    let undone = h.run(Request::Undo);
+    let mut restored = undone.state.project.snapshot();
+    let before = imported.state.project.snapshot();
+    assert!(restored.next_id > before.next_id);
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(undone.state.can_redo);
+}
+
+#[test]
 fn stopped_verified_stream_installs_auto_pan_and_renders_processed_audio() {
     check_auto_pan(false);
 }
@@ -57,10 +157,10 @@ fn check_auto_pan(running: bool) {
         hex_engine::DeviceTypeId::from_static("hex.auto-pan"),
     )
     .unwrap();
-    let inserted = h.run(Request::Edit(Command::InsertMainDevice {
+    let inserted = h.run_verified_device_insert(Command::InsertMainDevice {
         before: None,
         state: auto_pan,
-    }));
+    });
     let Some(Created::Device(device)) = inserted.created else {
         panic!("Auto Pan device")
     };
@@ -207,11 +307,19 @@ fn wait_for_audio(h: &Harness) {
 fn verified_track_limiter_running_tempo_edit_preserves_beat_and_audio() {
     let _native = native_fixture();
     for partition in [1, 257] {
-        verified_limiter_tempo_case(partition);
+        verified_limiter_tempo_case(partition, None);
     }
 }
 
-fn verified_limiter_tempo_case(partition: usize) {
+#[test]
+fn verified_track_limiter_running_tempo_edit_wraps_the_retimed_loop() {
+    let _native = native_fixture();
+    for partition in [1, 257] {
+        verified_limiter_tempo_case(partition, Some(6015..6207));
+    }
+}
+
+fn verified_limiter_tempo_case(partition: usize, loop_range: Option<std::ops::Range<u64>>) {
     let files = Files::new();
     let mut h = actual_native_harness();
     h.wait = Duration::from_secs(3);
@@ -243,17 +351,28 @@ fn verified_limiter_tempo_case(partition: usize) {
         hex_engine::DeviceTypeId::from_static("hex.limiter"),
     )
     .unwrap();
-    h.run(Request::Edit(Command::InsertDevice {
+    h.run_verified_device_insert(Command::InsertDevice {
         track,
         before: None,
         state: limiter,
-    }));
-    let previous = h.applied(h.context.unwrap());
+    });
+    let mut previous = h.applied(h.context.unwrap());
+    if let Some(range) = &loop_range {
+        h.run(Request::Edit(Command::SetLoopRegion {
+            start: range.start,
+            end: range.end,
+            enabled: true,
+        }));
+        previous = h.applied(h.context.unwrap());
+    }
     h.audio
         .as_mut()
         .unwrap()
         .control
-        .command(PlaybackCommand::Play)
+        .command(match &loop_range {
+            Some(range) => PlaybackCommand::PlayFrom(range.start),
+            None => PlaybackCommand::Play,
+        })
         .unwrap();
     wait_for_audio(&h);
     let old_tempo = imported.state.project.tempo_map().clone();
@@ -307,10 +426,30 @@ fn verified_limiter_tempo_case(partition: usize) {
         .tempo_map()
         .beat_to_frame(beat)
         .unwrap();
-    assert_eq!(after, expected + partition as u64, "partition {partition}");
+    let advanced = expected + partition as u64;
+    let expected = if let Some(old_range) = &loop_range {
+        let region = edited.state.project.loop_region().unwrap();
+        assert!(region.enabled());
+        assert_eq!(region.start()..region.end(), 8020..8276);
+        assert!(old_range.contains(&before));
+        assert!((region.start()..region.end()).contains(&expected));
+        if partition == 257 {
+            assert!(advanced >= region.end(), "publication block must wrap");
+        }
+        region.start() + (advanced - region.start()) % (region.end() - region.start())
+    } else {
+        advanced
+    };
+    assert_eq!(after, expected, "partition {partition}");
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(status.playing.load(Acquire));
     assert!(status.rejected_revision().is_none());
+    if loop_range.is_some() {
+        // Clear any samples buffered in the limiter before observing new audio.
+        for _ in 0..8 {
+            h.render();
+        }
+    }
     wait_for_audio(&h);
 }
 
@@ -353,10 +492,10 @@ fn check_main_saturator(running: bool) {
         hex_engine::DeviceTypeId::from_static("hex.saturator"),
     )
     .unwrap();
-    h.run(Request::Edit(Command::InsertMainDevice {
+    h.run_verified_device_insert(Command::InsertMainDevice {
         before: None,
         state: saturator,
-    }));
+    });
     let installed = h.applied(h.context.unwrap());
     assert_ne!(installed.audio_revision, prior.audio_revision);
     if !running {
@@ -377,7 +516,15 @@ fn check_main_saturator(running: bool) {
         status.position.load(Acquire) > status.audible_position.load(Acquire),
         "Main processor reports latency"
     );
-    assert!(status.rejected_revision().is_none());
+    if running {
+        assert!(matches!(
+            status.rejected_revision(),
+            Some((revision, hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation))
+                if revision < installed.audio_revision
+        ));
+    } else {
+        assert!(status.rejected_revision().is_none());
+    }
     h.audio
         .as_mut()
         .unwrap()

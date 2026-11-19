@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use super::{asbd_from_config, check_os_status, frames_to_duration, host_time_to_stream_instant};
+use super::{asbd_from_config, check_os_status, frames_to_duration, HostTimebase};
 
 use super::OSStatus;
 use crate::host::coreaudio::macos::loopback::LoopbackDevice;

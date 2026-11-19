@@ -33,6 +33,7 @@ mod route_follow;
 mod sampler;
 mod section_edit;
 mod verified_clip_move;
+mod verified_device_insert;
 mod verified_gain;
 use verified_gain::{PreviewWatermark, VerifiedKey, VerifiedSource};
 #[cfg(all(test, feature = "allocation-probe"))]
@@ -130,6 +131,9 @@ pub(super) struct NativeAudioSink {
     /// One route-change notice for the delivered output (#4131).
     pending_route_event: Option<EditorAudioEvent>,
     pending_degraded_event: Option<EditorAudioEvent>,
+    pending_editor_windows: Option<EditorAudioEvent>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    editor_windows: Option<(u64, u64, Vec<u64>)>,
     pending_latency_event: Option<EditorAudioEvent>,
     pending_parameter_event: Option<EditorAudioEvent>,
     pending_plugin_transport: Option<EditorAudioEvent>,
@@ -140,6 +144,7 @@ pub(super) struct NativeAudioSink {
     route_follow: route_follow::RouteFollow,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     verified_preview: Option<VerifiedSource>,
+    verified_insert: Option<verified_device_insert::Insert>,
     verified_clip_control: verified_clip_move::VerifiedClipControl,
     preview_watermark: Option<PreviewWatermark>,
     verified_last: Option<VerifiedKey>,
@@ -216,6 +221,9 @@ impl NativeAudioSink {
             pending_status_observation: None,
             pending_route_event: None,
             pending_degraded_event: None,
+            pending_editor_windows: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            editor_windows: None,
             pending_latency_event: None,
             pending_parameter_event: None,
             pending_plugin_transport: None,
@@ -224,6 +232,7 @@ impl NativeAudioSink {
             route_follow: Default::default(),
             desired: None,
             verified_preview: None,
+            verified_insert: None,
             verified_clip_control: Default::default(),
             preview_watermark: None,
             verified_last: None,
@@ -270,6 +279,12 @@ impl NativeAudioSink {
         }
     }
     fn relinquish_output(&mut self) {
+        if matches!(
+            self.verified_preview,
+            Some(VerifiedSource::ArrangementGain(_))
+        ) {
+            self.verified_preview = None;
+        }
         self.document_rebind = None;
         self.initial_open_started = None;
         if let Some(identity) = self.output_identity {
@@ -295,6 +310,11 @@ impl NativeAudioSink {
         {
             self.last_stopped_frame = control.status.position.load(Acquire);
         }
+        if let Some(insert) = self.verified_insert.take() {
+            insert
+                .attempt
+                .refused("audio output closed · restart audio to recover".into());
+        }
         drop(self.output.take());
         self.section_edit = None;
         self.offline_section_edit = None;
@@ -308,6 +328,11 @@ impl NativeAudioSink {
         self.pending_status_observation = None;
         self.pending_route_event = None;
         self.pending_degraded_event = None;
+        self.pending_editor_windows = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.editor_windows = None;
+        }
         self.pending_latency_event = None;
         self.pending_parameter_event = None;
         self.pending_plugin_transport = None;
@@ -544,6 +569,7 @@ impl NativeAudioSink {
         let revision = match &state {
             EditorPublicationState::Submitted { audio_revision }
             | EditorPublicationState::VerifiedPreviewSubmitted { audio_revision, .. }
+            | EditorPublicationState::VerifiedArrangementGainSubmitted { audio_revision }
             | EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
                 Some(*audio_revision)
             }
@@ -584,6 +610,7 @@ impl NativeAudioSink {
             &mut self.pending_status_observation,
             &mut self.pending_route_event,
             &mut self.pending_degraded_event,
+            &mut self.pending_editor_windows,
             &mut self.pending_latency_event,
             &mut self.pending_plugin_transport,
             &mut self.pending_parameter_event,
@@ -607,6 +634,29 @@ impl NativeAudioSink {
             self.pending_release_event = None;
             self.relinquish_output();
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn observe_plugin_editor_windows(&mut self, generation: u64, output: u64) {
+        if self.editor_windows.as_ref().is_some_and(
+            |(previous_generation, previous_output, devices)| {
+                *previous_generation == generation
+                    && *previous_output == output
+                    && self
+                        .plugins
+                        .open_editor_devices(generation)
+                        .eq(devices.iter().copied())
+            },
+        ) {
+            return;
+        }
+        let devices: Vec<_> = self.plugins.open_editor_devices(generation).collect();
+        self.editor_windows = Some((generation, output, devices.clone()));
+        self.pending_editor_windows = Some(EditorAudioEvent::PluginEditorWindows {
+            project_generation: generation,
+            output_identity: output,
+            devices,
+        });
     }
     /// Compares newly confirmed default routes with the delivered output's
     /// route and queues one `OutputRouteChanged` notice when it moved.
@@ -656,16 +706,36 @@ impl NativeAudioSink {
             return;
         };
         self.maintain_returns(control);
-        let Some(snapshot) = self.verified_preview.clone().or_else(|| {
-            self.desired
-                .as_ref()
-                .map(|source| VerifiedSource::Canonical(Arc::clone(source)))
-        }) else {
+        let insert = self.verified_insert.clone();
+        if insert
+            .as_ref()
+            .is_some_and(|insert| !insert.attempt.preparing())
+        {
+            // The editor owns the terminal. Keep the old desired source from
+            // republishing across the receipt while it decides or commits.
+            return;
+        }
+        let Some(snapshot) = insert
+            .as_ref()
+            .map(|insert| VerifiedSource::Canonical(Arc::clone(insert.attempt.source())))
+            .or_else(|| self.verified_preview.clone())
+            .or_else(|| {
+                self.desired
+                    .as_ref()
+                    .map(|source| VerifiedSource::Canonical(Arc::clone(source)))
+            })
+        else {
             return;
         };
         let context = snapshot.context();
         let key = snapshot.key();
         if !control.audio_candidate_claims_available() {
+            if let Some(insert) = insert.as_ref() {
+                insert.attempt.refused(
+                    "audio ownership cleanup is incomplete · save project and restart hex".into(),
+                );
+                return;
+            }
             self.observe(
                 context,
                 "incomplete",
@@ -676,6 +746,12 @@ impl NativeAudioSink {
             return;
         }
         if control.status.device_fault.load(Acquire) || control.status.render_fault.load(Acquire) {
+            if let Some(insert) = insert.as_ref() {
+                insert
+                    .attempt
+                    .refused("audio output closed · restart audio to recover".into());
+                return;
+            }
             self.observe(
                 context,
                 "fault",
@@ -724,7 +800,9 @@ impl NativeAudioSink {
                 return;
             }
         }
-        if self.verified_blocked == Some(key) || self.verified_last == Some(key) {
+        if insert.is_none()
+            && (self.verified_blocked == Some(key) || self.verified_last == Some(key))
+        {
             return;
         }
         let Ok(policy) = self.policy.as_ref().copied() else {
@@ -738,14 +816,9 @@ impl NativeAudioSink {
             let (quote, builtin_effects) = match snapshot.candidate_reservation_quote() {
                 Ok(quote) => quote,
                 Err(error) => {
-                    self.blocked = Some(context);
-                    self.verified_blocked = Some(key);
-                    self.observe(
-                        context,
-                        "refused",
-                        EditorPublicationState::Refused(format!(
-                            "this audio revision is unsupported: {error:?}"
-                        )),
+                    self.refuse_verified_source(
+                        &snapshot,
+                        format!("this audio revision is unsupported: {error:?}"),
                     );
                     return;
                 }
@@ -775,14 +848,9 @@ impl NativeAudioSink {
                 quote.storage_reservation(bytes).ok()
             });
             let Some(storage) = storage else {
-                self.blocked = Some(context);
-                self.verified_blocked = Some(key);
-                self.observe(
-                    context,
-                    "refused",
-                    EditorPublicationState::Refused(
-                        "audio preparation reservation exceeded".into(),
-                    ),
+                self.refuse_verified_source(
+                    &snapshot,
+                    "audio preparation reservation exceeded".into(),
                 );
                 return;
             };
@@ -795,13 +863,7 @@ impl NativeAudioSink {
             } else {
                 let current = self.next_catalog;
                 let Some(next) = current.checked_add(1) else {
-                    self.blocked = Some(context);
-                    self.verified_blocked = Some(key);
-                    self.observe(
-                        context,
-                        "refused",
-                        EditorPublicationState::Refused("source generation exhausted".into()),
-                    );
+                    self.refuse_verified_source(&snapshot, "source generation exhausted".into());
                     return;
                 };
                 self.next_catalog = next;
@@ -846,12 +908,13 @@ impl NativeAudioSink {
                 }
             }
         }
-        self.advance_preparation(control, policy);
+        self.advance_preparation(control, policy, insert.as_ref());
     }
     fn advance_preparation(
         &mut self,
         control: &mut hex_audio::prepared::PublicationControl,
         policy: AudioPolicy,
+        insert: Option<&verified_device_insert::Insert>,
     ) {
         let Some(mut pending) = self.preparation.take() else {
             return;
@@ -885,10 +948,18 @@ impl NativeAudioSink {
                                     pending.snapshot.canonical(),
                                     policy.stream,
                                     policy.granular,
-                                    || {
-                                        self.request_cancellation
+                                    || match insert {
+                                        Some(insert) => insert
+                                            .cancellation
                                             .as_ref()
-                                            .is_some_and(|c| c.is_cancelled())
+                                            .is_some_and(|c| c.is_cancelled()),
+                                        // The desired snapshot already committed. Document
+                                        // intent supersedes request-owned work; replacement of
+                                        // this source is driven by the next committed snapshot.
+                                        None => self
+                                            .request_cancellation
+                                            .as_ref()
+                                            .is_some_and(|c| c.is_shutting_down()),
                                     },
                                 )
                                 .map(|(definitions, granular)| (sources, definitions, granular))
@@ -1069,8 +1140,21 @@ impl NativeAudioSink {
             self.observe(context, "busy", EditorPublicationState::Busy);
             return;
         };
-        match control.stage_audio_candidate_preparation(pending.token, context.project_generation) {
-            Ok(ticket) => {
+        let submitted = match insert.as_ref() {
+            Some(insert) => control
+                .stage_verified_device_insert(
+                    pending.token,
+                    context,
+                    insert.predecessor,
+                    insert.approval,
+                )
+                .map(|(ticket, receipt)| (ticket, Some(receipt))),
+            None => control
+                .stage_audio_candidate_preparation(pending.token, context.project_generation)
+                .map(|ticket| (ticket, None)),
+        };
+        match submitted {
+            Ok((ticket, receipt)) => {
                 let revision = control.submitted_revision();
                 self.submitted[index] = Some(Submitted {
                     resident_copy_frames: pending.resident_copy_frames,
@@ -1080,15 +1164,35 @@ impl NativeAudioSink {
                     ticket,
                     domain: pending.domain,
                 });
+                if let Some((insert, receipt)) = insert.as_ref().zip(receipt) {
+                    insert
+                        .attempt
+                        .submitted(Box::new(resident::InsertReceipt::new(
+                            hex_session::service::ResidentGraphSubmission {
+                                context,
+                                audio_revision: revision,
+                                output_identity: insert.predecessor.output_identity,
+                            },
+                            receipt,
+                        )));
+                    return;
+                }
                 self.last_context = Some(context);
                 self.verified_last = Some(pending.snapshot.key());
-                let state = match pending.snapshot.preview_identity() {
-                    Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
-                        audio_revision: revision,
-                        identity,
-                    },
-                    None => EditorPublicationState::Submitted {
-                        audio_revision: revision,
+                let state = match &pending.snapshot {
+                    VerifiedSource::ArrangementGain(_) => {
+                        EditorPublicationState::VerifiedArrangementGainSubmitted {
+                            audio_revision: revision,
+                        }
+                    }
+                    snapshot => match snapshot.preview_identity() {
+                        Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
+                            audio_revision: revision,
+                            identity,
+                        },
+                        None => EditorPublicationState::Submitted {
+                            audio_revision: revision,
+                        },
                     },
                 };
                 self.observe(context, "submitted", state);
@@ -1115,8 +1219,6 @@ impl NativeAudioSink {
         mut pending: Preparation,
         error: String,
     ) {
-        let context = pending.snapshot.context();
-        let key = pending.snapshot.key();
         control.cancel_audio_candidate_preparation(pending.token);
         pending.cancelling = true;
         if let Some(token) = pending.domain
@@ -1128,13 +1230,64 @@ impl NativeAudioSink {
         {
             domain.request_retirement(control);
         }
+        self.refuse_verified_source(&pending.snapshot, error);
         self.preparation = Some(pending);
-        self.blocked = Some(context);
-        self.verified_blocked = Some(key);
-        self.observe(context, "refused", EditorPublicationState::Refused(error));
+    }
+    fn refuse_verified_source(&mut self, source: &VerifiedSource, error: String) {
+        if let Some(insert) = self.verified_insert.as_ref()
+            && Arc::ptr_eq(insert.attempt.source(), source.canonical_arc())
+        {
+            insert.attempt.refused(error);
+            return;
+        }
+        let context = source.context();
+        self.verified_blocked = Some(source.key());
+        let state = if matches!(source, VerifiedSource::ArrangementGain(_)) {
+            self.verified_preview = None;
+            EditorPublicationState::VerifiedArrangementGainRefused(error)
+        } else {
+            self.blocked = Some(context);
+            EditorPublicationState::Refused(error)
+        };
+        self.observe(context, "refused", state);
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn confirms_device_inserts(&self) -> bool {
+        true
+    }
+
+    fn confirms_verified_device_inserts(&self) -> bool {
+        self.output.is_some() && self.output_generation.is_some()
+    }
+
+    fn begin_verified_device_insert(
+        &mut self,
+        attempt: hex_session::service::VerifiedDeviceInsertAttempt,
+    ) -> Result<(), String> {
+        self.begin_verified_insert(attempt)
+    }
+
+    fn finish_verified_device_insert(
+        &mut self,
+        attempt: &hex_session::service::VerifiedDeviceInsertAttempt,
+        installed: bool,
+    ) {
+        self.finish_verified_insert(attempt, installed);
+    }
+
+    fn device_insert_receipt(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<Box<dyn hex_session::service::DeviceInsertAudioReceipt>> {
+        self.retain_device_insert_receipt(submission)
+    }
+    fn offer_device_insert_consent(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<std::time::Instant> {
+        self.offer_resident_device_insert_consent(submission)
+    }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn plugin_parameter_requires_stopped_restore(
         &mut self,
@@ -1780,6 +1933,12 @@ impl WorkerAudioSink for NativeAudioSink {
         self.verified_clip_control
             .receive(self.desired.as_ref(), update)
     }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.receive_verified_arrangement_gain(update)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
     }
@@ -1787,6 +1946,27 @@ impl WorkerAudioSink for NativeAudioSink {
         &self,
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
         self.resident_inventory()
+    }
+    fn prepare_paused_input_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        self.prepare_resident_paused_monitor(request, revision, resources, admit)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn poll_paused_note_monitor(
+        &mut self,
+        graph: Option<hex_session::service::PausedNoteGraph<'_>>,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> bool {
+        self.poll_resident_paused_notes(graph, admit)
     }
     #[allow(clippy::result_large_err)] // Preserve the exact graph owner on refusal.
     fn publish_resident(
@@ -2139,7 +2319,7 @@ impl WorkerAudioSink for NativeAudioSink {
         hold
     }
     fn poll(&mut self) {
-        self.resident.reap_observations();
+        self.resident.reap_control_owners();
         self.poll_edit_timeout();
         self.poll_section_edit();
         self.poll_open();
@@ -2161,6 +2341,17 @@ impl WorkerAudioSink for NativeAudioSink {
                 } else if let Some(control) = output.publication.control() {
                     control.reclaim();
                     control.poll_resident_publication();
+                }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if self.resident.paused_monitor.is_none()
+                    && self
+                        .resident
+                        .pending_paused_notes
+                        .as_ref()
+                        .is_none_or(|pending| pending.effects.is_none())
+                    && let Some(control) = output.publication.control()
+                {
+                    self.plugins.reap_paused_monitor(control);
                 }
                 if self.document_rebind.as_ref().is_none_or(|rebind| {
                     output
@@ -2189,6 +2380,18 @@ impl WorkerAudioSink for NativeAudioSink {
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 if let Some(desired) = self.desired.as_deref() {
                     self.plugins.close_removed_editor(desired);
+                }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if let Some(desired) = self.desired.as_deref()
+                    && let Some(output_identity) = output
+                        .publication
+                        .control()
+                        .and_then(|control| control.output_identity())
+                {
+                    self.observe_plugin_editor_windows(
+                        desired.context().project_generation,
+                        output_identity,
+                    );
                 }
                 if let Some(desired) = self.desired.as_ref() {
                     let recovery = self.sampler.is_none()
@@ -2244,6 +2447,7 @@ impl WorkerAudioSink for NativeAudioSink {
             && self.pending_status_observation.is_none()
             && self.pending_route_event.is_none()
             && self.pending_degraded_event.is_none()
+            && self.pending_editor_windows.is_none()
             && self.pending_latency_event.is_none()
             && self.pending_parameter_event.is_none()
             && self.pending_plugin_transport.is_none()

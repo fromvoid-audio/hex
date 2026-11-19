@@ -302,6 +302,32 @@ enum EditFixture {
     NewTrackSample,
     TimeDuplicate,
     InFlightTimeDuplicate,
+    LoopToggle,
+    LoopRange,
+}
+
+#[gpui::test]
+fn degraded_loop_edit_keeps_one_intent_until_recovery_and_its_terminal(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::LoopToggle,
+        EditRecovery::Ready,
+    );
+    graph_edit_recovery(cx, EditFixture::LoopRange, EditRecovery::Ready);
+}
+
+#[gpui::test]
+fn degraded_loop_edit_clears_the_preview_after_stale_or_failed_recovery(
+    cx: &mut gpui::TestAppContext,
+) {
+    graph_edit_recovery(
+        &mut cx.new_app(),
+        EditFixture::LoopToggle,
+        EditRecovery::ProjectChanged,
+    );
+    graph_edit_recovery(cx, EditFixture::LoopRange, EditRecovery::Failed);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -378,6 +404,35 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
     service.submit(add_track("other")).unwrap();
     let ready = next(&service).state;
     let other = ready.project.tracks()[1].id();
+    let loop_edit = matches!(edit, EditFixture::LoopToggle | EditFixture::LoopRange);
+    let ready = if loop_edit {
+        service
+            .submit(Request::Edit(Command::SetLoopRegion {
+                start: 0,
+                end: 32_768,
+                enabled: false,
+            }))
+            .unwrap();
+        next(&service).state
+    } else {
+        ready
+    };
+    let expected_loop = loop_edit.then(|| {
+        hex_project::LoopRegion::new(
+            if edit == EditFixture::LoopToggle {
+                0
+            } else {
+                4_096
+            },
+            if edit == EditFixture::LoopToggle {
+                32_768
+            } else {
+                65_536
+            },
+            true,
+        )
+        .unwrap()
+    });
     let mut refusal_event = None;
     let ready = if matches!(
         edit,
@@ -551,6 +606,33 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 v.start_time_duplicate(range, 0);
             }
             assert!(v.pending_time_range_move.is_some());
+        } else if let Some(region) = expected_loop {
+            if edit == EditFixture::LoopToggle {
+                v.toggle_loop();
+            } else {
+                v.submit_selection_loop_preview(region, false);
+            }
+            assert_eq!(v.pending_loop_region(), Some(region));
+            assert!(
+                v.recovery.generation().is_some(),
+                "loop must wait for fresh audio"
+            );
+            assert_eq!(v.worker_requests_pending, 1, "only restart is queued");
+            assert!(
+                v.deferred_play.is_some(),
+                "playing intent must survive recovery"
+            );
+            v.toggle_loop();
+            v.submit_selection_loop_preview(
+                hex_project::LoopRegion::new(0, 2048, true).unwrap(),
+                false,
+            );
+            assert_eq!(
+                v.pending_loop_region(),
+                Some(region),
+                "repeats preserve the original loop"
+            );
+            assert_eq!(v.worker_requests_pending, 1, "repeats do not queue edits");
         } else {
             assert!(v.enqueue_device_barrier(request()));
         }
@@ -608,6 +690,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             assert!(v.recovery.deferred_edit.is_none());
             assert!(v.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
+            assert!(v.pending_loop_region().is_none());
             assert!(v.service.try_event().is_err());
             assert_eq!(v.state.as_ref().unwrap().revision, revision);
         }
@@ -657,6 +740,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             assert!(v.service.try_event().is_err());
             assert!(v.pending_sample_drop.is_none());
             assert!(v.pending_time_range_move.is_none());
+            assert!(v.pending_loop_region().is_none());
             assert!(
                 v.error
                     .as_deref()
@@ -725,6 +809,18 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                     "capture auto-warp before recovery"
                 );
             }
+            EditFixture::LoopToggle | EditFixture::LoopRange => {
+                assert_eq!(project.loop_region(), expected_loop);
+                assert_eq!(
+                    v.pending_loop_region(),
+                    expected_loop,
+                    "preview waits for the loop terminal"
+                );
+                assert!(
+                    !v.tick_deferred_play(),
+                    "resume waits for the loop terminal"
+                );
+            }
         }
         if sample.is_some() {
             assert!(
@@ -734,6 +830,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         v.receive(added);
         assert!(v.pending_sample_drop.is_none());
+        assert!(v.pending_loop_region().is_none());
         assert!(v.service.try_event().is_err(), "no repeated insertion");
         if matches!(
             edit,
@@ -774,6 +871,8 @@ struct Sink {
     cancellation_done: Arc<AtomicBool>,
     section_fixture: bool,
     section_fence: Option<(hex_audio::prepared::StoppedEditFence, Option<u64>)>,
+    paused_monitor_enabled: bool,
+    paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
 }
 
 /// Existing production-path test sink with neutral gates. Callers retain the
@@ -784,6 +883,7 @@ pub(in crate::editor) fn worker_fixture_sink(
     audition_ready: bool,
     consume_next_inherited_candidate: Arc<AtomicBool>,
     section_fixture: bool,
+    paused_monitor_enabled: bool,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
         output,
@@ -797,6 +897,8 @@ pub(in crate::editor) fn worker_fixture_sink(
         cancellation_done: Arc::new(AtomicBool::new(false)),
         section_fixture,
         section_fence: None,
+        paused_monitor_enabled,
+        paused_monitor: None,
     })
 }
 
@@ -1151,7 +1253,7 @@ impl WorkerAudioSink for Sink {
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
         use hex_session::service::ResidentPublicationReadiness;
-        if !self.audition_ready {
+        if !self.audition_ready && !self.paused_monitor_enabled {
             return ResidentPublicationReadiness::NoOutput;
         }
         let Some(control) = self.output.publication.control() else {
@@ -1160,6 +1262,20 @@ impl WorkerAudioSink for Sink {
         let Some(output_identity) = control.output_identity() else {
             return ResidentPublicationReadiness::NoOutput;
         };
+        if self.paused_monitor_enabled
+            && let Some(source) = control.status.recording_source()
+        {
+            return ResidentPublicationReadiness::Applied {
+                submission: hex_session::service::ResidentRuntimeLoop {
+                    output_identity,
+                    audio_revision: source.audio_revision,
+                    source_context: Some(source.context),
+                    source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
+                    section_loop: None,
+                },
+                publication_in_flight: control.status.publication_in_flight(),
+            };
+        }
         ResidentPublicationReadiness::Idle {
             output_identity,
             applied_revision: control.status.applied_revision.load(Acquire),
@@ -1170,20 +1286,54 @@ impl WorkerAudioSink for Sink {
         true
     }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
+        let monitor_view = DeviceResourceAdmission::default();
         [
             self.output
                 .publication
                 .device_resource_admission_on_control()
                 .unwrap(),
-            DeviceResourceAdmission::default(),
+            self.paused_monitor
+                .as_ref()
+                .map_or(monitor_view, |hold| monitor_view.with_paused_monitor(hold)),
             DeviceResourceAdmission::default(),
         ]
+    }
+    fn prepare_paused_input_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        if !self.paused_monitor_enabled || self.paused_monitor.is_some() {
+            return Err("fixture paused monitor unavailable".into());
+        }
+        let (monitor, hold) = hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
+            Arc::clone(revision),
+            resources,
+            request.track,
+            4096,
+            |view| {
+                let [current, retired, pending] = self.resident_admission();
+                admit(&[current, retired, pending, view])
+            },
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        self.paused_monitor = Some(hold);
+        Ok(monitor)
     }
     fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
         Ok(48_000)
     }
     fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
     fn poll(&mut self) {
+        if self
+            .paused_monitor
+            .as_ref()
+            .is_some_and(|hold| hold.released_on_control())
+        {
+            self.paused_monitor = None;
+        }
         let control = self.output.publication.control().unwrap();
         control.reclaim();
         if let Some((fence, Some(revision))) = self.section_fence
@@ -1235,7 +1385,8 @@ impl WorkerAudioSink for Sink {
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
             ResidentPublicationPolicy::InheritRuntime => PublicationPolicy::InheritRuntime,
-            ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+            ResidentPublicationPolicy::InheritRuntimeAt(_)
+            | ResidentPublicationPolicy::DeviceInsert { .. } => {
                 return Err(ResidentPublicationRefusal {
                     kind: hex_session::service::ResidentPublicationFailure::Other,
                     playback,
@@ -1571,6 +1722,8 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             cancellation_done: Arc::clone(&cancellation_done),
             section_fixture: false,
             section_fence: None,
+            paused_monitor_enabled: false,
+            paused_monitor: None,
         }),
         reservation,
     )
@@ -1791,6 +1944,8 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             cancellation_done: Arc::new(AtomicBool::new(false)),
             section_fixture: false,
             section_fence: None,
+            paused_monitor_enabled: false,
+            paused_monitor: None,
         }),
         reservation,
     )

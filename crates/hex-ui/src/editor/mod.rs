@@ -838,6 +838,7 @@ pub(super) struct EditorView {
     route_follow: Option<u64>,
     /// Vst3 devices the current output reports as degraded.
     degraded_plugins: crate::editor_backend::DegradedDevices,
+    plugin_editor_windows: Vec<u64>,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -846,6 +847,7 @@ pub(super) struct EditorView {
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
     leftover_recovery: leftover_recovery::State,
     truncated_import: truncated_import::State,
+    device_insert_confirmation: Option<hex_session::service::DeviceInsertConfirmation>,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -1653,6 +1655,7 @@ impl EditorView {
             pending_recovery_generation: None,
             route_follow: None,
             degraded_plugins: Default::default(),
+            plugin_editor_windows: Vec::new(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
@@ -1662,6 +1665,7 @@ impl EditorView {
             latency_rebuild: None,
             leftover_recovery: Default::default(),
             truncated_import: Default::default(),
+            device_insert_confirmation: None,
             sampler_edit_resume: None,
             deferred_play: None,
             offline_cursor: 0,
@@ -2344,11 +2348,7 @@ impl EditorView {
             return false;
         }
         self.advance_selection_intent();
-        self.duplicate_intent.cancel_chain();
-        self.retire_clip_detail_state_for(clip);
-        self.detail_context = None;
-        self.selected_track = Some(track);
-        self.arrangement_focus.observe_active_track(Some(track));
+        self.select_arrangement_clip(track, clip);
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {
@@ -2356,10 +2356,19 @@ impl EditorView {
                 .select(&state.project, track, false, false);
             self.update_track_selection_status();
         }
-        self.selected_clip = Some(clip);
-        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
+    }
+
+    /// Change the clip subject without switching panes or taking keyboard focus.
+    pub(super) fn select_arrangement_clip(&mut self, track: TrackId, clip: ClipId) {
+        self.duplicate_intent.cancel_chain();
+        self.retire_clip_detail_state_for(clip);
+        self.detail_context = None;
+        self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
+        self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
     }
 
     /// Reset clip-local editor state when the clip editor's subject changes.

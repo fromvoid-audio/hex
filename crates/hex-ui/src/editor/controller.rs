@@ -247,6 +247,8 @@ impl EditorView {
             &mut self.recovery,
             &mut self.pending_sample_drop,
             &mut self.pending_time_range_move,
+            &mut self.pending_loop,
+            &mut self.clip_loop,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -460,6 +462,7 @@ impl EditorView {
         self.audio_admission.reset_audio();
         // A new output prepares fresh endpoints; it reports its own set.
         self.degraded_plugins = Default::default();
+        self.plugin_editor_windows.clear();
         if self
             .pending_publication_observation
             .as_ref()
@@ -507,6 +510,12 @@ impl EditorView {
                     });
                 }
                 self.status = "publishing gain preview".into();
+            }
+            crate::EditorPublicationState::VerifiedArrangementGainSubmitted { .. } => {
+                self.status = "publishing gain preview".into();
+            }
+            crate::EditorPublicationState::VerifiedArrangementGainRefused(reason) => {
+                self.status = format!("gain preview unavailable · {}", reason.to_lowercase());
             }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
@@ -674,6 +683,22 @@ impl EditorView {
                         let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
                         self.toggle_play();
                         changed = true;
+                    }
+                }
+                crate::EditorAudioEvent::PluginEditorWindows {
+                    project_generation,
+                    output_identity,
+                    devices,
+                } => {
+                    if project_generation == self.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.output_identity())
+                            == Some(output_identity)
+                    {
+                        changed |= self.plugin_editor_windows != devices;
+                        self.plugin_editor_windows = devices;
                     }
                 }
                 crate::EditorAudioEvent::PluginParameterTouched {
@@ -1125,6 +1150,7 @@ impl EditorView {
                     query_bytes,
                     self.time_selection_key_held
                 );
+                super::device_panel::trace_vst3_track_panel(self, snapshot);
             });
         }
         crate::diagnostics::record_audio(cx, self.audio.as_mut());
@@ -1958,6 +1984,8 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2458,6 +2486,9 @@ impl EditorView {
         self.recovery_failure = event.recovery_failure.clone();
         self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
+        if let Some(offer) = event.device_insert_confirmation.take() {
+            self.device_insert_confirmation = Some(offer);
+        }
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
         self.observe_automation_take_recovery(&event);
@@ -2492,7 +2523,7 @@ impl EditorView {
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.modulation_depth_complete(&event);
-        let clip_drop_cursor = self.clip_move_request_complete(&event);
+        let clip_drop = self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);
@@ -2558,6 +2589,8 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -2998,6 +3031,7 @@ impl EditorView {
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.degraded_plugins = Default::default();
+            self.plugin_editor_windows.clear();
             self.drag_lanes.clear();
             self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();
@@ -3168,7 +3202,17 @@ impl EditorView {
                 });
                 self.select_copied_group(first, last, count);
             }
-        } else if let Some(hex_project::Created::Track(track)) = event.created {
+        } else if let Some(hex_project::Created::Track(track)) = event.created
+            && clip_drop.as_ref().is_none_or(|(cursor, moved)| {
+                moved.is_none()
+                    || cursor.track != track
+                    || self.selection_intent_epoch == Some(cursor.epoch)
+            })
+        {
+            let moved_selection = self.selected_track == Some(track)
+                && clip_drop
+                    .as_ref()
+                    .is_some_and(|(cursor, moved)| cursor.track == track && moved.is_some());
             self.focused_return = None;
             self.device_panel.main_selected = None;
             if let Some(state) = &self.state {
@@ -3178,8 +3222,10 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
-            self.selected_clip = None;
-            self.midi_selection.clear();
+            if !moved_selection {
+                self.selected_clip = None;
+                self.midi_selection.clear();
+            }
             self.reconcile_arrangement_focus();
             self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
@@ -3493,8 +3539,10 @@ impl EditorView {
             self.audition_midi_selection();
         }
         self.apply_completed_midi_step(midi_step_complete);
-        if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
-            self.install_drop_cursor(cursor);
+        if let Some((cursor, moved_clip)) =
+            clip_drop.or(bounce_drop_cursor.map(|cursor| (cursor, None)))
+        {
+            self.install_drop_cursor(cursor, moved_clip);
         }
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
@@ -3976,6 +4024,14 @@ impl EditorView {
         // picker path may still be awaiting the next render's Open reconciliation.
         if !request.is_project_open() && !recovery_restore {
             self.pending_open_path = None;
+        }
+        // A released play-start marker can join its in-progress recovery.
+        // It hasn't edited the project yet and must leave the recovered seek alive.
+        if self.recovering_clip_play_start_request(&request) {
+            return self.recover_before_graph_edit(
+                super::recovery_state::DeferredEditKind::ClipPlayStart,
+                request,
+            );
         }
         if matches!(
             &request,
@@ -4808,6 +4864,7 @@ impl EditorView {
     pub(super) fn tick_deferred_play(&mut self) -> bool {
         if self.stopped_playback_restore.is_some()
             || self.recovery.generation().is_some()
+            || self.pending_loop_region().is_some()
             || self.stopped_plugin_parameter_terminal_pending()
         {
             return false;

@@ -268,14 +268,18 @@ Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
 Scripts without their own test module, config files and unknown inputs keep
-comprehensive discovery. Merge checks without explicit native acceptance inputs
+comprehensive discovery. Ordinary unscoped full audits and comprehensive merge
+checks without explicit native acceptance inputs
 run that inventory through `scripts/python_shards.py --discover` with up to
 eight workers and batches of up to eight ordinary cases from the same
 module or package. When Git on the
 original PATH is Apple's `/usr/bin/git` launcher, sharded runs resolve the
 selected Git once with `xcrun` and put only that executable ahead of the
-original PATH for its child processes. Comprehensive full, release and health runs
-remain serial. Owner selections run through `scripts/python_shards.py`:
+original PATH for its child processes. Full audits with explicit native
+acceptance inputs, scoped full plans, and the release and health profiles
+retain serial comprehensive discovery. Unscoped full reports record sharded
+discovery explicitly. Reports predating that marker retain their serial
+configuration for certificate validation. Owner selections run through `scripts/python_shards.py`:
 ordinary cases from the same module are batched up to eight per process in a
 shared work queue with a default cap of 12 workers.
 Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
@@ -664,6 +668,25 @@ inputs change. This controlled helper test does not establish installed plug-in,
 native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
+
+### Signed VST3 editor regression timing
+
+Use the optimized desktop test target to time the signed regression that
+checks whether a late editor value reaches the original worker across graph
+publication. Use the verified fixture receipts from the commands above.
+
+```sh
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test --locked --release -p hex-desktop --features allocation-probe --bin hex-desktop \
+  -- --ignored --exact --test-threads=1 \
+  native_audio::tests::plugins::capture_source_guard::late_editor_value_remains_on_original_worker_after_unlaned_publication
+```
+
+Measure first and repeated invocations separately and record both process wall
+time and the test harness duration. Report compilation separately. A fresh
+copy of the desktop executable can spend measurable time before libtest
+produces its first output, including on a listing-only run.
 
 ### Dense playback baseline
 

@@ -772,9 +772,26 @@ fn verified_gain_case(session: bool) {
         value: ParameterValue::Float(0.75),
     }));
     wait(&h, applied.audio_revision, 0.75);
-    let removed = h.run(Request::Edit(hex_project::Command::RemoveTrack(track)));
+    let pending = h.run(Request::Edit(hex_project::Command::RemoveTrack(track)));
+    assert!(!pending.request_complete);
+    assert!(pending.state.project.track(track).is_some());
+    assert_eq!(pending.active_device_gesture.unwrap().key, fourth);
+    let removed = h.next_with_audio();
+    assert!(removed.request_complete);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    let receipt = removed.device_insert_complete.as_ref().unwrap();
+    assert_eq!(
+        receipt.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
     assert!(removed.state.project.track(track).is_none());
     assert!(removed.active_device_gesture.is_none());
+    let retired = removed.gesture_ack.as_ref().unwrap();
+    assert_eq!(retired.key, fourth);
+    assert_eq!(
+        retired.phase,
+        hex_session::device_gesture::GesturePhase::Cancel
+    );
     let empty_current = h.applied(h.context.unwrap());
     stable_gain(&h, empty_current, 0.0);
 

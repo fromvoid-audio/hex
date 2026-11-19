@@ -315,6 +315,42 @@ private:
 @end
 
 namespace hex_instance {
+// A file picker can suspend the worker's outer main loop. This source runs on
+// the same lane inside AppKit's modal panel mode. Its handler must outlive it
+// and leave SDK calls, including editor detach, to the outer main loop.
+class ModalEditorRequest {
+    CFRunLoopSourceRef source;
+public:
+    template<class Handle>
+    explicit ModalEditorRequest(Handle& handle) {
+        CFRunLoopSourceContext context{};
+        context.info=&handle;
+        context.perform=[](void* info) { (*static_cast<Handle*>(info))(); };
+        source=CFRunLoopSourceCreate(kCFAllocatorDefault,0,&context);
+        if(source)
+            CFRunLoopAddSource(CFRunLoopGetMain(),source,(CFStringRef)NSModalPanelRunLoopMode);
+    }
+    ModalEditorRequest(const ModalEditorRequest&)=delete;
+    ModalEditorRequest& operator=(const ModalEditorRequest&)=delete;
+    ~ModalEditorRequest() {
+        if(source) {
+            CFRunLoopSourceInvalidate(source);
+            CFRelease(source);
+        }
+    }
+    explicit operator bool() const { return source!=nullptr; }
+    void notify() const {
+        CFRunLoopSourceSignal(source);
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+    }
+    static void cancel_file_picker(NSApplication* app) {
+        // NSOpenPanel inherits NSSavePanel. Leave sheets and custom dialogs
+        // with their owners. AppKit returns Cancel to the SDK's caller.
+        if([[app modalWindow] isKindOfClass:[NSSavePanel class]])
+            [app stopModalWithCode:NSModalResponseCancel];
+    }
+};
+
 // AppKit's default deactivate rule follows only the helper. Treat Hex and
 // its editor helpers as one foreground group without transferring the view.
 class EditorPanelVisibility {

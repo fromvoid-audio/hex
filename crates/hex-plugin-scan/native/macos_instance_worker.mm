@@ -6,6 +6,7 @@
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include "pluginterfaces/base/iplugincompatibility.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -417,6 +418,27 @@ int main(int argc,char** argv) {
             bool editor_edits_sealed=false;
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
+            std::atomic<bool> pcm_since_main_pump{false};
+            auto observe_editor_visibility=[&] {
+                if(page_stage.load(std::memory_order_acquire)!=PageRequested ||
+                   page_query.kind!=hex_instance::EDITOR_VISIBILITY) return false;
+                detached_editor_position.reset();
+                editor_state=editor.is_open()?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
+                page_stage.store(PageComplete,std::memory_order_release);
+                return true;
+            };
+            auto service_modal_editor_request=[&] {
+                if(observe_editor_visibility()) return;
+                const auto stage=page_stage.load(std::memory_order_acquire);
+                if((stage==PageRequested || stage==PageFeedbackPending) &&
+                   hex_instance::closes_open_editor(page_query.kind) && editor.is_open()) {
+                    // Leave the request pending. The existing turn owns the
+                    // detach and its ACK after AppKit and foreign code return.
+                    hex_instance::ModalEditorRequest::cancel_file_picker(NSApp);
+                }
+            };
+            hex_instance::ModalEditorRequest modal_editor_request(service_modal_editor_request);
+            if(!modal_editor_request) { failure=HostControl;throw Refusal{}; }
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -682,10 +704,15 @@ int main(int argc,char** argv) {
                             if(state!=PageIdle || page_operation==std::numeric_limits<uint64_t>::max() ||
                                 request.capture_operation!=page_operation+1) return false;
                             page_query=request.parameter_query;
-                            // A previous PCM result may still be waiting for
-                            // the main-lane feedback slot. Publish it before
-                            // allowing the controller to answer this query.
-                            ++page_operation;page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            ++page_operation;
+                            // Only visibility can finish before preceding PCM
+                            // feedback is published. Cancellation may unblock
+                            // that publication but does not complete a close.
+                            const bool visibility=page_query.kind==hex_instance::EDITOR_VISIBILITY;
+                            const bool needs_feedback=!visibility && parameter_feedback.count;
+                            page_stage.store(needs_feedback?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            if(visibility || hex_instance::closes_open_editor(page_query.kind))
+                                modal_editor_request.notify();
                         } else if(state==PageIdle || request.capture_operation!=page_operation ||
                                   !(request.parameter_query==page_query)) return false;
                         if(state==PageFailed) {worker_failure.store(page_failure);return false;}
@@ -1111,6 +1138,7 @@ int main(int argc,char** argv) {
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
+                        pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
                             diagnostic_pcm_blocks.store(blocks,std::memory_order_relaxed);
                             if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
@@ -1145,6 +1173,10 @@ int main(int argc,char** argv) {
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
+            constexpr auto quiet_pcm_window=std::chrono::milliseconds(40);
+            constexpr double quiet_main_wait=0.008;
+            const double pcm_only_wait=std::clamp(config->maximum/config->rate/3.0,0.001,0.002);
+            auto active_pcm_until=std::chrono::steady_clock::now()+quiet_pcm_window;
             std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
             const auto may_cancel_closed_peer=[&] {
                 if(!worker_retiring.load(std::memory_order_acquire)) return true;
@@ -1190,7 +1222,8 @@ int main(int argc,char** argv) {
                     if(const auto flags=instance.host_refusals()) {
                         control_failure(runtime_host_failure(flags,false));continue;
                     }
-                    if(page_stage.load(std::memory_order_acquire)==PageRequested) {
+                    if(page_stage.load(std::memory_order_acquire)==PageRequested &&
+                       !observe_editor_visibility()) {
                         page_failure=0;
                         try {
                             // Acquire the exact prior worker publication even
@@ -1419,7 +1452,18 @@ int main(int argc,char** argv) {
                         editor.quarantine();
                         control_failure(Unexpected);
                     }
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
+                    // AppKit and admitted control work use the fast cadence.
+                    // With PCM only, bound the main-lane wait relative to the
+                    // admitted quantum. The worker still receives PCM directly.
+                    const auto now=std::chrono::steady_clock::now();
+                    if(pcm_since_main_pump.exchange(false,std::memory_order_relaxed))
+                        active_pcm_until=now+quiet_pcm_window;
+                    const bool busy=editor.is_open() || stage!=Idle ||
+                        page_stage.load(std::memory_order_acquire)!=PageIdle ||
+                        live_stage.load(std::memory_order_acquire)!=LiveIdle;
+                    const double wait=busy ? 0.001 :
+                        (now<active_pcm_until ? pcm_only_wait : quiet_main_wait);
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,wait,true);
                 } catch(...) { control_failure(Unexpected); }
             }
             worker.join();failure=worker_failure.load()&0xFF;

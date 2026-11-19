@@ -140,6 +140,83 @@ fn same_mode_revision_and_reset_predecessor_are_never_busy() {
 }
 
 #[test]
+fn stopped_live_monitor_keeps_busy_transition_until_it_drains() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let (project, device) = project_with_device_slot();
+    let revision = revision(&project, table);
+    let track = project.tracks()[0].id();
+    let arrangement = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let new_monitor = || {
+        PausedTrackMonitor::prepare_on_control(
+            Arc::clone(&revision),
+            track,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+        )
+        .unwrap()
+    };
+    let probe = Arc::new(Probe::default());
+    let mut monitor = new_monitor();
+    let mut mode = 0;
+    let mut chain = fixture_chain(device, mode, &probe);
+    for _ in 0..CAPACITY {
+        mode = 1 - mode;
+        let mut next = fixture_chain(device, mode, &probe);
+        next.inherit_from(&chain);
+        chain = next;
+    }
+    monitor.pcm_runtime_for_test().device_chains[0] = chain;
+    assert!(monitor.pcm_runtime_for_test().renders_no_device_chains());
+    let mut heard = [[0.0; 2]; 1];
+    monitor
+        .render(&arrangement, &[[0.5; 2]; 1], &mut heard)
+        .unwrap();
+    assert_ne!(heard, [[0.0; 2]; 1]);
+    let mut successor = new_monitor();
+    let candidate = successor.pcm_runtime_for_test();
+    candidate.device_chains[0] = fixture_chain(device, 1 - mode, &probe);
+    assert!(monitor.blocks_graph_replacement(candidate));
+    assert_eq!(
+        candidate.try_inherit_state_live_from(monitor.pcm_runtime_for_test()),
+        Err(SessionPlaybackError::DeviceTransitionBusy)
+    );
+    assert!(monitor.blocks_graph_replacement(candidate));
+    assert_eq!(probe.dropped_transitions(), 0);
+    let mut silent = [[0.0; 2]; TRANSITION_FRAMES as usize - 1];
+    let silence = [[0.0; 2]; 13];
+    for block in silent.chunks_mut(silence.len()) {
+        assert!(monitor.blocks_graph_replacement(candidate));
+        monitor
+            .render(&arrangement, &silence[..block.len()], block)
+            .unwrap();
+        assert!(block.iter().all(|frame| *frame == [0.0; 2]));
+    }
+    assert!(!monitor.blocks_graph_replacement(candidate));
+    assert_eq!(monitor.pcm_runtime_for_test().performance_frame(), 0);
+    candidate
+        .try_inherit_state_live_from(monitor.pcm_runtime_for_test())
+        .unwrap();
+    assert_eq!(probe.dropped_transitions(), 0);
+    candidate.apply(SessionPlaybackCommand::Pause).unwrap();
+    assert!(!candidate.renders_no_device_chains());
+    assert_eq!(
+        candidate.apply(SessionPlaybackCommand::Play),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(candidate.renders_no_device_chains());
+    candidate
+        .render_paused_pcm(
+            track,
+            &[[0.5; 2]; 1],
+            &mut heard,
+            &mut hex_lattice::RefuseForeign,
+        )
+        .unwrap();
+    candidate.apply(SessionPlaybackCommand::Seek(8)).unwrap();
+    assert!(candidate.renders_no_device_chains());
+}
+
+#[test]
 fn idle_busy_transition_with_return_tail_refuses_without_settling_donor() {
     let table = Arc::new(hex_devices::SineTable::new());
     let (project, device) = project_with_device_slot();

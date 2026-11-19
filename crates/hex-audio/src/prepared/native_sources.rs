@@ -227,6 +227,7 @@ impl PublicationControl {
             },
             request.successor.project_generation,
             Some(request.successor),
+            None,
             Some(observation),
             admit,
         )
@@ -1586,6 +1587,30 @@ impl PublicationControl {
     /// Queue acceptance grants no graph, canonical edit or disposal authority.
     /// A full queue refuses before extracting the original constructor pair.
     pub fn publish_native_source_endpoint(&mut self, binding: Binding) -> Result<(), &'static str> {
+        self.publish_native_source_endpoint_with_paused_source(binding, None)
+    }
+
+    /// Loan a separate worker to the paused monitor bank. The original Root
+    /// still owns admission and retirement. The callback revalidates the
+    /// exact source when installing and again before it borrows the bank.
+    pub fn publish_paused_monitor_native_source_endpoint(
+        &mut self,
+        binding: Binding,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+    ) -> Result<(), &'static str> {
+        let scope = (source, transport_epoch);
+        if self.status.paused_input_source() != Some(scope) {
+            return Err("paused native monitor source changed");
+        }
+        self.publish_native_source_endpoint_with_paused_source(binding, Some(scope))
+    }
+
+    fn publish_native_source_endpoint_with_paused_source(
+        &mut self,
+        binding: Binding,
+        paused_source: Option<(AppliedAudioSource, u64)>,
+    ) -> Result<(), &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native preparation output is closing");
         }
@@ -1593,7 +1618,10 @@ impl PublicationControl {
             .publications
             .write_chunk_uninit(1)
             .map_err(|_| "native endpoint publication is busy")?;
-        let endpoint = self.candidate_root.loan_native_endpoint(binding)?;
+        let mut endpoint = self.candidate_root.loan_native_endpoint(binding)?;
+        if let Some(source) = paused_source {
+            endpoint.bind_paused_monitor(source);
+        }
         chunk.fill_from_iter(std::iter::once(QueuedPublication::Native(endpoint)));
         Ok(())
     }
@@ -1642,6 +1670,20 @@ pub(super) fn reserve_parameter_observation<'a>(
 }
 
 impl Callback {
+    pub(super) fn install_native_source_endpoint(
+        &mut self,
+        endpoint: crate::candidate_custody::NativeEndpointEnvelope,
+    ) -> Result<(), crate::candidate_custody::NativeEndpointEnvelope> {
+        let bank = if let Some(source) = endpoint.paused_source() {
+            if self.status.paused_input_source() != Some(source) {
+                return Err(endpoint);
+            }
+            &mut self.paused_native_sources
+        } else {
+            &mut self.native_sources
+        };
+        bank.install(self.candidate_root.root_id(), endpoint)
+    }
     /// Borrow the installed original endpoint's input observation without
     /// waiting, allocation, or ownership transfer. This is not graph, source,
     /// transport, state, or publication authority; callers must validate each.
@@ -1664,8 +1706,13 @@ impl Callback {
     /// This grants no readiness, endpoint loan, graph admission or native ACK.
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
-        self.native_sources
-            .workers_idle_on_control(&self.candidate_root)
+        Some(
+            self.native_sources
+                .workers_idle_on_control(&self.candidate_root)?
+                && self
+                    .paused_native_sources
+                    .workers_idle_on_control(&self.candidate_root)?,
+        )
     }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_worker_phase_for_test(&self) -> Option<usize> {
@@ -1800,26 +1847,32 @@ impl Callback {
         }
     }
     pub(super) fn return_requested_native_sources(&mut self) {
+        let paused_endpoints = self.paused_native_sources.has_endpoints();
         for index in 0..hex_lattice::MAX_STATEFUL_PROCESSORS {
             if self.held_retirement.is_some() || self.retired.is_full() {
                 return;
             }
-            let Some(endpoint) = self.native_sources.take_requested(index) else {
+            let Some(endpoint) = self.native_sources.take_requested(index).or_else(|| {
+                paused_endpoints
+                    .then(|| self.paused_native_sources.take_requested(index))
+                    .flatten()
+            }) else {
                 continue;
             };
             self.return_publication(ReturnedPublication::Native(endpoint));
         }
     }
     pub(crate) fn has_native_source_endpoints(&self) -> bool {
-        self.native_sources.has_endpoints()
+        self.native_sources.has_endpoints() || self.paused_native_sources.has_endpoints()
     }
     pub(crate) fn extract_native_source_endpoints_on_control(
         &mut self,
         destination: &mut [Option<crate::candidate_custody::NativeEndpointEnvelope>;
                  hex_lattice::MAX_STATEFUL_PROCESSORS],
     ) -> bool {
-        self.native_sources
-            .extract(self.candidate_root.root_id(), destination)
+        let root = self.candidate_root.root_id();
+        self.native_sources.extract(root, destination)
+            && self.paused_native_sources.extract(root, destination)
     }
 }
 

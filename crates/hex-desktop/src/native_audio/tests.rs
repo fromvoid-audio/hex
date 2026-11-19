@@ -272,6 +272,29 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn confirms_verified_device_inserts(&self) -> bool {
+        self.inner.confirms_verified_device_inserts()
+    }
+    fn begin_verified_device_insert(
+        &mut self,
+        attempt: hex_session::service::VerifiedDeviceInsertAttempt,
+    ) -> Result<(), String> {
+        self.inner.begin_verified_device_insert(attempt)
+    }
+    fn finish_verified_device_insert(
+        &mut self,
+        attempt: &hex_session::service::VerifiedDeviceInsertAttempt,
+        installed: bool,
+    ) {
+        self.inner.finish_verified_device_insert(attempt, installed);
+    }
+    fn offer_device_insert_consent(
+        &mut self,
+        submission: hex_session::service::ResidentGraphSubmission,
+    ) -> Option<Instant> {
+        self.inner.offer_device_insert_consent(submission)
+    }
+
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
@@ -431,6 +454,12 @@ impl WorkerAudioSink for ObservedSink {
                 .push((identity, kind));
         }
         accepted
+    }
+    fn verified_arrangement_gain_update(
+        &mut self,
+        update: hex_session::service::VerifiedArrangementGainUpdate,
+    ) -> bool {
+        self.inner.verified_arrangement_gain_update(update)
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
@@ -722,6 +751,14 @@ impl Harness {
         }
     }
     pub(super) fn next(&mut self) -> Event {
+        self.next_event(false)
+    }
+
+    pub(super) fn next_with_audio(&mut self) -> Event {
+        self.next_event(true)
+    }
+
+    fn next_event(&mut self, drive_audio: bool) -> Event {
         let deadline = Instant::now() + self.wait;
         loop {
             if let Ok(event) = self.service.as_ref().unwrap().try_event() {
@@ -752,6 +789,9 @@ impl Harness {
                 Instant::now() < deadline,
                 "canonical worker did not respond"
             );
+            if drive_audio {
+                self.render();
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -813,6 +853,23 @@ impl Harness {
         let event = self.next();
         assert!(event.error.is_none(), "{:?}", event.error);
         event
+    }
+    pub(super) fn run_verified_device_insert(&mut self, command: hex_project::Command) -> Event {
+        let staged = self.run(Request::Edit(command));
+        assert!(!staged.request_complete);
+        let mut applied = self.next_with_audio();
+        assert!(applied.error.is_none(), "{:?}", applied.error);
+        if let Some(offer) = applied.device_insert_confirmation.take() {
+            assert!(offer.proceed());
+            applied = self.next_with_audio();
+            assert!(applied.error.is_none(), "{:?}", applied.error);
+        }
+        let receipt = applied.device_insert_complete.as_ref().unwrap();
+        assert_eq!(
+            receipt.outcome,
+            hex_session::service::DeviceInsertOutcome::Installed
+        );
+        applied
     }
     pub(super) fn open(&mut self) {
         let deadline = Instant::now() + self.wait;

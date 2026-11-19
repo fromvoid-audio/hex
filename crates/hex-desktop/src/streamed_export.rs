@@ -18,6 +18,7 @@ use hex_stream::{
     PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind, StreamRuntime,
 };
 use std::{
+    borrow::Cow,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -112,7 +113,7 @@ pub(crate) fn bounce_with_config(
             ))
         },
         request.repitches(),
-        GranularCapture::Captured(request.granulars()),
+        DerivedCapture::Bounce(request),
         Some(request.path()),
         config,
         request.control(),
@@ -165,15 +166,16 @@ fn media(error: impl std::fmt::Display) -> ExportError {
     ExportError::Media(error.to_string())
 }
 
-/// Canonical export and retained ordinary inputs share exact root projection;
-/// neither form authorizes readers, workers, native domains or page loans.
+/// Source facts for derived pages. An offline bounce can also borrow its
+/// isolated Project when there is no retained requirement to look up.
 #[derive(Clone, Copy)]
-enum GranularCapture<'a> {
+enum DerivedCapture<'a> {
     Canonical(&'a hex_session::service::CanonicalAudioSourceSnapshot),
     Captured(&'a [hex_engine::audio_transform::StreamedGranularRequirement]),
+    Bounce(&'a hex_session::StreamedBounceRequest<'a>),
 }
-impl GranularCapture<'_> {
-    fn root_for(
+impl DerivedCapture<'_> {
+    fn granular_root(
         &self,
         expected: &hex_engine::StreamedSourceMetadata,
         file: &VerifiedAudioFile,
@@ -185,7 +187,7 @@ impl GranularCapture<'_> {
         if !expected.is_granular_of(&raw) {
             return Err(ExportError::Invalid("granular export source facts differ"));
         }
-        match self {
+        let captured = match self {
             Self::Canonical(source) => {
                 for result in source.required_granular_roots(expected.key().generation()) {
                     check(control)?;
@@ -194,24 +196,104 @@ impl GranularCapture<'_> {
                         return Ok(root);
                     }
                 }
+                &[]
             }
-            Self::Captured(requirements) => {
-                for requirement in *requirements {
+            Self::Captured(requirements) => *requirements,
+            Self::Bounce(request) => {
+                let key = expected.key();
+                for result in request.projected_granular_roots(key.asset(), key.generation()) {
                     check(control)?;
-                    if requirement
-                        .metadata_for(&raw)
-                        .is_ok_and(|metadata| &metadata == expected)
-                    {
-                        return requirement
-                            .try_owned_root(&raw, &AtomicBool::new(false))
-                            .map_err(ExportError::Render);
+                    let root = result.map_err(ExportError::Render)?;
+                    if root.metadata() == expected {
+                        return Ok(root);
                     }
                 }
+                request.granulars()
+            }
+        };
+        for requirement in captured {
+            check(control)?;
+            if requirement
+                .metadata_for(&raw)
+                .is_ok_and(|metadata| &metadata == expected)
+            {
+                return requirement
+                    .try_owned_root(&raw, &AtomicBool::new(false))
+                    .map_err(ExportError::Render);
             }
         }
         Err(ExportError::Invalid(
             "verified granular requirement missing or differs",
         ))
+    }
+
+    fn repitch_definition(
+        &self,
+        metadata: &hex_engine::StreamedSourceMetadata,
+        raw: hex_engine::StreamedSourceMetadata,
+        file: &VerifiedAudioFile,
+        retained: &[hex_engine::audio_transform::StreamedRepitchRequirement],
+        available: usize,
+        control: &impl Cancellation,
+    ) -> Result<(SourceDefinition, usize), ExportError> {
+        let matches = |requirement: &hex_engine::audio_transform::StreamedRepitchRequirement| {
+            requirement
+                .metadata_for(&raw)
+                .is_ok_and(|expected| &expected == metadata)
+        };
+        let mut requirement = retained
+            .iter()
+            .find(|requirement| matches(requirement))
+            .map(Cow::Borrowed);
+        let budget_error = ExportError::Invalid("repitch map reservation exceeded");
+        if requirement.is_none()
+            && let Self::Bounce(request) = self
+            && let Some(projected) =
+                request.projected_repitch_requirements(raw.key().asset(), raw.key().generation())
+        {
+            let workspace = hex_engine::audio_transform::native_metadata_workspace_bytes()
+                .ok_or(ExportError::Invalid("repitch workspace overflow"))?;
+            if workspace > available {
+                return Err(budget_error);
+            }
+            check(control)?;
+            for candidate in projected {
+                check(control)?;
+                let candidate = candidate.map_err(ExportError::Render)?;
+                if matches(&candidate) {
+                    requirement = Some(Cow::Owned(candidate));
+                    break;
+                }
+            }
+        }
+        let requirement = requirement.ok_or(ExportError::Invalid(
+            "verified repitch requirement missing or differs",
+        ))?;
+        let bytes = requirement
+            .map()
+            .backing_bytes()
+            .ok_or(ExportError::Invalid("repitch map size overflow"))?;
+        // A projected recipe and the independent constructor's map coexist
+        // during the copy. Borrowed recipes are charged by their caller.
+        let projected_bytes = match &requirement {
+            Cow::Borrowed(_) => 0,
+            Cow::Owned(requirement) => requirement
+                .retained_bytes()
+                .ok_or(ExportError::Invalid("repitch map size overflow"))?,
+        };
+        if bytes
+            .checked_add(projected_bytes)
+            .is_none_or(|peak| peak > available)
+        {
+            return Err(budget_error);
+        }
+        let map = requirement.try_owned_map().map_err(ExportError::Render)?;
+        check(control)?;
+        let definition =
+            SourceDefinition::new(file.path().to_path_buf(), raw, file.reader_limits())
+                .with_repitch(map, requirement.law())
+                .map_err(ExportError::Render)?;
+        Ok((definition, bytes))
     }
 }
 
@@ -405,7 +487,7 @@ impl VerifiedPages {
                 )),
             },
             &requirements,
-            GranularCapture::Canonical(request.source()),
+            DerivedCapture::Canonical(request.source()),
             Some(request.path()),
             capture_config,
             request.control(),
@@ -418,7 +500,7 @@ impl VerifiedPages {
         prepared: &hex_engine::PreparedRevision,
         mut file_for: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
         repitches: &[hex_engine::audio_transform::StreamedRepitchRequirement],
-        granular_capture: GranularCapture<'_>,
+        derived: DerivedCapture<'_>,
         destination: Option<&std::path::Path>,
         config: StreamConfig,
         control: &impl Cancellation,
@@ -501,34 +583,20 @@ impl VerifiedPages {
             let original = file
                 .source_metadata(metadata.key().asset(), metadata.key().generation())
                 .map_err(ExportError::Render)?;
-            let mut repitch = None;
-            let mut is_granular = false;
+            let is_repitch = metadata.key().repitch_identity().is_some();
+            let is_granular = metadata.key().granular_identity().is_some();
             let expected = match metadata.key().pitch() {
                 Some((cents, law)) => original
                     .with_plain_pitch(cents, law)
                     .map_err(ExportError::Render)?,
                 None if metadata.key().is_raw() => original.clone(),
-                None if metadata.key().repitch_identity().is_some() => {
-                    let requirement = repitches
-                        .iter()
-                        .find(|requirement| {
-                            requirement.asset() == metadata.key().asset()
-                                && requirement
-                                    .metadata_for(&original)
-                                    .is_ok_and(|expected| expected == *metadata)
-                        })
-                        .ok_or(ExportError::Invalid(
-                            "verified repitch requirement missing or differs",
-                        ))?;
-                    repitch = Some(requirement);
-                    requirement
-                        .metadata_for(&original)
-                        .map_err(ExportError::Render)?
+                None if is_repitch && metadata.is_repitch_of(&original) => metadata.clone(),
+                None if is_repitch => {
+                    return Err(ExportError::Invalid(
+                        "verified export file facts differ from compiled source",
+                    ));
                 }
-                None if metadata.key().granular_identity().is_some() => {
-                    is_granular = true;
-                    metadata.clone()
-                }
+                None if is_granular => metadata.clone(),
                 None => return Err(ExportError::Invalid("unsupported derived export source")),
             };
             if expected != *metadata {
@@ -566,7 +634,7 @@ impl VerifiedPages {
                                 "granular metadata reservation exceeded",
                             ));
                         }
-                        let root = granular_capture.root_for(metadata, file, control)?;
+                        let root = derived.granular_root(metadata, file, control)?;
                         granular_map_bytes = granular_map_bytes
                             .checked_add(
                                 root.backing_bytes()
@@ -584,33 +652,18 @@ impl VerifiedPages {
                         }
                         granulars.push(root);
                     } else {
-                        let definition = if let Some(requirement) = repitch {
-                            repitch_map_bytes = repitch_map_bytes
-                                .checked_add(
-                                    requirement
-                                        .map()
-                                        .backing_bytes()
-                                        .ok_or(ExportError::Invalid("repitch map size overflow"))?,
-                                )
-                                .ok_or(ExportError::Invalid("repitch map size overflow"))?;
-                            if repitch_map_bytes
-                                .checked_add(granular_map_bytes)
-                                .and_then(|bytes| bytes.checked_add(root_slots))
-                                .is_none_or(|bytes| bytes > config.max_kernel_table_bytes)
-                            {
-                                return Err(ExportError::Invalid(
-                                    "repitch map reservation exceeded",
-                                ));
-                            }
-                            let map = requirement.try_owned_map().map_err(ExportError::Render)?;
-                            check(control)?;
-                            SourceDefinition::new(
-                                file.path().to_path_buf(),
-                                original,
-                                file.reader_limits(),
-                            )
-                            .with_repitch(map, requirement.law())
-                            .map_err(ExportError::Render)?
+                        let definition = if is_repitch {
+                            let available = config
+                                .max_kernel_table_bytes
+                                .checked_sub(root_slots)
+                                .and_then(|left| left.checked_sub(granular_map_bytes))
+                                .and_then(|left| left.checked_sub(repitch_map_bytes))
+                                .ok_or(ExportError::Invalid("repitch map reservation exceeded"))?;
+                            let (definition, bytes) = derived.repitch_definition(
+                                metadata, original, file, repitches, available, control,
+                            )?;
+                            repitch_map_bytes += bytes;
+                            definition
                         } else {
                             SourceDefinition::new(
                                 file.path().to_path_buf(),
@@ -1244,7 +1297,7 @@ pub(super) fn resident_seek_storage_bytes(
                 ))
         },
         sources.repitches().requirements(),
-        GranularCapture::Captured(sources.granulars().requirements()),
+        DerivedCapture::Captured(sources.granulars().requirements()),
         None,
         StreamConfig::initial(),
         &AtomicBool::new(false),
@@ -1312,7 +1365,7 @@ fn prepare_file_seek_runtime<'a>(
         &spec.prepared_revision,
         resolve,
         repitches,
-        GranularCapture::Captured(granulars),
+        DerivedCapture::Captured(granulars),
         None,
         StreamConfig::initial(),
         cancelled,

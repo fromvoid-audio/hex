@@ -880,6 +880,18 @@ impl ConstructorPageLoan {
     pub fn test_ready_page(&self, key: crate::ResourcePageKey) -> bool {
         self.pages.endpoint.test_ready_page(key)
     }
+    /// Test-only observation of the next worker failure, without consuming it.
+    #[cfg(feature = "test-support")]
+    pub fn test_next_failure(&self) -> Option<crate::StreamFailure> {
+        self.pages.endpoint.test_next_failure()
+    }
+
+    /// Test fixture only: ask the real worker to read a page without pumping.
+    #[cfg(feature = "test-support")]
+    pub fn test_request_audio_page(&mut self, key: StreamSourceKey, index: u64) {
+        self.pages.request_page(key, index);
+    }
+
     /// Test fixture only: queue the normal speculative path without pumping.
     #[cfg(feature = "test-support")]
     pub fn test_prefetch_audio_page(&mut self, key: StreamSourceKey, index: u64) {

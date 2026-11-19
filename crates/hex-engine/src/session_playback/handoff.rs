@@ -1,4 +1,5 @@
 use super::*;
+use crate::signal_graph::FreshHistory;
 use crate::{MidiTiming, Track};
 use std::sync::Weak;
 mod shared_sources;
@@ -465,6 +466,7 @@ enum Restart {
     None,
     Ordinary,
     Baked,
+    ConfirmedInsert { force: bool },
 }
 
 impl SessionPlayback {
@@ -509,6 +511,7 @@ impl SessionPlayback {
             false,
             None,
             Some(anchor),
+            false,
         )
     }
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
@@ -682,6 +685,17 @@ impl SessionPlayback {
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         self.inherit_state_planned(previous, None, None, true, true, None)
     }
+
+    pub(super) fn inherit_state_at_device_insert_cut(
+        &mut self,
+        previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned_with_anchor(
+            previous, groups, demand, true, false, None, None, true,
+        )
+    }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
     /// unavailable source history...) does not refuse: the planner rejects it
@@ -710,6 +724,7 @@ impl SessionPlayback {
             fenced_restart,
             continuation,
             None,
+            false,
         )
     }
 
@@ -723,6 +738,7 @@ impl SessionPlayback {
         fenced_restart: bool,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
+        confirmed_insert: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if continuation.is_some() && (fenced_restart || self.live_restart || anchor.is_some()) {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -806,7 +822,11 @@ impl SessionPlayback {
             previous,
             groups,
             demand.as_deref_mut(),
-            Restart::None,
+            if confirmed_insert {
+                Restart::ConfirmedInsert { force: false }
+            } else {
+                Restart::None
+            },
             source_transfer.as_ref(),
             continuation,
             None,
@@ -836,7 +856,11 @@ impl SessionPlayback {
                     previous,
                     None,
                     demand,
-                    Restart::Ordinary,
+                    if confirmed_insert {
+                        Restart::ConfirmedInsert { force: true }
+                    } else {
+                        Restart::Ordinary
+                    },
                     None,
                     None,
                     None,
@@ -939,6 +963,11 @@ impl SessionPlayback {
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
         anchor: Option<&PreparedTempoAnchor>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.stopped_input.map(|scope| scope.track)
+            != previous.stopped_input.map(|scope| scope.track)
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if previous.pending_shared_chase.is_some() || previous.pending_shared_live.is_some() {
             return Err(SessionPlaybackError::MutableInstrumentChase);
         }
@@ -975,7 +1004,12 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::InvalidCommand);
             }
         }
-        let force_restart = restart != Restart::None;
+        let confirmed_insert = matches!(restart, Restart::ConfirmedInsert { .. });
+        let force_restart = matches!(
+            restart,
+            Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
+        );
+        let continuous_insert = self.require_continuous_insert && previous.playing;
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -1125,6 +1159,22 @@ impl SessionPlayback {
             .timing()
             .same_map(previous.revision.session().timing());
         let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
+        if confirmed_insert
+            && (previous.playing
+                || !mapped_main_clock
+                || previous.periodic_tempo() != self.periodic_tempo_at(previous.arrangement_frame)
+                || previous.routes.iter().any(|route| route.pending.is_some()))
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        if continuous_insert
+            && (force_restart
+                || !mapped_main_clock
+                || self.revision.arrangement().main_latency_frames()
+                    != previous.revision.arrangement().main_latency_frames())
+        {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
             old.delays.latest_stamp().is_none_or(|stamp| {
                 !stamp.transport_is_running
@@ -1193,18 +1243,16 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active);
         // None: the delay layout cannot carry the moved clock (refused below
         // unless a paused donor takes the reset at its cursor).
-        // A cold, independent added or removed track also needs a fresh delay history
-        // when no foreign instrument is present. Foreign handoff admission
-        // retains its narrower `fresh` input above; compensation proves the
-        // isolated routing and silent rings independently below.
-        let history_track = fresh.or_else(|| {
-            if !previous.playing {
-                return None;
-            }
+        // A track with no source qualifies for the cold history check even
+        // when another track has a hosted generator. The gate handoff above
+        // still uses its separate fresh-generator admission check.
+        let history_track = if previous.playing {
             let old = previous.revision.arrangement().tracks();
             let new = self.revision.arrangement().tracks();
             cold_added_track(new, old)
                 .or_else(|| cold_added_track(old, new))
+                .map(FreshHistory::ColdTrack)
+                .or(fresh.map(FreshHistory::Track))
                 .or_else(|| {
                     (old.len().checked_add(1) == Some(new.len())
                         && same_base_timing
@@ -1253,8 +1301,11 @@ impl SessionPlayback {
                         )
                     })
                     .flatten()
+                    .map(FreshHistory::Track)
                 })
-        });
+        } else {
+            None
+        };
         let compensation_pair = self
             .compensation
             .as_ref()
@@ -1302,7 +1353,6 @@ impl SessionPlayback {
         }
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
-                .map(crate::signal_graph::FreshHistory::Track)
                 .or_else(|| {
                     if !previous.playing
                         || !same_base_timing
@@ -1337,7 +1387,7 @@ impl SessionPlayback {
                         None,
                         true,
                     )
-                    .map(crate::signal_graph::FreshHistory::RemovedTrack)
+                    .map(FreshHistory::RemovedTrack)
                 })
                 .or_else(|| {
                     candidate
@@ -1345,16 +1395,14 @@ impl SessionPlayback {
                         .has_one_more_node_than(&old.graph)
                         .then(|| muted_isolated_latency_addition(self, previous))
                         .flatten()
-                        .map(|(track, device)| {
-                            crate::signal_graph::FreshHistory::ChangedTrack(track, device)
-                        })
+                        .map(|(track, device)| FreshHistory::ChangedTrack(track, device))
                 })
                 .or_else(|| {
                     candidate
                         .graph
                         .added_isolated_return_from(&old.graph)
                         .or(removed_return)
-                        .map(crate::signal_graph::FreshHistory::Return)
+                        .map(FreshHistory::Return)
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
@@ -1457,6 +1505,9 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
+        if continuous_insert && relocate {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
         // An ordinary reset cannot transfer a detached Return tail. A fenced
         // bounce has already baked that audio into the successor.
         if relocate
@@ -1539,27 +1590,51 @@ impl SessionPlayback {
         // when the timing map and loop are unchanged.
         let running_restart =
             relocate && previous.playing && mapped_main_clock && same_periodic_timing;
-        // Appending a hosted effect or removing an already bypassed suffix
-        // can require fresh delay rings. The same-clock restart keeps the
-        // Arrangement cursor, worker binding and accepted gate deadlines
-        // while the local PCM history refills. An active removed effect still
-        // needs the tail planner.
-        let keep_foreign_gates = foreign_handoff.requires_clock_continuity
-            && running_restart
-            && !force_restart
-            && source_transfer.is_none()
+        let preserve_restart_clock = running_restart || (relocate && confirmed_insert);
+        // A confirmed Main effect append can rebuild local delay history
+        // without altering any instrument's input clock. The foreign plan
+        // has already matched the exact instrument workers and checked held
+        // gates at the cut. Preserve their ledgers while the new delay fills.
+        let confirmed_main_effect_append = confirmed_insert
+            && self.revision.arrangement().main_latency_frames()
+                > previous.revision.arrangement().main_latency_frames()
             && self
                 .revision
                 .arrangement()
-                .tracks()
-                .iter()
-                .zip(previous.revision.arrangement().tracks())
-                .any(|(new, old)| {
-                    new.canonical_track_id() == old.canonical_track_id()
-                        && (appended_foreign_effect(&new.device_chain, &old.device_chain).is_some()
-                            || appended_foreign_effect(&old.device_chain, &new.device_chain)
-                                .is_some_and(|removed| removed.bypassed))
+                .main_device_chain
+                .split_last()
+                .is_some_and(|(appended, prefix)| {
+                    let old = &previous.revision.arrangement().main_device_chain;
+                    appended.definition.is_some()
+                        && prefix.len() == old.len()
+                        && prefix
+                            .iter()
+                            .zip(old.iter())
+                            .all(|(next, old)| next.device_id == old.device_id)
                 });
+        // The existing running hosted-suffix restart also preserves the
+        // worker clock. An active removed effect still needs the tail planner.
+        let keep_foreign_gates = foreign_handoff.requires_clock_continuity
+            && !force_restart
+            && source_transfer.is_none()
+            && (confirmed_main_effect_append
+                || running_restart
+                    && self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .iter()
+                        .zip(previous.revision.arrangement().tracks())
+                        .any(|(new, old)| {
+                            new.canonical_track_id() == old.canonical_track_id()
+                                && (appended_foreign_effect(&new.device_chain, &old.device_chain)
+                                    .is_some()
+                                    || appended_foreign_effect(
+                                        &old.device_chain,
+                                        &new.device_chain,
+                                    )
+                                    .is_some_and(|removed| removed.bypassed))
+                        }));
         if foreign_handoff.requires_clock_continuity
             && (force_restart
                 || (relocate && !keep_foreign_gates)
@@ -1570,7 +1645,7 @@ impl SessionPlayback {
         }
         // A paused cursor keeps its Arrangement beat across an edited base
         // tempo map, like the running handoff below (Pulse #4118).
-        let paused_cursor = if relocate && !previous.playing {
+        let paused_cursor = if relocate && !previous.playing && !confirmed_insert {
             Some(
                 if self
                     .revision
@@ -1604,8 +1679,9 @@ impl SessionPlayback {
         }
         if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart || running_relocate)
+            && !previous.stopped_input_has_history()
             && (paused_cursor.is_some()
-                || running_restart
+                || preserve_restart_clock
                 || running_relocate
                 || (!previous.monitor_source_releases
                     && previous.performance_frame == 0
@@ -1648,12 +1724,19 @@ impl SessionPlayback {
                         {
                             RouteOwner::SessionAudio {
                                 clip,
-                                launch_frame: if running_restart { launch_frame } else { 0 },
+                                launch_frame: if preserve_restart_clock {
+                                    launch_frame
+                                } else {
+                                    0
+                                },
                             }
                         }
                         RouteOwner::Silence => RouteOwner::Silence,
                         _ => RouteOwner::Arrangement,
                     };
+                    if confirmed_insert && route.owner != old.owner {
+                        return Err(SessionPlaybackError::InvalidCommand);
+                    }
                 }
             }
             // Queued launches cannot be proven against the restarted graph;
@@ -1725,7 +1808,7 @@ impl SessionPlayback {
                 // epoch, DSP history or one-shot admission is changed.
                 let (frame, arrangement_frame, loop_pass) = match cursor {
                     Some((frame, _)) => (frame, frame, 0),
-                    None if running_restart => (
+                    None if preserve_restart_clock => (
                         previous.performance_frame,
                         previous.arrangement_frame,
                         previous.arrangement_loop_pass,
@@ -1772,7 +1855,7 @@ impl SessionPlayback {
                 // (or on the next block when relocating while playing).
                 self.interactive_start_frame = Some(frame);
                 self.playing = running_relocate;
-            } else if running_restart {
+            } else if preserve_restart_clock {
                 self.performance_frame = previous.performance_frame;
                 self.arrangement_frame = previous.arrangement_frame;
                 self.arrangement_loop_pass = previous.arrangement_loop_pass;
@@ -1782,7 +1865,7 @@ impl SessionPlayback {
                 self.monitor_source_releases |= previous.monitor_source_releases;
                 self.restart_audio_history();
                 self.interactive_start_frame = Some(self.performance_frame);
-                self.playing = true;
+                self.playing = previous.playing;
                 self.route_state_generation = previous.route_state_generation.wrapping_add(1);
             }
             self.foreign_arrangement.inherit_handoff(
@@ -3241,6 +3324,9 @@ impl SessionPlayback {
                         next.track == old_route.id && next.source_matches(old)
                     })
             });
+            if confirmed_insert && route.owner != old_route.owner {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
             if let Some(mut pending) = route.pending {
                 let valid = match pending.target {
                     RouteTarget::Arrangement | RouteTarget::Silence => true,
@@ -3276,9 +3362,19 @@ impl SessionPlayback {
                             .map_err(|_| SessionPlaybackError::TempoConversion)?
                             .max(previous.performance_frame)
                     };
+                    if continuous_insert
+                        && old_route.pending.is_some_and(|old| {
+                            old.frame.max(previous.performance_frame) != pending.frame
+                        })
+                    {
+                        return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+                    }
                     route.pending = Some(pending);
                 }
             }
+        }
+        if continuous_insert && report.cancelled_pending_len != 0 {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         // Source/timing edits retain the historical global-floor policy: all
         // currently active Session MIDI routes need copied voices to bridge
@@ -5702,6 +5798,9 @@ impl SessionPlayback {
         // before this donor has ever monitored. Preserve that admission as
         // well as existing release intent when a later edit removes the input.
         self.monitor_source_releases |= previous.monitor_source_releases;
+        if previous.stopped_input_has_history() {
+            self.stopped_input = previous.stopped_input;
+        }
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
@@ -6529,6 +6628,9 @@ fn fresh_unconnected_track(candidate: &[Track], previous: &[Track]) -> Option<Tr
 /// A track absent from the other revision with no authored or live source.
 /// The compensation graph separately proves isolated routing and silent rings.
 fn cold_added_track(candidate: &[Track], previous: &[Track]) -> Option<TrackId> {
+    if candidate.len().checked_sub(1) != Some(previous.len()) {
+        return None;
+    }
     let id = fresh_unconnected_track(candidate, previous)?;
     let track = candidate
         .iter()
@@ -6583,9 +6685,9 @@ fn fresh_added_audio_track(
     if next_retained.is_some() { None } else { added }
 }
 
-/// The initial selective case is resident, Arrangement-owned audio only.
-/// Exactly one already-muted track gains one local native latency processor;
-/// graph preflight independently proves isolation, equal maximum latency and
+/// Exactly one already-muted resident audio track gains a native latency processor.
+/// Unchanged native Arrangement instruments use the ordinary voice handoff.
+/// Graph preflight independently proves isolation, equal maximum latency and
 /// silent discarded rings before any runtime state is moved.
 fn muted_isolated_latency_addition(
     candidate: &SessionPlayback,
@@ -6638,6 +6740,24 @@ fn muted_isolated_latency_addition(
     // Bound state comparisons on the callback even for many native devices.
     const MAX_STATE_COMPARE_BYTES: usize = 4096;
     let mut compared_bytes = 0_usize;
+    let mut same_state =
+        |a: Option<&hex_lattice_contract::NativeDeviceState>,
+         b: Option<&hex_lattice_contract::NativeDeviceState>| {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    if !a.asset_references().is_empty() || !b.asset_references().is_empty() {
+                        return false;
+                    }
+                    if !a.shares_payload_storage_with(b) {
+                        compared_bytes =
+                            compared_bytes.saturating_add(a.payload().len().max(b.payload().len()));
+                    }
+                    compared_bytes <= MAX_STATE_COMPARE_BYTES && a == b
+                }
+                (None, None) => true,
+                _ => false,
+            }
+        };
     let mut changed = None;
     for (before, after) in old.iter().zip(new) {
         let id = before.canonical_track_id()?;
@@ -6646,10 +6766,21 @@ fn muted_isolated_latency_addition(
             || before.source_mix != after.source_mix
             || before.gain_envelope.is_some()
             || after.gain_envelope.is_some()
+            || before.instrument_id != after.instrument_id
+            || before.instrument_position != after.instrument_position
+            || before.source_id != after.source_id
+            || before.source_receiver_index != after.source_receiver_index
+            || before.source_input_enabled != after.source_input_enabled
+            || before.source_audio_receiver != after.source_audio_receiver
+            || before.midi_source_index != after.midi_source_index
+            || before.instrument_bypassed != after.instrument_bypassed
+            || before.tuning_identity != after.tuning_identity
+            || !same_state(
+                before.instrument_state.as_ref(),
+                after.instrument_state.as_ref(),
+            )
             || [before, after].iter().any(|track| {
-                track.instrument_id.is_some()
-                    || track.source_id.is_some()
-                    || track.midi_source_index.is_some()
+                track.foreign_instrument.is_some()
                     || track.device_chain.iter().any(|device| {
                         matches!(
                             device.definition,
@@ -6670,27 +6801,7 @@ fn muted_isolated_latency_addition(
                         && a.device_type == b.device_type
                         && a.bypassed == b.bypassed
                         && a.matrix == b.matrix
-                        && match (&a.configuration, &b.configuration) {
-                            (Some(a), Some(b)) => {
-                                if !a.asset_references().is_empty()
-                                    || !b.asset_references().is_empty()
-                                {
-                                    return false;
-                                }
-                                let bytes = if a.shares_payload_storage_with(b) {
-                                    0
-                                } else {
-                                    a.payload().len().max(b.payload().len())
-                                };
-                                let Some(next) = compared_bytes.checked_add(bytes) else {
-                                    return false;
-                                };
-                                compared_bytes = next;
-                                compared_bytes <= MAX_STATE_COMPARE_BYTES && a == b
-                            }
-                            (None, None) => true,
-                            _ => false,
-                        }
+                        && same_state(a.configuration.as_deref(), b.configuration.as_deref())
                         && a.automation.is_empty()
                         && b.automation.is_empty()
                         && a.modulation.is_none()
@@ -6704,6 +6815,9 @@ fn muted_isolated_latency_addition(
         };
         if changed.is_some()
             || !before.device_chain.is_empty()
+            || before.instrument_id.is_some()
+            || before.source_id.is_some()
+            || before.midi_source_index.is_some()
             || !before.mix.muted()
             || !after.mix.muted()
             || device.bypassed

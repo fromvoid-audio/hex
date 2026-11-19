@@ -8,11 +8,10 @@ use serde_json::value::RawValue;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document<'a> {
+struct Document<'a, Base> {
     format: &'a str,
     version: u32,
-    #[serde(borrow)]
-    base: &'a RawValue,
+    base: Base,
     #[serde(deserialize_with = "bounded_locators")]
     locators: Vec<Row>,
 }
@@ -60,11 +59,18 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
         .map(|ArrangementLocatorSnapshot { id, frame, name }| Row { id, frame, name })
         .collect();
     let prior = Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let base = crate::encode(&prior)?;
+    if super::s_curve_fades::contains(&prior) {
+        encode_over(super::s_curve_fades::document(&prior)?, locators)
+    } else {
+        encode_over(crate::encode_prior(&prior)?, locators)
+    }
+}
+
+fn encode_over(base: impl Serialize, locators: Vec<Row>) -> Result<Vec<u8>, StorageError> {
     crate::encode_document(&Document {
         format: "hex-project",
         version: ARRANGEMENT_LOCATOR_SCHEMA_VERSION,
-        base: serde_json::from_slice(&base)?,
+        base,
         locators,
     })
 }
@@ -75,7 +81,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "project exceeds the document size limit",
         ));
     }
-    let document: Document<'_> = serde_json::from_slice(bytes)?;
+    let document: Document<'_, &RawValue> = serde_json::from_slice(bytes)?;
     #[derive(Deserialize)]
     struct Header {
         version: u32,
@@ -101,6 +107,27 @@ mod tests {
     use super::*;
     use hex_project::{ClipFade, Command, Created, Editor};
     use serde_json::Value;
+
+    fn assert_prior_document_bytes(project: &Project, bytes: &[u8]) {
+        let mut snapshot = project.snapshot();
+        snapshot.arrangement_locators.clear();
+        let prior = crate::encode(&Project::from_snapshot(snapshot).unwrap()).unwrap();
+        let envelope: Document<'_, &RawValue> = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(envelope.base.get().as_bytes(), prior);
+        assert_eq!(crate::encode_document(&envelope).unwrap(), bytes);
+    }
+
+    #[test]
+    fn locators_preserve_prior_bytes_without_a_curve_envelope() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::AddArrangementLocator { frame: 40 })
+            .unwrap();
+        let project = editor.project();
+        let bytes = crate::encode(project).unwrap();
+        assert_prior_document_bytes(project, &bytes);
+        assert_eq!(crate::decode(&bytes).unwrap(), *project);
+    }
 
     #[test]
     fn locators_round_trip_over_a_prior_s_curve_document() {
@@ -154,6 +181,7 @@ mod tests {
             ARRANGEMENT_LOCATOR_SCHEMA_VERSION
         );
         assert_eq!(crate::decode(&bytes).unwrap(), *expected);
+        assert_prior_document_bytes(expected, &bytes);
         assert!(crate::encode_schema22(expected).is_err());
 
         let folder = std::env::temp_dir().join(format!("hex-locators-{}", std::process::id()));

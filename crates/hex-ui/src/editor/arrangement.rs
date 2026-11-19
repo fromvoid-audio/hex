@@ -255,6 +255,7 @@ impl EditorView {
         );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
+        let selected_rows = self.time_selection_track_indices();
         let track_scale_factor = window.scale_factor();
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
@@ -269,12 +270,11 @@ impl EditorView {
                     let Some(track) = state.project.tracks().get(index) else {
                         return div();
                     };
-                    let selected = this.selected_track() == Some(track.id());
                     this.track_row(
                         &state,
                         track,
                         index,
-                        selected,
+                        selected_rows,
                         super::tracks::ClipViewTimeline {
                             viewport: rows_viewport,
                             grid: &rows_grid,
@@ -385,12 +385,16 @@ impl EditorView {
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-                        if !phase.capture()
-                            || Self::row_size_wheel(event)
-                            || !bounds.contains(&event.position)
-                            || f32::from(event.position.x)
-                                >= f32::from(bounds.origin.x)
-                                    + (f32::from(bounds.size.width) - header_width).max(0.0)
+                        if !phase.capture() || !bounds.contains(&event.position) {
+                            return;
+                        }
+                        if Self::row_size_wheel(event) {
+                            zoom_entity.update(cx, |view, _| view.remember_row_size_scroll());
+                            return;
+                        }
+                        if f32::from(event.position.x)
+                            >= f32::from(bounds.origin.x)
+                                + (f32::from(bounds.size.width) - header_width).max(0.0)
                         {
                             return;
                         }

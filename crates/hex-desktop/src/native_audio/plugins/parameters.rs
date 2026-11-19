@@ -644,6 +644,7 @@ mod tests {
             observes_latency: false,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
             pending_touch: None,

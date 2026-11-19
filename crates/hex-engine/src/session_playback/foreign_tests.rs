@@ -13,6 +13,8 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created};
 
+mod paused_monitor;
+
 struct BorrowedDefinition {
     binding_epoch: Option<u64>,
     instances: Vec<(ProcessorInstanceIdentity, u32)>,
@@ -184,6 +186,24 @@ impl ForeignProcessors for Borrowed {
     fn reject_callback(&mut self) {
         self.revoked = true;
         self.rejections += 1;
+    }
+}
+
+#[test]
+fn paused_input_monitor_refuses_foreign_track_return_and_main_effects() {
+    for location in 0..3 {
+        let (revision, _, _) = prepared(location, false);
+        let track = revision.arrangement().tracks()[0]
+            .canonical_track_id()
+            .unwrap();
+        assert!(matches!(
+            PausedTrackMonitor::prepare_on_control(
+                revision,
+                track,
+                MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            ),
+            Err(SessionPlaybackError::InvalidCommand)
+        ));
     }
 }
 

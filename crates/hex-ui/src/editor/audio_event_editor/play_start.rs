@@ -14,12 +14,12 @@ impl EditorView {
             return None;
         }
         match gesture.kind {
-            Kind::PlayStart { position } => Some(position),
+            Kind::PlayStart { position, .. } => Some(position),
             _ => None,
         }
     }
     pub(super) fn audio_play_start_position(&self) -> Option<u64> {
-        if let Some(Kind::PlayStart { position }) =
+        if let Some(Kind::PlayStart { position, .. }) =
             self.audio_event_editor.gesture.as_ref().map(|g| g.kind)
         {
             return Some(position);
@@ -101,6 +101,7 @@ impl EditorView {
             || self.audio_event_editor.source_view
             || !self.event_context_current()
             || self.edit_pending()
+            || self.recovery.generation().is_some()
             || self.audio_event_editor.pending.is_some()
             || self.audio_event_editor.gesture.is_some()
             || cx.has_active_drag()
@@ -128,7 +129,10 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let kind = Kind::PlayStart { position };
+        let kind = Kind::PlayStart {
+            position,
+            recovery_attempted: false,
+        };
         if !self.capture_audio_event_pointer(kind, window, cx) {
             return;
         }
