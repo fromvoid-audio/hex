@@ -1065,7 +1065,7 @@ fn resident_auto_pan_power_installs_and_restarts_at_the_callback_boundary() {
         .unwrap();
 
     let table = Arc::new(hex_engine::SineTable::new());
-    let prepare = |project| {
+    let prepare = |project: &Project| {
         Arc::new(
             hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
                 .unwrap(),
