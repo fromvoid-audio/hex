@@ -459,6 +459,14 @@ impl StoredForeignContinuation {
     }
 }
 
+/// Exact ordinary audio submission the resident mute was prepared against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentMutePredecessor {
+    pub context: crate::AudioSourceContext,
+    pub output_identity: u64,
+    pub audio_revision: u64,
+}
+
 /// Playback graph, with the legacy finite renderer kept as the compatibility path.
 pub struct Playback {
     metronome: Option<Box<Metronome>>,
@@ -1464,10 +1472,24 @@ impl Playback {
         &mut self,
         previous: &Arc<PreparedRevision>,
         track: hex_project::TrackId,
+        predecessor: ResidentMutePredecessor,
     ) -> bool {
-        self.session_runtime
-            .as_mut()
-            .is_some_and(|runtime| runtime.prepare_resident_mute_on_control(previous, track))
+        self.session_runtime.as_mut().is_some_and(|runtime| {
+            runtime.prepare_resident_mute_on_control(previous, track, Some(predecessor))
+        })
+    }
+
+    /// The publisher must bind this identity to its actual callback graph.
+    pub fn resident_mute_predecessor(&self) -> Option<ResidentMutePredecessor> {
+        self.session_runtime.as_ref()?.resident_mute_predecessor()
+    }
+
+    /// Permit the normal mute publication to proceed after a stale fence.
+    /// The proof allocation remains part of the graph until control reclaims it.
+    pub fn disarm_resident_mute(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.disarm_resident_mute();
+        }
     }
 
     /// Borrow the actual prepared foreign nodes on control. These immutable

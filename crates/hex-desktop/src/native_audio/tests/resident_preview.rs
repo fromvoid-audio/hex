@@ -751,8 +751,16 @@ fn arrangement_toggle_mute_ramps_the_installed_resident_audio_once() {
     // Use the ordinary edit publisher for the outgoing canonical graph.
     let before = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
     let (old_revision, old_metadata) = h.applied(import_revision);
-    assert_eq!(old_metadata.source_origin, ResidentSourceOrigin::CanonicalCandidate);
-    h.audio.as_mut().unwrap().control.command(PlaybackCommand::Play).unwrap();
+    assert_eq!(
+        old_metadata.source_origin,
+        ResidentSourceOrigin::CanonicalCandidate
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
     for _ in 0..4 {
         h.render();
     }

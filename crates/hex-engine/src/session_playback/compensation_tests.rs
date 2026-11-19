@@ -2246,7 +2246,7 @@ fn resident_mute_feeds_the_same_pcm_as_a_fader_cut() {
             let mut old = SessionPlayback::new(Arc::clone(&before)).unwrap();
             let mut next = SessionPlayback::new(Arc::clone(after)).unwrap();
             if Arc::ptr_eq(after, &muted) {
-                assert!(next.prepare_resident_mute_on_control(&before, track));
+                assert!(next.prepare_resident_mute_on_control(&before, track, None));
             }
             old.apply(SessionPlaybackCommand::Play).unwrap();
             old.render(&mut [[0.0; 2]; 32]).unwrap();
@@ -2290,7 +2290,7 @@ fn resident_mute_refuses_a_replacement_source_and_revalidates_the_handoff() {
     let muted = prepare(&f).unwrap();
 
     let mut next = SessionPlayback::new(Arc::clone(&muted)).unwrap();
-    assert!(next.prepare_resident_mute_on_control(&before, track));
+    assert!(next.prepare_resident_mute_on_control(&before, track, None));
     // Another prepared owner can share every clip and PCM sample. It still
     // cannot serve as the predecessor captured by this candidate.
     let mut actual = SessionPlayback::new(other_owner).unwrap();
@@ -2303,7 +2303,7 @@ fn resident_mute_refuses_a_replacement_source_and_revalidates_the_handoff() {
 
     let mut actual = SessionPlayback::new(Arc::clone(&before)).unwrap();
     let mut next = SessionPlayback::new(muted).unwrap();
-    assert!(next.prepare_resident_mute_on_control(&before, track));
+    assert!(next.prepare_resident_mute_on_control(&before, track, None));
     actual.apply(SessionPlaybackCommand::Play).unwrap();
     actual.render(&mut [[0.0; 2]; 32]).unwrap();
     next.try_inherit_state_from(&mut actual).unwrap();
@@ -2319,7 +2319,7 @@ fn resident_mute_refuses_a_replacement_source_and_revalidates_the_handoff() {
         Audio::new(48_000, vec![[-0.25, 0.25]; 1024]).unwrap(),
     );
     let mut replaced = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
-    assert!(!replaced.prepare_resident_mute_on_control(&before, track));
+    assert!(!replaced.prepare_resident_mute_on_control(&before, track, None));
 }
 
 #[test]

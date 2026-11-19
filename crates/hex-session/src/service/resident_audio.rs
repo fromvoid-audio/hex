@@ -719,6 +719,44 @@ impl Inputs<'_> {
         let metadata = canonical_metadata(snapshot, context);
         self.publish_tagged(snapshot, project, sink, metadata)
     }
+    fn publish_resident_mute(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        track: hex_project::TrackId,
+        witness: super::RawArrangementContentWitness,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let context = snapshot.prepared_context;
+        let metadata = canonical_metadata(snapshot, context);
+        let (policy, section_loop) =
+            inherited_runtime(sink, context, ResidentPublicationPolicy::InheritRuntime)?;
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
+        if let ResidentPublicationPolicy::InheritRuntimeAt(applied) = policy
+            && applied.source_origin == ResidentSourceOrigin::CanonicalCandidate
+            && let Some(previous) = self.current
+            && previous.source_origin == ResidentSourceOrigin::CanonicalCandidate
+            && previous.file_sources.is_none()
+            && snapshot.file_sources.is_none()
+            && let Some(submission) = previous.submission
+            && submission.context == previous.prepared_context
+            && applied.source_context == Some(submission.context)
+            && applied.output_identity == submission.output_identity
+            && applied.audio_revision == submission.audio_revision
+            && witness.matches(submission.context, context, track)
+        {
+            playback.prepare_resident_mute_on_control(
+                &previous.prepared,
+                track,
+                hex_engine::playback::ResidentMutePredecessor {
+                    context: submission.context,
+                    output_identity: submission.output_identity,
+                    audio_revision: submission.audio_revision,
+                },
+            );
+        }
+        self.publish_tagged_playback(snapshot, project, sink, metadata, policy, playback)
+    }
     /// Stopped section edits (and their Undo/Redo) keep the raw cursor but start
     /// every device, effect tail, compensation delay and instrument empty there:
     /// the song prefix is not replayed, so latency is independent of the cursor.
@@ -3034,6 +3072,13 @@ impl Session {
             );
         let explicit_tuning = matches!(&transition, Transition::Command(command)
             if matches!(command.as_ref(), Command::SetTuning(..)));
+        let mute_track = match &transition {
+            Transition::Command(command) => match command.as_ref() {
+                Command::Mute { track, muted: true } | Command::ToggleMute(track) => Some(*track),
+                _ => None,
+            },
+            _ => None,
+        };
         let prepare = |source: &Project, project: &Project| {
             let changed = source != project;
             let context = if !changed {
@@ -3109,7 +3154,27 @@ impl Session {
                 sink.confirm_section_edit_recovery(context, accepted)
                     .map_err(SessionError::NativeAudio)?;
             } else {
-                let accepted = inputs.publish(&mut snapshot, project, sink, context)?;
+                let mute = mute_track.and_then(|track| {
+                    let previous = current?.prepared_context;
+                    if previous.editor_revision.checked_add(1) != Some(context.editor_revision) {
+                        return None;
+                    }
+                    let witness = super::RawArrangementContentWitness::for_resident_mute(
+                        (source, previous),
+                        (project, context),
+                        track,
+                        |asset| {
+                            media.resident.contains_key(&asset)
+                                && !media.verified.contains_key(&asset)
+                        },
+                    )?;
+                    Some((track, witness))
+                });
+                let accepted = if let Some((track, witness)) = mute {
+                    inputs.publish_resident_mute(&mut snapshot, project, sink, track, witness)?
+                } else {
+                    inputs.publish(&mut snapshot, project, sink, context)?
+                };
                 sink.confirm_stopped_foreign_history(context, accepted)
                     .map_err(SessionError::NativeAudio)?;
                 if plugin_parameter {

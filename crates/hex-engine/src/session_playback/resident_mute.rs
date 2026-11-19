@@ -1,21 +1,24 @@
 //! Exact, control-prepared raw resident input for one Arrangement mute.
 use super::{RouteOwner, SessionPlayback};
-use crate::{Clip, PreparedRevision, Track};
+use crate::{Clip, PreparedRevision, Track, playback::ResidentMutePredecessor};
 use hex_project::TrackId;
 use std::sync::{Arc, Weak};
 
 pub(super) struct ResidentMuteBasis {
     previous: Weak<PreparedRevision>,
+    predecessor: Option<ResidentMutePredecessor>,
+    disarmed: bool,
     index: usize,
 }
 
 impl SessionPlayback {
     /// Prepare one outgoing resident source from exact compiled owners. Only the
     /// callback's actual outgoing owner can arm the fader on inheritance.
-    pub fn prepare_resident_mute_on_control(
+    pub(crate) fn prepare_resident_mute_on_control(
         &mut self,
         previous: &Arc<PreparedRevision>,
         track: TrackId,
+        predecessor: Option<ResidentMutePredecessor>,
     ) -> bool {
         if self.require_fresh_candidate().is_err() {
             return false;
@@ -59,15 +62,34 @@ impl SessionPlayback {
         }
         self.resident_mute = Some(ResidentMuteBasis {
             previous: Arc::downgrade(previous),
+            predecessor,
+            disarmed: false,
             index,
         });
         true
     }
 
+    pub(crate) fn resident_mute_predecessor(&self) -> Option<ResidentMutePredecessor> {
+        self.resident_mute.as_ref()?.predecessor
+    }
+
+    pub(crate) fn disarm_resident_mute(&mut self) {
+        if let Some(basis) = self.resident_mute.as_mut() {
+            basis.disarmed = true;
+        }
+    }
+
+    pub(super) fn cancel_resident_mute_ramp(&mut self) {
+        if let Some(basis) = &self.resident_mute {
+            self.track_faders[basis.index].revoke_resident_input();
+        }
+    }
+
     pub(super) fn resident_mute_index(&self, previous: &Self) -> Option<usize> {
         let basis = self.resident_mute.as_ref()?;
         let route = previous.routes.get(basis.index)?;
-        (std::ptr::eq(basis.previous.as_ptr(), Arc::as_ptr(&previous.revision))
+        (!basis.disarmed
+            && std::ptr::eq(basis.previous.as_ptr(), Arc::as_ptr(&previous.revision))
             && previous.playing
             && matches!(route.owner, RouteOwner::Arrangement)
             && route.pending.is_none()

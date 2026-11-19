@@ -137,41 +137,103 @@ fn resident_mute_prepared_owner_is_checked_in_the_actual_callback() {
         .execute(Command::Mute { track, muted: true })
         .unwrap();
     let muted = prepare(&editor);
-    for expected in [&original, &same_pcm_other_owner] {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Case {
+        Exact,
+        DifferentPreparedOwner,
+        ResubmittedOwner,
+        Stop,
+    }
+    for case in [
+        Case::Exact,
+        Case::DifferentPreparedOwner,
+        Case::ResubmittedOwner,
+        Case::Stop,
+    ] {
         let (mut control, mut callback) = channel(8_000).unwrap();
         control
-            .publish_with_policy_and_context_generation(
-                Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap(),
-                PublicationPolicy::InheritRuntime,
-                1,
-            )
+            .configure_device_resource_publication_on_control(limits())
             .unwrap();
+        let before = hex_engine::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        let publish_original = |control: &mut Control| {
+            control
+                .publish_with_admission_and_source_on_control(
+                    Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap(),
+                    PublicationPolicy::InheritRuntime,
+                    before,
+                    |_| Ok::<(), String>(()),
+                )
+                .unwrap()
+        };
+        let initial = publish_original(&mut control);
         control.command(PlaybackCommand::Play).unwrap();
         block(&mut callback);
         assert_eq!(block(&mut callback), [[0.5, -0.25]; 32]);
         control.reclaim();
+        let captured = control.status.recording_source().unwrap();
+        assert_eq!(captured.audio_revision, initial);
+        if case == Case::ResubmittedOwner {
+            let newer = publish_original(&mut control);
+            assert_ne!(newer, initial);
+            assert_eq!(block(&mut callback), [[0.5, -0.25]; 32]);
+            assert_eq!(
+                control.status.recording_source().unwrap(),
+                AppliedAudioSource {
+                    audio_revision: newer,
+                    ..captured
+                }
+            );
+            control.reclaim();
+        }
 
+        let expected = if case == Case::DifferentPreparedOwner {
+            &same_pcm_other_owner
+        } else {
+            &original
+        };
         let mut successor = Playback::try_from_prepared_with_session(Arc::clone(&muted)).unwrap();
-        assert!(successor.prepare_resident_mute_on_control(expected, track));
+        assert!(successor.prepare_resident_mute_on_control(
+            expected,
+            track,
+            hex_engine::playback::ResidentMutePredecessor {
+                context: captured.context,
+                output_identity: captured.output_identity,
+                audio_revision: captured.audio_revision,
+            },
+        ));
         let installed = control
-            .publish_with_policy_and_context_generation(
+            .publish_with_admission_and_source_on_control(
                 successor,
                 PublicationPolicy::InheritRuntime,
-                1,
+                hex_engine::AudioSourceContext {
+                    editor_revision: 2,
+                    ..before
+                },
+                |_| Ok::<(), String>(()),
             )
             .unwrap();
+        if case == Case::Stop {
+            control.command(PlaybackCommand::Stop).unwrap();
+        }
         let first = block(&mut callback);
         assert_eq!(control.status.applied_revision.load(Acquire), installed);
         let second = block(&mut callback);
-        if Arc::ptr_eq(expected, &original) {
+        if case == Case::Exact {
             for (index, actual) in first.into_iter().chain(second).enumerate() {
                 let gain = 1.0 - (index + 1).min(40) as f32 / 40.0;
                 assert!((actual[0] - 0.5 * gain).abs() < 1e-6);
                 assert!((actual[1] + 0.25 * gain).abs() < 1e-6);
             }
+        } else if case == Case::Stop {
+            assert!(!control.status.playing.load(Acquire));
+            control.command(PlaybackCommand::Play).unwrap();
+            assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
         } else {
-            assert_eq!(first, [[0.0; 2]; 32]);
-            assert_eq!(second, [[0.0; 2]; 32]);
+            assert_eq!(first, [[0.0; 2]; 32], "{case:?}");
+            assert_eq!(second, [[0.0; 2]; 32], "{case:?}");
         }
         control.reclaim();
         control.request_shutdown();

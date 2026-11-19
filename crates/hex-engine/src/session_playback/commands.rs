@@ -135,6 +135,7 @@ impl SessionPlayback {
                         }
                     }
                 }
+                self.cancel_resident_mute_ramp();
                 self.playing = false;
                 self.browser_audition.voices = Default::default();
             }
@@ -203,9 +204,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn stop_transport(&mut self) -> bool {
-        for fader in &mut self.track_faders[..self.routes.len()] {
-            fader.revoke_resident_input();
-        }
+        self.cancel_resident_mute_ramp();
         self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
@@ -357,6 +356,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+        self.cancel_resident_mute_ramp();
         self.end_paused_source_interval();
         self.browser_audition.voices = Default::default();
         self.monitor_source_releases = false;

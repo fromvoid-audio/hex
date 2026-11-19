@@ -533,6 +533,7 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
+                    resident_mute_fence: None,
                     scheduled_cut_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

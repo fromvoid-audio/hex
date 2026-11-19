@@ -82,6 +82,7 @@ fn queue(control: &mut Control, playback: Playback, revision: u64, policy: Publi
             source_context: None,
             policy,
             fresh_runtime_cancellation: None,
+            resident_mute_fence: None,
             scheduled_cut_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

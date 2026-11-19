@@ -2,7 +2,7 @@
 use super::CanonicalAudioSourceSnapshot;
 use crate::AudioSourceBinding;
 use hex_engine::AudioSourceContext;
-use hex_project::TrackId;
+use hex_project::{AssetId, Project, TrackId};
 
 /// Exact canonical correlations for one unchanged raw Arrangement audio track.
 ///
@@ -27,6 +27,21 @@ impl RawArrangementContentWitness {
     ) -> bool {
         self.previous == previous && self.candidate == candidate && self.track == track
     }
+
+    /// A staged mute leaves the worker's source bindings unchanged. Compare
+    /// the authored content against that borrowed resident inventory; the
+    /// compiler and output still check the actual PCM and predecessor.
+    pub(in crate::service) fn for_resident_mute(
+        previous: (&Project, AudioSourceContext),
+        candidate: (&Project, AudioSourceContext),
+        track: TrackId,
+        resident: impl Fn(AssetId) -> bool,
+    ) -> Option<Self> {
+        if previous.0.track(track)?.muted() || !candidate.0.track(track)?.muted() {
+            return None;
+        }
+        compare_content(previous, candidate, track, resident)
+    }
 }
 
 impl CanonicalAudioSourceSnapshot {
@@ -38,65 +53,75 @@ impl CanonicalAudioSourceSnapshot {
         candidate: &Self,
         track: TrackId,
     ) -> Option<RawArrangementContentWitness> {
-        if self.context.project_generation != candidate.context.project_generation
-            || self.context.editor_revision >= candidate.context.editor_revision
-            || self.mode != candidate.mode
-            || self.project.sample_rate() != candidate.project.sample_rate()
-            || self.project.tempo_map() != candidate.project.tempo_map()
-        {
+        if self.mode != candidate.mode {
             return None;
         }
-        let old = self.project.track(track)?;
-        let new = candidate.project.track(track)?;
-        if old.is_group()
-            || new.is_group()
-            || old.source_id().is_some()
-            || new.source_id().is_some()
-            || old.instrument().is_some()
-            || new.instrument().is_some()
-            || !old.midi_clips().is_empty()
-            || !new.midi_clips().is_empty()
-            || old.clips().is_empty()
-            || old.clips() != new.clips()
-            || old.clips().iter().any(|clip| clip.audio_edit().is_some())
-            || self
-                .project
-                .session_cells()
-                .iter()
-                .any(|cell| cell.track() == track)
-            || candidate
-                .project
-                .session_cells()
-                .iter()
-                .any(|cell| cell.track() == track)
-        {
-            return None;
-        }
-        for asset in old.clips().iter().map(|clip| clip.asset()) {
-            let old_asset = self.project.asset(asset)?;
-            let new_asset = candidate.project.asset(asset)?;
-            if old_asset != new_asset {
-                return None;
-            }
-            let same = match (self.sources.get(&asset)?, candidate.sources.get(&asset)?) {
-                (AudioSourceBinding::Resident(old), AudioSourceBinding::Resident(new)) => {
-                    old.sample_rate() == new.sample_rate() && old.shares_pcm_with(new)
-                }
-                (AudioSourceBinding::VerifiedFile(old), AudioSourceBinding::VerifiedFile(new)) => {
-                    old == new
-                }
-                _ => false,
-            };
-            if !same {
-                return None;
-            }
-        }
-        Some(RawArrangementContentWitness {
-            previous: self.context,
-            candidate: candidate.context,
+        compare_content(
+            (&self.project, self.context),
+            (&candidate.project, candidate.context),
             track,
-        })
+            |asset| match (self.sources.get(&asset), candidate.sources.get(&asset)) {
+                (
+                    Some(AudioSourceBinding::Resident(old)),
+                    Some(AudioSourceBinding::Resident(new)),
+                ) => old.sample_rate() == new.sample_rate() && old.shares_pcm_with(new),
+                (
+                    Some(AudioSourceBinding::VerifiedFile(old)),
+                    Some(AudioSourceBinding::VerifiedFile(new)),
+                ) => old == new,
+                _ => false,
+            },
+        )
     }
+}
+
+fn compare_content(
+    (old_project, previous): (&Project, AudioSourceContext),
+    (new_project, candidate): (&Project, AudioSourceContext),
+    track: TrackId,
+    same_binding: impl Fn(AssetId) -> bool,
+) -> Option<RawArrangementContentWitness> {
+    if previous.project_generation != candidate.project_generation
+        || previous.editor_revision >= candidate.editor_revision
+        || old_project.sample_rate() != new_project.sample_rate()
+        || old_project.tempo_map() != new_project.tempo_map()
+    {
+        return None;
+    }
+    let old = old_project.track(track)?;
+    let new = new_project.track(track)?;
+    if old.is_group()
+        || new.is_group()
+        || old.source_id().is_some()
+        || new.source_id().is_some()
+        || old.instrument().is_some()
+        || new.instrument().is_some()
+        || !old.midi_clips().is_empty()
+        || !new.midi_clips().is_empty()
+        || old.clips().is_empty()
+        || old.clips() != new.clips()
+        || old.clips().iter().any(|clip| clip.audio_edit().is_some())
+        || old_project
+            .session_cells()
+            .iter()
+            .any(|cell| cell.track() == track)
+        || new_project
+            .session_cells()
+            .iter()
+            .any(|cell| cell.track() == track)
+    {
+        return None;
+    }
+    for asset in old.clips().iter().map(|clip| clip.asset()) {
+        if old_project.asset(asset)? != new_project.asset(asset)? || !same_binding(asset) {
+            return None;
+        }
+    }
+    Some(RawArrangementContentWitness {
+        previous,
+        candidate,
+        track,
+    })
 }
 
 #[cfg(test)]
