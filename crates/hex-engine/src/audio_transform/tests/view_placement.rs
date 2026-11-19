@@ -1078,7 +1078,6 @@ fn assert_musical_outer_pcm(
         .unwrap();
     let clip = editor.project().clip(id).unwrap();
     let tempo = editor.project().tempo_map();
-    let asset = editor.project().asset(clip.asset()).unwrap();
     let duration = clip.duration();
     let context = AudioTransformPreparation::default();
     let expected_source = render(
@@ -1092,31 +1091,13 @@ fn assert_musical_outer_pcm(
         let held = clip.projected_outer_fade_preview(tempo, fade).unwrap();
         let authored = clip.with_authored_outer_fade(tempo, fade).unwrap();
         let outer = authored.projected_outer_fade(tempo).unwrap().unwrap();
-        let edit = authored.audio_edit().unwrap();
         assert_eq!(outer.breakpoints().unwrap(), held.breakpoints().unwrap());
         let hits = context.cache_hits();
-        let source = PreparedAudioSourceRef::Resident(&media[&authored.asset()]);
-        let compiled = if edit.content_view.is_some() {
-            context
-                .compile_content(tempo, &authored, edit, asset, source)
-                .unwrap()
-        } else if edit.placement.is_some() {
-            context
-                .compile_view(tempo, &authored, edit, asset, source)
-                .unwrap()
-        } else {
-            context
-                .compile_captured_clip_at_tempo(
-                    tempo,
-                    &authored,
-                    edit,
-                    asset,
-                    source,
-                    Some(OuterPlaybackFade::Musical(&outer)),
-                )
-                .unwrap()
-                .unwrap()
-        };
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tracks[0].audio_clips_mut().unwrap()[0] = authored.retained_snapshot();
+        let admitted = Editor::new(Project::from_snapshot(snapshot).unwrap(), 1).unwrap();
+        let prepared = prepare(&admitted, media, &context);
+        let compiled = &prepared.arrangement().tracks()[0].clips[0];
         if block == 256 {
             assert!(
                 context.cache_hits() > hits,
@@ -1129,18 +1110,7 @@ fn assert_musical_outer_pcm(
             compiled.audio.as_ref().unwrap().frames().len(),
             duration as usize
         );
-        let graph = crate::Project::new(
-            editor.project().sample_rate(),
-            vec![crate::Track::new(vec![compiled], 1.0, false).unwrap()],
-        )
-        .unwrap();
-        let mut output = vec![[0.0; 2]; duration as usize];
-        let mut renderer = crate::Renderer::new(&graph);
-        renderer.seek(clip.start());
-        renderer.play();
-        for part in output.chunks_mut(block) {
-            renderer.render(part).unwrap();
-        }
+        let output = render(&prepared, clip.start(), duration as usize, block);
         for (index, (actual, raw)) in output.iter().zip(&expected_source).enumerate() {
             let gain = held.gain_at(clip.start() + index as u64).unwrap();
             assert_eq!(*actual, raw.map(|sample| sample * gain), "frame {index}");
