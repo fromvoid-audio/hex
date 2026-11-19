@@ -1,0 +1,209 @@
+{
+  "head": "9f60ed6d9c550f23a6dc64004ab9517eea982b13",
+  "base": "1759c65bef5a7df5f44fc0bd355b5012265603a6",
+  "route": "reviewed change-based; not runner-certified",
+  "steps": [
+    {
+      "name": "engine-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-engine",
+        "--features",
+        "instrument-test-support",
+        "--lib",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 7.851830542,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "conformance-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/hex_engine-bc20fa13277cf600",
+        "compiled_fade_conformance::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 1.2906147910000012,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "slot-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/hex_engine-bc20fa13277cf600",
+        "audio_preparation::transformed::fade_tests::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.01190224999999856,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "preparation-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/hex_engine-bc20fa13277cf600",
+        "audio_preparation::tests::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.02230800000000066,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "arrangement-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/hex_engine-bc20fa13277cf600",
+        "audio_preparation::arrangement_clip_tests::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.036700374999998786,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "audio-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-audio",
+        "--features",
+        "allocation-probe",
+        "--test",
+        "allocation_probes",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 10.414325000000002,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "callback-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/allocation_probes-970431369210aac5",
+        "compiled_sparse_fade::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.9360042499999999,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "calibration-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-audio",
+        "--features",
+        "allocation-probe",
+        "--test",
+        "allocation_probe_calibration",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 2.611868874999999,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "calibration-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/allocation_probe_calibration-8c68e47370a9c63d",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.4755479170000001,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "consumer-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "-p",
+        "hex-engine",
+        "-p",
+        "hex-audio",
+        "-p",
+        "hex-media",
+        "-p",
+        "hex-cli",
+        "-p",
+        "hex-desktop",
+        "-p",
+        "hex-export",
+        "-p",
+        "hex-session",
+        "-p",
+        "hex-stream",
+        "-p",
+        "hex-ui",
+        "--features",
+        "hex-audio/allocation-probe",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 70.81726041600001,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "quick",
+      "command": [
+        "python3",
+        "scripts/local-ci.py",
+        "--quick"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 28.129135333999997,
+      "build": false,
+      "test": false
+    },
+    {
+      "name": "diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "1759c65bef5a7df5f44fc0bd355b5012265603a6",
+        "9f60ed6d9c550f23a6dc64004ab9517eea982b13"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.04472133299999825,
+      "build": false,
+      "test": false
+    }
+  ],
+  "test_setup_execution_seconds": 2.773077582999999,
+  "files": {
+    "crates/hex-audio/tests/allocation_probes/compiled_sparse_fade.rs": "c959805af8f7e6f131343f98d2408ea74eb5f2a511c0aa177449feca24e60298",
+    "crates/hex-audio/tests/allocation_probes/main.rs": "4e3b7121564d84a8fa9d0510f08151978021b7c8f97df2dcb11ec53008916ee4",
+    "crates/hex-engine/src/audio_preparation.rs": "e964c68538e80e7b55e5366ecc25e98ad53d958717a8ba9b1af0960174572f72",
+    "crates/hex-engine/src/audio_preparation/arrangement_clips.rs": "fcab547fc64b14095bded102bac0418330d6234961c9159be149ef9a1b514d99",
+    "crates/hex-engine/src/audio_preparation/storage.rs": "c14be50698fbf60a2ce551cb64c180efc142aab93e4150348b9a5e028786324d",
+    "crates/hex-engine/src/audio_preparation/transformed.rs": "3625cd857658c85ef834d4b5da186a06072237a260dd6e4b3e7ad80f9ffe7ebf",
+    "crates/hex-engine/src/audio_preparation/transformed/fade_tests.rs": "70d5e166f68561868ef3c03e0be9092c79c60d3f9bc3233ebe3a7339e1d54ea0",
+    "crates/hex-engine/src/compiled_fade_conformance.rs": "e5cb6739f27eb9eeb925d99657b76f31d7fadd0439006c4d2abda35f2f4d5403",
+    "crates/hex-engine/src/lib.rs": "987be1b5e1e4ae2a220e6084efa11b49003d3787ca69b669c78537ba3ca730a5"
+  },
+  "passed": true
+}

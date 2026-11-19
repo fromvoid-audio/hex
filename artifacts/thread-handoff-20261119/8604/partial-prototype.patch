@@ -1,0 +1,1365 @@
+--- a/crates/hex-ui/src/editor/clip_view_ui_test.rs
++++ b/crates/hex-ui/src/editor/clip_view_ui_test.rs
+@@ -169,8 +169,7 @@
+                             clip,
+                             beat_start: view.piano_beat_start,
+                             beat_span: view.piano_beat_span.raw(),
+-                            pitch_low: view.piano_pitch_low,
+-                            pitch_rows: view.piano_pitch_rows,
++                            pitch: view.piano_pitch,
+                         },
+                         bounds: super::midi_stroke::CanvasBounds {
+                             x: 0.0,
+--- a/crates/hex-ui/src/editor/midi_canvas/geometry.rs
++++ b/crates/hex-ui/src/editor/midi_canvas/geometry.rs
+@@ -1,5 +1,5 @@
+ //! Pure piano-roll beat, pitch and compact-label mapping.
+-use super::super::{midi_drag, midi_scene};
++use super::super::midi_drag;
+ use hex_project::BeatTime;
+ 
+ pub(super) fn beat_at_x(
+@@ -58,20 +58,11 @@
+     }
+ }
+ 
+-pub(super) fn pitch_at_y(y: f32, height: f32, low: u8, rows: u8) -> Option<u8> {
+-    if !y.is_finite()
+-        || !height.is_finite()
+-        || height <= 0.0
+-        || y < 0.0
+-        || y >= height
+-        || !midi_scene::valid_pitch_range(low, rows)
+-    {
++pub(super) fn pitch_at_y(y: f32, height: f32, pitch: crate::editor::PitchViewport) -> Option<u8> {
++    if !y.is_finite() || !height.is_finite() || height <= 0.0 {
+         return None;
+     }
+-    Some(
+-        low.saturating_add(rows - 1)
+-            .saturating_sub(((y / height * f32::from(rows)).floor() as u8).min(rows - 1)),
+-    )
++    pitch.pitch_at(f64::from(y) / f64::from(height))
+ }
+ 
+ #[cfg(all(test, feature = "ui-unit-tier"))]
+@@ -115,14 +106,30 @@
+             ),
+             None
+         );
+-        assert_eq!(pitch_at_y(0.0, 120.0, 48, 24), Some(71));
++        assert_eq!(
++            pitch_at_y(0.0, 120.0, crate::editor::PitchViewport::DEFAULT),
++            Some(71)
++        );
+         for (pitch, low) in [(48_u8, 48_u8), (71, 48), (104, 104), (127, 104)] {
+             let row = low + 23 - pitch;
+             let y = (f32::from(row) + 0.5) / 24.0 * 120.0;
+-            assert_eq!(pitch_at_y(y, 120.0, low, 24), Some(pitch));
++            assert_eq!(
++                pitch_at_y(
++                    y,
++                    120.0,
++                    crate::editor::PitchViewport::from_rows(low, 24).unwrap()
++                ),
++                Some(pitch)
++            );
+         }
+-        assert_eq!(pitch_at_y(120.0, 120.0, 48, 24), None);
+-        assert_eq!(pitch_at_y(f32::INFINITY, 120.0, 48, 24), None);
++        assert_eq!(
++            pitch_at_y(120.0, 120.0, crate::editor::PitchViewport::DEFAULT),
++            None
++        );
++        assert_eq!(
++            pitch_at_y(f32::INFINITY, 120.0, crate::editor::PitchViewport::DEFAULT),
++            None
++        );
+         assert_eq!((i16::from(0_u8) - 1).clamp(0, 127), 0);
+         assert_eq!((i16::from(127_u8) + 1).clamp(0, 127), 127);
+         assert_eq!(4 * BeatTime::ONE.raw(), 4 * 4 * BeatTime::ONE.raw() / 4);
+--- a/crates/hex-ui/src/editor/midi_canvas.rs
++++ b/crates/hex-ui/src/editor/midi_canvas.rs
+@@ -83,8 +83,7 @@
+             clip: clip_id,
+             beat_start,
+             beat_span: beat_span.raw(),
+-            pitch_low,
+-            pitch_rows,
++            pitch,
+         };
+         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
+         let draw_overwrite = match self.midi_overwrite_preview() {
+@@ -765,8 +764,7 @@
+                     pitch_modifier: false,
+                     view_start: beat_start,
+                     view_span: beat_span.raw(),
+-                    pitch_low,
+-                    pitch_rows,
++                    pitch,
+                     bounds: super::midi_stroke::CanvasBounds {
+                         x: f32::from(bounds.origin.x),
+                         y: f32::from(bounds.origin.y),
+@@ -1005,8 +1003,7 @@
+                                         bounds: gesture_bounds,
+                                         beat_start,
+                                         beat_span: beat_span.raw(),
+-                                        pitch_low,
+-                                        pitch_rows,
++                                        pitch,
+                                         clip_length: clip_len.raw(),
+                                         grid,
+                                     },
+@@ -1046,8 +1043,7 @@
+                                 beat_start,
+                                 beat_span: beat_span.raw(),
+                                 clip_length: clip_len.raw(),
+-                                pitch_low,
+-                                pitch_rows,
++                                pitch,
+                                 grid,
+                             })
+                             .and_then(midi_drag::begin);
+@@ -1710,18 +1706,17 @@
+         }
+         self.piano_pitch_wheel_accum -= f32::from(steps) * 80.0;
+         let Some(next) = super::midi_scene::wheel_pitch_zoom(
+-            self.piano_pitch_low,
+-            self.piano_pitch_rows,
++            self.piano_pitch,
+             fraction,
+             steps,
+         ) else {
+             return false;
+         };
+-        if next == (self.piano_pitch_low, self.piano_pitch_rows) {
++        if next == (self.piano_pitch) {
+             return false;
+         }
+         self.cancel_midi_note_gesture();
+-        (self.piano_pitch_low, self.piano_pitch_rows) = next;
++        (self.piano_pitch) = next;
+         true
+     }
+ 
+--- a/crates/hex-ui/src/editor/midi_creation.rs
++++ b/crates/hex-ui/src/editor/midi_creation.rs
+@@ -242,8 +242,7 @@
+                 .is_some_and(|s| s.revision == g.context.revision)
+             && self.piano_beat_start == g.context.view_start
+             && self.piano_beat_span.raw() == g.context.view_span
+-            && self.piano_pitch_low == g.context.pitch_low
+-            && self.piano_pitch_rows == g.context.pitch_rows
++            && self.piano_pitch == g.context.pitch
+             && self.midi_snap_grid == g.context.grid
+             && self.midi_draw_mode == g.context.draw_mode
+             && self.midi_draw_pitch_locked == g.context.pitch_locked
+--- a/crates/hex-ui/src/editor/midi_drag.rs
++++ b/crates/hex-ui/src/editor/midi_drag.rs
+@@ -170,8 +170,7 @@
+     pub(super) beat_start: i128,
+     pub(super) beat_span: u64,
+     pub(super) clip_length: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+     pub(super) grid: MidiGrid,
+ }
+ 
+@@ -190,8 +189,7 @@
+     pub(super) beat_start: i128,
+     pub(super) beat_span: u64,
+     pub(super) clip_length: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+     pub(super) grid: MidiGrid,
+ }
+ 
+@@ -204,8 +202,7 @@
+     pub(super) pending: bool,
+     pub(super) beat_start: i128,
+     pub(super) beat_span: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+     pub(super) grid: MidiGrid,
+     pub(super) bounds: [f32; 4],
+ }
+@@ -218,8 +215,7 @@
+         && !context.pending
+         && gesture.beat_start == context.beat_start
+         && gesture.beat_span == context.beat_span
+-        && gesture.pitch_low == context.pitch_low
+-        && gesture.pitch_rows == context.pitch_rows
++        && gesture.pitch == context.pitch
+         && gesture.grid == context.grid
+         && gesture.bounds == context.bounds
+ }
+@@ -286,12 +282,7 @@
+         start.beat_start,
+         start.beat_span,
+     )?;
+-    let pointer_pitch = pitch_at_point(
+-        start.pointer[1],
+-        start.bounds,
+-        start.pitch_low,
+-        start.pitch_rows,
+-    )?;
++    let pointer_pitch = pitch_at_point(start.pointer[1], start.bounds, start.pitch)?;
+     let note_end = start.original.start.checked_add(start.original.duration)?;
+     if start.original.duration == 0 || note_end > start.clip_length {
+         return None;
+@@ -323,8 +314,7 @@
+         beat_start: start.beat_start,
+         beat_span: start.beat_span,
+         clip_length: start.clip_length,
+-        pitch_low: start.pitch_low,
+-        pitch_rows: start.pitch_rows,
++        pitch: start.pitch,
+         grid: start.grid,
+     })
+ }
+@@ -348,12 +338,7 @@
+     ) else {
+         return false;
+     };
+-    let Some(pointer_pitch) = pitch_at_point(
+-        pointer_y,
+-        gesture.bounds,
+-        gesture.pitch_low,
+-        gesture.pitch_rows,
+-    ) else {
++    let Some(pointer_pitch) = pitch_at_point(pointer_y, gesture.bounds, gesture.pitch) else {
+         return false;
+     };
+     let effective_grid = if matches!(gesture.kind, GestureKind::ResizeTrailing { .. }) {
+@@ -514,8 +499,7 @@
+ pub(super) fn pitch_at_point(
+     y: f32,
+     bounds: [f32; 4],
+-    pitch_low: u8,
+-    pitch_rows: u8,
++    pitch: crate::editor::PitchViewport,
+ ) -> Option<u8> {
+     let [left, top, width, height] = bounds;
+     if !y.is_finite()
+@@ -525,17 +509,10 @@
+         || !height.is_finite()
+         || width <= 0.0
+         || height <= 0.0
+-        || !super::midi_scene::valid_pitch_range(pitch_low, pitch_rows)
+     {
+         return None;
+     }
+-    let row = (((y - top) / height) * f32::from(pitch_rows)).floor();
+-    let row = row.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+-    Some(
+-        (i32::from(pitch_low) + i32::from(pitch_rows) - 1)
+-            .saturating_sub(row)
+-            .clamp(0, 127) as u8,
+-    )
++    pitch.pitch_at_extended((f64::from(y) - f64::from(top)) / f64::from(height))
+ }
+ 
+ fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
+@@ -594,8 +571,7 @@
+             beat_start: 0,
+             beat_span: 4 * BeatTime::ONE.raw(),
+             clip_length: CLIP_LENGTH,
+-            pitch_low: 48,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+             grid,
+         })
+         .expect("valid note gesture")
+@@ -623,8 +599,7 @@
+             beat_start: 0,
+             beat_span: 4 * BeatTime::ONE.raw(),
+             clip_length,
+-            pitch_low: 48,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+             grid: MidiGrid::Sixteenth,
+         })
+         .expect("valid note gesture")
+@@ -652,8 +627,7 @@
+             beat_start: 0,
+             beat_span,
+             clip_length: CLIP_LENGTH,
+-            pitch_low: 48,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+             grid: MidiGrid::Sixteenth,
+         })
+         .expect("valid note gesture")
+@@ -889,8 +863,7 @@
+                 beat_start: 0,
+                 beat_span: 4 * BeatTime::ONE.raw(),
+                 clip_length: CLIP_LENGTH,
+-                pitch_low: 48,
+-                pitch_rows: 24,
++                pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+                 grid: MidiGrid::Sixteenth,
+             })
+             .is_none()
+@@ -1243,8 +1216,7 @@
+             pending: false,
+             beat_start: drag.beat_start,
+             beat_span: drag.beat_span,
+-            pitch_low: drag.pitch_low,
+-            pitch_rows: drag.pitch_rows,
++            pitch: drag.pitch,
+             grid: drag.grid,
+             bounds: drag.bounds,
+         };
+--- a/crates/hex-ui/src/editor/midi_draw.rs
++++ b/crates/hex-ui/src/editor/midi_draw.rs
+@@ -201,8 +201,7 @@
+             pitch_modifier: modifiers.pitch,
+             view_start: self.piano_beat_start,
+             view_span: self.piano_beat_span.raw(),
+-            pitch_low: self.piano_pitch_low,
+-            pitch_rows: self.piano_pitch_rows,
++            pitch: self.piano_pitch,
+             bounds,
+             pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
+             draw_mode: self.midi_draw_mode,
+@@ -218,8 +217,7 @@
+         && current.grid == rendered.grid
+         && current.view_start == rendered.view_start
+         && current.view_span == rendered.view_span
+-        && current.pitch_low == rendered.pitch_low
+-        && current.pitch_rows == rendered.pitch_rows
++        && current.pitch == rendered.pitch
+         && current.bounds == rendered.bounds
+         && current.pitch_locked == (rendered.pitch_locked ^ current.pitch_modifier)
+         && current.draw_mode == rendered.draw_mode
+@@ -359,8 +357,7 @@
+             pitch_modifier: false,
+             view_start: 0,
+             view_span: BeatTime::ONE.raw() * 4,
+-            pitch_low: 48,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+             bounds: midi_stroke::CanvasBounds {
+                 x: 10.0,
+                 y: 20.0,
+--- a/crates/hex-ui/src/editor/midi_group_drag.rs
++++ b/crates/hex-ui/src/editor/midi_group_drag.rs
+@@ -204,8 +204,7 @@
+     pub(super) selection_epoch: u64,
+     pub(super) beat_start: i128,
+     pub(super) beat_span: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+     pub(super) grid: MidiGrid,
+     pub(super) bounds: [f32; 4],
+     pub(super) pending: bool,
+@@ -223,8 +222,7 @@
+     pub(super) bounds: [f32; 4],
+     pub(super) beat_start: i128,
+     pub(super) beat_span: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+     pub(super) clip_length: u64,
+     pub(super) grid: MidiGrid,
+ }
+@@ -243,8 +241,7 @@
+     bounds: [f32; 4],
+     beat_start: i128,
+     beat_span: u64,
+-    pitch_low: u8,
+-    pitch_rows: u8,
++    pitch: crate::editor::PitchViewport,
+     clip_length: u64,
+     grid: MidiGrid,
+     delta: i128,
+@@ -287,12 +284,7 @@
+             start.beat_start,
+             start.beat_span,
+         )?;
+-        let pointer_pitch = midi_drag::pitch_at_point(
+-            start.pointer[1],
+-            start.bounds,
+-            start.pitch_low,
+-            start.pitch_rows,
+-        )?;
++        let pointer_pitch = midi_drag::pitch_at_point(start.pointer[1], start.bounds, start.pitch)?;
+         Some(Self {
+             copy: start.copy,
+             kind: if start.copy {
+@@ -310,8 +302,7 @@
+             bounds: start.bounds,
+             beat_start: start.beat_start,
+             beat_span: start.beat_span,
+-            pitch_low: start.pitch_low,
+-            pitch_rows: start.pitch_rows,
++            pitch: start.pitch,
+             clip_length: start.clip_length,
+             grid: start.grid,
+             delta: 0,
+@@ -327,8 +318,7 @@
+             && self.selection_epoch == context.selection_epoch
+             && self.beat_start == context.beat_start
+             && self.beat_span == context.beat_span
+-            && self.pitch_low == context.pitch_low
+-            && self.pitch_rows == context.pitch_rows
++            && self.pitch == context.pitch
+             && self.grid == context.grid
+             && self.bounds == context.bounds
+             && !context.pending
+@@ -340,8 +330,7 @@
+         else {
+             return false;
+         };
+-        let Some(pointer_pitch) =
+-            midi_drag::pitch_at_point(point[1], self.bounds, self.pitch_low, self.pitch_rows)
++        let Some(pointer_pitch) = midi_drag::pitch_at_point(point[1], self.bounds, self.pitch)
+         else {
+             return false;
+         };
+@@ -456,8 +445,7 @@
+             bounds: note.bounds,
+             beat_start: note.beat_start,
+             beat_span: note.beat_span,
+-            pitch_low: note.pitch_low,
+-            pitch_rows: note.pitch_rows,
++            pitch: note.pitch,
+             clip_length: note.clip_length,
+             grid: note.grid,
+             delta: i128::from(note.preview.start) - i128::from(note.original.start),
+@@ -503,8 +491,7 @@
+             selection_epoch: self.selection_epoch,
+             beat_start: self.beat_start,
+             beat_span: self.beat_span,
+-            pitch_low: self.pitch_low,
+-            pitch_rows: self.pitch_rows,
++            pitch: self.pitch,
+             grid: self.grid,
+             bounds: self.bounds,
+             pending: false,
+@@ -804,8 +791,7 @@
+             bounds: BOUNDS,
+             beat_start: 0,
+             beat_span: CLIP,
+-            pitch_low,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(pitch_low, 24).unwrap(),
+             clip_length: CLIP,
+             grid,
+         })
+@@ -942,8 +928,7 @@
+             selection_epoch: 5,
+             beat_start: 0,
+             beat_span: CLIP,
+-            pitch_low: 104,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(104, 24).unwrap(),
+             grid: MidiGrid::Off,
+             bounds: BOUNDS,
+             pending: false,
+--- a/crates/hex-ui/src/editor/midi_hover_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_hover_ui_tests.rs
+@@ -22,8 +22,7 @@
+                 note.pitch(),
+                 note.start(),
+                 note.duration(),
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows,
++                v.piano_pitch,
+             )
+         });
+     let left =
+--- a/crates/hex-ui/src/editor/midi_marquee.rs
++++ b/crates/hex-ui/src/editor/midi_marquee.rs
+@@ -28,8 +28,7 @@
+                 clip: self.detail_clip_id()?,
+                 beat_start: self.piano_beat_start,
+                 beat_span: self.piano_beat_span.raw(),
+-                pitch_low: self.piano_pitch_low,
+-                pitch_rows: self.piano_pitch_rows,
++                pitch: self.piano_pitch,
+             },
+             bounds,
+             selection_epoch: self.midi_selection.epoch(),
+--- a/crates/hex-ui/src/editor/midi_marquee_pointer.rs
++++ b/crates/hex-ui/src/editor/midi_marquee_pointer.rs
+@@ -223,8 +223,7 @@
+                 clip,
+                 beat_start: self.piano_beat_start,
+                 beat_span: self.piano_beat_span.raw(),
+-                pitch_low: self.piano_pitch_low,
+-                pitch_rows: self.piano_pitch_rows,
++                pitch: self.piano_pitch,
+             },
+             bounds,
+             selection_epoch: self.midi_selection.epoch(),
+--- a/crates/hex-ui/src/editor/midi_marquee_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_marquee_ui_tests.rs
+@@ -26,8 +26,7 @@
+             state.project.snapshot(),
+             state.project.midi_source(clip).unwrap().notes()[0].id(),
+             v.midi_selection.primary().unwrap(),
+-            v.piano_pitch_low,
+-            v.piano_pitch_rows,
++            v.piano_pitch,
+         )
+     });
+     let roll = visual.debug_bounds("midi-note-roll").unwrap();
+@@ -189,8 +188,7 @@
+         (
+             notes[0].id(),
+             notes[1].id(),
+-            view.piano_pitch_low,
+-            view.piano_pitch_rows,
++            view.piano_pitch,
+         )
+     });
+     editor.update(&mut visual, |view, cx| {
+--- a/crates/hex-ui/src/editor/midi_note_overwrite_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_note_overwrite_ui_tests.rs
+@@ -123,7 +123,7 @@
+ 
+ fn pitch_y(visual: &mut VisualTestContext, editor: &Entity<EditorView>, pitch: u8) -> Pixels {
+     let roll = visual.debug_bounds("midi-note-roll").unwrap();
+-    let (low, rows) = editor.read_with(&*visual, |v, _| (v.piano_pitch_low, v.piano_pitch_rows));
++    let (low, rows) = editor.read_with(&*visual, |v, _| (v.piano_pitch));
+     roll.origin.y
+         + px(1.0)
+         + (roll.size.height - px(2.0))
+--- a/crates/hex-ui/src/editor/midi_note_pointer.rs
++++ b/crates/hex-ui/src/editor/midi_note_pointer.rs
+@@ -46,8 +46,7 @@
+             pending: c.pending,
+             beat_start: c.beat_start,
+             beat_span: c.beat_span,
+-            pitch_low: c.pitch_low,
+-            pitch_rows: c.pitch_rows,
++            pitch: c.pitch,
+             grid: c.grid,
+             bounds: c.bounds,
+         }
+@@ -60,8 +59,7 @@
+             selection_epoch: self.midi_selection.epoch(),
+             beat_start: self.piano_beat_start,
+             beat_span: self.piano_beat_span.raw(),
+-            pitch_low: self.piano_pitch_low,
+-            pitch_rows: self.piano_pitch_rows,
++            pitch: self.piano_pitch,
+             grid: self.midi_snap_grid,
+             bounds,
+             pending: self.edit_pending(),
+@@ -78,8 +76,7 @@
+                 && c.clip == Some(f.clip)
+                 && c.beat_start == f.view_start
+                 && c.beat_span == f.view_span
+-                && c.pitch_low == f.pitch_low
+-                && c.pitch_rows == f.pitch_rows
++                && c.pitch == f.pitch
+                 && c.grid == f.grid
+                 && c.bounds == rectangle(f.bounds)
+                 && g.kind() == key.kind
+@@ -98,8 +95,7 @@
+                         pending: false,
+                         beat_start: f.view_start,
+                         beat_span: f.view_span,
+-                        pitch_low: f.pitch_low,
+-                        pitch_rows: f.pitch_rows,
++                        pitch: f.pitch,
+                         grid: f.grid,
+                         bounds: rectangle(f.bounds),
+                     },
+--- a/crates/hex-ui/src/editor/midi_pan_capture_tests.rs
++++ b/crates/hex-ui/src/editor/midi_pan_capture_tests.rs
+@@ -75,8 +75,7 @@
+         (
+             v.piano_beat_start,
+             v.piano_beat_span,
+-            v.piano_pitch_low,
+-            v.piano_pitch_rows,
++            v.piano_pitch,
+         )
+     })
+ }
+--- a/crates/hex-ui/src/editor/midi_pan_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_pan_ui_tests.rs
+@@ -34,7 +34,7 @@
+     visual.run_until_parked();
+     let viewport = editor.read_with(&visual, |v, _| {
+         assert!((v.piano_beat_start as f64 / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.000001);
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 24));
++        assert_eq!((v.piano_pitch), (54, 24));
+         let s = v.state.as_ref().unwrap();
+         assert_eq!(
+             (s.project.snapshot(), s.revision, s.can_undo, s.can_redo),
+--- a/crates/hex-ui/src/editor/midi_pitch_capture_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_pitch_capture_ui_tests.rs
+@@ -78,7 +78,7 @@
+     repaint(&editor, &mut visual);
+     editor.read_with(&visual, |v, _| {
+         assert!(v.piano_pitch_zoom.is_none());
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12));
++        assert_eq!((v.piano_pitch), (54, 12));
+         assert!(!v.edit_pending());
+         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+     });
+@@ -117,7 +117,7 @@
+         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+         repaint(&editor, &mut visual);
+         assert_eq!(
+-            editor.read_with(&visual, |v, _| (v.piano_pitch_low, v.piano_pitch_rows)),
++            editor.read_with(&visual, |v, _| (v.piano_pitch)),
+             (54, 12)
+         );
+         match loss {
+@@ -192,7 +192,7 @@
+         assert_eq!(actions.get(), 0, "{loss}: trailing up");
+         editor.read_with(&visual, |v, _| {
+             assert!(v.piano_pitch_zoom.is_none(), "{loss}");
+-            assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12), "{loss}");
++            assert_eq!((v.piano_pitch), (54, 12), "{loss}");
+             assert!(!v.edit_pending());
+             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+         });
+--- /dev/null
++++ b/crates/hex-ui/src/editor/midi_pitch_viewport.rs
+@@ -0,0 +1,165 @@
++//! Finite view-only piano pitch coordinates shared by paint, hits and capture.
++//! Fixed sub-semitone units give scene keys exact equality without float hashing.
++use std::ops::Range;
++
++const UNITS_PER_PITCH: u32 = 4096;
++const MIDI_UNITS: u32 = 128 * UNITS_PER_PITCH;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub(super) struct PitchViewport {
++    low: u32,
++    span: u32,
++}
++impl PitchViewport {
++    pub(super) const DEFAULT: Self = Self {
++        low: 48 * UNITS_PER_PITCH,
++        span: 24 * UNITS_PER_PITCH,
++    };
++    pub(super) fn from_rows(low: u8, rows: u8) -> Option<Self> {
++        Self::new(f64::from(low), f64::from(rows))
++    }
++    pub(super) fn new(low: f64, span: f64) -> Option<Self> {
++        if !low.is_finite() || !span.is_finite() || low < 0.0 || span <= 0.0 || low + span > 128.0 {
++            return None;
++        }
++        let high = ((low + span) * f64::from(UNITS_PER_PITCH)).round() as u32;
++        let low = (low * f64::from(UNITS_PER_PITCH)).round() as u32;
++        let span = high.checked_sub(low)?;
++        (span > 0 && high <= MIDI_UNITS).then_some(Self { low, span })
++    }
++    pub(super) fn low(self) -> f64 {
++        f64::from(self.low) / f64::from(UNITS_PER_PITCH)
++    }
++    pub(super) fn span(self) -> f64 {
++        f64::from(self.span) / f64::from(UNITS_PER_PITCH)
++    }
++    pub(super) fn high(self) -> f64 {
++        self.low() + self.span()
++    }
++    /// Integer note cells intersecting the viewport; only for bounded iteration.
++    pub(super) fn coverage(self) -> Range<u8> {
++        (self.low / UNITS_PER_PITCH) as u8..(self.low + self.span).div_ceil(UNITS_PER_PITCH) as u8
++    }
++    pub(super) fn contains(self, pitch: u8) -> bool {
++        self.coverage().contains(&pitch)
++    }
++    /// Unclipped normalized note top. Edge notes may be partially visible.
++    pub(super) fn note_top(self, pitch: u8) -> Option<f32> {
++        self.contains(pitch)
++            .then(|| ((self.high() - f64::from(pitch) - 1.0) / self.span()) as f32)
++    }
++    pub(super) fn row_height(self) -> f32 {
++        (1.0 / self.span()) as f32
++    }
++    pub(super) fn row_height_pixels(self, height: f32) -> Option<f32> {
++        (height.is_finite() && height > 0.0).then(|| height / self.span() as f32)
++    }
++    pub(super) fn pitch_at(self, fraction: f64) -> Option<u8> {
++        (fraction >= 0.0 && fraction < 1.0)
++            .then(|| self.pitch_at_extended(fraction))
++            .flatten()
++    }
++    /// Captured note drags may leave the canvas; only MIDI limits clamp them.
++    pub(super) fn pitch_at_extended(self, fraction: f64) -> Option<u8> {
++        if !fraction.is_finite() {
++            return None;
++        }
++        Some(((self.high() - fraction * self.span()).ceil() - 1.0).clamp(0.0, 127.0) as u8)
++    }
++    pub(super) fn panned(self, semitones: f64) -> Option<Self> {
++        if !semitones.is_finite() {
++            return None;
++        }
++        let low = ((self.low() + semitones).clamp(0.0, 128.0 - self.span())
++            * f64::from(UNITS_PER_PITCH))
++        .round() as u32;
++        Some(Self {
++            low: low.min(MIDI_UNITS - self.span),
++            ..self
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn viewport_rejects_invalid_ranges_and_retains_exact_identity() {
++        for (low, span) in [
++            (f64::NAN, 12.0),
++            (0.0, f64::INFINITY),
++            (-1.0, 12.0),
++            (0.0, 0.0),
++            (127.0, 2.0),
++            (128.0, 1.0),
++            (0.0, 1e-10),
++        ] {
++            assert!(PitchViewport::new(low, span).is_none(), "{low}/{span}");
++        }
++        assert!(PitchViewport::from_rows(0, 128).is_some());
++        assert!(PitchViewport::from_rows(127, 1).is_some());
++        assert!(PitchViewport::from_rows(0, 0).is_none());
++        assert_ne!(
++            PitchViewport::new(59.25, 12.5),
++            PitchViewport::new(59.25 + 1.0 / 4096.0, 12.5)
++        );
++        assert_eq!(
++            PitchViewport::DEFAULT,
++            PitchViewport::from_rows(48, 24).unwrap()
++        );
++    }
++    #[test]
++    fn partial_rows_and_midi_edges_share_forward_inverse_geometry() {
++        for (low, span) in [
++            (0.0, 12.5),
++            (59.25, 12.5),
++            (115.5, 12.5),
++            (127.75, 0.25),
++            (0.25, 127.75),
++        ] {
++            let view = PitchViewport::new(low, span).unwrap();
++            for pitch in view.coverage() {
++                let top = f64::from(view.note_top(pitch).unwrap());
++                let bottom = top + f64::from(view.row_height());
++                let middle = (top.max(0.0) + bottom.min(1.0)) / 2.0;
++                assert_eq!(view.pitch_at(middle), Some(pitch), "{view:?} pitch={pitch}");
++            }
++            assert_eq!(view.pitch_at(-0.01), None);
++            assert_eq!(view.pitch_at(1.0), None);
++            assert_eq!(view.pitch_at(f64::NAN), None);
++            assert_eq!(view.pitch_at_extended(-1e20), Some(127));
++            assert_eq!(view.pitch_at_extended(1e20), Some(0));
++        }
++    }
++    #[test]
++    fn integer_inputs_preserve_row_and_hit_mapping() {
++        for low in 0..128_u8 {
++            for rows in 1..=128 - low {
++                let view = PitchViewport::from_rows(low, rows).unwrap();
++                assert_eq!(view.coverage(), low..low + rows);
++                assert_eq!(view.row_height_pixels(240.0), Some(240.0 / f32::from(rows)));
++                for row in 0..rows {
++                    let pitch = low + rows - 1 - row;
++                    assert_eq!(
++                        view.note_top(pitch).unwrap(),
++                        f32::from(row) / f32::from(rows)
++                    );
++                    assert_eq!(
++                        view.pitch_at((f64::from(row) + 0.5) / f64::from(rows)),
++                        Some(pitch)
++                    );
++                }
++            }
++        }
++    }
++    #[test]
++    fn pan_keeps_fractional_span_and_clamps_at_both_midi_edges() {
++        let view = PitchViewport::new(59.25, 12.5).unwrap();
++        assert_eq!(view.panned(0.25).unwrap().low(), 59.5);
++        assert_eq!(view.panned(-1e20).unwrap().low(), 0.0);
++        let high = view.panned(1e20).unwrap();
++        assert_eq!(high.high(), 128.0);
++        assert_eq!(high.span(), 12.5);
++        assert!(view.panned(f64::NAN).is_none());
++    }
++}
+--- a/crates/hex-ui/src/editor/midi_pitch_zoom.rs
++++ b/crates/hex-ui/src/editor/midi_pitch_zoom.rs
+@@ -76,8 +76,7 @@
+                         clip,
+                         beat_start: self.piano_beat_start,
+                         beat_span: self.piano_beat_span.raw(),
+-                        pitch_low: self.piano_pitch_low,
+-                        pitch_rows: self.piano_pitch_rows,
++                        pitch: self.piano_pitch,
+                     },
+                     viewport: window.viewport_size(),
+                     detail_height: self.clip_detail_body_height,
+@@ -105,7 +104,7 @@
+                 // Preserve the original integer-row redraw threshold. The
+                 // window lease still consumes a sub-row move exclusively.
+                 if matches!(event, SplitterEvent::Change(_))
+-                    && (self.piano_pitch_low, self.piano_pitch_rows) == (low, rows)
++                    && (self.piano_pitch) == (low, rows)
+                 {
+                     return false;
+                 }
+--- a/crates/hex-ui/src/editor/midi_resize_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_resize_ui_tests.rs
+@@ -148,8 +148,7 @@
+                     clip,
+                     beat_start: v.piano_beat_start,
+                     beat_span: v.piano_beat_span.raw(),
+-                    pitch_low: v.piano_pitch_low,
+-                    pitch_rows: v.piano_pitch_rows,
++                    pitch: v.piano_pitch,
+                 },
+                 source.notes(),
+             );
+--- a/crates/hex-ui/src/editor/midi_scene.rs
++++ b/crates/hex-ui/src/editor/midi_scene.rs
+@@ -117,8 +117,7 @@
+     pub(super) clip: ClipId,
+     pub(super) beat_start: i128,
+     pub(super) beat_span: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq)]
+@@ -175,13 +174,12 @@
+ impl MidiScene {
+     pub(super) fn build(key: SceneKey, notes: &[MidiNote]) -> Self {
+         let mut visible = Vec::with_capacity(notes.len());
+-        let mut rows = vec![Vec::new(); usize::from(key.pitch_rows)];
++        let mut rows = vec![Vec::new(); key.pitch.coverage().len()];
+         let mut by_id = HashMap::with_capacity(notes.len());
+         let view_end = key.beat_start.checked_add(i128::from(key.beat_span));
+ 
+         if key.beat_span > 0
+             && key.beat_start == clamp_start(key.beat_start, key.beat_span)
+-            && valid_pitch_range(key.pitch_low, key.pitch_rows)
+             && let Some(view_end) = view_end
+         {
+             for note in notes {
+@@ -190,14 +188,13 @@
+                 let Some(end) = start.checked_add(i128::from(duration)) else {
+                     continue;
+                 };
+-                if end <= key.beat_start
+-                    || start >= view_end
+-                    || note.pitch() < key.pitch_low
+-                    || note.pitch() >= key.pitch_low.saturating_add(key.pitch_rows)
+-                {
++                if end <= key.beat_start || start >= view_end {
+                     continue;
+                 }
+-                let row = usize::from(key.pitch_low + (key.pitch_rows - 1) - note.pitch());
++                let Some(y) = key.pitch.note_top(note.pitch()) else {
++                    continue;
++                };
++                let row = usize::from(key.pitch.coverage().end - 1 - note.pitch());
+                 let visible_start = start.max(key.beat_start);
+                 let visible_end = end.min(view_end);
+                 let x = (visible_start - key.beat_start) as f64 / key.beat_span as f64;
+@@ -211,7 +208,7 @@
+                     velocity: note.velocity(),
+                     active: note.active(),
+                     x: x as f32,
+-                    y: row as f32 / f32::from(key.pitch_rows),
++                    y,
+                     width: width as f32,
+                     leading_edge_visible: start >= key.beat_start,
+                     trailing_edge_visible: end <= view_end,
+@@ -331,8 +328,8 @@
+         {
+             return None;
+         }
+-        let row = ((y / height * f32::from(self.key.pitch_rows)).floor() as usize)
+-            .min(self.rows.len().saturating_sub(1));
++        let pitch = self.key.pitch.pitch_at(f64::from(y) / f64::from(height))?;
++        let row = usize::from(self.key.pitch.coverage().end - 1 - pitch);
+         let local_x = x;
+         let previous = cycle.filter(|last| {
+             last.key == self.key && last.row as usize == row && last.x_cell == x.floor() as u32
+@@ -437,21 +434,18 @@
+     let end = start.checked_add(i128::from(duration))?;
+     if key.beat_span == 0
+         || key.beat_start != clamp_start(key.beat_start, key.beat_span)
+-        || !valid_pitch_range(key.pitch_low, key.pitch_rows)
+         || duration == 0
+-        || pitch < key.pitch_low
+-        || pitch >= key.pitch_low.saturating_add(key.pitch_rows)
+         || end <= key.beat_start
+         || start >= view_end
+     {
+         return None;
+     }
+-    let row = usize::from(key.pitch_low + (key.pitch_rows - 1) - pitch);
++    let y = key.pitch.note_top(pitch)?;
+     let visible_start = start.max(key.beat_start);
+     let visible_end = end.min(view_end);
+     Some(InsertGeometry {
+         x: ((visible_start - key.beat_start) as f64 / key.beat_span as f64) as f32,
+-        y: row as f32 / f32::from(key.pitch_rows),
++        y,
+         width: ((visible_end - visible_start) as f64 / key.beat_span as f64) as f32,
+     })
+ }
+@@ -538,8 +532,7 @@
+             clip,
+             beat_start: 0,
+             beat_span: SPAN,
+-            pitch_low: 48,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+         }
+     }
+ 
+@@ -636,11 +629,11 @@
+                 ..original
+             },
+             SceneKey {
+-                pitch_low: 49,
++                pitch: crate::editor::PitchViewport::from_rows(49, 24).unwrap(),
+                 ..original
+             },
+             SceneKey {
+-                pitch_rows: 12,
++                pitch: crate::editor::PitchViewport::from_rows(48, 12).unwrap(),
+                 ..original
+             },
+         ] {
+@@ -725,8 +718,7 @@
+         for (low, rows) in [(48, 1), (48, 12), (0, 128)] {
+             let scene = MidiScene::build(
+                 SceneKey {
+-                    pitch_low: low,
+-                    pitch_rows: rows,
++                    pitch: crate::editor::PitchViewport::from_rows(low, rows).unwrap(),
+                     ..key(clip)
+                 },
+                 notes,
+@@ -760,8 +752,7 @@
+         for (low, rows) in [(0, 0), (127, 2), (128, 1)] {
+             let scene = MidiScene::build(
+                 SceneKey {
+-                    pitch_low: low,
+-                    pitch_rows: rows,
++                    pitch: crate::editor::PitchViewport::from_rows(low, rows).unwrap(),
+                     ..key(clip)
+                 },
+                 notes,
+--- a/crates/hex-ui/src/editor/midi_selection.rs
++++ b/crates/hex-ui/src/editor/midi_selection.rs
+@@ -39,7 +39,6 @@
+                 .beat_start
+                 .checked_add(i128::from(context.scene.beat_span))
+                 .is_none()
+-            || !midi_scene::valid_pitch_range(context.scene.pitch_low, context.scene.pitch_rows)
+             || !first.into_iter().all(f32::is_finite)
+             || first[0] < 0.0
+             || first[0] >= context.bounds.width
+@@ -93,7 +92,7 @@
+                 last,
+                 context.bounds.width,
+                 context.bounds.height,
+-                context.scene.pitch_rows,
++                context.scene.pitch,
+             )
+         })
+     }
+@@ -386,14 +385,13 @@
+     last: [f32; 2],
+     width: f32,
+     height: f32,
+-    pitch_rows: u8,
++    pitch: crate::editor::PitchViewport,
+ ) -> Result<Vec<NoteId>, &'static str> {
+     if !first.into_iter().chain(last).all(f32::is_finite)
+         || !width.is_finite()
+         || !height.is_finite()
+         || width <= 0.0
+         || height <= 0.0
+-        || pitch_rows == 0
+     {
+         return Ok(Vec::new());
+     }
+@@ -410,7 +408,10 @@
+         let (left, right) =
+             midi_scene::pixel_bounds(*note, width).ok_or("invalid midi scene width")?;
+         let top = note.y * height;
+-        let bottom = top + height / f32::from(pitch_rows);
++        let bottom = top
++            + pitch
++                .row_height_pixels(height)
++                .ok_or("invalid midi scene height")?;
+         if right >= rect[0] && left <= rect[2] && bottom >= rect[1] && top <= rect[3] {
+             hits.push(note.id);
+         }
+@@ -527,7 +528,15 @@
+             },
+         ];
+         assert_eq!(
+-            marquee_hits(&notes, [29.0, 4.0], [21.0, 7.0], 100.0, 240.0, 24).unwrap(),
++            marquee_hits(
++                &notes,
++                [29.0, 4.0],
++                [21.0, 7.0],
++                100.0,
++                240.0,
++                crate::editor::PitchViewport::from_rows(48, 24).unwrap()
++            )
++            .unwrap(),
+             [ids[0]]
+         );
+     }
+--- a/crates/hex-ui/src/editor/midi_stroke.rs
++++ b/crates/hex-ui/src/editor/midi_stroke.rs
+@@ -44,8 +44,7 @@
+     pub(super) pitch_modifier: bool,
+     pub(super) view_start: i128,
+     pub(super) view_span: u64,
+-    pub(super) pitch_low: u8,
+-    pub(super) pitch_rows: u8,
++    pub(super) pitch: crate::editor::PitchViewport,
+     pub(super) bounds: CanvasBounds,
+     pub(super) pitch_locked: bool,
+     pub(super) draw_mode: bool,
+@@ -70,7 +69,6 @@
+                 .view_start
+                 .checked_add(i128::from(self.view_span))
+                 .is_some()
+-            && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
+             && self.bounds.is_valid()
+             && self.draw_mode
+     }
+@@ -735,8 +733,7 @@
+             pitch_modifier: false,
+             view_start: 0,
+             view_span: length,
+-            pitch_low: 48,
+-            pitch_rows: 24,
++            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
+             bounds: CanvasBounds {
+                 x: 0.0,
+                 y: 0.0,
+@@ -1656,11 +1653,6 @@
+                 ..blank
+             },
+             StrokeContext {
+-                pitch_low: 127,
+-                pitch_rows: 2,
+-                ..blank
+-            },
+-            StrokeContext {
+                 bounds: CanvasBounds {
+                     width: f32::NAN,
+                     ..blank.bounds
+@@ -1701,7 +1693,7 @@
+         let mut view_span = base;
+         view_span.view_span -= 1;
+         let mut pitch_range = base;
+-        pitch_range.pitch_low += 1;
++        pitch_range.pitch = pitch_range.pitch.panned(1.0).unwrap();
+         let mut bounds = base;
+         bounds.bounds.x += 1.0;
+         let mut mode = base;
+--- a/crates/hex-ui/src/editor/midi_velocity_ui.rs
++++ b/crates/hex-ui/src/editor/midi_velocity_ui.rs
+@@ -107,8 +107,7 @@
+                 clip: context.scene.clip,
+                 beat_start: context.scene.start,
+                 beat_span: context.scene.span,
+-                pitch_low: self.piano_pitch_low,
+-                pitch_rows: self.piano_pitch_rows,
++                pitch: self.piano_pitch,
+             },
+             bounds,
+             selection_epoch: context.selection_epoch,
+--- a/crates/hex-ui/src/editor/midi_wheel_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_wheel_ui_tests.rs
+@@ -30,8 +30,7 @@
+         let at = visual.debug_bounds(surface).unwrap().center();
+         let before = editor.read_with(&visual, |v, _| {
+             (
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows,
++                v.piano_pitch,
+                 v.piano_beat_start,
+                 v.piano_beat_span,
+                 v.state.as_ref().unwrap().project.snapshot(),
+@@ -76,7 +75,7 @@
+     let roll = visual.debug_bounds("midi-note-roll").unwrap();
+     let width = f32::from(roll.size.width);
+     let before = editor.read_with(&visual, |v, _| {
+-        (v.piano_pitch_low, v.piano_pitch_rows, v.piano_beat_span)
++        (v.piano_pitch, v.piano_beat_span)
+     });
+     // Negative x reveals later beats: a quarter of the width is one beat here.
+     wheel(
+@@ -89,7 +88,7 @@
+     editor.read_with(&visual, |v, _| {
+         assert!(beats(v.piano_beat_start, 1.0), "swipe pans time");
+         assert_eq!(
+-            (v.piano_pitch_low, v.piano_pitch_rows, v.piano_beat_span),
++            (v.piano_pitch, v.piano_beat_span),
+             before
+         );
+     });
+@@ -101,7 +100,7 @@
+     editor.read_with(&visual, |v, _| {
+         assert!(beats(v.piano_beat_start, 2.0), "shift pans time");
+         assert_eq!(
+-            (v.piano_pitch_low, v.piano_pitch_rows, v.piano_beat_span),
++            (v.piano_pitch, v.piano_beat_span),
+             before
+         );
+     });
+@@ -139,8 +138,7 @@
+     let viewport = |visual: &mut VisualTestContext| {
+         editor.read_with(visual, |v, _| {
+             (
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows,
++                v.piano_pitch,
+                 v.piano_beat_start,
+                 v.piano_beat_span,
+             )
+--- a/crates/hex-ui/src/editor/midi_zoom_ui_tests.rs
++++ b/crates/hex-ui/src/editor/midi_zoom_ui_tests.rs
+@@ -241,7 +241,7 @@
+     );
+     visual.run_until_parked();
+     editor.read_with(&visual, |v, _| {
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12));
++        assert_eq!((v.piano_pitch), (54, 12));
+         assert_eq!(v.piano_beat_span, BeatTime::from_quarters(4).unwrap());
+         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+     });
+@@ -383,8 +383,7 @@
+                 clip,
+                 beat_start: v.piano_beat_start,
+                 beat_span: v.piano_beat_span.raw(),
+-                pitch_low: v.piano_pitch_low,
+-                pitch_rows: v.piano_pitch_rows,
++                pitch: v.piano_pitch,
+             },
+             state.project.midi_source(clip).unwrap().notes(),
+         );
+@@ -440,8 +439,7 @@
+         let bounds = visual.debug_bounds(surface).unwrap();
+         let before = editor.read_with(&visual, |v, _| {
+             (
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows,
++                v.piano_pitch,
+                 v.piano_beat_start,
+                 v.piano_beat_span,
+                 v.state.as_ref().unwrap().project.snapshot(),
+@@ -474,7 +472,7 @@
+                 (before.2, before.3)
+             );
+             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.4);
+-            (v.piano_pitch_low, v.piano_pitch_rows)
++            (v.piano_pitch)
+         });
+         editor.update(&mut visual, |v, _| {
+             assert!(v.enqueue(Request::Edit(Command::RenameTrack {
+@@ -484,7 +482,7 @@
+         });
+         pump(&editor, &mut visual);
+         editor.read_with(&visual, |v, _| {
+-            assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), pitch_view)
++            assert_eq!((v.piano_pitch), pitch_view)
+         });
+         let roll = visual.debug_bounds("midi-note-roll").unwrap();
+         visual.simulate_event(ScrollWheelEvent {
+@@ -495,7 +493,7 @@
+         });
+         visual.run_until_parked();
+         editor.read_with(&visual, |v, _| {
+-            assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), pitch_view);
++            assert_eq!((v.piano_pitch), pitch_view);
+             assert!(v.piano_beat_span < before.3, "cmd-wheel zooms time");
+         });
+     }
+@@ -553,7 +551,7 @@
+         wheel(&mut visual, -320.0, true);
+     }
+     editor.read_with(&visual, |v, _| {
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (0, 128))
++        assert_eq!((v.piano_pitch), (0, 128))
+     });
+     for _ in 0..12 {
+         wheel(&mut visual, 320.0, true);
+@@ -561,8 +559,7 @@
+     editor.read_with(&visual, |v, _| assert_eq!(v.piano_pitch_rows, 1));
+     editor.update(&mut visual, |v, _| {
+         let saved = (
+-            v.piano_pitch_low,
+-            v.piano_pitch_rows,
++            v.piano_pitch,
+             v.piano_pitch_wheel_accum,
+         );
+         for (bounds, y, delta) in [
+@@ -575,8 +572,7 @@
+             assert!(!v.zoom_piano_pitch_wheel_at(bounds, y, delta));
+             assert_eq!(
+                 (
+-                    v.piano_pitch_low,
+-                    v.piano_pitch_rows,
++                    v.piano_pitch,
+                     v.piano_pitch_wheel_accum
+                 ),
+                 saved
+--- a/crates/hex-ui/src/editor/mod.rs
++++ b/crates/hex-ui/src/editor/mod.rs
+@@ -179,6 +179,8 @@
+ mod midi_loop_profile;
+ mod midi_ruler;
+ mod midi_scene;
++mod midi_pitch_viewport;
++pub(super) use midi_pitch_viewport::PitchViewport;
+ mod midi_selection;
+ mod midi_source_controls;
+ mod midi_step;
+@@ -926,8 +928,7 @@
+     piano_pitch_scroll_accum: f32,
+     pub(in crate::editor) piano_beat_start: i128,
+     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
+-    pub(in crate::editor) piano_pitch_low: u8,
+-    piano_pitch_rows: u8,
++    pub(in crate::editor) piano_pitch: PitchViewport,
+     piano_pitch_zoom: Option<midi_pitch_zoom::Zoom>,
+     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
+     pending_requests: VecDeque<Request>,
+@@ -1743,8 +1744,7 @@
+             piano_beat_start: 0,
+             piano_beat_span: hex_project::BeatTime::from_quarters(4)
+                 .unwrap_or(hex_project::BeatTime::ONE),
+-            piano_pitch_low: 48,
+-            piano_pitch_rows: 24,
++            piano_pitch: PitchViewport::DEFAULT,
+             piano_pitch_zoom: None,
+             midi_snap_grid: midi_drag::MidiGrid::default(),
+             pending_requests: VecDeque::new(),
+--- a/crates/hex-ui/src/editor/zoom_fit.rs
++++ b/crates/hex-ui/src/editor/zoom_fit.rs
+@@ -253,8 +253,7 @@
+                 if (
+                     self.piano_beat_start,
+                     self.piano_beat_span,
+-                    self.piano_pitch_low,
+-                    self.piano_pitch_rows,
++                    self.piano_pitch,
+                 ) == (next.start, next.span, next.low, next.rows)
+                 {
+                     return false;
+--- a/crates/hex-ui/src/editor/zoom_fit_ui_tests.rs
++++ b/crates/hex-ui/src/editor/zoom_fit_ui_tests.rs
+@@ -72,8 +72,7 @@
+         (
+             v.piano_beat_start,
+             v.piano_beat_span.raw(),
+-            v.piano_pitch_low,
+-            v.piano_pitch_rows,
++            v.piano_pitch,
+         )
+     });
+     let roll = visual.debug_bounds("midi-note-roll").unwrap();
+@@ -95,8 +94,7 @@
+             (
+                 v.piano_beat_start,
+                 v.piano_beat_span.raw(),
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows
++                v.piano_pitch,
+             ),
+             (0, 4 * beat, 48, 24)
+         );
+@@ -111,7 +109,7 @@
+     editor.read_with(&visual, |v, _| {
+         assert_eq!(v.piano_beat_start, 0);
+         assert!(v.piano_beat_span.raw() > beat * 7 / 2 && v.piano_beat_span.raw() < 4 * beat);
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (46, 47));
++        assert_eq!((v.piano_pitch), (46, 47));
+         let state = v.state.as_ref().unwrap();
+         assert_eq!(
+             (state.project.snapshot(), state.can_undo, state.can_redo),
+@@ -126,7 +124,7 @@
+     editor.update(&mut visual, |v, cx| {
+         v.midi_selection.set_single(selected);
+         assert!(v.apply_zoom_fit(Target::Midi, false));
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (46, 47));
++        assert_eq!((v.piano_pitch), (46, 47));
+         cx.notify();
+     });
+     editor.update(&mut visual, |v, _| {
+@@ -155,7 +153,7 @@
+     visual.run_until_parked();
+     visual.simulate_keystrokes("z");
+     editor.read_with(&visual, |v, _| {
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (0, 128))
++        assert_eq!((v.piano_pitch), (0, 128))
+     });
+ }
+ #[gpui::test]
+@@ -276,8 +274,7 @@
+         (
+             v.state.as_ref().unwrap().project.snapshot(),
+             v.midi_marker,
+-            v.piano_pitch_low,
+-            v.piano_pitch_rows,
++            v.piano_pitch,
+         )
+     });
+     visual.simulate_keystrokes("z");
+@@ -286,7 +283,7 @@
+             (v.piano_beat_start, v.piano_beat_span.raw()),
+             (0, 4 * BeatTime::ONE.raw())
+         );
+-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 12));
++        assert_eq!((v.piano_pitch), (54, 12));
+         assert_eq!(
+             v.midi_time_selection_bounds(),
+             Some((BeatTime::ONE.raw(), 3 * BeatTime::ONE.raw()))
+@@ -314,8 +311,7 @@
+             (
+                 v.piano_beat_start,
+                 v.piano_beat_span.raw(),
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows
++                v.piano_pitch,
+             ),
+             (0, 4 * BeatTime::ONE.raw(), before.2, before.3)
+         )
+@@ -525,8 +521,7 @@
+             (
+                 v.piano_beat_start,
+                 v.piano_beat_span,
+-                v.piano_pitch_low,
+-                v.piano_pitch_rows
++                v.piano_pitch,
+             ),
+             (i128::from(prior.0.raw()), prior.1, prior.2, prior.3)
+         )
+--- a/crates/hex-ui/tests/piano_roll_unit/editor.rs
++++ b/crates/hex-ui/tests/piano_roll_unit/editor.rs
+@@ -1,3 +1,6 @@
++#[path = "../../src/editor/midi_pitch_viewport.rs"]
++mod midi_pitch_viewport;
++pub(super) use midi_pitch_viewport::PitchViewport;
+ // These source modules share pure geometry contracts. Their production callers
+ // use more methods than this unit-only target, so unused items are expected here.
+ #[allow(dead_code)]

@@ -1,0 +1,452 @@
+--- a/crates/hex-engine/src/audio_transform/frame_fade_preview.rs
++++ b/crates/hex-engine/src/audio_transform/frame_fade_preview.rs
+@@ -113,6 +113,10 @@
+         }
+         let source_frames = asset.playback_frames();
+         let projection = if let Some(edit) = clip.audio_edit() {
++            edit.domain
++                .fade_clock
++                .require_supported()
++                .map_err(|error| Invalid(error.0))?;
+             if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
+                 || !matches!(edit.timing, AudioClipTiming::Frames)
+                 || edit.domain.warp_enabled
+--- a/crates/hex-engine/src/audio_transform/mod.rs
++++ b/crates/hex-engine/src/audio_transform/mod.rs
+@@ -830,6 +830,10 @@
+         asset: &Asset,
+         source: &Audio,
+     ) -> Result<Audio, Invalid> {
++        edit.domain
++            .fade_clock
++            .require_supported()
++            .map_err(|error| Invalid(error.0))?;
+         if self.cancelled() {
+             return Err(Invalid("audio preparation cancelled"));
+         }
+--- a/crates/hex-engine/src/audio_transform/tests.rs
++++ b/crates/hex-engine/src/audio_transform/tests.rs
+@@ -3548,3 +3548,32 @@
+         64_000
+     );
+ }
++
++#[test]
++fn unsupported_outer_fade_is_refused_before_preparation_cache_lookup() {
++    let (mut editor, id, media) = fixture(false);
++    editor
++        .execute(Command::SetAudioClipPitch {
++            clip: id,
++            cents: 100,
++        })
++        .unwrap();
++    let clip = editor.project().clip(id).unwrap();
++    let asset = editor.project().asset(clip.asset()).unwrap();
++    let context = AudioTransformPreparation::default();
++    let edit = clip.audio_edit().unwrap();
++    context
++        .prepare_audio(editor.project(), edit, asset, &media[&clip.asset()])
++        .unwrap();
++    let before = context.cache_hits();
++    let mut unsupported = edit.clone();
++    Arc::make_mut(&mut unsupported.domain).fade_clock = hex_project::AudioClipFadeClock::Outer;
++    assert_eq!(
++        context
++            .prepare_audio(editor.project(), &unsupported, asset, &media[&clip.asset()])
++            .unwrap_err()
++            .0,
++        "outer clip fades are not supported yet"
++    );
++    assert_eq!(context.cache_hits(), before);
++}
+--- a/crates/hex-engine/src/audio_transform/view.rs
++++ b/crates/hex-engine/src/audio_transform/view.rs
+@@ -198,6 +198,10 @@
+         source: PreparedAudioSourceRef<'_>,
+         projection: AudioViewProjection<'_>,
+     ) -> Result<Clip, Invalid> {
++        edit.domain
++            .fade_clock
++            .require_supported()
++            .map_err(|error| Invalid(error.0))?;
+         if self.cancelled() {
+             return Err(Invalid("audio preparation cancelled"));
+         }
+--- a/crates/hex-project/src/audio_edit/fade_clock_tests.rs
++++ b/crates/hex-project/src/audio_edit/fade_clock_tests.rs
+@@ -0,0 +1,93 @@
++use super::*;
++use crate::{Command, Created, Editor, Project, TrackContentSnapshot};
++
++fn fixture() -> (Project, crate::ClipId) {
++    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
++    let Created::Imported { clip, .. } = editor
++        .execute(Command::ImportAudioTrack {
++            name: "fade".into(),
++            path: "fade.wav".into(),
++            sample_rate: 48_000,
++            frames: 96_000,
++        })
++        .unwrap()
++    else {
++        panic!("audio fixture")
++    };
++    editor
++        .execute(Command::SetAudioClipPitch { clip, cents: 100 })
++        .unwrap();
++    editor
++        .execute(Command::SetClipFades {
++            clip,
++            fade_in: 120,
++            fade_out: 240,
++        })
++        .unwrap();
++    (editor.project().clone(), clip)
++}
++
++#[test]
++fn capture_and_existing_edits_keep_legacy_clock_through_snapshot() {
++    let (project, id) = fixture();
++    let clip = project.clip(id).unwrap();
++    assert_eq!(
++        AudioClipEdit::capture(clip).domain.fade_clock,
++        AudioClipFadeClock::LegacyRoot
++    );
++    assert_eq!(
++        clip.audio_edit().unwrap().domain.fade_clock,
++        AudioClipFadeClock::LegacyRoot
++    );
++    assert_eq!(Project::from_snapshot(project.snapshot()).unwrap(), project);
++}
++
++#[test]
++fn outer_clock_is_refused_even_for_neutral_fades_and_never_admitted() {
++    let (project, id) = fixture();
++    for neutral in [false, true] {
++        let mut snapshot = project.snapshot();
++        let TrackContentSnapshot::Hybrid { audio_clips, .. } = &mut snapshot.tracks[0].content
++        else {
++            panic!("hybrid fixture")
++        };
++        let edit = audio_clips[0].edit.as_mut().unwrap();
++        let domain = Arc::make_mut(&mut edit.domain);
++        domain.fade_clock = AudioClipFadeClock::Outer;
++        if neutral {
++            domain.fade = ClipFade::neutral(domain.fade.span()).unwrap();
++        }
++        let clip = project.clip(id).unwrap();
++        let asset = project.asset(clip.asset()).unwrap();
++        assert_eq!(
++            edit.validate(clip, project.tempo_map(), asset.playback_frames())
++                .unwrap_err()
++                .0,
++            "outer clip fades are not supported yet"
++        );
++        assert_eq!(
++            edit.projected_fade(project.tempo_map()).err().unwrap().0,
++            "outer clip fades are not supported yet"
++        );
++        assert_eq!(
++            Project::from_snapshot(snapshot).unwrap_err().0,
++            "outer clip fades are not supported yet"
++        );
++    }
++    assert_eq!(Project::from_snapshot(project.snapshot()).unwrap(), project);
++}
++
++#[test]
++fn retained_root_admission_also_refuses_outer_clock() {
++    let (project, id) = fixture();
++    let mut snapshot = project.clip(id).unwrap().retained_snapshot();
++    Arc::make_mut(&mut snapshot.edit.as_mut().unwrap().domain).fade_clock =
++        AudioClipFadeClock::Outer;
++    assert_eq!(
++        project
++            .restore_retained_audio_root(1, snapshot, Arc::new(project.tempo_map().clone()))
++            .unwrap_err()
++            .0,
++        "outer clip fades are not supported yet"
++    );
++}
+--- a/crates/hex-project/src/audio_edit.rs
++++ b/crates/hex-project/src/audio_edit.rs
+@@ -234,6 +234,25 @@
+     }
+ }
+ 
++/// Clock that authors an instance-owned clip fade. Historical projects keep
++/// their retained-root law; an outer fade will use unwrapped destination age.
++/// `Outer` is reserved but unsupported until projection, transitions and storage
++/// can preserve it. Capture and edit commands continue to author `LegacyRoot`.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub enum AudioClipFadeClock {
++    LegacyRoot,
++    Outer,
++}
++impl AudioClipFadeClock {
++    /// Refuse the reserved law before an older consumer can interpret or drop it.
++    pub fn require_supported(self) -> Result<(), Invalid> {
++        match self {
++            Self::LegacyRoot => Ok(()),
++            Self::Outer => Err(Invalid("outer clip fades are not supported yet")),
++        }
++    }
++}
++
+ /// Effective processing domain with instance-owned loop and fade settings.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct AudioClipDomain {
+@@ -241,6 +260,7 @@
+     pub source_phase: u64,
+     pub looping: bool,
+     pub fade: ClipFade,
++    pub fade_clock: AudioClipFadeClock,
+     pub fade_start: u64,
+     pub fade_projection: Option<AudioFadeProjection>,
+ }
+@@ -707,6 +727,7 @@
+         &'a self,
+         tempo: &'a TempoMap,
+     ) -> Result<ProjectedAudioFade<'a>, Invalid> {
++        self.domain.fade_clock.require_supported()?;
+         let tempo = self.processing_tempo(tempo);
+         let (first, length, _, _) = self.projected_domain(tempo)?;
+         let origin = if self.reference_start_raw().is_some() {
+@@ -746,6 +767,7 @@
+                 source_phase: clip.source_phase,
+                 looping: clip.looping,
+                 fade: clip.fade,
++                fade_clock: AudioClipFadeClock::LegacyRoot,
+                 fade_start: 0,
+                 fade_projection: None,
+             }),
+@@ -1084,6 +1106,7 @@
+         tempo: &TempoMap,
+         asset_frames: u64,
+     ) -> Result<(), Invalid> {
++        self.domain.fade_clock.require_supported()?;
+         if let Some(period) = self.repeat_period
+             && (self
+                 .view_end
+@@ -1684,6 +1707,8 @@
+ 
+ #[cfg(test)]
+ mod content_tests;
++#[cfg(test)]
++mod fade_clock_tests;
+ 
+ #[cfg(test)]
+ mod limit_tests {
+--- a/crates/hex-project/src/lib.rs
++++ b/crates/hex-project/src/lib.rs
+@@ -87,14 +87,15 @@
+ mod selection_fades;
+ mod source_ranges;
+ pub use audio_edit::{
+-    AudioClipContent, AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView,
+-    AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
+-    AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+-    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
+-    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioCycles,
+-    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler,
+-    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
+-    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
++    AudioClipContent, AudioClipDomain, AudioClipEdit, AudioClipFadeClock, AudioClipTiming,
++    AudioContentView, AudioDomainClock, AudioFadeProjection, AudioImportWarp,
++    AudioProcessingProjection, AudioViewMode, AudioViewOccurrence, AudioViewPlacement,
++    AudioViewProjection, AudioViewResize, AudioViewResizeOperation, BeatsPreserve, BeatsTail,
++    MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES,
++    MusicalEventSource, ProjectedAudioCycles, ProjectedAudioFade, SOURCE_GAIN_UNITY,
++    SourceGainPoint, WarpMarker, WarpMode, WarpResampler, WarpSettings, audio_projection_beat,
++    audio_projection_frame, audio_projection_frame_q32, default_audio_warp,
++    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+ };
+ pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
+ pub use content_window::{ContentWindow, RepeatBoundaryPlan, RepeatCycles};
+--- a/crates/hex-storage/src/audio_edit/fade_clock_tests.rs
++++ b/crates/hex-storage/src/audio_edit/fade_clock_tests.rs
+@@ -0,0 +1,56 @@
++use super::*;
++use crate::{decode, encode, schema_version_for};
++
++const SCHEMA64: &[u8] = include_bytes!("../../tests/fixtures/warp-resampler/schema64.json");
++
++#[test]
++fn historical_domains_including_retained_roots_keep_legacy_law_and_complete_state() {
++    let project = decode(SCHEMA64).unwrap();
++    let mut count = 0;
++    for clip in project.tracks().iter().flat_map(|track| track.clips()) {
++        for clip in std::iter::once(clip).chain(clip.retained_audio_roots().map(|root| &root.clip))
++        {
++            if let Some(edit) = clip.audio_edit() {
++                assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
++                let dto = AudioEditDto::try_from(edit.clone()).unwrap();
++                // Events are owned by their separate wrapper, not AudioEditDto.
++                let restored = AudioClipEdit::try_from(dto).unwrap();
++                assert_eq!(restored.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
++                count += 1;
++            }
++        }
++    }
++    assert!(count >= 5, "fixture must retain nested processing roots");
++    let bytes = encode(&project).unwrap();
++    assert_eq!(schema_version_for(&project), 64);
++    assert_eq!(
++        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
++        serde_json::from_slice::<serde_json::Value>(SCHEMA64).unwrap()
++    );
++    assert_eq!(decode(&bytes).unwrap(), project);
++}
++
++#[test]
++fn dto_encoder_refuses_outer_clock_before_it_can_drop_the_law() {
++    let project = decode(SCHEMA64).unwrap();
++    let edit = project
++        .tracks()
++        .iter()
++        .flat_map(|track| track.clips())
++        .find_map(|clip| clip.audio_edit())
++        .unwrap();
++    for neutral in [false, true] {
++        let mut edit = edit.clone();
++        let domain = Arc::make_mut(&mut edit.domain);
++        domain.fade_clock = AudioClipFadeClock::Outer;
++        if neutral {
++            domain.fade = ClipFade::neutral(domain.fade.span()).unwrap();
++        }
++        assert!(matches!(
++            AudioEditDto::try_from(edit),
++            Err(StorageError::Invalid(
++                "outer clip fades are not supported yet"
++            ))
++        ));
++    }
++}
+--- a/crates/hex-storage/src/audio_edit.rs
++++ b/crates/hex-storage/src/audio_edit.rs
+@@ -1,10 +1,10 @@
+ //! Current musical/frozen audio metadata adapter; no DSP or PCM persistence.
+ use crate::StorageError;
+ use hex_project::{
+-    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
+-    AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
+-    BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
+-    WarpResampler, WarpSettings,
++    AudioClipDomain, AudioClipEdit, AudioClipFadeClock, AudioClipTiming, AudioDomainClock,
++    AudioFadeProjection, AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime,
++    BeatsPreserve, BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker,
++    WarpMode, WarpResampler, WarpSettings,
+ };
+ use serde::{Deserialize, Serialize};
+ use std::sync::Arc;
+@@ -225,10 +225,14 @@
+     Alternating,
+ }
+ 
+-impl From<AudioClipEdit> for AudioEditDto {
+-    fn from(edit: AudioClipEdit) -> Self {
++impl TryFrom<AudioClipEdit> for AudioEditDto {
++    type Error = StorageError;
++    fn try_from(edit: AudioClipEdit) -> Result<Self, Self::Error> {
+         let d = &edit.domain;
+-        Self {
++        d.fade_clock
++            .require_supported()
++            .map_err(|error| StorageError::Invalid(error.0))?;
++        Ok(Self {
+             placement_start_offset: edit.placement_start_offset,
+             placement_end_offset: edit.placement_end_offset,
+             processing_projection: edit.processing_projection.as_ref().map(|p| {
+@@ -373,7 +377,7 @@
+                 },
+                 cycle_phase: p.cycle_phase,
+             }),
+-        }
++        })
+     }
+ }
+ impl TryFrom<AudioEditDto> for AudioClipEdit {
+@@ -533,6 +537,7 @@
+                 source_phase: d.source_phase,
+                 looping: d.looping,
+                 fade,
++                fade_clock: AudioClipFadeClock::LegacyRoot,
+                 fade_start: d.fade_start,
+                 fade_projection,
+             }),
+@@ -586,3 +591,6 @@
+         })
+     }
+ }
++
++#[cfg(test)]
++mod fade_clock_tests;
+--- a/crates/hex-storage/src/lib.rs
++++ b/crates/hex-storage/src/lib.rs
+@@ -563,6 +563,7 @@
+ /// Nonempty serial units use schema80; flat projects retain their prior layout.
+ pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+     use schema::long_granular::{self, LongWarpSchema};
++    refuse_unsupported_fade_clocks(project)?;
+     if long_granular::contains(project, LongWarpSchema::Inactive) {
+         return long_granular::encode(project, LongWarpSchema::Inactive);
+     }
+@@ -692,9 +693,26 @@
+ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
+     refuse_legacy_routes(project)?;
+     encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
++}
++
++/// Check before a feature wrapper can remove unsupported metadata from its base.
++fn refuse_unsupported_fade_clocks(project: &Project) -> Result<(), StorageError> {
++    for clip in project.tracks().iter().flat_map(|track| track.clips()) {
++        for clip in std::iter::once(clip).chain(clip.retained_audio_roots().map(|root| &root.clip))
++        {
++            if let Some(edit) = clip.audio_edit() {
++                edit.domain
++                    .fade_clock
++                    .require_supported()
++                    .map_err(|error| StorageError::Invalid(error.0))?;
++            }
++        }
++    }
++    Ok(())
+ }
+ 
+ fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
++    refuse_unsupported_fade_clocks(project)?;
+     if !project.arrangement_locators().is_empty() {
+         return Err(StorageError::Invalid(
+             "older schema cannot save arrangement locators",
+--- a/crates/hex-storage/src/schema/long_granular.rs
++++ b/crates/hex-storage/src/schema/long_granular.rs
+@@ -168,7 +168,7 @@
+                         clip.edit
+                             .take()
+                             .ok_or(StorageError::Invalid("long warp edit missing"))?
+-                            .into(),
++                            .try_into()?,
+                     )
+                 } else {
+                     None
+--- a/crates/hex-storage/src/schema/musical_audio.rs
++++ b/crates/hex-storage/src/schema/musical_audio.rs
+@@ -128,11 +128,13 @@
+             let TrackContentSnapshot::Hybrid { audio_clips, .. } = track.content else {
+                 continue;
+             };
+-            audio_clip_state.extend(audio_clips.into_iter().map(|clip| AudioState {
+-                clip: clip.id,
+-                gain_millidb: clip.gain.millidb(),
+-                audio_edit: clip.edit.map(Into::into),
+-            }));
++            for clip in audio_clips {
++                audio_clip_state.push(AudioState {
++                    clip: clip.id,
++                    gain_millidb: clip.gain.millidb(),
++                    audio_edit: clip.edit.map(TryInto::try_into).transpose()?,
++                });
++            }
+         }
+         audio_clip_state.extend(snapshot.session.cells.into_iter().filter_map(|cell| {
+             if let SessionCellContentSnapshot::Audio(clip) = cell.content {

@@ -1,0 +1,125 @@
+{
+  "base": "3ab11eea250d970c326016051ba69d19d07c15b3",
+  "status": "partial artifact-only prototype; NOT a compilable product candidate or qualified patch",
+  "tracked_source_changed": false,
+  "passing_evidence": "standalone PitchViewport 4 tests only (0.01s)",
+  "remaining": "UI state/paint/navigation/fixture adapters, full compile, owning consumer tests and optimized benchmark",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/clip_view_ui_test.rs",
+      "sha256": "b758a4dd9140d62177a178dc97bf21dd3542df6897479ea67cd8f3a3fc944028"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_canvas/geometry.rs",
+      "sha256": "6c0db76db709105a1365986b9e86a564fee11b01dccaac7082eef742f5ce2943"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_canvas.rs",
+      "sha256": "77cb649f2421709bbc7d77a01faa0e92ce6a2472421158e06de7c624791a6e69"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_creation.rs",
+      "sha256": "d7c8d2f5bbb8af334249f1797ba88d56a0a132acf698d261066c8599a5cbde98"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_drag.rs",
+      "sha256": "637b91932a14b849f47ea4411c34c1ec74c1212a5cc03eec82f00a9d1ade9611"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_draw.rs",
+      "sha256": "edba8639b9efa55b24b6118c50f2126f22872a762e234c37686bf6405093263c"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_group_drag.rs",
+      "sha256": "30e60d51e2670f19bb147ee758ef0106700ee7849ec98427fea03b9120a98aa2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_hover_ui_tests.rs",
+      "sha256": "50aefd615dcee90a6858a6a244649605b459a931cd72f9a14799d3375352bef2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_marquee.rs",
+      "sha256": "4bce57fb4e12ed64b4f15b723def3c1bc85ccfea9c3e5a1b219afec5aadd409f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_marquee_pointer.rs",
+      "sha256": "be81277a3fa54fb99029b92c2fc1d9d6339188e4366a3844992122c417e88df7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_marquee_ui_tests.rs",
+      "sha256": "d921eeeadabf3440698576b664b920bbe0a06a0ba457d04dc07b8c5dfdb9c7fe"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_note_overwrite_ui_tests.rs",
+      "sha256": "3e71b99550e091d8151203424f490c7866580b4d0e5e9bcffc3b2a2e497c2229"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_note_pointer.rs",
+      "sha256": "d16a80898a581fe05b2a766ad42af6872f02c451ab4328d5a3d133171bde06ce"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_pan_capture_tests.rs",
+      "sha256": "bb589311fe76cf2f1e1a9704c3be10a2e1c0a45f7f595be835edde60d6028c69"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_pan_ui_tests.rs",
+      "sha256": "3a2542d24da45b77bc439cff0b9ff8b1a5c4b83a4b02737e7fdb510caa1460f1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_pitch_capture_ui_tests.rs",
+      "sha256": "9fe2e1a02e0a0881ede88e35a101d8d67da218d8f79e33c2c2434cd2d8259fee"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_pitch_viewport.rs",
+      "sha256": "eaeafe62f94734ac344f76540a74664ddcaef9e042194848f08ee010ff7b8d16"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_pitch_zoom.rs",
+      "sha256": "aec44daf4b1abd256b2a9cae0f3a38ea5b3ff9b34a89fb6e402a95af72db9a1e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_resize_ui_tests.rs",
+      "sha256": "f5883a3d0200c1dc6bf9efee70df3d0f48f3940352c2a7201eaf22372c57538d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_scene.rs",
+      "sha256": "e38bbe1e6b8d63c206dd3f5601f27d4d2f045374a3960211038ab4903c97a260"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_selection.rs",
+      "sha256": "579f9418191e1aef780c1c75e08398c7a746b91fe8e3120b794b610a5f0d0070"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_stroke.rs",
+      "sha256": "846ddfb93dac1844bd37057ae0e75095ff7731124b95fffd6944aee0b4e9314a"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_velocity_ui.rs",
+      "sha256": "87bfb0346133ccdcf7332c2345085c3e3020a2c40167870b7d53e0a03988493e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_wheel_ui_tests.rs",
+      "sha256": "91a5beff86a9ed7dc8df8a424c8287bc4a1264923ee378c7a7f5ef2f395371f6"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_zoom_ui_tests.rs",
+      "sha256": "c138bcefedc0ec95ceb1d1098d98de803228e9039d5fa451452c2248718a0f27"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/mod.rs",
+      "sha256": "0e3029a17c1960dd94dc4e1ea7869cbcec91cc5a7cf7ebe43b98c1fcd82a365e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/zoom_fit.rs",
+      "sha256": "e1d64bb63bfa2b9af973564f2189e15117be0adfa0e3bd5d993a35137b398af8"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/zoom_fit_ui_tests.rs",
+      "sha256": "2df22ae40494fd18f2999a6e0bd5aabee389d3c90f83275a9eb8ca3c7d2a1c36"
+    },
+    {
+      "path": "crates/hex-ui/tests/piano_roll_unit/editor.rs",
+      "sha256": "c05fe3c437c8011d74e2d571876abd370611a3cb19449041abdc7a762604286a"
+    }
+  ]
+}

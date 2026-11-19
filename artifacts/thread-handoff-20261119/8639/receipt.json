@@ -1,0 +1,19 @@
+{
+  "artifact_only": true,
+  "source_base": "9f60ed6d9c550f23a6dc64004ab9517eea982b13",
+  "prerequisites": {
+    "8623": "56d0ab7b2b48f82d2b9df4f29952e674fe5703a373eadfd1c574315a97c2dd7d",
+    "8628": "db10f2cddc19fb46f24673285ef8ad9a60a054d7dd59824353e71ff93f9065f3"
+  },
+  "qualification": "Formatted/read-reviewed artifact milestone, all Rust product tests uncompiled/unrun. No tracked source or previous artifact changes.",
+  "sha256": "131141f2fee9e728283f1f1b798c65efb1120afce1e65417fb24f82fa1754d6d",
+  "files": [
+    "crates/hex-project/src/audio_edit/commands.rs",
+    "crates/hex-project/src/audio_edit/outer_fade.rs",
+    "crates/hex-project/src/audio_edit/outer_fade/crop.rs",
+    "crates/hex-project/src/audio_edit/outer_fade/tests.rs",
+    "crates/hex-project/src/audio_edit/outer_fade/tests/crop_tests.rs",
+    "crates/hex-project/src/audio_edit/view.rs"
+  ],
+  "scope": "private signed inverse + private pure original/result context helper with first real trim_view caller; no defaults/admission/codec/anchor/stretch/alias/directsplit/publicleading wiring"
+}

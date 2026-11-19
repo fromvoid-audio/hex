@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-11-19T16:53:51.380375+00:00",
+  "own_wrapper_matches": [
+    53046
+  ],
+  "log": "artifacts/8623/qualification-launch-05.log",
+  "log_tail": "waiting for cargo slot: /Users/portalsurfer/.cache/hex/cargo-slot.lock\nnext cargo slot reserved: /Users/portalsurfer/.cache/hex/cargo-slot.lock\ncargo slot acquired: /Users/portalsurfer/.cache/hex/cargo-slot.lock\nrunning cargo test -p hex-project -p hex-storage -p hex-engine --lib --locked -- fade_clock_tests:: unsupported_outer_fade_is_refused_before_preparation_cache_lookup audio_transform::frame_fade_preview::tests:: schema::long_granular::tests:: log /Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8623/qualification-2791e93abc3d/01.log\n",
+  "own_descendants": [
+    60619,
+    60624,
+    60682,
+    60683
+  ],
+  "reservation_confirmed": true,
+  "child_started": true,
+  "action": "terminated only verified own descendants (if any) and own wrapper; no shared lock or other process altered"
+}

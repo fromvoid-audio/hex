@@ -1,0 +1,176 @@
+{
+  "head": "41f83e16bb003434a48fea6ebe804020b8867532",
+  "base": "4c130ff4228acb362d3b45fc846fcbff067e380b",
+  "route": "reviewed change-based; not runner-certified",
+  "steps": [
+    {
+      "name": "integration-engine-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-engine",
+        "--features",
+        "instrument-test-support",
+        "--lib",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 19.991081208,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "integration-slot-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/hex_engine-bc20fa13277cf600",
+        "audio_preparation::transformed::fade_tests::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.7604534590000007,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "integration-audio-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-audio",
+        "--features",
+        "allocation-probe",
+        "--test",
+        "allocation_probes",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 13.493257875000001,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "integration-callback-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/allocation_probes-970431369210aac5",
+        "compiled_sparse_fade::",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.6416387499999985,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "integration-calibration-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-audio",
+        "--features",
+        "allocation-probe",
+        "--test",
+        "allocation_probe_calibration",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 1.480259457999999,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "integration-calibration-tests",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/target/debug/deps/allocation_probe_calibration-8c68e47370a9c63d",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.378389250000005,
+      "build": false,
+      "test": true
+    },
+    {
+      "name": "integration-consumer-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "-p",
+        "hex-engine",
+        "-p",
+        "hex-audio",
+        "-p",
+        "hex-media",
+        "-p",
+        "hex-cli",
+        "-p",
+        "hex-desktop",
+        "-p",
+        "hex-export",
+        "-p",
+        "hex-session",
+        "-p",
+        "hex-stream",
+        "-p",
+        "hex-ui",
+        "--features",
+        "hex-audio/allocation-probe",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 28.012955833999996,
+      "build": true,
+      "test": false
+    },
+    {
+      "name": "integration-quick",
+      "command": [
+        "python3",
+        "scripts/local-ci.py",
+        "--quick"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 12.506566042000003,
+      "build": false,
+      "test": false
+    },
+    {
+      "name": "integration-diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "4c130ff4228acb362d3b45fc846fcbff067e380b",
+        "41f83e16bb003434a48fea6ebe804020b8867532"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.017978666999994175,
+      "build": false,
+      "test": false
+    }
+  ],
+  "fresh_test_setup_execution_seconds": 1.7804814590000042,
+  "carried_owner_tests": 30,
+  "carried_evidence": "qualified-9f60ed6d9/qualification.json",
+  "carry_reason": "Production, fixture, probe and timer source bytes unchanged. Only2native slot tests add the existing unknown-layout refusal gate, so those tests rerun. Main adds cold-device stream warmup and processor power-off behavior; neither occurs in these resident no-device fixtures. Public fade/resource/clock contracts and toolchain/configuration unchanged. Callback entry changed, so actual callback and allocator calibration rerun; all Cargo consumers freshly compile/lint.",
+  "files": {
+    "crates/hex-audio/tests/allocation_probes/compiled_sparse_fade.rs": "c959805af8f7e6f131343f98d2408ea74eb5f2a511c0aa177449feca24e60298",
+    "crates/hex-audio/tests/allocation_probes/main.rs": "4e3b7121564d84a8fa9d0510f08151978021b7c8f97df2dcb11ec53008916ee4",
+    "crates/hex-engine/src/audio_preparation.rs": "e964c68538e80e7b55e5366ecc25e98ad53d958717a8ba9b1af0960174572f72",
+    "crates/hex-engine/src/audio_preparation/arrangement_clips.rs": "fcab547fc64b14095bded102bac0418330d6234961c9159be149ef9a1b514d99",
+    "crates/hex-engine/src/audio_preparation/storage.rs": "c14be50698fbf60a2ce551cb64c180efc142aab93e4150348b9a5e028786324d",
+    "crates/hex-engine/src/audio_preparation/transformed.rs": "3625cd857658c85ef834d4b5da186a06072237a260dd6e4b3e7ad80f9ffe7ebf",
+    "crates/hex-engine/src/audio_preparation/transformed/fade_tests.rs": "e9fcbc025d73a12ae38abeacf8aac401e3b1656a41d004c8ccfa7ae652da33e9",
+    "crates/hex-engine/src/compiled_fade_conformance.rs": "e5cb6739f27eb9eeb925d99657b76f31d7fadd0439006c4d2abda35f2f4d5403",
+    "crates/hex-engine/src/lib.rs": "987be1b5e1e4ae2a220e6084efa11b49003d3787ca69b669c78537ba3ca730a5"
+  },
+  "passed": true
+}

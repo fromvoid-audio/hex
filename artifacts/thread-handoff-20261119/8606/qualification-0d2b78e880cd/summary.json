@@ -1,0 +1,146 @@
+{
+  "kind": "reviewed change-based check set; not runner-certified",
+  "base": "fb3f3e9402137e679d7442c9fb8f68946c999d4d",
+  "source": "0d2b78e880cd4e0bc2aa88ac1a95405da2703d4c",
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-unit-tier",
+        "--test",
+        "unit_piano_roll",
+        "--locked",
+        "--",
+        "editor::midi_pitch_viewport::tests::",
+        "editor::midi_scene::tests::",
+        "editor::midi_selection::tests::"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 14.820154,
+      "test_setup_execution_seconds": 0.405971375,
+      "test_budget_exceeded": false,
+      "log": "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8606/qualification-0d2b78e880cd/01.log",
+      "harness_summaries": [
+        "test result: ok. 20 passed; 0 failed; 1 ignored; 0 measured; 73 filtered out; finished in 0.02s"
+      ]
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--lib",
+        "--locked",
+        "--",
+        "editor::midi_canvas::zoom_tests::",
+        "editor::midi_canvas::hover_tests::",
+        "editor::midi_canvas::marquee_tests::",
+        "editor::midi_canvas::resize_tests::",
+        "editor::midi_velocity_ui::tests::",
+        "editor::clip_view_ui_test::midi_clip_view_toggle",
+        "editor::zoom_fit::tests::midi_fit_targets_current_selected_notes_or_all_notes_in_both_axes"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 30.017492083999997,
+      "test_setup_execution_seconds": 5.6973227080000015,
+      "test_budget_exceeded": false,
+      "log": "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8606/qualification-0d2b78e880cd/02.log",
+      "harness_summaries": [
+        "test result: ok. 39 passed; 0 failed; 3 ignored; 0 measured; 2213 filtered out; finished in 4.31s"
+      ]
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "-p",
+        "hex-desktop",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 9.386880459000004,
+      "test_setup_execution_seconds": null,
+      "test_budget_exceeded": false,
+      "log": "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8606/qualification-0d2b78e880cd/03.log",
+      "harness_summaries": []
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "-p",
+        "hex-desktop",
+        "--all-targets",
+        "--features",
+        "hex-ui/ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 16.036092167000007,
+      "test_setup_execution_seconds": null,
+      "test_budget_exceeded": false,
+      "log": "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8606/qualification-0d2b78e880cd/04.log",
+      "harness_summaries": []
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "-p",
+        "hex-desktop",
+        "--all-targets",
+        "--features",
+        "hex-ui/ui-unit-tier",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 8.807940791999997,
+      "test_setup_execution_seconds": null,
+      "test_budget_exceeded": false,
+      "log": "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8606/qualification-0d2b78e880cd/05.log",
+      "harness_summaries": []
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/local-ci.py",
+        "--quick"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 12.553466041999997,
+      "test_setup_execution_seconds": null,
+      "test_budget_exceeded": false,
+      "log": "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8606/qualification-0d2b78e880cd/06.log",
+      "harness_summaries": []
+    }
+  ],
+  "benchmark_before_setup_execution_seconds": 0.3663792079999837,
+  "combined_test_setup_execution_seconds": 6.469673290999985,
+  "passed": true,
+  "benchmark_after_setup_execution_seconds": 0.31357674999999574,
+  "combined_test_and_benchmark_setup_execution_seconds": 6.783250040999981,
+  "optimized_benchmark_after_passed": true
+}

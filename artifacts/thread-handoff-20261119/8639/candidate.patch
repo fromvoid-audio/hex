@@ -1,0 +1,403 @@
+--- a/crates/hex-project/src/audio_edit/commands.rs
++++ b/crates/hex-project/src/audio_edit/commands.rs
+@@ -93,7 +93,7 @@
+     edit.processing_projection = None;
+     edit.placement_start_offset = 0;
+     edit.placement_end_offset = 0;
+-    let mut result = trim_view(&source, edge, frame, &projection.tempo)?;
++    let mut result = trim_view_source(&source, edge, frame, &projection.tempo)?;
+     let start = if edge == TrimEdge::Left {
+         frame
+     } else {
+@@ -135,6 +135,17 @@
+     frame: u64,
+     tempo: &TempoMap,
+ ) -> Result<Clip, Invalid> {
++    let mut result = trim_view_source(clip, edge, frame, tempo)?;
++    super::outer_fade::retain_crop_context(clip, &mut result, tempo)?;
++    Ok(result)
++}
++
++fn trim_view_source(
++    clip: &Clip,
++    edge: TrimEdge,
++    frame: u64,
++    tempo: &TempoMap,
++) -> Result<Clip, Invalid> {
+     if edge == TrimEdge::Left && frame < clip.start {
+         if let Some(prefixed) = super::extend_frame_left(clip, frame)? {
+             return Ok(prefixed);
+--- a/crates/hex-project/src/audio_edit/outer_fade/crop.rs
++++ b/crates/hex-project/src/audio_edit/outer_fade/crop.rs
+@@ -0,0 +1,92 @@
++//! One original-to-result context transfer after retained source trimming.
++//! This does not admit Outer, author new fade edges or alter source processing.
++use super::*;
++use std::sync::Arc;
++
++pub(crate) fn retain_crop_context(
++    original: &Clip,
++    result: &mut Clip,
++    tempo: &TempoMap,
++) -> Result<(), Invalid> {
++    let Some(projected) = original.projected_outer_fade(tempo)? else {
++        return Ok(());
++    };
++    let old = original
++        .audio_edit()
++        .ok_or(Invalid("outer crop source domain is missing"))?;
++    let next = result
++        .audio_edit()
++        .ok_or(Invalid("outer crop result lost its retained domain"))?;
++    if original.asset() != result.asset()
++        || next.domain.fade_clock != AudioClipFadeClock::Outer
++        || matches!(old.domain.clock, AudioDomainClock::Frames(_))
++            != matches!(next.domain.clock, AudioDomainClock::Frames(_))
++    {
++        return Err(Invalid("outer crop changed source or clock kind"));
++    }
++    // The same inverse owns source-independent destination context for frame,
++    // live/frozen musical and directed reads, including negative prefix age.
++    let elapsed = projected.view.signed_elapsed_at_frame(result.start())?;
++    let duration = result.duration();
++    // Compute fallible context first. Failure cannot partly change the result.
++    let mut context = old.domain.as_ref().clone();
++    match old.domain.clock {
++        AudioDomainClock::Frames(_) => {
++            let before = i128::from(old.domain.fade.offset()) - i128::from(old.domain.fade_start);
++            let next = before
++                .checked_add(elapsed)
++                .ok_or(Invalid("outer frame crop age overflow"))?;
++            let distance = u64::try_from(next.unsigned_abs())
++                .map_err(|_| Invalid("outer frame crop age exceeds clock range"))?;
++            let (offset, prefix) = if next >= 0 {
++                (distance, 0)
++            } else {
++                (0, distance)
++            };
++            context.fade = padded_frame_fade(old.domain.fade, offset, prefix, duration)?;
++            context.fade_start = prefix;
++        }
++        AudioDomainClock::Beats(_) => context.shift_outer_fade_displacement(elapsed)?,
++    }
++    let edit = result
++        .audio_edit_mut()
++        .ok_or(Invalid("outer crop result lost its retained domain"))?;
++    let domain = Arc::make_mut(&mut edit.domain);
++    domain.fade = context.fade;
++    domain.fade_start = context.fade_start;
++    domain.fade_projection = context.fade_projection;
++    Ok(())
++}
++
++fn padded_frame_fade(
++    original: ClipFade,
++    offset: u64,
++    prefix: u64,
++    duration: u64,
++) -> Result<ClipFade, Invalid> {
++    let visible = duration.saturating_sub(prefix).max(1);
++    let required = offset
++        .checked_add(visible)
++        .ok_or(Invalid("outer fade crop span overflow"))?;
++    let span = original.span().max(required);
++    let padding = span - original.span();
++    // Padding a neutral law must keep unity. For a nonneutral law, increasing
++    // span and out-end offset equally keeps its original zero tail unchanged.
++    let out_end = if original.is_neutral() {
++        original.out_end_offset()
++    } else {
++        original
++            .out_end_offset()
++            .checked_add(padding)
++            .ok_or(Invalid("outer fade silent padding overflow"))?
++    };
++    ClipFade::new(span, offset, original.fade_in(), original.fade_out())?
++        .with_shape(
++            original.in_start(),
++            out_end,
++            original.in_curve(),
++            original.out_curve(),
++        )?
++        .with_curve_positions(original.in_position(), original.out_position())
++        .map(|fade| fade.with_curve_laws(original.curve_laws()))
++}
+--- a/crates/hex-project/src/audio_edit/outer_fade/tests/crop_tests.rs
++++ b/crates/hex-project/src/audio_edit/outer_fade/tests/crop_tests.rs
+@@ -0,0 +1,170 @@
++use super::*;
++use crate::audio_edit::{TrimEdge, trim_view};
++
++#[test]
++fn signed_destination_inverse_retains_frame_endpoints_and_unsigned_refusal() {
++    let (mut clip, tempo) = repeated();
++    clip.start = 50_000;
++    crate::audio_edit::project_clip(&mut clip, &tempo).unwrap();
++    let view = AudioViewProjection::new(&clip, &tempo).unwrap();
++    for (frame, expected) in [
++        (0, -50_000),
++        (49_983, -17),
++        (50_000, 0),
++        (50_013, 13),
++        (126_696, 76_696),
++        (126_713, 76_713),
++    ] {
++        assert_eq!(view.signed_elapsed_at_frame(frame).unwrap(), expected);
++        if expected >= 0 {
++            assert_eq!(view.elapsed_at_frame(frame).unwrap(), expected as u64);
++        } else {
++            assert_eq!(
++                view.elapsed_at_frame(frame).unwrap_err().0,
++                "audio content frame precedes placement"
++            );
++        }
++    }
++}
++
++#[test]
++fn frame_trim_rewinds_whole_cycles_then_uses_one_prefix_and_pads_silence_exactly() {
++    let (mut original, tempo) = repeated();
++    original.start = 50_000;
++    crate::audio_edit::project_clip(&mut original, &tempo).unwrap();
++    let cropped = trim_view(&original, TrimEdge::Left, 107_522, &tempo).unwrap();
++    assert_eq!(cropped.retained_fade().offset(), 57_522);
++    assert_eq!(cropped.audio_edit().unwrap().domain.fade_start, 0);
++    let before = original.projected_outer_fade(&tempo).unwrap().unwrap();
++    let after = cropped.projected_outer_fade(&tempo).unwrap().unwrap();
++    for frame in (107_522..126_696).step_by(257) {
++        assert_eq!(
++            after.gain_at(frame).unwrap(),
++            before.gain_at(frame).unwrap()
++        );
++    }
++    let rewound = trim_view(&cropped, TrimEdge::Left, 50_000, &tempo).unwrap();
++    assert_eq!(rewound.retained_fade(), original.retained_fade());
++    let prefixed = trim_view(&rewound, TrimEdge::Left, 49_000, &tempo).unwrap();
++    assert_eq!(prefixed.retained_fade().offset(), 0);
++    assert_eq!(prefixed.audio_edit().unwrap().domain.fade_start, 1_000);
++    let prefix = prefixed.projected_outer_fade(&tempo).unwrap().unwrap();
++    assert_eq!(prefix.gain_at(49_999).unwrap(), 0.0);
++    assert_eq!(
++        prefix.gain_at(50_001).unwrap(),
++        before.gain_at(50_001).unwrap()
++    );
++    let extended = trim_view(&original, TrimEdge::Right, 166_696, &tempo).unwrap();
++    assert_eq!(extended.retained_fade().span(), 116_696);
++    assert_eq!(extended.retained_fade().out_end_offset(), 40_000);
++    let tail = trim_view(&extended, TrimEdge::Left, 150_000, &tempo).unwrap();
++    assert_eq!(tail.retained_fade().offset(), 100_000);
++    let tail_query = tail.projected_outer_fade(&tempo).unwrap().unwrap();
++    for frame in [150_000, 160_000, 166_695] {
++        assert_eq!(tail_query.gain_at(frame).unwrap(), 0.0);
++    }
++}
++
++#[test]
++fn neutral_padding_stays_unity_and_repeat_context_application_is_idempotent() {
++    let (mut clip, tempo) = repeated();
++    Arc::make_mut(&mut clip.audio_edit_mut().unwrap().domain).fade =
++        ClipFade::neutral(76_696).unwrap();
++    let mut extended = trim_view(&clip, TrimEdge::Right, 120_000, &tempo).unwrap();
++    assert!(extended.retained_fade().is_neutral());
++    assert_eq!(extended.retained_fade().out_end_offset(), 0);
++    assert_eq!(
++        extended
++            .projected_outer_fade(&tempo)
++            .unwrap()
++            .unwrap()
++            .gain_at(119_999)
++            .unwrap(),
++        1.0
++    );
++    let once = extended.clone();
++    crate::audio_edit::outer_fade::retain_crop_context(&clip, &mut extended, &tempo).unwrap();
++    assert_eq!(extended, once);
++}
++
++#[test]
++fn signed_frozen_directed_clock_and_crop_keep_forward_gain_once() {
++    let (mut clip, tempo) = repeated();
++    clip.audio_edit_mut()
++        .unwrap()
++        .anchor_at_reference(0, 0, &tempo)
++        .unwrap();
++    let edit = clip.audio_edit_mut().unwrap();
++    edit.timing = AudioClipTiming::Frozen {
++        reference_start_raw: 0,
++        tempo: Arc::new(tempo.clone()),
++    };
++    let length = edit.placement.unwrap().outer_length.length();
++    edit.content_view = Some(AudioContentView {
++        restore_plain: false,
++        base_view_start: edit.view_start,
++        base_view_end: edit.view_end,
++        base_placement: edit.placement,
++        base_start_delta: 0,
++        window: ContentWindow::new(0, length, true).unwrap(),
++        read_resampler: crate::WarpResampler::default(),
++    });
++    clip.start = 300_000;
++    crate::audio_edit::project_clip(&mut clip, &tempo).unwrap();
++    let view = AudioViewProjection::new(&clip, &tempo).unwrap();
++    assert_eq!(
++        view.signed_elapsed_at_frame(276_000).unwrap(),
++        -i128::from(BeatTime::ONE.raw())
++    );
++    assert_eq!(view.signed_elapsed_at_frame(300_000).unwrap(), 0);
++    assert_eq!(
++        view.signed_elapsed_at_frame(300_000 + clip.duration())
++            .unwrap(),
++        i128::from(length)
++    );
++    assert!(
++        view.signed_elapsed_at_frame(300_000 + clip.duration() + 24_000)
++            .unwrap()
++            > i128::from(length)
++    );
++    let cut = 324_000;
++    let cropped = trim_view(&clip, TrimEdge::Left, cut, &tempo).unwrap();
++    assert_eq!(
++        cropped
++            .audio_edit()
++            .unwrap()
++            .domain
++            .outer_fade_displacement()
++            .unwrap(),
++        i128::from(BeatTime::ONE.raw())
++    );
++    let before = clip.projected_outer_fade(&tempo).unwrap().unwrap();
++    let after = cropped.projected_outer_fade(&tempo).unwrap().unwrap();
++    for frame in (cut..clip.start() + clip.duration()).step_by(997) {
++        assert_eq!(
++            after.gain_at(frame).unwrap(),
++            before.gain_at(frame).unwrap()
++        );
++    }
++}
++
++#[test]
++fn context_refusal_preserves_result_and_legacy_trim_path_is_unchanged() {
++    let (clip, tempo) = repeated();
++    let mut missing = clip.clone();
++    missing.edit = None;
++    let before = missing.clone();
++    assert!(
++        crate::audio_edit::outer_fade::retain_crop_context(&clip, &mut missing, &tempo).is_err()
++    );
++    assert_eq!(missing, before);
++    let mut legacy = clip.clone();
++    Arc::make_mut(&mut legacy.audio_edit_mut().unwrap().domain).fade_clock =
++        AudioClipFadeClock::LegacyRoot;
++    let trimmed = trim_view(&legacy, TrimEdge::Left, 19_174, &tempo).unwrap();
++    assert_eq!(
++        trimmed.audio_edit().unwrap().domain.fade_clock,
++        AudioClipFadeClock::LegacyRoot
++    );
++    assert_eq!(trimmed.retained_fade(), legacy.retained_fade());
++}
+--- a/crates/hex-project/src/audio_edit/outer_fade/tests.rs
++++ b/crates/hex-project/src/audio_edit/outer_fade/tests.rs
+@@ -356,14 +356,12 @@
+             .unwrap()
+             .elapsed_at_frame(cut)
+             .unwrap();
+-        let mut cropped =
++        let cropped =
+             crate::audio_edit::trim_view(&original, crate::TrimEdge::Left, cut, &author).unwrap();
+         let old_domain = &original.audio_edit().unwrap().domain;
+-        let domain = Arc::make_mut(&mut cropped.audio_edit_mut().unwrap().domain);
+-        // Prospective context required of the later crop bridge, not activation.
+-        domain
+-            .shift_outer_fade_displacement(i128::from(consumed))
+-            .unwrap();
++        let domain = &cropped.audio_edit().unwrap().domain;
++        // The guarded trim boundary now retains this context; no canonical
++        // Outer admission, command history or native behavior is activated.
+         assert_eq!(domain.fade, old_domain.fade);
+         assert_eq!(
+             domain.fade_projection.as_ref().unwrap().origin_beat_raw,
+@@ -492,18 +490,15 @@
+         domain.fade = ClipFade::new(76_696, 0, 0, 3_600).unwrap();
+         domain.fade_projection.as_mut().unwrap().origin_beat_raw = origin;
+         crate::audio_edit::project_clip(&mut clip, &author).unwrap();
+-        let mut cropped =
++        let cropped =
+             crate::audio_edit::trim_view(&clip, crate::TrimEdge::Left, common_crop_frame, &author)
+                 .unwrap();
+-        Arc::make_mut(&mut cropped.audio_edit_mut().unwrap().domain)
+-            .shift_outer_fade_displacement(consumed)
+-            .unwrap();
++
+         let mut rewound =
+             crate::audio_edit::trim_view(&cropped, crate::TrimEdge::Left, 0, &author).unwrap();
+-        let domain = Arc::make_mut(&mut rewound.audio_edit_mut().unwrap().domain);
+-        // These explicit context updates model the later crop bridge; no
+-        // admitted edit/Undo or native behavior is exercised by this fixture.
+-        domain.shift_outer_fade_displacement(-common_crop).unwrap();
++        let domain = &rewound.audio_edit().unwrap().domain;
++        // Actual guarded trim previews retain context. Admission, command
++        // history and native behavior remain unactivated.
+         assert_eq!(domain.outer_fade_displacement().unwrap(), -origin);
+         assert_eq!(domain.fade.offset(), 0);
+         assert_eq!(
+@@ -556,3 +551,5 @@
+             .all(|frame| (clip.start()..=u64::MAX - 10).contains(&frame))
+     );
+ }
++
++mod crop_tests;
+--- a/crates/hex-project/src/audio_edit/outer_fade.rs
++++ b/crates/hex-project/src/audio_edit/outer_fade.rs
+@@ -5,6 +5,8 @@
+     AudioViewProjection, audio_projection_beat, audio_projection_frame,
+ };
+ use crate::{Clip, ClipFade, Invalid, TempoMap};
++mod crop;
++pub(super) use crop::retain_crop_context;
+ 
+ /// Clip-context outer fade projection. Source repetition, slip and reflection
+ /// never restart or reverse this envelope. Gain samples use project frames;
+--- a/crates/hex-project/src/audio_edit/view.rs
++++ b/crates/hex-project/src/audio_edit/view.rs
+@@ -994,6 +994,15 @@
+     }
+     /// Elapsed destination clock at a project frame; the exact end is permitted.
+     pub fn elapsed_at_frame(&self, frame: u64) -> Result<u64, Invalid> {
++        u64::try_from(self.signed_elapsed_at_frame(frame)?)
++            .map_err(|_| Invalid("audio content frame precedes placement"))
++    }
++
++    /// Unwrapped forward destination context before/inside/after this gate.
++    /// Units are frames or raw beat ticks, following the same retained clock
++    /// and exact endpoint identities as elapsed_at_frame. Negative values are
++    /// technical crop/prefix context and do not grant negative placement.
++    pub(super) fn signed_elapsed_at_frame(&self, frame: u64) -> Result<i128, Invalid> {
+         // A rounded frame endpoint can invert to one raw beat tick outside
+         // its authored endpoint. Preserve the finite window's exact identity.
+         if frame == self.placed_frames.0 {
+@@ -1001,11 +1010,8 @@
+         }
+         if frame == self.placed_frames.1 {
+             return self.content.map_or_else(
+-                || {
+-                    u64::try_from(self.end - self.start)
+-                        .map_err(|_| Invalid("audio elapsed length overflow"))
+-                },
+-                |(window, _, _)| window.length(),
++                || Ok(self.end - self.start),
++                |(window, _, _)| window.length().map(i128::from),
+             );
+         }
+         let (_, start, displacement) = self.content.unwrap_or((
+@@ -1025,8 +1031,9 @@
+         } else {
+             raw
+         };
+-        u64::try_from(position - start)
+-            .map_err(|_| Invalid("audio content frame precedes placement"))
++        position
++            .checked_sub(start)
++            .ok_or(Invalid("audio elapsed destination coordinate overflow"))
+     }
+     /// Project an elapsed destination clock boundary with the same live/frozen law.
+     pub fn frame_at_elapsed(&self, elapsed: u64) -> Result<u64, Invalid> {

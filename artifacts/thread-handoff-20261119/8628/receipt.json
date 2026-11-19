@@ -1,0 +1,17 @@
+{
+  "artifact_only": true,
+  "source_base": "9f60ed6d9c550f23a6dc64004ab9517eea982b13",
+  "prerequisite_patch": "artifacts/outer-fade-marker/candidate.patch",
+  "prerequisite_sha256": "56d0ab7b2b48f82d2b9df4f29952e674fe5703a373eadfd1c574315a97c2dd7d",
+  "qualification": "uncompiled/unrun, source freeze active",
+  "files": [
+    "crates/hex-project/src/audio_edit.rs",
+    "crates/hex-project/src/audio_edit/outer_fade.rs",
+    "crates/hex-project/src/audio_edit/outer_fade/tests.rs",
+    "crates/hex-project/src/lib.rs"
+  ],
+  "sha256": "db10f2cddc19fb46f24673285ef8ad9a60a054d7dd59824353e71ff93f9065f3",
+  "scope": "Clip::projected_outer_fade and projected_outer_fade_preview: project-frame gain, authored-knot/inverse and bounded breakpoints; metadata tests only; no admission/render/default/schema changes",
+  "review_repair": "Immutable author origin with normalized D=local_start_raw-fade_start; query/preview/checked read-shift helper; nine metadata tests including concrete subframe hard-gate collision and negative-origin tempo seam. Supersedes original origin-shift/frame-offset musical proposal. All uncompiled/unrun. Hidden-knot elapsed preflight before absolute frame mapping; valid four-cycle placement ending at u64::MAX-10 regression. Ten drafted tests, uncompiled/unrun; hidden-knot-before.rs preserved for source before/after witness. Outer Frame compound offset+prefix now explicitly refused; fixtures split into offset-only and prefix-only, with Legacy exclusion unchanged.",
+  "ready_for_apply": true
+}

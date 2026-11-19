@@ -1,0 +1,21 @@
+{
+  "artifact_only": true,
+  "source_base": "9f60ed6d9c550f23a6dc64004ab9517eea982b13",
+  "files": [
+    "crates/hex-engine/src/audio_transform/frame_fade_preview.rs",
+    "crates/hex-engine/src/audio_transform/mod.rs",
+    "crates/hex-engine/src/audio_transform/tests.rs",
+    "crates/hex-engine/src/audio_transform/view.rs",
+    "crates/hex-project/src/audio_edit.rs",
+    "crates/hex-project/src/audio_edit/fade_clock_tests.rs",
+    "crates/hex-project/src/lib.rs",
+    "crates/hex-storage/src/audio_edit.rs",
+    "crates/hex-storage/src/audio_edit/fade_clock_tests.rs",
+    "crates/hex-storage/src/lib.rs",
+    "crates/hex-storage/src/schema/long_granular.rs",
+    "crates/hex-storage/src/schema/musical_audio.rs"
+  ],
+  "sha256": "56d0ab7b2b48f82d2b9df4f29952e674fe5703a373eadfd1c574315a97c2dd7d",
+  "qualification": "not compiled or run; runtime source freeze active",
+  "notes": "Added direct view compilation guard before any cache/root-loop path. Raw frame preview supports no retained roots; nested rejection relies on canonical admission. No coherent unsupported Clip can be constructed from public model restoration while Outer admission is disabled."
+}

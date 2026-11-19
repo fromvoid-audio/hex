@@ -1,0 +1,26 @@
+{
+  "before-false": {
+    "median_ns_per_block": 730.8805,
+    "min": 540.291,
+    "max": 1055.365,
+    "n": 20
+  },
+  "before-true": {
+    "median_ns_per_block": 705.234,
+    "min": 562.91,
+    "max": 1237.2,
+    "n": 20
+  },
+  "after-false": {
+    "median_ns_per_block": 633.7865,
+    "min": 494.344,
+    "max": 1137.992,
+    "n": 20
+  },
+  "after-true": {
+    "median_ns_per_block": 1776.9715,
+    "min": 1490.677,
+    "max": 2411.231,
+    "n": 20
+  }
+}

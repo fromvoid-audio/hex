@@ -1,0 +1,36 @@
+{
+  "base": "2791e93abc3d1e67b0eb904cefd49a15f1ebe82e",
+  "artifact_only": true,
+  "scope": "private processing Root only; no activation, destination finalization, stream eligibility rewrite, nativeSlot expansion or new PCM owner",
+  "files": {
+    "crates/hex-engine/src/audio_transform/mod.rs": "0cbe535ebf883ee2cfa60ab0c640f3e3495799dd8384df03ae53833ab02b3d1f",
+    "crates/hex-engine/src/audio_transform/processing_root/tests.rs": "ba4976071648bbfde5ae924fd54c22c6b2c7351168e648ba58ee1e6425c339dd",
+    "crates/hex-engine/src/audio_transform/processing_root.rs": "1a036e88ab581f503466d58a19c3a0412b575e8d25fd226c51510ee6cc75295d",
+    "crates/hex-engine/src/audio_transform/tests.rs": "64deed1588718f446be6cb9e02b546d83515c13f048f455cd7bc286ed981bfb9"
+  },
+  "patch_sha256": "c03990111ef663588fd700ded69ef55727e8ca4e8d7ba0764eea78055a102802",
+  "tests_drafted": 4,
+  "review_repair": "obsolete unsupported-preparation test deleted; no replacement Engine cache/Model-validation duplicate; fourth test distinguishes Legacy/Outer neutral/nonneutral stream metadata eligibility without redundant immutable-input assertion; legal context review separates Frame offset/prefix variants and uses musical prefix97/local0 with immutable original author origin",
+  "verification": "artifact test module parsed/formatted by rustfmt only; no Cargo compilation or test execution; no tracked source or Git mutation; production artifact hashes unchanged",
+  "coverage_limits": "event PCM, root cache reuse/capacity and musical processing identity are drafted oracles; child/content proof is structural only; stream tests query metadata eligibility, not native streaming playback/admission; canonical validation remains Project-owned",
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/4064",
+  "legal_fixture_contexts": {
+    "frame_offset_prefix": [
+      [
+        7,
+        0
+      ],
+      [
+        0,
+        31
+      ]
+    ],
+    "musical_prefix_consumed": [
+      97,
+      0
+    ],
+    "musical_shape_offset": 3,
+    "musical_author_origin": "fixed before first preparation, unchanged for prefix case"
+  },
+  "test_limits": "four drafted tests, still uncompiled/unrun; Root-cache capacity assertions remain in one table-driven test; child proof is structural only, stream query proof is metadata eligibility only"
+}

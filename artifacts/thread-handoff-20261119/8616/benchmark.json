@@ -1,0 +1,167 @@
+{
+  "head": "9f60ed6d9c550f23a6dc64004ab9517eea982b13",
+  "hardware": "Apple M5 Pro",
+  "arch": "arm64",
+  "load_before": [
+    8.15673828125,
+    10.57275390625,
+    10.25048828125
+  ],
+  "steps": [
+    {
+      "name": "timing-fixture-compile",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hex-engine",
+        "--features",
+        "instrument-test-support",
+        "--lib",
+        "--no-run"
+      ],
+      "code": 0,
+      "wall_seconds": 18.738926749999997
+    },
+    {
+      "name": "before-release-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "-p",
+        "hex-engine",
+        "--features",
+        "instrument-test-support",
+        "--lib",
+        "--no-run"
+      ],
+      "code": 0,
+      "wall_seconds": 123.67550187500001
+    },
+    {
+      "name": "after-release-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "-p",
+        "hex-engine",
+        "--features",
+        "instrument-test-support",
+        "--lib",
+        "--no-run"
+      ],
+      "code": 0,
+      "wall_seconds": 115.617742333
+    },
+    {
+      "name": "timing-0-before",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-before",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.9683220840000217
+    },
+    {
+      "name": "timing-1-after",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-after",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.5347187920000351
+    },
+    {
+      "name": "timing-2-after",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-after",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.02052308399998992
+    },
+    {
+      "name": "timing-3-before",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-before",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.015220542000008663
+    },
+    {
+      "name": "timing-4-after",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-after",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.021234249999963595
+    },
+    {
+      "name": "timing-5-before",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-before",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.016091833000018596
+    },
+    {
+      "name": "timing-6-before",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-before",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.014971082999977625
+    },
+    {
+      "name": "timing-7-after",
+      "command": [
+        "/Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8616/binaries/hex-engine-after",
+        "compiled_fade_conformance::tests::profile_sparse_fade_render_cost",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "code": 0,
+      "wall_seconds": 0.02137670799999114
+    }
+  ],
+  "candidate_lib_sha256": "987be1b5e1e4ae2a220e6084efa11b49003d3787ca69b669c78537ba3ca730a5",
+  "before_lib_sha256": "9509051ae1b3f3540ca4d33d7c73915a17f553e90e35ba61dd4263f99cd719e9",
+  "before_binary_sha256": "a0a3300f4a7b2c73f9848ef861f965e2afc15c46724f4954f3599e5a84ebd63e",
+  "after_binary_sha256": "d9ad5d403f6145cee0a19a4a1313af95ccc0736ec2d931db5e440af965042311",
+  "load_after": [
+    11.25537109375,
+    11.2216796875,
+    10.62158203125
+  ]
+}

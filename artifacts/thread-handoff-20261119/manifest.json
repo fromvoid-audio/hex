@@ -1,0 +1,335 @@
+{
+  "purpose": "user-requested stop/handoff; no further implementation or merges from this chat",
+  "source_head": "2791e93abc3d1e67b0eb904cefd49a15f1ebe82e",
+  "source_pr": 4055,
+  "pulse_project": 2,
+  "pulse_version": 18,
+  "pulse_version_name": "0.2",
+  "issues": [
+    8581,
+    8582,
+    8583,
+    8584,
+    8586,
+    8588,
+    8590,
+    8594,
+    8601,
+    8602,
+    8604,
+    8605,
+    8606,
+    8611,
+    8614,
+    8616,
+    8623,
+    8628,
+    8635,
+    8636,
+    8639
+  ],
+  "qualification": "2791 quick guards green; Cargo compilation interrupted at user stop; no tests ran; all subsequent drafts uncompiled/unrun",
+  "excluded": "user project bytes, commercial audio, plug-in state, binaries, screenshots, targets/caches, credentials",
+  "files": [
+    {
+      "path": "outer-fade-marker/candidate.patch",
+      "sha256": "56d0ab7b2b48f82d2b9df4f29952e674fe5703a373eadfd1c574315a97c2dd7d",
+      "bytes": 17838
+    },
+    {
+      "path": "outer-fade-marker/receipt.json",
+      "sha256": "dc991b5b5685a07498dc563546a113db8abf91dbeafa0cce975e90dc3b0565d4",
+      "bytes": 1166
+    },
+    {
+      "path": "8628/candidate.patch",
+      "sha256": "db10f2cddc19fb46f24673285ef8ad9a60a054d7dd59824353e71ff93f9065f3",
+      "bytes": 36166
+    },
+    {
+      "path": "8628/receipt.json",
+      "sha256": "29fa76794306676e76f86a85ef5e263bb8dd0536c10aaeae7c9a44f3734c13eb",
+      "bytes": 1525
+    },
+    {
+      "path": "8628/hidden-knot-before.rs",
+      "sha256": "83e7657aa86690e4af49ec00af9d8aa8b013af805e228fcac41fc28dd3b3d786",
+      "bytes": 10600
+    },
+    {
+      "path": "8628/source/crates/hex-project/src/lib.rs",
+      "sha256": "df500220458bc2289eb865ffb34ab26f6199530d0a1a0c68b1b68db730b6a9b3",
+      "bytes": 41174
+    },
+    {
+      "path": "8628/source/crates/hex-project/src/audio_edit.rs",
+      "sha256": "4d8f829f8d29ea9479639a01ba2a945b0c1282ba8e2c9e004fe10fd2e475a9a5",
+      "bytes": 74820
+    },
+    {
+      "path": "8628/source/crates/hex-project/src/audio_edit/outer_fade.rs",
+      "sha256": "4381f9e6c80eb07c66bccf6cec20719f2c4b48c4beccc4c020cd56945ceeadc0",
+      "bytes": 10695
+    },
+    {
+      "path": "8628/source/crates/hex-project/src/audio_edit/outer_fade/tests.rs",
+      "sha256": "752b4466a2936ab798b312b7f78e6c39bbeb92f73c2cb4d1648006da030d4ae5",
+      "bytes": 21954
+    },
+    {
+      "path": "8635/candidate.patch",
+      "sha256": "c03990111ef663588fd700ded69ef55727e8ca4e8d7ba0764eea78055a102802",
+      "bytes": 16181
+    },
+    {
+      "path": "8635/receipt.json",
+      "sha256": "ae14164a6a550ed2253b926e49634c8a3667e056e72881e499fbb11d8ad68a44",
+      "bytes": 2324
+    },
+    {
+      "path": "8635/source/crates/hex-engine/src/audio_transform/processing_root.rs",
+      "sha256": "1a036e88ab581f503466d58a19c3a0412b575e8d25fd226c51510ee6cc75295d",
+      "bytes": 1538
+    },
+    {
+      "path": "8635/source/crates/hex-engine/src/audio_transform/mod.rs",
+      "sha256": "0cbe535ebf883ee2cfa60ab0c640f3e3495799dd8384df03ae53833ab02b3d1f",
+      "bytes": 51298
+    },
+    {
+      "path": "8635/source/crates/hex-engine/src/audio_transform/tests.rs",
+      "sha256": "64deed1588718f446be6cb9e02b546d83515c13f048f455cd7bc286ed981bfb9",
+      "bytes": 120751
+    },
+    {
+      "path": "8635/source/crates/hex-engine/src/audio_transform/processing_root/tests.rs",
+      "sha256": "ba4976071648bbfde5ae924fd54c22c6b2c7351168e648ba58ee1e6425c339dd",
+      "bytes": 11250
+    },
+    {
+      "path": "8639/candidate.patch",
+      "sha256": "131141f2fee9e728283f1f1b798c65efb1120afce1e65417fb24f82fa1754d6d",
+      "bytes": 16774
+    },
+    {
+      "path": "8639/receipt.json",
+      "sha256": "4165e0195b65cfa829417a7f1b9339a24c962fa5753c2b18dea270eebb433266",
+      "bytes": 1075
+    },
+    {
+      "path": "8639/source/crates/hex-project/src/audio_edit/outer_fade.rs",
+      "sha256": "fb798bf171c2802ace9f8155eb7a6b244a6a37e86ee0c691ea91ae701bd5d9b6",
+      "bytes": 10747
+    },
+    {
+      "path": "8639/source/crates/hex-project/src/audio_edit/commands.rs",
+      "sha256": "8deba54b8239f8bac3662f8d9c5f5ba26b9686ae7d49a1abe108636ab68cb02e",
+      "bytes": 25404
+    },
+    {
+      "path": "8639/source/crates/hex-project/src/audio_edit/view.rs",
+      "sha256": "29bc9ede33795b31da7a0efc93a672bc71831340f39f8fe91707496945ae4e93",
+      "bytes": 76633
+    },
+    {
+      "path": "8639/source/crates/hex-project/src/audio_edit/outer_fade/tests.rs",
+      "sha256": "ac4a578f2eaf6c3fc2f5bc3a3dbf215fbf5fc54cb185068ecb5ae8208e6e81b4",
+      "bytes": 21653
+    },
+    {
+      "path": "8639/source/crates/hex-project/src/audio_edit/outer_fade/crop.rs",
+      "sha256": "72f137da172dd970c67eecf8495079cf9664902e8a39c3941e09a513b1e3b115",
+      "bytes": 3691
+    },
+    {
+      "path": "8639/source/crates/hex-project/src/audio_edit/outer_fade/tests/crop_tests.rs",
+      "sha256": "014b0991c6b96750de8f09ddad46737f47dae7be45546c24f66b1d09f796a4a8",
+      "bytes": 6440
+    },
+    {
+      "path": "8588/raw-ui/waveform_frame_source.rs",
+      "sha256": "1839aa5c56adb3454d5c6adb4dd105299d1da478d8aaa4625e9515b5faacf9a7",
+      "bytes": 10093
+    },
+    {
+      "path": "8588/raw-ui/waveform_frame_source/tests.rs",
+      "sha256": "a72930dfc5ba519421b378ac6c95e999eb6467477da9ba14e552a662c9134e57",
+      "bytes": 6577
+    },
+    {
+      "path": "8588/event-prototype/waveform_frame_source.rs",
+      "sha256": "1839aa5c56adb3454d5c6adb4dd105299d1da478d8aaa4625e9515b5faacf9a7",
+      "bytes": 10093
+    },
+    {
+      "path": "8588/event-prototype/waveform_frame_source/tests.rs",
+      "sha256": "a72930dfc5ba519421b378ac6c95e999eb6467477da9ba14e552a662c9134e57",
+      "bytes": 6577
+    },
+    {
+      "path": "8588/arrangement-live/trim_timeline.py",
+      "sha256": "af055e7f236827f77f16bfed7334da35ab15789d58e8cd155d4b1da3818cad91",
+      "bytes": 2501
+    },
+    {
+      "path": "8588/arrangement-live/waveform_frame_source.rs",
+      "sha256": "f05fb11ee8cf5de5b363a337d70bf0152dfecb1e8c85dd27ea7280bde45bc3a4",
+      "bytes": 8846
+    },
+    {
+      "path": "8588/arrangement-live/tracks.rs",
+      "sha256": "334f1143aff6b81dcb30ff524f24986cdf3ce00f6558693b128cae05ea7f3f25",
+      "bytes": 185765
+    },
+    {
+      "path": "8588/arrangement-live/integrate_view.py",
+      "sha256": "4fecfd024ee266813a1ab2877160d6cb9adc34a21acee1f7bb453e9de85a35dd",
+      "bytes": 3125
+    },
+    {
+      "path": "8588/arrangement-live/waveform.rs",
+      "sha256": "bebaa3cfc6f5f1eddf8c7c7622bff88ba73bf4bc6ca962658ccc157f4d1d5186",
+      "bytes": 23813
+    },
+    {
+      "path": "8588/arrangement-live/event_preview_accessor.rs",
+      "sha256": "9d3f32bb5b659f681cabde5176f5175d39558dafaae0a6f2563c2afb4c7d789d",
+      "bytes": 1236
+    },
+    {
+      "path": "8588/arrangement-live/integrate_geometry.py",
+      "sha256": "dad4a16c6eebdd224bb2a83314b59ee2f27aa7b4426b25ed8883334953154f42",
+      "bytes": 5479
+    },
+    {
+      "path": "8588/arrangement-live/waveform_overrange.rs",
+      "sha256": "8c91bd5decea46136778ddb75837209eeaf542da2423463a5f60bb80ddf8c293",
+      "bytes": 18382
+    },
+    {
+      "path": "8588/arrangement-live/waveform_geometry.rs",
+      "sha256": "f867ccfd1042a632214cc86b64151a98982b253f29492076637ab633cb1b4a9f",
+      "bytes": 129914
+    },
+    {
+      "path": "8588/arrangement-live/waveform_frame_source_view.rs",
+      "sha256": "35af9393b1b2d135a4608c0b599c9b43f187fee221ea900761d10f490b10c859",
+      "bytes": 2696
+    },
+    {
+      "path": "8588/arrangement-live/waveform_frame_source/tests.rs",
+      "sha256": "a084e6b3390cea2455a334ba6640625a157f4746ed7555762e0f869ee61327cc",
+      "bytes": 6345
+    },
+    {
+      "path": "8594/occurrence-fade-query.rs",
+      "sha256": "620193b034f2cf011f0160d82673d0cbc7432e607b8bcf61f158b8033e8f2c3f",
+      "bytes": 1969
+    },
+    {
+      "path": "8594/normal-command-test.rs",
+      "sha256": "9ba2df7a80f54e297a4292ff20aaa70d5e2d554caf7a8b11f0ce795d686871a5",
+      "bytes": 2684
+    },
+    {
+      "path": "8604/partial-prototype.patch",
+      "sha256": "efdf92f13386fdcc929a1ada5d2df8f4086226beaf74306becc43bd6e21ce3fd",
+      "bytes": 51557
+    },
+    {
+      "path": "8604/prototype-receipt.json",
+      "sha256": "907e1b28d0d240e1d70ac58d16e3963734e54f9dbd6b237570697310208b72db",
+      "bytes": 4986
+    },
+    {
+      "path": "8604/pitch_viewport.rs",
+      "sha256": "eaeafe62f94734ac344f76540a74664ddcaef9e042194848f08ee010ff7b8d16",
+      "bytes": 6276
+    },
+    {
+      "path": "8604/pitch_viewport_harness.rs",
+      "sha256": "3163c728f0c52363071033b0da21ea9339385317410a034d980796eae644deac",
+      "bytes": 50
+    },
+    {
+      "path": "8604/migrate_pairs.py",
+      "sha256": "00073f7cf4fd181811693ef09abe2a29725dfb99512977810962d0d8f70b34bc",
+      "bytes": 2355
+    },
+    {
+      "path": "8604/base-sha.txt",
+      "sha256": "899e27271794c090679a665bea8d1def0488738e6a15bf450189b765b3d0ec49",
+      "bytes": 41
+    },
+    {
+      "path": "8623/qualify.py",
+      "sha256": "55c98c91300ee5aa3f48569e34d1c221dcab2ab1b0efdb9b2463542bde68c845",
+      "bytes": 3961
+    },
+    {
+      "path": "8623/quick-preliminary.log",
+      "sha256": "28f8d0178b3f4eb6aa8f4d6f183a1812273926648351f426dcb2237d121c5088",
+      "bytes": 491
+    },
+    {
+      "path": "8623/qualification-launch-05.log",
+      "sha256": "c32616af9623350f71c35a26c587941ca5ccdadd6e1afda8a6ae5cf31b42f44a",
+      "bytes": 553
+    },
+    {
+      "path": "8623/qualification-launch-04.cancel.json",
+      "sha256": "89c4a439ed63d68328b2812fc5cb35d44201616534b3383eda5be1df305294df",
+      "bytes": 417
+    },
+    {
+      "path": "8623/qualification-launch-05.user-stop.json",
+      "sha256": "7f237ac99196d34f4b0d20a800962449c4892c53acaac9a4eb3c7a903bbc92b8",
+      "bytes": 979
+    },
+    {
+      "path": "8623/qualification-2791e93abc3d/01.log",
+      "sha256": "51d0a4992680a58917989748213404317afbecad4633694ef358316347785952",
+      "bytes": 547
+    },
+    {
+      "path": "8616/integration-qualification.json",
+      "sha256": "cfd50eb355f774fc406ef16a50fa94a6baf92b83ce3516bce944da4097b97d8b",
+      "bytes": 5516
+    },
+    {
+      "path": "8616/qualification.json",
+      "sha256": "4974f15097dc3b7e7d1f31245b832eaaeb1b1c281cf85ec94e890376a5ae1304",
+      "bytes": 5870
+    },
+    {
+      "path": "8616/benchmark.json",
+      "sha256": "d446213c0ee00545e8d640117f80139851a13d76fadb2302d33789b541892c53",
+      "bytes": 4615
+    },
+    {
+      "path": "8616/timing-summary.json",
+      "sha256": "376e6cbaf8371229efd41e6314da5e33aef465e9b4c509da9f0d337cc9ff6a20",
+      "bytes": 457
+    },
+    {
+      "path": "8616/qualified-9f60ed6d9/qualification.json",
+      "sha256": "4974f15097dc3b7e7d1f31245b832eaaeb1b1c281cf85ec94e890376a5ae1304",
+      "bytes": 5870
+    },
+    {
+      "path": "8616/qualified-9f60ed6d9/benchmark.json",
+      "sha256": "d446213c0ee00545e8d640117f80139851a13d76fadb2302d33789b541892c53",
+      "bytes": 4615
+    },
+    {
+      "path": "8616/qualified-9f60ed6d9/timing-summary.json",
+      "sha256": "376e6cbaf8371229efd41e6314da5e33aef465e9b4c509da9f0d337cc9ff6a20",
+      "bytes": 457
+    },
+    {
+      "path": "8606/qualification-0d2b78e880cd/summary.json",
+      "sha256": "2cfbca70b57b04c9a96c760453bc2ebb30a68222b7b239b611385897ef6afed9",
+      "bytes": 4371
+    }
+  ]
+}

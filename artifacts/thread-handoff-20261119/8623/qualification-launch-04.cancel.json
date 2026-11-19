@@ -1,0 +1,10 @@
+{
+  "own_wrapper_pid": 48212,
+  "observed_at": "2026-11-19T16:36:02.093265+00:00",
+  "children": [],
+  "confirmed_reservation": false,
+  "child_or_check_started": false,
+  "action": "terminated only our stopped pending wrapper, then resumed signal delivery; rerun documented persistent default",
+  "source": "2791e93abc3d1e67b0eb904cefd49a15f1ebe82e",
+  "original_log": "artifacts/8623/qualification-launch-04.log"
+}

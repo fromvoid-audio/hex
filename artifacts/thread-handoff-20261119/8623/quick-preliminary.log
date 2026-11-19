@@ -1,0 +1,15 @@
+[1/7] changelog: running
+[1/7] changelog: passed
+[2/7] architecture: running
+[2/7] architecture: passed
+[3/7] gpui-patch: running
+[3/7] gpui-patch: passed
+[4/7] dependency-patches: running
+[4/7] dependency-patches: passed
+[5/7] ui-style: running
+[5/7] ui-style: passed
+[6/7] device-layout: running
+[6/7] device-layout: passed
+[7/7] format: running
+[7/7] format: passed
+local ci partial: /Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/local-ci/20261119T154008Z-1ea19913/summary.json

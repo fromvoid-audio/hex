@@ -1,0 +1,4 @@
+waiting for cargo slot: /Users/portalsurfer/.cache/hex/cargo-slot.lock
+next cargo slot reserved: /Users/portalsurfer/.cache/hex/cargo-slot.lock
+cargo slot acquired: /Users/portalsurfer/.cache/hex/cargo-slot.lock
+running cargo test -p hex-project -p hex-storage -p hex-engine --lib --locked -- fade_clock_tests:: unsupported_outer_fade_is_refused_before_preparation_cache_lookup audio_transform::frame_fade_preview::tests:: schema::long_granular::tests:: log /Users/portalsurfer/.codex/worktrees/dbd7/hex/artifacts/8623/qualification-2791e93abc3d/01.log
