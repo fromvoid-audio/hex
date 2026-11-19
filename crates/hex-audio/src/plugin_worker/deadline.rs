@@ -37,10 +37,16 @@ impl Deadline {
         })
     }
 
-    pub(super) fn before_poll(&mut self) -> Result<(), Error> {
+    pub(super) fn before_poll(&mut self) {
         if self.live_until.is_some_and(|until| Instant::now() < until) {
             self.enter();
-        } else {
+        }
+    }
+
+    // A stall can outlast the live window while audio is queued. Check for
+    // input at the current priority before treating that gap as idle.
+    pub(super) fn after_empty_poll(&mut self, now: Instant) -> Result<(), Error> {
+        if self.live_until.is_none_or(|until| now >= until) {
             self.live_until = None;
             self.leave()?;
         }
@@ -73,5 +79,52 @@ impl Deadline {
             // later pthread QoS request on a manually scheduled thread.
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_live_wait_keeps_deadline_priority_until_the_worker_checks_for_audio() {
+        let period = Duration::from_micros(5_805);
+        let mut deadline = Deadline {
+            policy: CoreAudioWorkerTimeConstraint::for_current_thread(
+                period,
+                Duration::from_micros(300),
+                Duration::from_millis(4),
+            )
+            .unwrap(),
+            interval: period * 2,
+            live_until: Some(Instant::now()),
+            active: false,
+            refused: false,
+        };
+        deadline.enter();
+        assert!(
+            deadline.active,
+            "worker priority must be admitted for this test"
+        );
+
+        deadline.before_poll();
+        assert!(
+            deadline.active,
+            "priority must survive until the input poll"
+        );
+
+        // A received request renews the live period. A subsequent empty poll
+        // within that period keeps the worker ready for the next request.
+        deadline.replied();
+        let expires = deadline.live_until.unwrap();
+        deadline.after_empty_poll(expires - period).unwrap();
+        assert!(deadline.active);
+
+        deadline.after_empty_poll(expires).unwrap();
+        assert!(
+            !deadline.active,
+            "an expired empty poll must restore priority"
+        );
+        assert!(deadline.live_until.is_none());
     }
 }
