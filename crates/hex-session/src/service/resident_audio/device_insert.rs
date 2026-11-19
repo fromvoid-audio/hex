@@ -6,6 +6,7 @@ use super::*;
 pub enum GraphEditOperation {
     InsertDevice,
     RemoveDevice,
+    MoveDevice,
     RemoveTrack,
 }
 
@@ -81,6 +82,7 @@ impl Operation {
         match self {
             Self::Device(GraphEditOperation::InsertDevice) => "device inserted",
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
+            Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
             Self::Tempo => "tempo applied",
         }
@@ -457,6 +459,12 @@ pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<Grap
         Command::RemoveDevice(_)
         | Command::RemoveDevices { .. }
         | Command::RemoveInstrument { .. } => Some(GraphEditOperation::RemoveDevice),
+        Command::MoveDevice { .. }
+        | Command::MoveMainDevice { .. }
+        | Command::MoveReturnDevice { .. }
+        | Command::MoveTrackDevice { .. }
+        | Command::MoveTrackDevices { .. }
+        | Command::ReorderDevices { .. } => Some(GraphEditOperation::MoveDevice),
         Command::RemoveTrack(_) | Command::RemoveTracks(_) => Some(GraphEditOperation::RemoveTrack),
         _ => None,
     }
@@ -468,9 +476,9 @@ pub(in crate::service) enum BrowserEdit {
     Unchanged,
 }
 
-/// Browser requests that resolve to an insertion use the same install
-/// receipt as explicit graph commands. Non-inserting drops and offline
-/// callers continue through ordinary command preparation.
+/// Device drops that insert or move a device use the same install receipt as
+/// explicit graph commands. Other browser actions and offline callers use
+/// ordinary command preparation.
 #[allow(clippy::too_many_arguments)] // Exact request, editor and audio owners.
 pub(in crate::service) fn submit_browser_edit(
     session: &mut Session,
@@ -487,12 +495,17 @@ pub(in crate::service) fn submit_browser_edit(
         project_generation,
         editor_revision: state.revision,
     };
-    if graph_edit_operation(&command) == Some(GraphEditOperation::InsertDevice)
+    if let Some(operation @ (GraphEditOperation::InsertDevice | GraphEditOperation::MoveDevice)) =
+        graph_edit_operation(&command)
         && let Some(sink) = events.resident_audio()
     {
         match session.audio_mode() {
             DocumentAudioMode::Resident
-                if sink.resident_publication_enabled() && sink.confirms_device_inserts() =>
+                if sink.resident_publication_enabled()
+                    && sink.confirms_device_inserts()
+                    && (operation == GraphEditOperation::InsertDevice
+                        || sink.resident_publication_readiness()
+                            != ResidentPublicationReadiness::NoOutput) =>
             {
                 return session
                     .stage_resident_device_insert(
@@ -504,7 +517,7 @@ pub(in crate::service) fn submit_browser_edit(
                         None,
                         document_intent,
                     )
-                    .map(|pending| BrowserEdit::Pending(Box::new(pending)));
+                    .map(BrowserEdit::from_pending);
             }
             DocumentAudioMode::VerifiedStreaming if sink.confirms_verified_device_inserts() => {
                 return session
@@ -516,11 +529,7 @@ pub(in crate::service) fn submit_browser_edit(
                         document_intent,
                         None,
                     )
-                    .map(|pending| {
-                        pending.map_or(BrowserEdit::Unchanged, |pending| {
-                            BrowserEdit::Pending(Box::new(pending))
-                        })
-                    });
+                    .map(BrowserEdit::from_pending);
             }
             _ => {}
         }
@@ -538,6 +547,12 @@ pub(in crate::service) fn submit_browser_edit(
         admission,
     )?;
     Ok(BrowserEdit::Applied(created, prepared))
+}
+
+impl BrowserEdit {
+    fn from_pending(pending: Option<Pending>) -> Self {
+        pending.map_or(Self::Unchanged, |pending| Self::Pending(Box::new(pending)))
+    }
 }
 
 impl Session {
@@ -577,7 +592,9 @@ impl Session {
         };
         let edit = self.editor.stage_edit(command)?;
         let tempo_cut = matches!(operation, Operation::Tempo);
-        if tempo_cut && edit.project() == self.project() {
+        if (tempo_cut || operation.device() == Some(GraphEditOperation::MoveDevice))
+            && edit.project() == self.project()
+        {
             return Ok(None);
         }
         let retiring_gain = gesture
@@ -655,6 +672,8 @@ impl Session {
         }))
     }
 
+    /// Stage the exact replacement graph. An unchanged move leaves the
+    /// existing audio submission and project history alone.
     #[allow(clippy::too_many_arguments)] // Exact editor, audio and worker request inputs.
     pub(in crate::service) fn stage_resident_device_insert(
         &mut self,
@@ -665,7 +684,7 @@ impl Session {
         current: Option<&Snapshot>,
         plugin: Option<&PluginEffectControl>,
         document_intent: u64,
-    ) -> Result<Pending, SessionError> {
+    ) -> Result<Option<Pending>, SessionError> {
         let staged = (|| {
             crate::validate_command_media(&command)?;
             let operation = if plugin.is_some() {
@@ -676,6 +695,9 @@ impl Session {
                     .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
             };
             let edit = self.editor.stage_edit(command)?;
+            if operation == GraphEditOperation::MoveDevice && edit.project() == self.project() {
+                return Ok(None);
+            }
             let installed = sink
                 .resident_runtime_loop(context)
                 .map_err(SessionError::NativeAudio)?
@@ -694,7 +716,7 @@ impl Session {
                     })
                 })
                 .ok_or(SessionError::Invalid(
-                    "device insertion needs the current installed audio graph",
+                    "device edit needs the current installed audio graph",
                 ))?;
             let context = hex_engine::AudioSourceContext {
                 editor_revision: context.editor_revision.saturating_add(1),
@@ -732,7 +754,7 @@ impl Session {
                 },
             )?;
             let receipt = insert_receipt(&snapshot, sink)?;
-            Ok(Pending {
+            Ok(Some(Pending {
                 edit,
                 prepared: Prepared::Resident(Box::new(Resident {
                     snapshot,
@@ -746,7 +768,7 @@ impl Session {
                 document_intent,
                 plugin: None,
                 publish_created: true,
-            })
+            }))
         })();
         if staged.is_err() {
             sink.finish_resident_effect_edit(
