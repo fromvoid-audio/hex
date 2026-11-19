@@ -158,6 +158,21 @@ fn clip_editor_audio_w_l_and_brace_align_scope_and_keep_released_paint(cx: &mut 
             assert_eq!(c.looping(), enabled);
             assert!(c.audio_edit().is_none());
         });
+        let bar = visual.debug_bounds("scope-range-fill").unwrap();
+        assert_eq!(bar.size.height, px(9.0));
+        let role = if enabled {
+            crate::theme::PaletteRole::Primary
+        } else {
+            crate::theme::PaletteRole::Muted
+        };
+        assert_eq!(
+            visual.rendered_background("scope-range-fill"),
+            Some(
+                gpui::Hsla::from(gpui::rgb(crate::theme::color(role)))
+                    .alpha(if enabled { 0.94 } else { 0.62 })
+                    .into()
+            )
+        );
     }
     if !editor.read_with(&visual, |v, _| v.audio_loop_grid().is_off()) {
         visual.simulate_keystrokes("cmd-4");

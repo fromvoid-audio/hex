@@ -14,12 +14,12 @@ fn at(v: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
         b.origin.y + px(11.0),
     )
 }
-fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
+fn assert_scope(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
     let b = content_bounds(v, "midi-loop-ruler");
     let scale_factor = v.update(|window, _| window.scale_factor());
     let scale = gpui::ScaledPixels::from(scale_factor);
     let color: gpui::Background = gpui::Hsla::from(rgb(theme::color(if on {
-        theme::PaletteRole::Text
+        theme::PaletteRole::Primary
     } else {
         theme::PaletteRole::Muted
     })))
@@ -29,7 +29,7 @@ fn assert_brace(v: &mut VisualTestContext, first: f32, last: f32, on: bool) {
         .rendered_filled_quads("midi-loop-ruler")
         .into_iter()
         .filter(|(b, c)| {
-            c == &color && (b.size.height / scale - 3.0).abs() < 0.01 && b.size.width / scale > 6.0
+            c == &color && (b.size.height / scale - 9.0).abs() < 0.01 && b.size.width / scale > 6.0
         })
         .collect();
     assert_eq!(bars.len(), 1);
@@ -98,7 +98,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             );
             assert!(!p.looping);
         });
-        assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+        assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
         assert!(
@@ -109,7 +109,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
         for _ in 0..3 {
             editor.update(&mut visual, |_, cx| cx.notify());
             visual.run_until_parked();
-            assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+            assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
         }
         editor.update(&mut visual, |v, cx| {
             v.receive(terminal);
@@ -134,7 +134,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             editor.update(&mut visual, |_, cx| cx.notify());
             visual.run_until_parked();
         }
-        assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+        assert_scope(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -149,7 +149,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
     let toggle = visual.debug_bounds("midi-loop-ruler-toggle").unwrap();
     visual.simulate_click(toggle.center(), Modifiers::default());
     pump(&editor, &mut visual);
-    assert_brace(&mut visual, 0.5, 1.0, true);
+    assert_scope(&mut visual, 0.5, 1.0, true);
     let after = editor.read_with(&visual, |v, _| {
         assert!(
             v.state
@@ -223,7 +223,7 @@ fn disabled_loop_keeps_markers_and_refuses_invalid_enable_without_history(cx: &m
             v.state.as_ref().unwrap().revision,
         )
     });
-    assert_brace(&mut visual, 0.25, 0.5, false);
+    assert_scope(&mut visual, 0.25, 0.5, false);
     let toggle = visual.debug_bounds("midi-loop-ruler-toggle").unwrap();
     visual.simulate_click(toggle.center(), Modifiers::default());
     pump(&editor, &mut visual);
@@ -256,7 +256,7 @@ fn disabled_loop_keeps_markers_and_refuses_invalid_enable_without_history(cx: &m
     });
     visual.simulate_click(toggle.center(), Modifiers::default());
     pump(&editor, &mut visual);
-    assert_brace(&mut visual, 0.25, 1.0, true);
+    assert_scope(&mut visual, 0.25, 1.0, true);
 }
 #[gpui::test]
 fn loop_capture_cancel_and_stale_frame_preserve_source_and_transport(cx: &mut TestAppContext) {
@@ -284,7 +284,7 @@ fn loop_capture_cancel_and_stale_frame_preserve_source_and_transport(cx: &mut Te
             }
         };
         visual.run_until_parked();
-        assert_brace(&mut visual, 0.0, 1.0, false);
+        assert_scope(&mut visual, 0.0, 1.0, false);
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {

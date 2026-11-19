@@ -299,6 +299,11 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
             .into()
         )
     );
+    assert_eq!(
+        visual.debug_bounds("loop-rail-range").unwrap().size.height,
+        px(9.0),
+        "the entire former bracket extent is filled"
+    );
     let midpoint = rail_point(&mut visual, 0.25);
     let command = Modifiers {
         platform: true,
@@ -314,7 +319,7 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
         visual.rendered_background("loop-rail-range"),
         Some(
             gpui::Hsla::from(gpui::rgb(crate::theme::color(
-                crate::theme::PaletteRole::Text
+                crate::theme::PaletteRole::Primary
             )))
             .alpha(0.94)
             .into()
