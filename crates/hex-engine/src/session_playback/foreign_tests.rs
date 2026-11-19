@@ -1092,6 +1092,103 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
 struct QuietTrackEffect;
 
 #[test]
+fn confirmed_track_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    use hex_devices::eq::EQ_DEFINITION;
+
+    let mut f = fixture(&[&[], &[]], 64);
+    let track = f.tracks[0];
+    let owner = ProcessorChainOwner::Track(track.value());
+    let Created::Device(eq) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: EQ_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("eq");
+    };
+    let Created::Device(hosted) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted effect");
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut predecessor = prepare(f.editor.project());
+    let mut reference = prepare(f.editor.project());
+    f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+    let mut refused = prepare(f.editor.project());
+    refused.require_continuous_insert = true;
+    let mut approved = prepare(f.editor.project());
+
+    let mut endpoint = Borrowed::new(owner, hosted.value());
+    let mut oracle = Borrowed::new(owner, hosted.value());
+    predecessor.apply(SessionPlaybackCommand::Play).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 32];
+    reference
+        .render_with_foreign_processors(&mut expected, None, None, None, &mut oracle)
+        .unwrap();
+    predecessor
+        .render_with_foreign_processors(&mut [[0.0; 2]; 7], None, None, None, &mut endpoint)
+        .unwrap();
+    assert!(!predecessor.device_chains[0].committed_range_is_quiescent(0..2));
+    assert_eq!(
+        refused.try_inherit_state_live_from(&mut predecessor),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    );
+    assert_eq!(predecessor.performance_frame, 7);
+    endpoint.next_offset = 0;
+    let mut before_cut = [[0.0; 2]; 1];
+    predecessor
+        .render_with_foreign_processors(&mut before_cut, None, None, None, &mut endpoint)
+        .unwrap();
+    assert_eq!(before_cut, expected[7..8]);
+
+    predecessor.set_playing_at_device_insert_cut(false);
+    approved
+        .try_inherit_state_at_device_insert_cut(&mut predecessor)
+        .unwrap();
+    assert_eq!(approved.performance_frame, 8);
+    approved.set_playing_at_device_insert_cut(true);
+    endpoint.next_offset = 0;
+    let mut after_cut = [[0.0; 2]; 24];
+    approved
+        .render_with_foreign_processors(&mut after_cut, None, None, None, &mut endpoint)
+        .unwrap();
+    assert_eq!(after_cut, expected[8..]);
+    assert!(after_cut.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(endpoint.next_offset, after_cut.len());
+}
+
+#[test]
 fn native_eq_append_keeps_live_foreign_track_and_delivers_eq_signal() {
     use hex_devices::eq::{EQ_DEFINITION, EQ_TYPE_ID, EqState, Node, NodeId};
 
