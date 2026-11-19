@@ -16,13 +16,11 @@ impl PublicationControl {
     pub(super) fn resident_mute_fence(
         &self,
         playback: &Playback,
-        policy: PublicationPolicy,
         candidate: Option<hex_engine::AudioSourceContext>,
     ) -> Option<FreshRuntimeFence> {
         let predecessor = AppliedAudioSource::from(playback.resident_mute_predecessor()?);
         let context = candidate?;
-        if policy != PublicationPolicy::InheritRuntime
-            || predecessor.output_identity != self.candidate_root.root_id()
+        if predecessor.output_identity != self.candidate_root.root_id()
             || self.status.recording_source() != Some(predecessor)
             || context.project_generation != predecessor.context.project_generation
             || predecessor.context.editor_revision.checked_add(1) != Some(context.editor_revision)
@@ -44,11 +42,11 @@ impl Callback {
         let Some(predecessor) = candidate.playback.resident_mute_predecessor() else {
             return;
         };
-        let current = candidate.resident_mute_fence.is_some_and(|fence| {
-            status.recording_source() == Some(predecessor.into())
+        let current = matches!(candidate.policy, PublicationPolicy::InheritRuntimeWithResidentMute(fence)
+            if status.recording_source() == Some(predecessor.into())
                 && status.consumed_command.load(Acquire) == fence.admitted_command_ticket
-                && !Self::runtime_fence_changed(status, active, fence)
-        });
+                && !Self::runtime_fence_changed(status, active, fence));
+
         if !current {
             candidate.playback.disarm_resident_mute();
         }

@@ -367,7 +367,6 @@ pub(crate) struct Publication {
     source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<PublicationReceiptOwner>,
-    resident_mute_fence: Option<FreshRuntimeFence>,
     // Callback-owned performance boundary for a pending quantized seek or
     // an insert waiting for the predecessor's admitted route action.
     scheduled_cut_frame: Option<u64>,
@@ -450,6 +449,9 @@ fn enqueue_legacy(
 pub enum PublicationPolicy {
     /// Preserve transport, launch ownership, and compatible voice state.
     InheritRuntime,
+    /// Ordinary inheritance with an optional resident ramp guarded at install.
+    /// The publication owner generates a fresh fence when queueing the graph.
+    InheritRuntimeWithResidentMute(FreshRuntimeFence),
     /// Install a staged device edit only at the captured source and clock,
     /// with cancellation ordered before any destructive inheritance.
     DeviceInsert {
@@ -501,6 +503,7 @@ impl PublicationPolicy {
     fn inherits_runtime(self) -> bool {
         match self {
             Self::InheritRuntime
+            | Self::InheritRuntimeWithResidentMute(_)
             | Self::DeviceInsert { .. }
             | Self::InheritAtTempoCut(_)
             | Self::InheritUnderArrangement(_)
@@ -2504,6 +2507,16 @@ impl PublicationControl {
         } else {
             None
         };
+        let policy = match policy {
+            PublicationPolicy::InheritRuntime
+            | PublicationPolicy::InheritRuntimeWithResidentMute(_) => {
+                self.resident_mute_fence(&playback, source_context).map_or(
+                    PublicationPolicy::InheritRuntime,
+                    PublicationPolicy::InheritRuntimeWithResidentMute,
+                )
+            }
+            _ => policy,
+        };
         let cancellation = policy.fresh_fence().map(|fence| {
             let basis = match policy {
                 PublicationPolicy::DeviceInsert { predecessor, fence } => {
@@ -2536,7 +2549,6 @@ impl PublicationControl {
             source_context,
             policy,
             fresh_runtime_cancellation: cancellation.clone().map(PublicationReceiptOwner),
-            resident_mute_fence: self.resident_mute_fence(&playback, policy, source_context),
             scheduled_cut_frame: None,
             streams,
             playback: Box::new(playback),
@@ -4069,7 +4081,9 @@ impl Callback {
                         ))
                     .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
-                PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
+                PublicationPolicy::InheritRuntime
+                | PublicationPolicy::InheritRuntimeWithResidentMute(_)
+                | PublicationPolicy::InstallFreshRuntime => None,
             };
             let monitor_handoff = stale_fence
                 .is_none()
@@ -10465,7 +10479,6 @@ mod tests {
                 source_context: None,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
-                resident_mute_fence: None,
                 scheduled_cut_frame: None,
                 streams: None,
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -11958,7 +11971,6 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
-                    resident_mute_fence: None,
                     scheduled_cut_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -13715,7 +13727,6 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            resident_mute_fence: None,
             scheduled_cut_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -13839,7 +13850,6 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        resident_mute_fence: None,
                         scheduled_cut_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -13923,7 +13933,6 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
-                        resident_mute_fence: None,
                         scheduled_cut_frame: None,
                         streams: None,
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -13946,7 +13955,6 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
-            resident_mute_fence: None,
             scheduled_cut_frame: None,
             streams: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -14116,7 +14124,6 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
-                    resident_mute_fence: None,
                     scheduled_cut_frame: None,
                     streams: None,
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
