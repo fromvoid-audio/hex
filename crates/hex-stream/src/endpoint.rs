@@ -125,6 +125,7 @@ pub(crate) struct Endpoint {
     pending_count: usize,
     // At most one speculative request; its ready buffer remains owned by the queue.
     prefetch_key: Option<ResourcePageKey>,
+    outgoing_prefetch_revision: Option<u64>,
     // Direct callers have no cancellation receipt; readiness roles clear their
     // own bits on cancellation so other consumers keep their pending page.
     prefetch_direct_demand: bool,
@@ -237,6 +238,7 @@ impl Endpoint {
             pending_mask: pending_count - 1,
             pending_count: 0,
             prefetch_key: None,
+            outgoing_prefetch_revision: None,
             prefetch_direct_demand: false,
             prefetch_readiness_mask: 0,
             source_keys: sources,
@@ -421,12 +423,23 @@ impl Endpoint {
     }
 
     pub(crate) fn take_failure(&mut self) -> Option<StreamFailure> {
+        self.take_failure_with_outgoing_revision()
+            .map(|(failure, _)| failure)
+    }
+
+    pub(crate) fn take_failure_with_outgoing_revision(
+        &mut self,
+    ) -> Option<(StreamFailure, Option<u64>)> {
         let failure = self.failure_rx.pop().ok()?;
-        self.pending_remove(ResourcePageKey {
+        let key = ResourcePageKey {
             source: failure.key,
             page_index: failure.page_index,
-        });
-        Some(failure)
+        };
+        let revision = self
+            .outgoing_prefetch_revision
+            .filter(|_| self.prefetch_key == Some(key));
+        self.pending_remove(key);
+        Some((failure, revision))
     }
 
     pub fn stats(&self) -> EndpointStats {
@@ -541,6 +554,7 @@ impl Endpoint {
         let key = key.into();
         if self.prefetch_key == Some(key) {
             self.prefetch_key = None;
+            self.outgoing_prefetch_revision = None;
             self.prefetch_direct_demand = false;
             self.prefetch_readiness_mask = 0;
         }
@@ -703,6 +717,7 @@ impl Endpoint {
         &mut self,
         extent: crate::StreamResourceExtent,
         retained: Option<&[&[crate::StreamResourceExtent]]>,
+        revision: u64,
     ) -> bool {
         let key = ResourcePageKey {
             source: extent.source,
@@ -721,6 +736,9 @@ impl Endpoint {
             return self.has_extent(extent);
         }
         self.prefetch(key);
+        if self.prefetch_key == Some(key) {
+            self.outgoing_prefetch_revision = Some(revision);
+        }
         false
     }
 
@@ -1038,6 +1056,7 @@ impl Endpoint {
             pending_mask: _,
             pending_count: _,
             prefetch_key: _,
+            outgoing_prefetch_revision: _,
             prefetch_direct_demand: _,
             prefetch_readiness_mask: _,
             source_keys,
@@ -1187,14 +1206,14 @@ mod tests {
         };
         assert!(test.endpoint.insert_ready(page(key(0))));
         test.endpoint.replace_protection(1, &[extent(0)]);
-        assert!(!test.endpoint.prewarm_fade_extent(extent(1), None));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(1), None, 1));
         assert_eq!(test.requests.pop().unwrap().0, key(1).into());
         assert!(test.ready.push(page(key(1))).is_ok());
-        assert!(!test.endpoint.prewarm_fade_extent(extent(2), None));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(2), None, 1));
         assert!(!test.endpoint.has_extent(extent(1)));
         assert!(test.requests.pop().is_err());
-        assert!(test.endpoint.prewarm_fade_extent(extent(1), None));
-        assert!(!test.endpoint.prewarm_fade_extent(extent(2), None));
+        assert!(test.endpoint.prewarm_fade_extent(extent(1), None, 1));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(2), None, 1));
         assert!(test.endpoint.has_extent(extent(0)));
         assert!(test.requests.pop().is_err());
         test.endpoint.reclaim_for_missing(1, 1);
@@ -1227,14 +1246,14 @@ mod tests {
         assert!(
             !test
                 .endpoint
-                .prewarm_fade_extent(extent(4), Some(&[&projected, &pending]))
+                .prewarm_fade_extent(extent(4), Some(&[&projected, &pending]), 1)
         );
         assert!(test.requests.pop().is_err());
         assert!((0..4).all(|index| test.endpoint.has_extent(extent(index))));
         assert!(
             !test
                 .endpoint
-                .prewarm_fade_extent(extent(4), Some(&[&projected]))
+                .prewarm_fade_extent(extent(4), Some(&[&projected]), 1)
         );
         assert_eq!(test.requests.pop().unwrap().0, key(4).into());
         assert!((0..3).all(|index| test.endpoint.has_extent(extent(index))));
@@ -1242,7 +1261,47 @@ mod tests {
         assert!(test.ready.push(page(key(4))).is_ok());
         assert!(
             test.endpoint
-                .prewarm_fade_extent(extent(4), Some(&[&projected]))
+                .prewarm_fade_extent(extent(4), Some(&[&projected]), 1)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn outgoing_prefetch_failure_keeps_only_the_revision_that_queued_it() {
+        let mut test = endpoint(3, 4, 4);
+        let source = source();
+        let key = |page_index| PageKey { source, page_index };
+        let failure = |page_index| StreamFailure {
+            key: source.into(),
+            page_index,
+            kind: crate::StreamFailureKind::DecodeFailed,
+        };
+        let extent = crate::StreamResourceExtent {
+            source: source.into(),
+            page_index: 1,
+            start: 0,
+            end: 1,
+        };
+        assert!(!test.endpoint.prewarm_fade_extent(extent, None, 17));
+        assert_eq!(test.requests.pop().unwrap().0, key(1).into());
+        assert!(!test.endpoint.prewarm_fade_extent(extent, None, 18));
+        assert!(test.requests.pop().is_err());
+        assert!(test.failures.push(failure(2)).is_ok());
+        assert_eq!(
+            test.endpoint.take_failure_with_outgoing_revision(),
+            Some((failure(2), None))
+        );
+        assert!(test.failures.push(failure(1)).is_ok());
+        assert_eq!(
+            test.endpoint.take_failure_with_outgoing_revision(),
+            Some((failure(1), Some(17)))
+        );
+        test.endpoint.request_page(source, 1);
+        assert_eq!(test.requests.pop().unwrap().0, key(1).into());
+        assert!(test.failures.push(failure(1)).is_ok());
+        assert_eq!(
+            test.endpoint.take_failure_with_outgoing_revision(),
+            Some((failure(1), None))
         );
     }
 

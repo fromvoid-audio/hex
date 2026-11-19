@@ -348,6 +348,9 @@ struct SourceSlot {
     looping: bool,
     reversed: bool,
     fade: hex_project::ClipFade,
+    // Semantic compilation may keep a nonneutral canonical envelope in final
+    // metadata. Reserve its existing box before constructing transformed PCM.
+    reserve_fade: bool,
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
@@ -1779,6 +1782,7 @@ impl AudioPreparationCustody {
                     } else {
                         clip.fade()
                     },
+                    reserve_fade: transformed && !clip.retained_fade().is_neutral(),
                     owner: None,
                     prepared_origin: None,
                     sparse_frames: crate::audio_transform::sparse_group_plan(clip)

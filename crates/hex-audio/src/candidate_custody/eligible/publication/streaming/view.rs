@@ -69,24 +69,50 @@ impl ActiveView<'_> {
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
         frames: usize,
-    ) -> Result<Option<QuantumPins>, QuantumFailure> {
-        let pins = self.reserve_stream_window(domains, frames, QuantumCoverage::CompleteFade)?;
+        revision: u64,
+    ) -> Result<Option<QuantumPins>, hex_engine::PlaybackHandoffRejection> {
+        use hex_engine::PlaybackHandoffRejection as Rejection;
+        let unavailable = Rejection::StreamedPagesNotReady;
+        let pins = self
+            .reserve_stream_window(domains, frames, QuantumCoverage::CompleteFade)
+            .map_err(|error| match error {
+                QuantumFailure::Capacity => Rejection::StreamedPageCapacity,
+                _ => unavailable,
+            })?;
         if pins.complete() {
             Ok(Some(pins))
         } else {
             pins.release(domains);
-            let workspace = self
-                .state
-                .streaming
-                .as_ref()
-                .ok_or(QuantumFailure::Invalid)?;
+            let workspace = self.state.streaming.as_ref().ok_or(unavailable)?;
             // Every domain fit before any speculative work. A later attempt
-            // must project the current clock again before acquiring a hold.
+            // must also reject any failed request that its projection needs.
             for token in self.state.domain_refs.into_iter().flatten() {
-                let pages =
-                    super::demand::envelope(domains, token).map_err(|_| QuantumFailure::Invalid)?;
-                let loan = pages.inner.loan.as_mut().ok_or(QuantumFailure::Invalid)?;
-                loan.prewarm_fitting_outgoing_fade(&workspace.quantum_extents[token.slot]);
+                let pages = super::demand::envelope(domains, token).map_err(|_| unavailable)?;
+                let loan = pages.inner.loan.as_ref().ok_or(unavailable)?;
+                if let Some((owner, failure)) = pages.inner.outgoing_failure
+                    && owner == revision
+                    && workspace.quantum_extents[token.slot].iter().any(|extent| {
+                        extent.source == failure.key
+                            && extent.page_index == failure.page_index
+                            && !loan.has_resource_extent(*extent)
+                    })
+                {
+                    return Err(
+                        if failure.kind == hex_stream::StreamFailureKind::SourceChanged {
+                            Rejection::StreamSourceChanged
+                        } else {
+                            unavailable
+                        },
+                    );
+                }
+            }
+            for token in self.state.domain_refs.into_iter().flatten() {
+                let pages = super::demand::envelope(domains, token).map_err(|_| unavailable)?;
+                let loan = pages.inner.loan.as_mut().ok_or(unavailable)?;
+                loan.prewarm_fitting_outgoing_fade(
+                    &workspace.quantum_extents[token.slot],
+                    revision,
+                );
             }
             Ok(None)
         }

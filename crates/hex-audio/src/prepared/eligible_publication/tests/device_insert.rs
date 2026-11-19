@@ -37,20 +37,35 @@ fn verified_device_insert_expires_at_the_preparation_deadline() {
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_playing() {
-    check_outgoing_cold_file(false);
+    check_outgoing_cold_file(ColdFile::Spare);
 }
 
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn outgoing_device_fade_can_warm_a_full_cache_with_the_current_window_held() {
-    check_outgoing_cold_file(true);
+    check_outgoing_cold_file(ColdFile::Full);
 }
 
 #[cfg(feature = "stream-test-support")]
-fn check_outgoing_cold_file(full_cache: bool) {
+#[test]
+fn outgoing_device_fade_refuses_its_failed_read_before_touching_current_pcm() {
+    check_outgoing_cold_file(ColdFile::FailedRead);
+}
+
+#[cfg(feature = "stream-test-support")]
+enum ColdFile {
+    Spare,
+    Full,
+    FailedRead,
+}
+
+#[cfg(feature = "stream-test-support")]
+fn check_outgoing_cold_file(case: ColdFile) {
     use hex_engine::MediaPages as _;
     use hex_project::Created;
 
+    let full_cache = !matches!(case, ColdFile::Spare);
+    let fail_read = matches!(case, ColdFile::FailedRead);
     let _serial = serial();
     let first_frames = if full_cache {
         (3 * hex_engine::STREAM_PAGE_FRAMES) as u32
@@ -100,6 +115,11 @@ fn check_outgoing_cold_file(full_cache: bool) {
         source: definitions[1].metadata.key(),
         page_index: 0,
     });
+    let gate = if fail_read {
+        gate.with_read_failure_after(0)
+    } else {
+        gate
+    };
     let context = AudioSourceContext {
         project_generation: 0,
         editor_revision: 7,
@@ -179,20 +199,31 @@ fn check_outgoing_cold_file(full_cache: bool) {
         .unwrap_or_else(|error| panic!("{}", error.reason));
     control.command(PlaybackCommand::Play).unwrap();
 
+    let failed = std::cell::Cell::new(false);
     let mut run = |project_fade: bool, render: bool| {
         let mut output = [[0.0; 2]; 16];
         let mut held = false;
         let allocations = allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|callback, _| {
                 callback.begin_block();
+                if fail_read
+                    && let Some(pages) = callback
+                        .domain_pages
+                        .iter_mut()
+                        .flatten()
+                        .find_map(|pages| pages.test_page_loan(domain))
+                {
+                    failed.set(failed.get() || pages.test_next_failure().is_some());
+                }
                 if project_fade {
+                    let revision = callback.recording_source().unwrap().audio_revision;
                     let mut active = callback
                         .active
                         .as_mut()
                         .and_then(ActivePublication::stream_view)
                         .unwrap();
                     if let Some(pins) = active
-                        .reserve_outgoing_fade(&mut callback.domain_pages, 128)
+                        .reserve_outgoing_fade(&mut callback.domain_pages, 128, revision)
                         .unwrap()
                     {
                         held = true;
@@ -274,19 +305,40 @@ fn check_outgoing_cold_file(full_cache: bool) {
         assert_eq!(control.status.applied_audio_source(), Some(source));
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
         release.send(()).unwrap();
-        while matches!(
-            receipt.state(),
-            PublicationReceiptState::Pending | PublicationReceiptState::Applying
-        ) {
-            run(false, true);
-            assert!(Instant::now() < deadline, "approved fade did not install");
-            std::thread::yield_now();
+        if fail_read {
+            while !failed.get() {
+                run(false, false);
+                assert!(
+                    Instant::now() < deadline,
+                    "cold worker did not report the read failure"
+                );
+                std::thread::yield_now();
+            }
+            for _ in 0..2 {
+                assert_eq!(run(false, true).1, [[0.25; 2]; 16]);
+            }
+            assert_eq!(control.status.position.load(Acquire), before + 64);
+            assert_eq!(control.status.applied_audio_source(), Some(source));
+            assert!(!control.status.stream_read_failed.load(Acquire));
+            assert_eq!(
+                receipt.state(),
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
+            );
+        } else {
+            while matches!(
+                receipt.state(),
+                PublicationReceiptState::Pending | PublicationReceiptState::Applying
+            ) {
+                run(false, true);
+                assert!(Instant::now() < deadline, "approved fade did not install");
+                std::thread::yield_now();
+            }
+            assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+            assert_eq!(
+                control.status.applied_audio_source().unwrap().context,
+                edit_context
+            );
         }
-        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
-        assert_eq!(
-            control.status.applied_audio_source().unwrap().context,
-            edit_context
-        );
         Some(staged)
     } else {
         assert!(!run(true, false).0);
@@ -307,10 +359,15 @@ fn check_outgoing_cold_file(full_cache: bool) {
         None
     };
     control.command(PlaybackCommand::Stop).unwrap();
-    for _ in 0..8 {
+    let stop_deadline = Instant::now() + Duration::from_millis(400);
+    loop {
         run(false, true);
+        if control.status.position.load(Acquire) == 0 {
+            break;
+        }
+        assert!(Instant::now() < stop_deadline, "stream did not stop");
+        std::thread::yield_now();
     }
-    assert_eq!(control.status.position.load(Acquire), 0);
     crate::lifecycle::test_dispose_backend(
         &mut Some(()),
         &mut false,
