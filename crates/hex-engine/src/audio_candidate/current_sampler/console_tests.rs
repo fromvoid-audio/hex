@@ -98,6 +98,30 @@ fn current_sampler_console_templates_construct_with_paired_storage() {
             .is_err()
     );
     owner.seal_constructor_on_control(exact).unwrap();
+    owner
+        .test_apply_action(crate::PlaybackAction::Session(
+            crate::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: crate::LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    let playback = &owner.inner.runtime.as_ref().unwrap().playback;
+    let before = (playback.position(), playback.playing());
+    assert!(
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 0,
+                    note_chase: crate::NoteChase::Off,
+                }
+            ))
+            .is_err(),
+        "private CURRENT start remains explicitly unsupported"
+    );
+    let playback = &owner.inner.runtime.as_ref().unwrap().playback;
+    assert_eq!((playback.position(), playback.playing()), before);
+    assert!(playback.pending_transport_fade().is_none());
     let config = &owner
         .inner
         .runtime

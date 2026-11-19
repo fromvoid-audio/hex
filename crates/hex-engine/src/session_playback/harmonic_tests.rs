@@ -969,3 +969,51 @@ fn note_chase_off_imports_only_the_admitted_analytic_voice() {
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
     assert_eq!(run(true), expected);
 }
+
+#[test]
+fn selected_session_off_imports_only_the_admitted_boundary_voice() {
+    let run = |oracle| {
+        let source = super::session_note_chase::with_window(&fixture(1, 1 << 30), oracle);
+        let table = Arc::new(hex_devices::SineTable::new());
+        let original = revision(&source, Arc::clone(&table));
+        assert!(
+            !original.session().midi_clips()[0]
+                .instrument_template()
+                .is_event_source(),
+            "the donor must use the analytic class"
+        );
+        let mut old = super::session_note_chase::start(Arc::clone(&original));
+        let prefix = super::session_note_chase::render(&mut old, 16);
+        assert!(prefix.iter().flatten().any(|s| *s != 0.0));
+        let changed = edit(
+            &source,
+            &[
+                (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+                (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+            ],
+        );
+        let candidate = Arc::new(
+            PreparedRevision::prepare(&changed, &BTreeMap::new(), table, Some(original.session()))
+                .unwrap(),
+        );
+        assert!(
+            candidate.session().midi_clips()[0]
+                .instrument_template()
+                .is_event_source(),
+            "the receiver must exercise mutable import"
+        );
+        let mut next = Playback::try_from_prepared_with_session(candidate).unwrap();
+        next.try_inherit_runtime_from(&mut old).unwrap();
+        super::session_note_chase::render(&mut next, 128)
+    };
+    let expected = run(true);
+    assert!(
+        expected.iter().flatten().any(|s| *s != 0.0),
+        "the real boundary gate must import and remain audible"
+    );
+    assert_eq!(
+        run(false),
+        expected,
+        "import must not reconstruct the skipped clipped intro"
+    );
+}
