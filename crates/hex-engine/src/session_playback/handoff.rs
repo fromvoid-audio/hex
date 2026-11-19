@@ -521,9 +521,9 @@ enum Restart {
 }
 
 impl SessionPlayback {
-    /// A confirmed reduction can rebuild PDC after a Return's unchanged
-    /// prefix. Its local DSP and exact hosted endpoint can stay at the old
-    /// input origin even though the downstream latency changes.
+    /// Keep an unchanged Return prefix at its input origin during a confirmed
+    /// trailing latency edit. A native append can start a fresh alignment
+    /// epoch when there is no buffered input before that prefix.
     fn retains_return_prefix_at_latency_cut(
         &self,
         previous: &Self,
@@ -550,23 +550,40 @@ impl SessionPlayback {
         else {
             return false;
         };
-        let Some((removed, prefix)) = old_bus.device_chain.split_last() else {
+        if old_bus.id != new_bus.id {
             return false;
+        }
+        let is_native_latency_stage = |device: &hex_lattice::PreparedRuntimeInstance| {
+            device.definition.is_some()
+                && device.foreign_processor().is_none()
+                && device
+                    .algorithmic_latency_frames()
+                    .is_some_and(|frames| frames > 0)
         };
-        old_bus.id == new_bus.id
+        let prefix = if let Some((removed, prefix)) = old_bus.device_chain.split_last()
             && prefix.len() == new_bus.device_chain.len()
-            && removed.definition.is_some()
-            && removed.foreign_processor().is_none()
-            && removed
-                .algorithmic_latency_frames()
-                .is_some_and(|frames| frames > 0)
+            && is_native_latency_stage(removed)
             && new_bus
                 .device_chain
                 .iter()
                 .any(|node| node.foreign_processor().is_some())
-            && old_chain.configuration_matches_range(new_chain, 0..new_chain.len())
+        {
+            prefix
+        } else if let Some((appended, prefix)) = new_bus.device_chain.split_last()
+            && prefix.len() == old_bus.device_chain.len()
+            && is_native_latency_stage(appended)
+            && let Some(first) = prefix.first()
+            && old_graph
+                .processor_latency(first.device_id, None)
+                .is_some_and(|stage| stage.upstream_frames == 0)
+        {
+            prefix
+        } else {
+            return false;
+        };
+        old_chain.configuration_matches_range(new_chain, 0..prefix.len())
             && new_chain.can_inherit_from(old_chain)
-            && new_bus.device_chain.iter().all(|node| {
+            && prefix.iter().all(|node| {
                 old_graph
                     .processor_latency(node.device_id, None)
                     .zip(new_graph.processor_latency(node.device_id, None))

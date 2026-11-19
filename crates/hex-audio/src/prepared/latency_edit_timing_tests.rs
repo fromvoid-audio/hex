@@ -716,6 +716,15 @@ fn removing_settled_off_main_effect_preserves_the_downstream_delay_history() {
 
 #[test]
 fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
+    assert_approved_limiter_append_preserves_repeat(false);
+}
+
+#[test]
+fn approved_return_limiter_append_preserves_a_buffered_delay_repeat() {
+    assert_approved_limiter_append_preserves_repeat(true);
+}
+
+fn assert_approved_limiter_append_preserves_repeat(on_return: bool) {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -737,16 +746,74 @@ fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
     let limiter = hex_devices::limiter::DEFINITION.default_state().unwrap();
     let mut source = vec![[0.0; 2]; 2048];
     source[0] = [0.125, -0.0625];
-    let ([before, after], _) = main_append_revisions(Some(delay), limiter, source);
-    assert_eq!(before.arrangement().main_latency_frames(), 0);
-    assert_eq!(after.arrangement().main_latency_frames(), DELAY as u32);
+    let ([before, after], old_latency) = if on_return {
+        let (mut editor, track, prepare) = resident_input(source);
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: limiter.clone(),
+            })
+            .unwrap();
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "delay return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: delay,
+            })
+            .unwrap();
+        let before = prepare(editor.project());
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+        ([before, prepare(editor.project())], DELAY)
+    } else {
+        (main_append_revisions(Some(delay), limiter, source).0, 0)
+    };
+    assert_eq!(
+        before.arrangement().main_latency_frames() as usize,
+        old_latency
+    );
+    assert_eq!(
+        after.arrangement().main_latency_frames() as usize,
+        old_latency + DELAY
+    );
+    let mut original = Playback::try_from_prepared_with_session(Arc::clone(&before)).unwrap();
+    original.apply(PlaybackCommand::Play);
+    let mut before_approval = [[0.0; 2]; 2 * QUANTUM];
+    original.render(&mut before_approval).unwrap();
     let mut uninterrupted = Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap();
     uninterrupted.apply(PlaybackCommand::Play);
     let mut oracle = [[0.0; 2]; TOTAL];
     uninterrupted.render(&mut oracle).unwrap();
-    let onset = oracle.iter().position(|pcm| *pcm != [0.0; 2]).unwrap();
+    if !on_return {
+        assert!(oracle[..CUT].iter().all(|pcm| *pcm == [0.0; 2]));
+    }
+    let onset = CUT
+        + oracle[CUT..]
+            .iter()
+            .position(|pcm| *pcm != [0.0; 2])
+            .unwrap();
     assert!(onset >= CUT + QUANTUM);
-    assert_eq!(onset, 480 + DELAY);
+    assert_eq!(onset, 480 + old_latency + DELAY);
 
     for partition in [1, BLOCK] {
         let (mut control, mut callback) = channel(RATE).unwrap();
@@ -802,6 +869,7 @@ fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
         control.command(PlaybackCommand::Play).unwrap();
         let mut scratch = [[0.0; 2]; QUANTUM];
         block(&mut scratch);
+        assert_eq!(scratch, before_approval[..QUANTUM]);
         let predecessor = control.status.recording_source().unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
         let revision = control
@@ -814,6 +882,7 @@ fn approved_main_limiter_append_preserves_a_buffered_delay_repeat() {
             )
             .unwrap();
         block(&mut scratch);
+        assert_eq!(scratch, before_approval[QUANTUM..]);
         assert_eq!(control.status.recording_source(), Some(predecessor));
         assert_eq!(control.status.position.load(Acquire), (2 * QUANTUM) as u64);
         let refused = control.fresh_runtime_receipt(revision).unwrap();
