@@ -661,7 +661,9 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     };
     let wet = compare(&mut callback);
     assert!(wet[..100].iter().flatten().all(|sample| *sample == 0.0));
-    let rejected = publish(&mut control, changed);
+    // A simultaneous receiver and power change still lacks an exact power
+    // continuation witness. The source keeps running at the old receiver.
+    let rejected = publish(&mut control, Arc::clone(&changed));
     compare(&mut callback);
     assert_ne!(old, rejected);
     assert_eq!(control.status.applied_revision.load(Ordering::Acquire), old);
@@ -697,7 +699,7 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     };
     control.stop();
     assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
-    let removed = publish(&mut control, dry);
+    let removed = publish(&mut control, Arc::clone(&dry));
     assert_eq!(render(&mut callback), [[0.0; 2]; 256]);
     assert_eq!(
         control.status.applied_revision.load(Ordering::Acquire),
@@ -726,6 +728,26 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
         control.status.applied_revision.load(Ordering::Acquire),
         attached
     );
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+
+    // The very same recipe can now change power at its unchanged receiver.
+    let position = control.status.position.load(Ordering::Acquire) as usize;
+    let mut dry_reference =
+        hex_engine::SessionPlayback::new_with_device_resources(dry, &resources).unwrap();
+    dry_reference.apply(SessionPlaybackCommand::Play).unwrap();
+    dry_reference.render(&mut vec![[0.0; 2]; position]).unwrap();
+    let powered_off = publish(&mut control, changed);
+    let fade = render(&mut callback);
+    let mut expected = [[0.0; 2]; 256];
+    dry_reference.render(&mut expected).unwrap();
+    assert_eq!(fade[239..], expected[239..]);
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        powered_off
+    );
+    dry_reference.render(&mut expected).unwrap();
+    assert_eq!(render(&mut callback), expected);
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
 }
