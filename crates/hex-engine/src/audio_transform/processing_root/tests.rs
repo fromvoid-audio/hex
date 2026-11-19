@@ -435,7 +435,7 @@ fn forward_frame_crop_applies_the_destination_fade_after_processing() {
                 &prospective,
                 asset,
                 super::super::PreparedAudioSourceRef::Resident(source),
-                Some(fade),
+                Some(super::super::OuterPlaybackFade::Frame(fade)),
             )
             .unwrap()
             .unwrap()
@@ -539,7 +539,7 @@ fn verified_frame_pitch_and_reverse_share_stream_identity_with_outer_fades() {
                     &prospective,
                     asset,
                     source(),
-                    Some(fade),
+                    Some(super::super::OuterPlaybackFade::Frame(fade)),
                 )
                 .unwrap()
                 .unwrap();

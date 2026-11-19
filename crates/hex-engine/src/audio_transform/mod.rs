@@ -29,6 +29,9 @@ mod granular_requirements;
 mod group;
 pub use granular_requirements::{StreamedGranularRequirement, StreamedGranularRequirements};
 pub(crate) use group::{GroupSource, sparse_group_plan};
+mod instance_fade;
+use instance_fade::OuterPlaybackFade;
+pub(crate) use instance_fade::materializes_musical_outer_fade;
 mod mapping;
 mod processing_root;
 mod view;
@@ -1073,7 +1076,8 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
-        let fade = checked_frame_outer_fade(clip, tempo_map)?;
+        let projection = clip.projected_outer_fade(tempo_map)?;
+        let fade = OuterPlaybackFade::projected(projection.as_ref(), edit.domain.clock)?;
         self.compile_captured_clip_at_tempo(tempo_map, clip, edit, asset, source, fade)
     }
 
@@ -1084,22 +1088,25 @@ impl AudioTransformPreparation {
         edit: &AudioClipEdit,
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
-        fade: Option<hex_project::ClipFade>,
+        fade: Option<OuterPlaybackFade<'_>>,
     ) -> Result<Option<Clip>, Invalid> {
         if fade.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
             return Err(Invalid(
                 "clip source fade differs from its processing clock",
             ));
         }
+        if let Some(fade) = fade {
+            fade.admit(
+                clip.duration(),
+                matches!(&source, PreparedAudioSourceRef::Resident(_)),
+            )?;
+        }
         if edit.is_long_inactive_warp_root(clip.duration()) {
             return direct_clip(clip, source).map(Some);
         }
         let finish = |prepared: Clip| {
-            let prepared = prepared.with_gain(clip.gain());
-            match fade {
-                Some(fade) => prepared.with_fade(fade).map(Some),
-                None => Ok(Some(prepared)),
-            }
+            self.finish_outer_fade(prepared.with_gain(clip.gain()), fade)
+                .map(Some)
         };
         if let PreparedAudioSourceRef::StreamedWithPitch(raw, derived_sources) = source
             && let Ok((map, law)) =
@@ -1157,7 +1164,10 @@ impl AudioTransformPreparation {
                 0,
                 clip.duration(),
                 false,
-                fade.unwrap_or(edit.domain.fade),
+                match fade {
+                    Some(OuterPlaybackFade::Frame(fade)) => fade,
+                    _ => edit.domain.fade,
+                },
             )
             .map(|prepared| Some(prepared.with_gain(clip.gain())));
         }
@@ -1258,10 +1268,17 @@ pub(crate) fn checked_frame_outer_fade(
     clip: &hex_project::Clip,
     tempo: &hex_project::TempoMap,
 ) -> Result<Option<hex_project::ClipFade>, Invalid> {
-    Ok(clip
-        .projected_outer_fade(tempo)?
-        .map(|fade| fade.frame_playback_envelope())
-        .transpose()?)
+    let Some(projected) = clip.projected_outer_fade(tempo)? else {
+        return Ok(None);
+    };
+    if projected.is_neutral()
+        && clip.audio_edit().is_some_and(|edit| {
+            matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_))
+        })
+    {
+        return Ok(None);
+    }
+    Ok(Some(projected.frame_playback_envelope()?))
 }
 
 fn edit_requires_resident_source(clip: &hex_project::Clip, edit: &AudioClipEdit) -> bool {
@@ -1271,6 +1288,7 @@ fn edit_requires_resident_source(clip: &hex_project::Clip, edit: &AudioClipEdit)
         || edit.domain.pitch_cents != 0
         || edit.domain.warp_enabled
         || !edit.domain.source_gain.is_empty()
+        || materializes_musical_outer_fade(edit)
         || (edit.domain.fade_clock == hex_project::AudioClipFadeClock::LegacyRoot
             && !edit.domain.fade.is_neutral())
 }
