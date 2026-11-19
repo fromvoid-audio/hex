@@ -9027,7 +9027,7 @@ fn run_worker(
                     }
                 }
                 Request::Edit(command)
-                    if matches!(&command, Command::SetProjectTempo { .. })
+                    if resident_audio::device_insert::is_tempo_edit(&command)
                         && session.audio_mode() == DocumentAudioMode::VerifiedStreaming
                         && compiled.as_ref().is_some_and(|(_, prepared)| {
                             prepared.arrangement().main_latency_frames() != 0

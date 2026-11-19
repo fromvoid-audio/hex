@@ -103,6 +103,12 @@ struct StoppedForeignHistory {
     fence: hex_audio::prepared::StoppedEditFence,
 }
 
+#[cfg(all(test, feature = "allocation-probe"))]
+struct VerifiedPageHold {
+    index: u64,
+    armed: SyncSender<(mpsc::Receiver<()>, SyncSender<()>)>,
+}
+
 pub(super) struct NativeAudioSink {
     audio_diagnostics: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
     plugins: plugins::Plugins,
@@ -113,6 +119,8 @@ pub(super) struct NativeAudioSink {
     native_graph_gate: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     native_graph_busy_observer: Option<SyncSender<()>>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    verified_page_hold: Option<VerifiedPageHold>,
     policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
     // Selected before initialization; applies to every resident graph, including an empty project.
@@ -211,6 +219,8 @@ impl NativeAudioSink {
             native_graph_gate: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             native_graph_busy_observer: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            verified_page_hold: None,
             policy: AudioPolicy::new(),
             resident: resident::Resident::default(),
             worker_owned_resident_graphs: true,
@@ -981,11 +991,7 @@ impl NativeAudioSink {
                                 .min(policy.stream.page_buffers.saturating_sub(2)),
                         },
                     ),
-                    None => control.begin_audio_candidate_domain_preparation(
-                        policy.stream,
-                        definitions,
-                        policy.readiness,
-                    ),
+                    None => self.begin_verified_file_domain(control, policy, definitions),
                 };
                 match started {
                     Ok(token) => {
@@ -1202,6 +1208,37 @@ impl NativeAudioSink {
             Err(error) => self.fail_preparation(control, pending, error.into()),
         }
     }
+    fn begin_verified_file_domain(
+        &mut self,
+        control: &mut hex_audio::prepared::PublicationControl,
+        policy: AudioPolicy,
+        definitions: Vec<hex_stream::SourceDefinition>,
+    ) -> Result<AudioCandidateDomainToken, hex_audio::AudioCandidateDomainStartError> {
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if let Some(definition) = definitions.first()
+            && let Some(hold) = self.verified_page_hold.take()
+        {
+            let (gate, entered, release) =
+                hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+                    source: definition.key,
+                    page_index: hold.index,
+                });
+            if hold.armed.try_send((entered, release)).is_ok() {
+                return control.begin_audio_candidate_domain_preparation_with_gate(
+                    policy.stream,
+                    definitions,
+                    policy.readiness,
+                    gate,
+                );
+            }
+        }
+        control.begin_audio_candidate_domain_preparation(
+            policy.stream,
+            definitions,
+            policy.readiness,
+        )
+    }
+
     fn fail_preparation(
         &mut self,
         control: &mut hex_audio::prepared::PublicationControl,
