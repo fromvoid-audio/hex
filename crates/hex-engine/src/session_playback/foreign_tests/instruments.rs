@@ -1517,6 +1517,88 @@ fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
 }
 
 #[test]
+fn running_tempo_edit_keeps_the_foreign_gate_and_moves_its_deadline() {
+    for (looped, tempo, donor_cut, arrangement_cut, gate_end) in [
+        (false, 90_000_000, 256, 341, 1000),
+        (true, 90_000_000, 256, 341, 1000),
+        // The attack rounds to the candidate cut and must not retrigger.
+        (false, 1_000_000_000, 1, 0, 90),
+        // The authored release belongs to the candidate's first sample.
+        (false, 90_000_000, 750, 1000, 1000),
+    ] {
+        let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
+        if looped {
+            editor
+                .execute(Command::SetLoopRegion {
+                    start: 0,
+                    end: 1024,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        let original = prepare(&editor, identity, true).unwrap();
+        let latency = original.arrangement().main_latency_frames() as usize;
+        assert!(latency > 0);
+        let mut playing = SessionPlayback::new(original).unwrap();
+        let mut endpoint = NoteEndpoint {
+            instrument_sample: 0.25,
+            ..Default::default()
+        };
+        playing.apply(SessionPlaybackCommand::Play).unwrap();
+        if looped {
+            endpoint
+                .render(&mut playing, &mut [[0.0; 2]; 1024])
+                .unwrap();
+        }
+        endpoint
+            .render(&mut playing, &mut vec![[0.0; 2]; donor_cut])
+            .unwrap();
+        let [(0, onset)] = endpoint.notes.as_slice() else {
+            panic!("one held note at the start of this pass");
+        };
+        assert!(onset.on);
+        let onset = *onset;
+        let cut = playing.performance_frame();
+
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(tempo).unwrap(),
+            })
+            .unwrap();
+        let mut changed_worker =
+            SessionPlayback::new(prepare_epoch(&editor, identity, true, 2).unwrap()).unwrap();
+        assert!(matches!(
+            changed_worker.try_inherit_state_live_from(&mut playing),
+            Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+        ));
+        let mut edited = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+        let report = edited.try_inherit_state_live_from(&mut playing).unwrap();
+        assert!(!report.running_audio_restart());
+        assert_eq!(edited.performance_frame(), cut);
+        assert_eq!(edited.arrangement_frame(), arrangement_cut as u64);
+        assert_eq!(edited.arrangement_loop_state().pass, u64::from(looped));
+
+        let release = gate_end - arrangement_cut;
+        let mut output = vec![[0.0; 2]; release + 1];
+        endpoint.render(&mut edited, &mut output).unwrap();
+        let silence = latency.saturating_sub(donor_cut);
+        assert!(output[..silence].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(output[silence..].iter().all(|frame| *frame == [0.25; 2]));
+        assert_eq!(
+            endpoint.notes,
+            [(
+                release,
+                hex_lattice::ForeignNote {
+                    on: false,
+                    velocity: 0,
+                    ..onset
+                }
+            )]
+        );
+    }
+}
+
+#[test]
 fn confirmed_main_limiter_keeps_the_foreign_gate_on_the_original_worker() {
     let (mut editor, identity) = fixture_with_duration(BeatTime::from_ratio(1, 32).unwrap());
     let original = prepare(&editor, identity, true).unwrap();

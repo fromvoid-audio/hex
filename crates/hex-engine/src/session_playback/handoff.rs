@@ -1025,6 +1025,17 @@ impl SessionPlayback {
         };
         let old_loop_region = previous.loop_region();
         let new_loop_region = self.loop_region();
+        let same_base_timing = self
+            .revision
+            .session()
+            .timing()
+            .same_map(previous.revision.session().timing());
+        let tempo_cut =
+            if !same_base_timing && restart == Restart::None && source_transfer.is_none() {
+                self.compensated_arrangement_tempo_cut(previous)?
+            } else {
+                None
+            };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
             self.revision.arrangement().tracks(),
@@ -1037,6 +1048,7 @@ impl SessionPlayback {
             },
             fresh,
             [old_loop_region, new_loop_region],
+            tempo_cut,
         )?;
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
@@ -1153,11 +1165,6 @@ impl SessionPlayback {
         // history; 2: carry the actual larger donor plan/rings, explicitly bound
         // to the candidate's immutable typed pre-Main map; 3: copy only stamps
         // after removing one proven zero-delay send.
-        let same_base_timing = self
-            .revision
-            .session()
-            .timing()
-            .same_map(previous.revision.session().timing());
         let mapped_main_clock = same_base_timing && new_loop_region == old_loop_region;
         if confirmed_insert
             && (previous.playing
@@ -1635,10 +1642,13 @@ impl SessionPlayback {
                                     )
                                     .is_some_and(|removed| removed.bypassed))
                         }));
+        let carried_cut =
+            tempo_cut.filter(|_| planned_transfer == Some(1) && fresh_history.is_none());
         if foreign_handoff.requires_clock_continuity
             && (force_restart
                 || (relocate && !keep_foreign_gates)
                 || (!compatible_instrument_loop_edit
+                    && carried_cut.is_none()
                     && (!mapped_main_clock || !same_periodic_timing)))
         {
             return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
@@ -1891,53 +1901,7 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         let old_loop = previous.loop_region().filter(|region| region.enabled());
         let new_loop = self.loop_region().filter(|region| region.enabled());
-        let old_base = previous.revision.session().timing();
-        let new_base = self.revision.session().timing();
-        let same_base = old_base.same_map(new_base);
-        // In-flight audio retains its original tempo, beat and frame stamps.
-        // With the same delay layout and musical loop bounds, copy that
-        // history and anchor new Arrangement audio at the actual cut.
-        let carries_arrangement_audio_tempo = !same_base
-            && previous.playing
-            && clock_transfer == 1
-            && fresh_history.is_none()
-            && previous.transient_loop.is_none()
-            && self.transient_loop.is_none()
-            && match (old_loop, new_loop) {
-                (None, None) => true,
-                (Some(old), Some(new)) => [(old.start(), new.start()), (old.end(), new.end())]
-                    .into_iter()
-                    .all(|(before, after)| {
-                        old_base
-                            .frame_to_beat(before)
-                            .and_then(|beat| new_base.beat_to_frame(beat))
-                            .is_ok_and(|mapped| mapped == after)
-                    }),
-                _ => false,
-            }
-            && self
-                .routes
-                .iter()
-                .chain(&previous.routes)
-                .all(|route| route.owner == RouteOwner::Arrangement && route.pending.is_none())
-            && self
-                .revision
-                .arrangement()
-                .tracks()
-                .iter()
-                .chain(previous.revision.arrangement().tracks())
-                .all(|track| track.instrument.is_none() && track.foreign_instrument.is_none());
-        // Resolve the retimed cursor before choosing its periodic clock. A
-        // faster tempo can put the donor's frame past the candidate loop end.
-        let carried_cut = if carries_arrangement_audio_tempo {
-            Some(candidate_arrangement_cut(
-                previous,
-                new_base,
-                self.loop_region(),
-            )?)
-        } else {
-            None
-        };
+        let same_base = same_base_timing;
         let candidate_periodic = self
             .periodic_tempo_at(carried_cut.map_or(previous.arrangement_frame, |(frame, _)| frame));
         let same_periodic = previous.periodic_tempo() == candidate_periodic;
@@ -2008,7 +1972,7 @@ impl SessionPlayback {
             }
         };
         if !same_base
-            && !carries_arrangement_audio_tempo
+            && carried_cut.is_none()
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
@@ -5994,6 +5958,54 @@ impl SessionPlayback {
             true,
         );
         Ok(report)
+    }
+
+    /// A running Arrangement tempo edit can carry the predecessor's stamped delay
+    /// history after graph compatibility is proved. Resolve the retimed
+    /// cursor first so instruments and the periodic clock see the same cut,
+    /// even when the predecessor's frame is past the shortened loop's end.
+    fn compensated_arrangement_tempo_cut(
+        &self,
+        previous: &Self,
+    ) -> Result<Option<(u64, u64)>, SessionPlaybackError> {
+        let old_base = previous.revision.session().timing();
+        let new_base = self.revision.session().timing();
+        if !previous.playing
+            || previous.compensation.is_none()
+            || self.compensation.is_none()
+            || previous.transient_loop.is_some()
+            || self.transient_loop.is_some()
+            || self
+                .routes
+                .iter()
+                .chain(&previous.routes)
+                .any(|route| route.owner != RouteOwner::Arrangement || route.pending.is_some())
+            || self
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .chain(previous.revision.arrangement().tracks())
+                .any(|track| track.instrument.is_some() && track.foreign_instrument.is_none())
+        {
+            return Ok(None);
+        }
+        let keeps_loop_bounds = match (previous.loop_region(), self.loop_region()) {
+            (None, None) => true,
+            (Some(old), Some(new)) => [(old.start(), new.start()), (old.end(), new.end())]
+                .into_iter()
+                .all(|(before, after)| {
+                    old_base
+                        .frame_to_beat(before)
+                        .and_then(|beat| new_base.beat_to_frame(beat))
+                        .is_ok_and(|mapped| mapped == after)
+                }),
+            _ => false,
+        };
+        if !keeps_loop_bounds {
+            return Ok(None);
+        }
+        candidate_arrangement_cut(previous, new_base, self.loop_region()).map(Some)
     }
 
     /// Exact owning frontier after the caller has preflighted the mapped
