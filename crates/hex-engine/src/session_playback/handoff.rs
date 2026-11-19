@@ -1743,6 +1743,8 @@ impl SessionPlayback {
                     .find(|(_, (new_bus, _))| new_bus.id == bus.id);
                 if confirmed_insert
                     && groups.is_none()
+                    && !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
                     && donor_epoch_matches
                     && let Some((new_index, _)) = successor
                     && self.retains_return_prefix_at_latency_cut(previous, index, new_index)

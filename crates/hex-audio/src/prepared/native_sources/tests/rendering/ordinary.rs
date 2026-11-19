@@ -367,29 +367,29 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn approved_track_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(0, false);
+fn fitting_track_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
+    verify_effect_removal_with_hosted_successor(0, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn approved_main_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(2, false);
+fn fitting_main_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
+    verify_effect_removal_with_hosted_successor(2, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn approved_return_effect_removal_keeps_one_native_endpoint_through_the_cut() {
-    verify_approved_effect_removal(1, false);
+fn fitting_return_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
+    verify_effect_removal_with_hosted_successor(1, false);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_return_latency_reduction_keeps_the_original_native_endpoint() {
-    verify_approved_effect_removal(1, true);
+    verify_effect_removal_with_hosted_successor(1, true);
 }
 
-fn verify_approved_effect_removal(location: usize, trailing_limiter: bool) {
+fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter: bool) {
     use hex_lattice_contract::NativeDeviceMetadata;
 
     const QUANTUM: usize = 128;
@@ -485,62 +485,54 @@ fn verify_approved_effect_removal(location: usize, trailing_limiter: bool) {
             ..context()
         },
     );
-    let refused = f.control.fresh_runtime_receipt(revision).unwrap();
+    let receipt = f.control.fresh_runtime_receipt(revision).unwrap();
     let waiting_pcm = render(&mut f);
-    if trailing_limiter {
-        assert!(waiting_pcm.iter().all(|frame| *frame != [0.0; 2]));
-    } else {
-        check_block(waiting_pcm, 2);
-    }
-    assert_eq!(
-        refused.state(),
-        PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
-    );
     assert_eq!(f.control.status.recording_source(), Some(predecessor));
 
-    let consent = f.control.offer_device_insert_consent(&refused).unwrap();
-    f.control.reclaim();
-    let replacement = compile(&f, true);
-    let mut approved = None;
-    let revision = f
-        .control
-        .publish_confirmed_device_insert_with_receipt_on_control(
-            replacement,
-            consent,
-            |receipt| approved = Some(receipt.clone()),
-            |_| Ok::<_, ()>(()),
-        )
-        .unwrap();
-    let approved = approved.unwrap();
-    let position = f.control.status.position.load(Acquire);
-    let fade_out = render(&mut f);
-    if !trailing_limiter {
-        assert_eq!(
-            fade_out[0],
-            expected(3).map(|sample| sample * 127.0 / 128.0)
-        );
-    }
-    assert_eq!(fade_out[QUANTUM - 1], [0.0; 2]);
-    assert_eq!(
-        f.control.status.position.load(Acquire),
-        position + QUANTUM as u64
-    );
-    assert_eq!(f.control.status.recording_source(), Some(predecessor));
-    render(&mut f);
-    assert_eq!(approved.state(), PublicationReceiptState::Installed);
-    assert_eq!(
-        f.control.status.recording_source(),
-        Some(AppliedAudioSource {
-            context: consent.candidate_context(),
-            audio_revision: revision,
-            ..predecessor
-        })
-    );
-    assert_eq!(
-        f.control.status.position.load(Acquire),
-        position + (2 * QUANTUM) as u64
-    );
     if trailing_limiter {
+        assert!(waiting_pcm.iter().all(|frame| *frame != [0.0; 2]));
+        assert_eq!(
+            receipt.state(),
+            PublicationReceiptState::Refused(
+                PlaybackHandoffRejection::DeviceInsertNeedsConfirmation
+            )
+        );
+        let consent = f.control.offer_device_insert_consent(&receipt).unwrap();
+        f.control.reclaim();
+        let replacement = compile(&f, true);
+        let mut approved = None;
+        let revision = f
+            .control
+            .publish_confirmed_device_insert_with_receipt_on_control(
+                replacement,
+                consent,
+                |receipt| approved = Some(receipt.clone()),
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        let approved = approved.unwrap();
+        let position = f.control.status.position.load(Acquire);
+        let fade_out = render(&mut f);
+        assert_eq!(fade_out[QUANTUM - 1], [0.0; 2]);
+        assert_eq!(
+            f.control.status.position.load(Acquire),
+            position + QUANTUM as u64
+        );
+        assert_eq!(f.control.status.recording_source(), Some(predecessor));
+        render(&mut f);
+        assert_eq!(approved.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            f.control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: consent.candidate_context(),
+                audio_revision: revision,
+                ..predecessor
+            })
+        );
+        assert_eq!(
+            f.control.status.position.load(Acquire),
+            position + (2 * QUANTUM) as u64
+        );
         // The new delay layout refills its own PDC while the same worker
         // keeps completing exactly one signed quantum per callback.
         for _ in 0..3 {
@@ -548,7 +540,21 @@ fn verify_approved_effect_removal(location: usize, trailing_limiter: bool) {
         }
         check_block(render(&mut f), 8);
     } else {
-        check_block(render(&mut f), 5);
+        check_block(waiting_pcm, 2);
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        check_block(render(&mut f), 3);
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        assert_eq!(f.control.status.recording_source(), Some(predecessor));
+        check_block(render(&mut f), 4);
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            f.control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context: receipt.context().unwrap(),
+                audio_revision: revision,
+                ..predecessor
+            })
+        );
     }
 
     let OrdinaryFixture {
