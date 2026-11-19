@@ -834,6 +834,10 @@ impl AudioTransformPreparation {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
+        // This resource is a processing root, not destination output. Only the
+        // explicit Outer instance envelope is excluded; Legacy stays baked.
+        let processing = processing_root::unfaded_outer_edit(edit, tempo_map)?;
+        let edit = processing.as_ref();
         edit.domain
             .fade_clock
             .require_supported()
