@@ -63,8 +63,8 @@ impl ActiveView<'_> {
         )
     }
 
-    /// A fade can start only with the complete span protected. A cache miss
-    /// leaves no partial reservation on either domain. Capacity is terminal.
+    /// A fade starts with the complete span protected. A fitting miss may
+    /// request lookahead and leaves neither domain partly held. Capacity is terminal.
     pub(crate) fn reserve_outgoing_fade(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],

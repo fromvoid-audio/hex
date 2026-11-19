@@ -697,6 +697,26 @@ impl Endpoint {
         }
     }
 
+    /// Service one exact fade lookahead without evicting any page. A full
+    /// cache or another in-flight request leaves the work to normal demand.
+    pub(crate) fn prewarm_fade_extent(&mut self, extent: crate::StreamResourceExtent) -> bool {
+        if self.cache_count >= self.max_cached_pages {
+            return false;
+        }
+        let key = ResourcePageKey {
+            source: extent.source,
+            page_index: extent.page_index,
+        };
+        if self.prefetch_key == Some(key)
+            && self.ready_rx.peek().is_ok_and(|page| page.key == Some(key))
+        {
+            self.pump_ready(1);
+            return self.has_extent(extent);
+        }
+        self.prefetch(key);
+        false
+    }
+
     fn unpinned_victim_except(&self, keep: ResourcePageKey) -> Option<usize> {
         let mask = self.cache.len() - 1;
         for offset in 0..self.cache.len() {
@@ -1122,6 +1142,37 @@ mod tests {
         page.valid_frames = 1;
         page.frames[0] = [key.page_index as f32, -(key.page_index as f32)];
         page
+    }
+
+    #[test]
+    fn fade_lookahead_only_accepts_its_exact_reply_and_never_evicts() {
+        let mut test = endpoint(2, 4, 4);
+        let source = source();
+        let key = |page_index| PageKey { source, page_index };
+        let extent = |page_index| crate::StreamResourceExtent {
+            source: source.into(),
+            page_index,
+            start: 0,
+            end: 1,
+        };
+        assert!(test.endpoint.insert_ready(page(key(0))));
+        test.endpoint.replace_protection(1, &[extent(0)]);
+        assert!(!test.endpoint.prewarm_fade_extent(extent(1)));
+        assert_eq!(test.requests.pop().unwrap().0, key(1).into());
+        assert!(test.ready.push(page(key(1))).is_ok());
+        assert!(!test.endpoint.prewarm_fade_extent(extent(2)));
+        assert!(!test.endpoint.has_extent(extent(1)));
+        assert!(test.requests.pop().is_err());
+        assert!(test.endpoint.prewarm_fade_extent(extent(1)));
+        assert!(!test.endpoint.prewarm_fade_extent(extent(2)));
+        assert!(test.endpoint.has_extent(extent(0)));
+        assert!(test.requests.pop().is_err());
+        test.endpoint.reclaim_for_missing(1, 1);
+        assert!(test.endpoint.has_extent(extent(0)));
+        assert!(
+            !test.endpoint.has_extent(extent(1)),
+            "unclaimed lookahead stays evictable"
+        );
     }
 
     #[test]

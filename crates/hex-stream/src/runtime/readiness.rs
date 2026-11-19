@@ -285,46 +285,50 @@ impl PreparedReadiness {
         {
             return false;
         }
-        extents.iter().all(|extent| {
-            let frame_end = extent
-                .page_index
-                .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
-                .and_then(|start| start.checked_add(extent.end as u64));
-            let frame_start = extent
-                .page_index
-                .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
-                .and_then(|start| start.checked_add(extent.start as u64));
-            let metadata = match extent.source {
-                StreamResourceKey::Audio(key) => self
-                    .catalog
-                    .catalog
-                    .sources
-                    .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
-                    .ok()
-                    .and_then(|index| self.catalog.catalog.sources.get(index))
-                    .map(|source| (source.project_rate(), 0, source.playback_frames())),
-                StreamResourceKey::Scalar(key) => self
-                    .catalog
-                    .catalog
-                    .scalar_sources
-                    .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
-                    .ok()
-                    .and_then(|index| self.catalog.catalog.scalar_sources.get(index))
-                    .map(|source| {
-                        (
-                            source.project_rate(),
-                            source.start_frame(),
-                            source.end_frame(),
-                        )
-                    }),
-            };
-            metadata.is_some_and(|(rate, start, end)| {
-                extent.start < extent.end
-                    && extent.end <= hex_engine::STREAM_PAGE_FRAMES
-                    && rate == stamp.device_rate
-                    && frame_start.is_some_and(|value| value >= start)
-                    && frame_end.is_some_and(|value| value <= end)
-            })
+        extents
+            .iter()
+            .all(|extent| self.catalog_covers_extent(extent, Some(stamp.device_rate)))
+    }
+
+    fn catalog_covers_extent(&self, extent: StreamResourceExtent, rate: Option<u32>) -> bool {
+        let frame_end = extent
+            .page_index
+            .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
+            .and_then(|start| start.checked_add(extent.end as u64));
+        let frame_start = extent
+            .page_index
+            .checked_mul(hex_engine::STREAM_PAGE_FRAMES as u64)
+            .and_then(|start| start.checked_add(extent.start as u64));
+        let metadata = match extent.source {
+            StreamResourceKey::Audio(key) => self
+                .catalog
+                .catalog
+                .sources
+                .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+                .ok()
+                .and_then(|index| self.catalog.catalog.sources.get(index))
+                .map(|source| (source.project_rate(), 0, source.playback_frames())),
+            StreamResourceKey::Scalar(key) => self
+                .catalog
+                .catalog
+                .scalar_sources
+                .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                .ok()
+                .and_then(|index| self.catalog.catalog.scalar_sources.get(index))
+                .map(|source| {
+                    (
+                        source.project_rate(),
+                        source.start_frame(),
+                        source.end_frame(),
+                    )
+                }),
+        };
+        metadata.is_some_and(|(source_rate, start, end)| {
+            extent.start < extent.end
+                && extent.end <= hex_engine::STREAM_PAGE_FRAMES
+                && rate.is_none_or(|rate| source_rate == rate)
+                && frame_start.is_some_and(|value| value >= start)
+                && frame_end.is_some_and(|value| value <= end)
         })
     }
     /// Count distinct pages among retained protections and outstanding intents,
@@ -631,13 +635,32 @@ impl ConstructorPageLoan {
     }
 
     /// Retain the complete already-resident outgoing span through its fade.
-    /// Its lifetime is independent of current windows and role promotions.
+    /// A fitting cold span can prewarm one missing page in spare cache space.
+    /// Only a complete revalidated span acquires a hold.
     pub fn reserve_outgoing_fade(
         &mut self,
         extents: &[StreamResourceExtent],
     ) -> Result<RenderPageReservation, RenderPageRefusal> {
-        self.reserve_render_pages(RenderPageKind::OutgoingFade, extents, false)
-            .map(|(reservation, _)| reservation)
+        let reserve = |loan: &mut Self| {
+            loan.reserve_render_pages(RenderPageKind::OutgoingFade, extents, false)
+                .map(|(reservation, _)| reservation)
+        };
+        let result = reserve(self);
+        if matches!(result, Err(RenderPageRefusal::NotResident))
+            && let Some(&missing) = extents
+                .iter()
+                .find(|&&extent| !self.pages.endpoint.has_extent(extent))
+        {
+            if !self.readiness.catalog_covers_extent(missing, None) {
+                return Err(RenderPageRefusal::InvalidExtents);
+            }
+            // Looking ahead does not pin an incomplete span. If its exact
+            // reply is ready, recheck the entire projection before admitting.
+            if self.pages.endpoint.prewarm_fade_extent(missing) {
+                return reserve(self);
+            }
+        }
+        result
     }
 
     fn reserve_render_pages(
