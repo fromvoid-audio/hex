@@ -2307,8 +2307,12 @@ impl Playback {
         &mut self,
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
-        confirmed_insert: bool,
+        handoff: crate::audio_candidate::CandidateHandoff<'_>,
     ) -> Result<(), PlaybackHandoffError> {
+        let confirmed_insert = matches!(
+            handoff,
+            crate::audio_candidate::CandidateHandoff::ApprovedInsert
+        );
         if confirmed_insert && !previous.device_insert_held()
             || !confirmed_insert && previous.device_insert_cut_pending()
         {
@@ -2322,7 +2326,7 @@ impl Playback {
             .session_runtime
             .as_mut()
             .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
-        next.inherit_candidate_groups(old, groups, confirmed_insert)
+        next.inherit_candidate_groups(old, groups, handoff)
             .map_err(PlaybackHandoffError::Session)?;
         self.inherit_metronome(previous);
         if confirmed_insert {
@@ -3275,31 +3279,33 @@ impl Playback {
         )
         .map_err(PlaybackHandoffError::Session)
     }
-    pub(crate) fn forecast_ordinary_tempo_cut(
+    pub(crate) fn forecast_tempo_cut(
         &self,
         previous: &Self,
         maximum_frames: usize,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
         anchor: &crate::session_playback::PreparedTempoAnchor,
+        claimed: Option<crate::session_playback::ClaimedTempoPair>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_ref().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_ref().ok_or_else(invalid)?;
-        next.forecast_ordinary_tempo_cut(old, maximum_frames, visit, anchor)
+        next.forecast_tempo_cut(old, maximum_frames, visit, anchor, claimed)
             .map_err(PlaybackHandoffError::Session)
     }
 
-    pub(crate) fn preview_ordinary_tempo_cut(
+    pub(crate) fn preview_tempo_cut(
         &mut self,
         previous: &mut Self,
         maximum_frames: usize,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
         anchor: &crate::session_playback::PreparedTempoAnchor,
+        claimed: Option<crate::session_playback::ClaimedTempoPair>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
-        next.preview_ordinary_tempo_cut(old, maximum_frames, visit, anchor)
+        next.preview_tempo_cut(old, maximum_frames, visit, anchor, claimed)
             .map_err(PlaybackHandoffError::Session)
     }
 

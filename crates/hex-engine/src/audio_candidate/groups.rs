@@ -707,6 +707,229 @@ mod tests {
         assert!(resumed.main_output_latency_frames > 0);
     }
 
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    ))]
+    #[test]
+    fn claimed_streamed_tempo_cut_preserves_pcm_and_original_retirement() {
+        assert!(crate::audio_storage_constructor_layout_supported());
+        const FRAMES: usize = 2048;
+        const LOOP: usize = 128;
+        let fixture = crate::signal_graph::tests::fixture(&[&[]], FRAMES);
+        let asset = fixture.editor.project().assets().next().unwrap().id();
+        let key = crate::StreamSourceKey::new(11, asset);
+        struct Pages(crate::StreamSourceKey, Vec<crate::Frame>);
+        impl crate::MediaPages for Pages {
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+                panic!("the only source page is present");
+            }
+            fn page(
+                &mut self,
+                key: crate::StreamSourceKey,
+                page_index: u64,
+            ) -> Option<crate::BorrowedMediaPage<'_>> {
+                (key == self.0 && page_index == 0).then_some(crate::BorrowedMediaPage {
+                    page_index,
+                    frames: &self.1,
+                })
+            }
+        }
+        let mut pages = Pages(key, vec![[0.25, -0.1]; FRAMES]);
+        let stream_owner = |project: &hex_project::Project| {
+            let metadata = crate::StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                FRAMES as u64,
+                FRAMES as u64,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap();
+            owner_with_source(
+                project,
+                OwnedAudioSource::try_streamed(metadata).ok().unwrap(),
+            )
+        };
+        let mut editor = fixture.editor;
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: LOOP as u64,
+                enabled: true,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: crate::default_native_device_state_for_class(
+                    crate::NativeDeviceClass::Effect,
+                    crate::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let (mut old, old_anchors, _, _) = stream_owner(editor.project());
+        let latency = old.status().unwrap().main_output_latency_frames;
+        assert!(latency > 0);
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let (mut next, next_anchors, _, _) = stream_owner(editor.project());
+        old.apply_action(crate::PlaybackAction::Transport(
+            crate::PlaybackCommand::Play,
+        ))
+        .unwrap();
+        let mut warm = [[0.0; 2]; LOOP];
+        for _ in 0..latency.div_ceil(LOOP as u32) + 2 {
+            old.stream_playback()
+                .render_with_pages_and_signal_observers(&mut warm, &mut pages, None, None)
+                .unwrap();
+        }
+        let before = old.status().unwrap();
+        assert_eq!(before.position, 0);
+        assert!(
+            warm.iter().any(|frame| frame[0].abs() > 0.01),
+            "lost predecessor PCM before the edit"
+        );
+        let due = before.performance_frame + LOOP as u64 + 3;
+        let anchor = old_anchors
+            .prepare_tempo_successor_on_control(
+                &next_anchors,
+                before.position,
+                before.performance_frame,
+                before.arrangement_loop_state.unwrap(),
+                due,
+            )
+            .unwrap();
+        let (mut other, other_anchors, _, _) = stream_owner(editor.project());
+        assert!(
+            other
+                .stream_playback()
+                .forecast_tempo_cut(
+                    &mut old.stream_playback(),
+                    2,
+                    &mut |_| panic!("separately constructed successor requested pages"),
+                    &anchor,
+                )
+                .is_err()
+        );
+        let mut forecast_extents = Vec::new();
+        let forecast = next
+            .stream_playback()
+            .forecast_tempo_cut(
+                &mut old.stream_playback(),
+                2,
+                &mut |extent| {
+                    forecast_extents.push(extent);
+                    Ok(())
+                },
+                &anchor,
+            )
+            .unwrap();
+        assert!(!forecast_extents.is_empty());
+        assert!(
+            next.stream_playback()
+                .preview_tempo_cut(
+                    &mut old.stream_playback(),
+                    2,
+                    &mut |_| panic!("early cut requested pages"),
+                    &anchor,
+                )
+                .is_err()
+        );
+        let predecessor_id = old.identity();
+        let mut previous = Some(old);
+        let mut retired = None;
+        let mut manifest = None;
+        assert!(
+            next.try_inherit_and_retire_at_tempo_cut(
+                &mut previous,
+                &mut retired,
+                &mut manifest,
+                &anchor,
+            )
+            .is_err(),
+            "an early tempo cut must leave the donor installed"
+        );
+        assert!(retired.is_none() && manifest.is_none());
+        let old = previous.as_mut().unwrap();
+        assert_eq!(old.status(), Some(before));
+        let mut prefix = [[0.0; 2]; LOOP + 3];
+        old.stream_playback()
+            .render_with_pages_and_signal_observers(&mut prefix, &mut pages, None, None)
+            .unwrap();
+        let exact_status = old.status().unwrap();
+        assert_eq!(exact_status.performance_frame, due);
+        assert_eq!(exact_status.position, 3);
+        let mut exact_extents = Vec::new();
+        let exact = next
+            .stream_playback()
+            .preview_tempo_cut(
+                &mut old.stream_playback(),
+                2,
+                &mut |extent| {
+                    exact_extents.push(extent);
+                    Ok(())
+                },
+                &anchor,
+            )
+            .unwrap();
+        assert_eq!(exact, forecast);
+        assert_eq!(exact_extents, forecast_extents);
+        assert_eq!(exact.arrangement_frame, 6);
+        next.try_inherit_and_retire_at_tempo_cut(
+            &mut previous,
+            &mut retired,
+            &mut manifest,
+            &anchor,
+        )
+        .unwrap();
+        assert!(previous.is_none());
+        let manifest = manifest.unwrap();
+        assert_eq!(manifest.predecessor(), predecessor_id);
+        assert_eq!(manifest.successor(), next.identity());
+        let resumed = next.status().unwrap();
+        assert!(resumed.playing);
+        assert_eq!((resumed.position, resumed.performance_frame), (6, due));
+        assert_eq!(resumed.main_output_latency_frames, latency);
+        let mut suffix = [[0.0; 2]; 2];
+        next.stream_playback()
+            .render_with_pages_and_signal_observers(&mut suffix, &mut pages, None, None)
+            .unwrap();
+        assert_eq!(suffix, prefix[LOOP + 1..]);
+
+        let mut anchors = [Some(old_anchors), Some(next_anchors), Some(other_anchors)];
+        let mut retired = retired.unwrap();
+        assert_eq!(retired.identity(), predecessor_id);
+        assert!(retired.status().is_none());
+        retired
+            .dispose_on_control()
+            .unwrap()
+            .record_anchor_cells_on_control(&mut anchors)
+            .unwrap();
+        next.dispose_on_control()
+            .unwrap()
+            .record_anchor_cells_on_control(&mut anchors)
+            .unwrap();
+        other
+            .dispose_on_control()
+            .unwrap()
+            .record_anchor_cells_on_control(&mut anchors)
+            .unwrap();
+        for anchor in anchors.iter_mut().flatten() {
+            assert!(anchor.all_origins_closed());
+            anchor.finish_disposal_on_control().unwrap();
+            anchor.dispose_original_inputs_on_control().unwrap();
+        }
+        // The plan can outlive both archives without keeping a Weak owner in
+        // either prepared allocation's exclusive reclamation path.
+        drop(anchor);
+    }
+
     #[test]
     fn real_utility_chains_fan_out_by_actual_tail_lifetime_not_history_copy() {
         if !crate::audio_storage_constructor_layout_supported() {

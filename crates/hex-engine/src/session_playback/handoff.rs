@@ -33,22 +33,34 @@ fn direct_return_tail_graph(graph: &crate::signal_graph::SignalGraph) -> bool {
 
 /// A control-prepared, source-bound tempo edit at one exact running cut.
 ///
-/// Weak identities keep the two Arc allocations from being reused, but do not
-/// keep revision contents alive. Their allocations and this token need bounded
-/// custody and control-side reclamation; borrowing transfers no ownership.
-/// Callers retain the actual revisions independently: if the constructor's
-/// arguments are their last strong handles, those revisions expire on return.
+/// Ordinary plans use weak allocation identities. Constructor plans use the
+/// original constructor incarnations so they do not retain prepared-root
+/// handles past graph disposal. Callers retain the actual revisions separately.
 /// This does not authorize publication or validate host commands, routes,
 /// output faults, or cancellation. The loop-aware constructor binds a
 /// canonical loop state; transient section loops remain unsupported.
 #[derive(Debug)]
 pub struct PreparedTempoAnchor {
-    previous: Weak<PreparedRevision>,
-    candidate: Weak<PreparedRevision>,
+    revisions: TempoRevisions,
     arrangement_frame: u64,
     performance_frame: u64,
     loop_state: Option<ArrangementLoopState>,
     mapped_cut: (u64, u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ClaimedTempoPair {
+    pub(crate) previous: crate::AudioCandidateIdentity,
+    pub(crate) candidate: crate::AudioCandidateIdentity,
+}
+
+#[derive(Debug)]
+enum TempoRevisions {
+    Ordinary {
+        previous: Weak<PreparedRevision>,
+        candidate: Weak<PreparedRevision>,
+    },
+    Claimed(ClaimedTempoPair),
 }
 
 impl PreparedTempoAnchor {
@@ -59,8 +71,33 @@ impl PreparedTempoAnchor {
         previous: &Arc<PreparedRevision>,
         candidate: &Arc<PreparedRevision>,
     ) -> bool {
-        std::ptr::eq(Arc::as_ptr(previous), self.previous.as_ptr())
-            && std::ptr::eq(Arc::as_ptr(candidate), self.candidate.as_ptr())
+        matches!(
+            &self.revisions,
+            TempoRevisions::Ordinary { previous: old, candidate: new }
+                if std::ptr::eq(Arc::as_ptr(previous), old.as_ptr())
+                    && std::ptr::eq(Arc::as_ptr(candidate), new.as_ptr())
+        )
+    }
+
+    pub(crate) fn bind_claimed_pair(mut self, pair: ClaimedTempoPair) -> Self {
+        // Actual constructor identities are unique and survive handoff.
+        // Leave no Weak handles to obstruct exclusive prepared-root disposal.
+        self.revisions = TempoRevisions::Claimed(pair);
+        self
+    }
+
+    fn matches_tempo_source(
+        &self,
+        previous: &Arc<PreparedRevision>,
+        candidate: &Arc<PreparedRevision>,
+        claimed: Option<ClaimedTempoPair>,
+    ) -> bool {
+        match claimed {
+            Some(pair) => {
+                matches!(self.revisions, TempoRevisions::Claimed(expected) if expected == pair)
+            }
+            None => self.matches_revisions(previous, candidate),
+        }
     }
 
     /// Compute both tempo conversions on control for the named future cut.
@@ -181,8 +218,10 @@ impl PreparedTempoAnchor {
             candidate_loop,
         )?;
         Ok(Self {
-            previous: Arc::downgrade(&previous),
-            candidate: Arc::downgrade(&candidate),
+            revisions: TempoRevisions::Ordinary {
+                previous: Arc::downgrade(&previous),
+                candidate: Arc::downgrade(&candidate),
+            },
             arrangement_frame,
             performance_frame,
             loop_state,
@@ -484,7 +523,7 @@ impl SessionPlayback {
         previous: &mut Self,
         anchor: &PreparedTempoAnchor,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.validate_tempo_cut(previous, anchor)?;
+        self.validate_tempo_cut(previous, anchor, None)?;
         self.require_fresh_candidate()?;
         self.inherit_state_planned_with_anchor(
             previous,
@@ -497,24 +536,27 @@ impl SessionPlayback {
             false,
         )
     }
-    /// Project the first ordinary Arrangement page window, without assuming
+    /// Project the first Arrangement page window, without assuming
     /// the donor will arrive or that this forecast includes its future tails.
     /// The actual cut must plan from the live donor before using these pages.
-    pub(crate) fn forecast_ordinary_tempo_cut(
+    pub(crate) fn forecast_tempo_cut(
         &self,
         previous: &Self,
         maximum_frames: usize,
         visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
         anchor: &PreparedTempoAnchor,
+        claimed: Option<ClaimedTempoPair>,
     ) -> Result<crate::StreamChunkWindow, SessionPlaybackError> {
         self.require_fresh_candidate()?;
-        if !anchor.matches_revisions(&previous.revision, &self.revision)
+        let ordinary = claimed.is_none();
+        if !anchor.matches_tempo_source(&previous.revision, &self.revision, claimed)
             || !previous.playing
             || previous.performance_frame >= anchor.performance_frame
             || previous.transient_loop.is_some()
             || self.transient_loop.is_some()
             || self.revision.scalar_automation.is_some()
             || previous.revision.scalar_automation.is_some()
+            || !ordinary && !previous.supports_closed_stream_demand()
             || self
                 .routes
                 .iter()
@@ -524,7 +566,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.visit_stream_chunk_with_history(
-            true,
+            ordinary,
             &self.routes,
             anchor.performance_frame,
             anchor.mapped_cut.0,
@@ -542,11 +584,11 @@ impl SessionPlayback {
         &self,
         previous: &Self,
         anchor: &PreparedTempoAnchor,
+        claimed: Option<ClaimedTempoPair>,
     ) -> Result<(), SessionPlaybackError> {
-        // The weak handles keep allocation identities reserved even after a
-        // graph expires. The two runtimes already own their live revisions;
-        // pointer comparison neither upgrades nor drops a graph on callback.
-        if !anchor.matches_revisions(&previous.revision, &self.revision)
+        // The live runtimes retain their own graphs. Validation neither
+        // upgrades a weak handle nor drops an owner on the callback.
+        if !anchor.matches_tempo_source(&previous.revision, &self.revision, claimed)
             || !previous.playing
             || previous.arrangement_frame != anchor.arrangement_frame
             || previous.performance_frame != anchor.performance_frame
@@ -870,7 +912,7 @@ impl SessionPlayback {
             }
             return self.inherit_state_planned_once(
                 previous,
-                None,
+                groups,
                 demand,
                 Restart::None,
                 None,

@@ -2755,7 +2755,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
-        confirmed_insert: bool,
+        handoff: crate::audio_candidate::CandidateHandoff<'_>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.midi_capture_active()
             || previous.midi_capture_active()
@@ -2767,10 +2767,30 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        if confirmed_insert {
-            self.inherit_state_at_device_insert_cut(previous, Some(groups), None)
-        } else {
-            self.inherit_state_live(previous, Some(groups))
+        use crate::audio_candidate::CandidateHandoff;
+        match handoff {
+            CandidateHandoff::Ordinary => self.inherit_state_live(previous, Some(groups)),
+            CandidateHandoff::ApprovedInsert => {
+                self.inherit_state_at_device_insert_cut(previous, Some(groups), None)
+            }
+            CandidateHandoff::Tempo(anchor, pair) => {
+                if !self.supports_closed_stream_demand()
+                    || !previous.supports_closed_stream_demand()
+                {
+                    return Err(SessionPlaybackError::InvalidCommand);
+                }
+                self.validate_tempo_cut(previous, anchor, Some(pair))?;
+                self.inherit_state_planned_with_anchor(
+                    previous,
+                    Some(groups),
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(anchor),
+                    false,
+                )
+            }
         }
     }
 
@@ -2878,6 +2898,7 @@ mod clip_gain;
 mod commands;
 mod current_sampler_routes;
 mod handoff;
+pub(crate) use handoff::ClaimedTempoPair;
 pub use handoff::PreparedTempoAnchor;
 mod harmonic_import;
 mod paused_track_monitor;

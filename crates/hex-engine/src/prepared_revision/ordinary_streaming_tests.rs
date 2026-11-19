@@ -2067,17 +2067,15 @@ fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
         )
         .unwrap();
         let mut demanded = Vec::new();
-        let premature = next
-            .stream_playback(new_context)
-            .preview_ordinary_tempo_cut(
-                &mut old.stream_playback(old_context),
-                partition,
-                &mut |extent| {
-                    demanded.push(extent);
-                    Ok(())
-                },
-                &anchor,
-            );
+        let premature = next.stream_playback(new_context).preview_tempo_cut(
+            &mut old.stream_playback(old_context),
+            partition,
+            &mut |extent| {
+                demanded.push(extent);
+                Ok(())
+            },
+            &anchor,
+        );
         assert!(
             premature.is_err(),
             "an early preview cannot reserve the cut's pages"
@@ -2087,8 +2085,8 @@ fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
         let mut forecasted = Vec::new();
         let forecast = next
             .stream_playback(new_context)
-            .forecast_ordinary_tempo_cut(
-                &old.stream_playback(old_context),
+            .forecast_tempo_cut(
+                &mut old.stream_playback(old_context),
                 partition,
                 &mut |extent| {
                     forecasted.push(extent);
@@ -2135,7 +2133,7 @@ fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
         assert!(
             different
                 .stream_playback(new_context)
-                .preview_ordinary_tempo_cut(
+                .preview_tempo_cut(
                     &mut old.stream_playback(old_context),
                     partition,
                     &mut |_| panic!("wrong candidate"),
@@ -2145,7 +2143,7 @@ fn ordinary_tempo_cut_previews_the_committed_stream_pages_after_a_loop_wrap() {
         );
         let preview = next
             .stream_playback(new_context)
-            .preview_ordinary_tempo_cut(
+            .preview_tempo_cut(
                 &mut old.stream_playback(old_context),
                 partition,
                 &mut |extent| {

@@ -256,20 +256,21 @@ impl SessionPlayback {
         )
     }
 
-    pub(crate) fn preview_ordinary_tempo_cut(
+    pub(crate) fn preview_tempo_cut(
         &mut self,
         previous: &mut Self,
         maximum_frames: usize,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         anchor: &handoff::PreparedTempoAnchor,
+        claimed: Option<handoff::ClaimedTempoPair>,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
-        self.validate_tempo_cut(previous, anchor)?;
+        self.validate_tempo_cut(previous, anchor, claimed)?;
         self.preview_stream_handoff_plan(
             previous,
             maximum_frames,
             None,
             visit,
-            true,
+            claimed.is_none(),
             false,
             None,
             Some(anchor),
