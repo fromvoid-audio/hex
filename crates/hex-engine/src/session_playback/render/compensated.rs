@@ -26,6 +26,40 @@ pub(super) struct BatchedSources<'a> {
     pub(super) main: Option<Frame>,
 }
 
+pub(super) fn add_main_track(main: &mut [Frame], track: &[Frame]) {
+    for (mixed, sample) in main.iter_mut().zip(track) {
+        mixed[0] += sample[0];
+        mixed[1] += sample[1];
+    }
+}
+
+fn resident_return_track_taps(
+    track: &crate::Track,
+    mut frame: Frame,
+    route: ResidentRoute,
+    metering: bool,
+) -> Frame {
+    // Unity scratch already preserves both tap magnitudes. Other tracks
+    // retain their raw scratch so each tap can observe its own gain stage.
+    if route != ResidentRoute::Unity {
+        frame[0] += 0.0;
+        frame[1] += 0.0;
+        track.apply_instrument_input_gain(std::slice::from_mut(&mut frame));
+    }
+    if metering {
+        track.instrument_meter.observe_input(&[frame]);
+    }
+    if route != ResidentRoute::Unity {
+        frame[0] += 0.0;
+        frame[1] += 0.0;
+        track.apply_instrument_output_gain(std::slice::from_mut(&mut frame));
+    }
+    if metering {
+        track.instrument_meter.observe_output(&[frame]);
+    }
+    frame
+}
+
 impl SessionPlayback {
     /// Identify resident tracks whose local processing is a pure pass-through;
     /// raw samples stay in scratch so meter observations remain per frame.
@@ -178,12 +212,7 @@ impl SessionPlayback {
                         if routes[index] == ResidentRoute::Passthrough {
                             // Match the per-frame input/output taps below exactly;
                             // the original raw sample remains for meter publication.
-                            value[0] += 0.0;
-                            value[1] += 0.0;
-                            track.apply_instrument_input_gain(std::slice::from_mut(&mut value));
-                            value[0] += 0.0;
-                            value[1] += 0.0;
-                            track.apply_instrument_output_gain(std::slice::from_mut(&mut value));
+                            value = resident_return_track_taps(track, value, routes[index], false);
                             value = mix.apply_frame(value);
                         }
                         output[0] += value[0] * send.gain;
@@ -194,6 +223,51 @@ impl SessionPlayback {
             }
         }
         true
+    }
+
+    /// After independent sends are prepared, advance each track's dry Main
+    /// edge in sample order. The wet Return processors still run per frame.
+    /// Keep the undelayed source scratch for the original per-frame meters.
+    pub(super) fn prepare_resident_return_main(
+        &mut self,
+        main: &mut [Frame],
+        routes: &[ResidentRoute; MAX_TRACKS],
+    ) -> Result<(), SessionPlaybackError> {
+        let compensation = self
+            .compensation
+            .as_mut()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let mut aligned = [[0.0; 2]; 256];
+        let aligned = &mut aligned[..main.len()];
+        for (index, (samples, &route)) in
+            self.resident_source_scratch.iter().zip(routes).enumerate()
+        {
+            let crate::signal_graph::TrackOutput::Main { edge } =
+                compensation.graph.tracks[index].output
+            else {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            };
+            let work_start = self.render_work.track(index);
+            let samples = &samples[..aligned.len()];
+            if route == ResidentRoute::Unity {
+                aligned.copy_from_slice(samples);
+            } else {
+                let track = &self.revision.arrangement().tracks()[index];
+                let mix = track
+                    .mix()
+                    .with_channel_gain(self.track_fader_scratch[index].current());
+                for (output, &sample) in aligned.iter_mut().zip(samples) {
+                    *output =
+                        mix.apply_frame(resident_return_track_taps(track, sample, route, false));
+                }
+            }
+            compensation
+                .edge_block(edge, aligned)
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            add_main_track(main, aligned);
+            self.render_work.finish(work_start);
+        }
+        Ok(())
     }
 
     /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
@@ -806,12 +880,14 @@ impl SessionPlayback {
             .as_mut()
             .ok_or(SessionPlaybackError::DeviceRuntime)?;
         let batched_main = resident_source.and_then(|batch| batch.main);
-        let owner_count = if batched_main.is_some() {
-            0
-        } else {
+        if batched_main.is_none() {
             compensation.inputs.fill([0.0; 2]);
             compensation.main.fill([0.0; 2]);
+        }
+        let owner_count = if batched_main.is_none() || batched_sends {
             compensation.graph.owner_order.len()
+        } else {
+            0
         };
         for order in 0..owner_count {
             let owner = self
@@ -823,6 +899,19 @@ impl SessionPlayback {
             match owner {
                 crate::signal_graph::Owner::Track(index) => {
                     let track = &self.revision.arrangement().tracks()[index];
+                    if let Some(batch) = resident_source.filter(|batch| batch.main.is_some()) {
+                        if self.device_metering {
+                            let work_start = self.render_work.track(index);
+                            resident_return_track_taps(
+                                track,
+                                self.resident_source_scratch[index][batch.index],
+                                batch.passthrough[index],
+                                true,
+                            );
+                            self.render_work.finish(work_start);
+                        }
+                        continue;
+                    }
                     let route = self.route_scratch[index];
                     // The aligned owner was already timed with its batch.
                     if let Some(batch) = resident_source.filter(|batch| batch.aligned[index]) {
@@ -845,26 +934,16 @@ impl SessionPlayback {
                     let mixed = if let Some(batch) = resident_source
                         .filter(|batch| batch.passthrough[index] != ResidentRoute::Scalar)
                     {
-                        let mut frame = self.resident_source_scratch[index][batch.index];
-                        if batch.passthrough[index] == ResidentRoute::Unity {
-                            if self.device_metering {
-                                track.instrument_meter.observe_input(&[frame]);
-                                track.instrument_meter.observe_output(&[frame]);
-                            }
+                        let route = batch.passthrough[index];
+                        let frame = resident_return_track_taps(
+                            track,
+                            self.resident_source_scratch[index][batch.index],
+                            route,
+                            self.device_metering,
+                        );
+                        if route == ResidentRoute::Unity {
                             frame
                         } else {
-                            frame[0] += 0.0;
-                            frame[1] += 0.0;
-                            track.apply_instrument_input_gain(std::slice::from_mut(&mut frame));
-                            if self.device_metering {
-                                track.instrument_meter.observe_input(&[frame]);
-                            }
-                            frame[0] += 0.0;
-                            frame[1] += 0.0;
-                            track.apply_instrument_output_gain(std::slice::from_mut(&mut frame));
-                            if self.device_metering {
-                                track.instrument_meter.observe_output(&[frame]);
-                            }
                             // The current stamp was just pushed. Admission proves
                             // zero fader arrival, no gain automation and no group
                             // mute, so its mix is exactly the static track mix.
@@ -1565,6 +1644,10 @@ mod tests {
         } else {
             fixture(&[&[]], 1024)
         };
+        f.samples[512..].fill([0.0625, -0.125]);
+        for audio in f.media.values_mut() {
+            *audio = crate::Audio::new(48_000, f.samples.clone()).unwrap();
+        }
         let mut snapshot = f.editor.project().snapshot();
         for track in &mut snapshot.tracks {
             track.gain = gain;
@@ -1625,16 +1708,16 @@ mod tests {
         } else {
             None
         };
-        let revision = Arc::new(
-            PreparedRevision::prepare(
-                f.editor.project(),
-                &f.media,
-                Arc::new(crate::SineTable::new()),
-                None,
-            )
-            .unwrap(),
-        );
-        let create_runtime = |revision| {
+        let create_runtime = || {
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    f.editor.project(),
+                    &f.media,
+                    Arc::new(crate::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
             if session {
                 SessionPlayback::new(revision)
             } else {
@@ -1642,8 +1725,9 @@ mod tests {
             }
             .unwrap()
         };
-        let mut actual = create_runtime(Arc::clone(&revision));
-        let mut scalar = create_runtime(revision);
+        // Each runtime has its own meter endpoints for independent readings.
+        let mut actual = create_runtime();
+        let mut scalar = create_runtime();
         scalar.resident_source_scratch.clear();
         for runtime in [&mut actual, &mut scalar] {
             runtime.set_device_metering(true);
@@ -1733,6 +1817,36 @@ mod tests {
             (actual.performance_frame(), actual.arrangement_frame()),
             position
         );
+        assert_eq!(
+            capture(&mut actual, actual_plan.as_ref()),
+            capture(&mut scalar, scalar_plan.as_ref())
+        );
+        for runtime in [&actual, &scalar] {
+            for track in runtime.revision.arrangement().tracks() {
+                track.instrument_meter.take_peaks();
+            }
+        }
+        for count in [129, 257] {
+            let mut output = [[0.0; 2]; 257];
+            let mut expected = output;
+            actual.render(&mut output[..count]).unwrap();
+            scalar.render(&mut expected[..count]).unwrap();
+            assert!(expected[..count].iter().any(|frame| *frame != [0.0; 2]));
+            for (actual, expected) in output[..count].iter().zip(&expected[..count]) {
+                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            }
+            for (track, reference) in actual
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .zip(scalar.revision.arrangement().tracks())
+            {
+                let peaks = track.instrument_meter.take_peaks();
+                assert!(peaks.input > 0.0);
+                assert_eq!(peaks, reference.instrument_meter.take_peaks());
+            }
+        }
         assert_eq!(
             capture(&mut actual, actual_plan.as_ref()),
             capture(&mut scalar, scalar_plan.as_ref())

@@ -1271,26 +1271,6 @@ impl SessionPlayback {
                     projected_history.map(|frames| (&stamps[..count], frames)),
                     &mut aligned,
                 )?;
-                // An entirely aligned window has no upstream consumers or
-                // Return buses. Sum those PCM blocks in the same track order
-                // as the frame loop, including the existing output value.
-                // Capture still needs the individual per-frame track taps.
-                main_is_batched = count > 1
-                    && capture.is_none()
-                    && !self.route_scratch.is_empty()
-                    && aligned[..self.route_scratch.len()]
-                        .iter()
-                        .all(|ready| *ready);
-                if main_is_batched {
-                    let main = &mut aligned_main[..count];
-                    main.copy_from_slice(&output[output_offset..output_offset + count]);
-                    for track in &self.resident_source_scratch {
-                        for (mixed, sample) in main.iter_mut().zip(track) {
-                            mixed[0] += sample[0];
-                            mixed[1] += sample[1];
-                        }
-                    }
-                }
                 passthrough.fill(compensated::ResidentRoute::Scalar);
                 if observer.is_none()
                     && scalar.is_none()
@@ -1313,6 +1293,27 @@ impl SessionPlayback {
                 }
                 self.prepare_unity_faders(count, &mut passthrough, &aligned);
                 batched_sends = self.prepare_resident_return_sends(count, &passthrough);
+                // Capture still needs individual per-frame track taps.
+                // A fully aligned flat graph, or the independent Return
+                // send path, can sum track PCM in Main order ahead of time.
+                main_is_batched = count > 1
+                    && capture.is_none()
+                    && !self.route_scratch.is_empty()
+                    && (batched_sends
+                        || aligned[..self.route_scratch.len()]
+                            .iter()
+                            .all(|ready| *ready));
+                if main_is_batched {
+                    let main = &mut aligned_main[..count];
+                    main.copy_from_slice(&output[output_offset..output_offset + count]);
+                    if batched_sends {
+                        self.prepare_resident_return_main(main, &passthrough)?;
+                    } else {
+                        for track in &self.resident_source_scratch {
+                            compensated::add_main_track(main, track);
+                        }
+                    }
+                }
                 resident_source_index = 0;
                 resident_source_end = count;
             }

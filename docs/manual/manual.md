@@ -880,11 +880,12 @@ header drops accept an instrument only when its device chain is empty; an
 occupied instrument slot is preserved. a device that looks familiar
 does not imply complete compatibility with another application's device.
 
-adding a latency-producing effect can require a fresh playback graph. for an
-audio-only arrangement without active console launches or recording, hex may
-briefly stop, rebuild and resume at the current position; effect tails reset.
-if the current performance cannot be rebuilt safely, press **escape** to stop
-and restore the current project sound before playing again.
+during playback, a supported device insert stays pending until the audio graph
+installs it. hex inserts the device while playback continues when it can keep
+the audio continuous. when the insertion can interrupt playback, hex asks.
+choose **cancel** to keep the current chain playing. choose **proceed** to fade
+out briefly, install the device and resume from the same position. held notes
+and effect tails may reset after a confirmed interruption.
 
 click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
