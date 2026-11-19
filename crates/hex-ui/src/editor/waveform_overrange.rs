@@ -4,7 +4,9 @@
 //! paint, submits finite requests without waiting and drains replies on control.
 //! Replacing a clip request cancels older work in bounded chunks; the result
 //! identity also prevents an already-completed stale reply from being installed.
-use super::{waveform_frame, waveform_source::bounded_clip_overrange};
+use super::{
+    waveform_frame, waveform_prepared_fade::PreparedFade, waveform_source::bounded_clip_overrange,
+};
 use hex_project::{Clip, ClipFade};
 use hex_session::CachedOverrange as Overrange;
 use hex_session::CachedWaveform;
@@ -46,6 +48,7 @@ pub(super) enum Mapping {
         fade: Option<ClipFade>,
     },
     Frame(Arc<waveform_frame::Projection>, waveform_frame::Clock),
+    PreparedFade(PreparedFade),
 }
 
 pub(super) struct Job {
@@ -214,7 +217,7 @@ fn calculate(job: Job) -> Option<Reply> {
             frame_query = projection.query();
             frame_query.as_ref().and_then(|query| clock.resolve(query))
         }
-        Mapping::Clip { .. } => None,
+        Mapping::Clip { .. } | Mapping::PreparedFade(_) => None,
     };
     let mut budget = MAX_FRAMES;
     for column in request.columns {
@@ -250,6 +253,9 @@ fn calculate(job: Job) -> Option<Reply> {
                     *fade,
                     CHUNK_FRAMES as usize,
                 ),
+                Mapping::PreparedFade(fade) => {
+                    fade.overrange(&request.waveform, start..end, CHUNK_FRAMES as usize)
+                }
                 Mapping::Frame(..) => frame.as_ref().and_then(|frame| {
                     waveform_frame::detail(
                         frame,

@@ -247,7 +247,7 @@ pub(super) fn overrange(peaks: [CachedPeak; 2]) -> CachedOverrange {
     }
 }
 
-fn merge(current: &mut Option<[CachedPeak; 2]>, next: [CachedPeak; 2]) {
+pub(super) fn merge(current: &mut Option<[CachedPeak; 2]>, next: [CachedPeak; 2]) {
     let Some(peaks) = current.as_mut() else {
         *current = Some(next);
         return;

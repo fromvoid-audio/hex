@@ -2731,7 +2731,8 @@ impl EditorView {
             .filter(|gain| *gain != clip.gain());
         let fade = self.fade_preview(clip.id());
         let trim = self.fade_trim_preview(clip.id());
-        let fallback = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+        let prepared = state.audio_clip_waveforms.get(&clip.id());
+        let fallback = if let Some(prepared) = prepared {
             // Cropping changes the visible offset in the immutable prepared root.
             let root_offset = trim
                 .and_then(Clip::audio_edit)
@@ -2789,7 +2790,21 @@ impl EditorView {
                     }),
                 },
             )),
-            None => fallback,
+            None => prepared
+                .and_then(|prepared| {
+                    let view = super::waveform_prepared_fade::PreparedFade::for_clip(
+                        &state.project,
+                        clip,
+                        prepared,
+                        fade,
+                        gain.unwrap_or(clip.gain()),
+                    )?;
+                    Some((
+                        std::sync::Arc::clone(&prepared.waveform),
+                        WaveformMapping::PreparedFade(view),
+                    ))
+                })
+                .or(fallback),
         };
         let body = match displayed {
             Some((waveform, mapping)) => super::waveform::timeline_waveform_view_cached(

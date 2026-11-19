@@ -1690,6 +1690,17 @@ fn clip_fade_shading_survives_idle_selection_and_narrow_repaints(cx: &mut TestAp
 fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
     cx: &mut TestAppContext,
 ) {
+    repeated_clip_fade_preview(cx, false);
+}
+
+#[gpui::test]
+fn processed_repeat_waveform_keeps_outer_fade_shape_through_delayed_ack_and_history(
+    cx: &mut TestAppContext,
+) {
+    repeated_clip_fade_preview(cx, true);
+}
+
+fn repeated_clip_fade_preview(cx: &mut TestAppContext, processed: bool) {
     use hex_project::{AudioEventEdit, AudioEventFade, AudioViewResizeOperation};
     use std::time::Instant;
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
@@ -1708,6 +1719,27 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
     let clip = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
     });
+    if processed {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetAudioClipPitch {
+                clip,
+                cents: 137,
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
+    let initial_fade = if processed {
+        Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(76_696, 0, 13_184, 23_254).unwrap(),
+        }
+    } else {
+        Command::SetClipFades {
+            clip,
+            fade_in: 13_184,
+            fade_out: 23_254,
+        }
+    };
     for command in [
         Command::EditAudioEvents {
             clip,
@@ -1724,11 +1756,7 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
                 project_frame: 76_696,
             },
         },
-        Command::SetClipFades {
-            clip,
-            fade_in: 13_184,
-            fade_out: 23_254,
-        },
+        initial_fade,
     ] {
         editor.update(&mut visual, |v, _| {
             assert!(v.enqueue(Request::Edit(command)))
@@ -1759,6 +1787,14 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
             })
             .collect::<Vec<_>>()
     };
+    let source = processed.then(|| {
+        editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let clip = state.project.clip(clip).unwrap();
+            assert_eq!(clip.audio_edit().unwrap().domain.pitch_cents, 137);
+            Arc::clone(&state.audio_clip_waveforms[&clip.id()].waveform)
+        })
+    });
     let original = mesh(&mut visual);
     let original_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
     assert!(
@@ -1794,6 +1830,12 @@ fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
         std::thread::yield_now();
     };
     assert!(event.error.is_none(), "{:?}", event.error);
+    if let Some(source) = source {
+        assert!(Arc::ptr_eq(
+            &source,
+            &event.state.audio_clip_waveforms[&clip].waveform
+        ));
+    }
     key(&mut visual, false, "f");
     for _ in 0..3 {
         clear_waveform_paints(&editor, &mut visual);
