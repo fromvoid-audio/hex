@@ -256,7 +256,88 @@ impl Publication {
     }
 }
 
+/// One callback's cold-span observation for an exact pending publication.
+/// It grants no fade authority or page storage. Render repins and reprojects.
+pub(super) struct ColdDeviceFade {
+    pub(super) revision: u64,
+    pub(super) frames: usize,
+}
+
 impl Callback {
+    pub(super) fn prewarm_cold_device_fade(&mut self, frames: usize) {
+        let Some(cold) = self.cold_device_fade.take() else {
+            return;
+        };
+        if frames == 0
+            || self.transport_fade.is_some()
+            || self.output_transport.is_some()
+            || self.stream_pending_play.is_some()
+            || self.stream_action_pending()
+            || self.native_effects_revoked()
+        {
+            return;
+        }
+        let Some(receipt) = self
+            .deferred_eligible
+            .as_ref()
+            .and_then(|next| next.device_insert())
+            .or_else(|| self.deferred.as_ref()?.fresh_runtime_cancellation.as_ref())
+        else {
+            return;
+        };
+        let Some(basis) = receipt.0.device_insert_basis() else {
+            return;
+        };
+        if receipt.0.revision() != cold.revision
+            || receipt.fenced_before_admission()
+            || receipt.0.state() != PublicationReceiptState::Pending
+            || self.recording_source() != Some(basis.predecessor)
+        {
+            return;
+        }
+        let current = if let Some(graph) = self.active.as_ref().and_then(ActivePublication::legacy)
+        {
+            basis.cut_is_current(&self.status, Some(graph))
+        } else {
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .is_some_and(|active| {
+                    basis.verified_cut_is_current(
+                        &self.status,
+                        active.revision,
+                        active.playback.session_route_state_generation(),
+                        basis.fence.route_state_generation,
+                    )
+                })
+        };
+        if current {
+            self.prewarm_outgoing_fade_for_render(frames, cold.frames);
+        }
+    }
+
+    fn prewarm_outgoing_fade_for_render(&mut self, frames: usize, fade_frames: usize) {
+        let Ok(Some(current)) = self.reserve_current_stream_window(frames) else {
+            return;
+        };
+        if !current.complete() {
+            current.release(&mut self.domain_pages);
+            return;
+        }
+        // Keep the exact current PCM pinned through render. The outgoing
+        // preflight only looks ahead; admission still happens at begin_block.
+        self.current_quantum_pins = Some(current);
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+            && let Ok(Some(complete)) =
+                active.reserve_outgoing_fade(&mut self.domain_pages, fade_frames)
+        {
+            complete.release(&mut self.domain_pages);
+        }
+    }
+
     pub(super) fn abort_blocked_device_insert(&mut self) {
         self.release_device_insert_fade_pins();
         if let Some(next) = self.deferred.as_ref()
@@ -407,6 +488,10 @@ impl Callback {
                 if let Some(streams) = next.streams.as_mut() {
                     streams.cancel_install(&mut self.domain_pages);
                 }
+                self.cold_device_fade = Some(ColdDeviceFade {
+                    revision: next.revision,
+                    frames: fade as usize,
+                });
                 return Ok(false);
             };
             self.device_insert_fade_pins = Some(pins);

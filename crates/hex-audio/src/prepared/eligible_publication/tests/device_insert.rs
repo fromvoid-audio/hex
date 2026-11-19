@@ -37,10 +37,27 @@ fn verified_device_insert_expires_at_the_preparation_deadline() {
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_playing() {
+    check_outgoing_cold_file(false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn outgoing_device_fade_can_warm_a_full_cache_with_the_current_window_held() {
+    check_outgoing_cold_file(true);
+}
+
+#[cfg(feature = "stream-test-support")]
+fn check_outgoing_cold_file(full_cache: bool) {
+    use hex_engine::MediaPages as _;
     use hex_project::Created;
 
     let _serial = serial();
-    let project = super::readiness::project_with_frames(512);
+    let first_frames = if full_cache {
+        (3 * hex_engine::STREAM_PAGE_FRAMES) as u32
+    } else {
+        512
+    };
+    let project = super::readiness::project_with_frames(u64::from(first_frames));
     let first_asset = project.assets().next().unwrap().id();
     let mut editor = Editor::new(project, 8).unwrap();
     let Created::Asset(next_asset) = editor
@@ -72,12 +89,13 @@ fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_play
             looping: false,
         })
         .unwrap();
-    let first = stream_fixture::Wav::with_frames(512);
+    let first = stream_fixture::Wav::with_frames(first_frames);
     let next = stream_fixture::Wav::with_samples(512, |_| 4_096);
     let definitions = vec![
         first.definition(first_asset, 11),
         next.definition(next_asset, 11),
     ];
+    let first_key = definitions[0].metadata.key();
     let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
         source: definitions[1].metadata.key(),
         page_index: 0,
@@ -86,31 +104,65 @@ fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_play
         project_generation: 0,
         editor_revision: 7,
     };
-    let mut owner = stream_fixture::owner_sources(
-        editor.project(),
-        definitions
-            .iter()
-            .map(|definition| definition.metadata.clone())
-            .collect(),
-        Some(context),
-    );
+    let metadata: Vec<_> = definitions
+        .iter()
+        .map(|definition| definition.metadata.clone())
+        .collect();
+    let mut owner =
+        stream_fixture::owner_sources(editor.project(), metadata.clone(), Some(context));
     let (mut control, mut data, errors, mut retirement) = anchored();
+    let mut limits = reservation(&mut owner);
+    if full_cache {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_engine::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let quote = AudioCandidateEffects::with_host_definitions(&[], |effects| {
+            Ok(effects.quote(editor.project(), metadata.len()).unwrap())
+        })
+        .unwrap();
+        let storage = quote.storage_reservation(0).unwrap();
+        limits.member_rows += quote.member_rows * 3;
+        limits.transfer_rows += quote.transfer_rows * 3;
+        limits.handle_rows += quote.handle_rows * 3;
+        limits.data_rows = limits.data_rows.max(quote.data_rows);
+        limits.max_retained_data_bytes += storage.max_prepared_data_bytes * 3;
+        limits.max_construction_peak_data_bytes += storage.max_construction_data_bytes * 3;
+    }
     control
-        .configure_audio_candidate_publication(reservation(&mut owner))
+        .configure_audio_candidate_publication(limits)
         .unwrap();
     control.configure_audio_candidate_streaming(3).unwrap();
     let mut stream = hex_stream::StreamRuntime::new_with_page_gate(
-        hex_stream::StreamConfig::with_pool_pages(4),
+        hex_stream::StreamConfig::with_pool_pages(if full_cache { 3 } else { 4 }),
         definitions,
         gate,
     )
     .unwrap();
     stream.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (stream_control, mut stream_pages) = stream.split().ok().unwrap();
+    if full_cache {
+        let warmup = Instant::now() + Duration::from_millis(400);
+        for index in [0, 2] {
+            stream_pages.request_page(first_key, index);
+            while stream_pages.page(first_key, index).is_none() {
+                stream_pages.pump_ready(2);
+                assert!(Instant::now() < warmup, "cache did not fill");
+                std::thread::yield_now();
+            }
+        }
+    }
     let domain = control
         .register_audio_candidate_domain_with_readiness(
-            stream.split().ok().unwrap(),
+            (stream_control, stream_pages),
             hex_stream::StreamReadinessReservation {
-                extents_per_role: 3,
+                extents_per_role: if full_cache { 2 } else { 3 },
             },
         )
         .unwrap_or_else(|error| panic!("{}", error.reason));
@@ -168,21 +220,92 @@ fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_play
         assert!(Instant::now() < deadline, "predecessor did not play");
         std::thread::yield_now();
     }
-    assert!(!run(true, false).0);
-    entered
-        .recv_timeout(Duration::from_millis(200))
-        .expect("the outgoing projection did not request the cold file");
-    assert_eq!(run(true, true), (false, [[0.25; 2]; 16]));
-    assert_eq!(control.status.position.load(Acquire), 32);
-    release.send(()).unwrap();
-    while !run(true, false).0 {
-        assert!(
-            Instant::now() < deadline,
-            "ready file did not join the held span"
+    let installed = if full_cache {
+        let source = control.status.applied_audio_source().unwrap();
+        let edit_context = AudioSourceContext {
+            editor_revision: 8,
+            ..context
+        };
+        let token = stream_fixture::prepare_candidate_with_sources(
+            &mut control,
+            editor.project(),
+            &metadata,
+            domain,
+            edit_context,
         );
-        std::thread::yield_now();
-    }
-    assert_eq!(control.status.position.load(Acquire), 32);
+        let (rejected, receipt) = control
+            .stage_verified_device_insert(token, edit_context, source, None, deadline, |_| {})
+            .unwrap();
+        assert_eq!(run(false, true).1, [[0.25; 2]; 16]);
+        assert_eq!(
+            receipt.state(),
+            PublicationReceiptState::Refused(
+                PlaybackHandoffRejection::DeviceInsertNeedsConfirmation
+            )
+        );
+        let offer = control
+            .offer_resident_device_insert_consent(&receipt)
+            .unwrap();
+        drop(recover(&mut control, &rejected));
+        let token = stream_fixture::prepare_candidate_with_sources(
+            &mut control,
+            editor.project(),
+            &metadata,
+            domain,
+            edit_context,
+        );
+        let (staged, receipt) = control
+            .stage_verified_device_insert(
+                token,
+                edit_context,
+                source,
+                Some(offer),
+                deadline,
+                |_| {},
+            )
+            .unwrap();
+        let before = control.status.position.load(Acquire);
+        assert_eq!(run(false, true).1, [[0.25; 2]; 16]);
+        entered
+            .recv_timeout(Duration::from_millis(200))
+            .expect("approved full-cache fade did not request the cold file");
+        assert_eq!(run(false, true).1, [[0.25; 2]; 16]);
+        assert_eq!(control.status.position.load(Acquire), before + 32);
+        assert_eq!(control.status.applied_audio_source(), Some(source));
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        release.send(()).unwrap();
+        while matches!(
+            receipt.state(),
+            PublicationReceiptState::Pending | PublicationReceiptState::Applying
+        ) {
+            run(false, true);
+            assert!(Instant::now() < deadline, "approved fade did not install");
+            std::thread::yield_now();
+        }
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert_eq!(
+            control.status.applied_audio_source().unwrap().context,
+            edit_context
+        );
+        Some(staged)
+    } else {
+        assert!(!run(true, false).0);
+        entered
+            .recv_timeout(Duration::from_millis(200))
+            .expect("the outgoing projection did not request the cold file");
+        assert_eq!(run(true, true), (false, [[0.25; 2]; 16]));
+        assert_eq!(control.status.position.load(Acquire), 32);
+        release.send(()).unwrap();
+        while !run(true, false).0 {
+            assert!(
+                Instant::now() < deadline,
+                "ready file did not join the held span"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(control.status.position.load(Acquire), 32);
+        None
+    };
     control.command(PlaybackCommand::Stop).unwrap();
     for _ in 0..8 {
         run(false, true);
@@ -200,6 +323,9 @@ fn outgoing_device_fade_requests_the_cold_next_file_while_current_pcm_keeps_play
     drop(errors);
     let _ = retirement.advance().unwrap();
     drop(recover(&mut control, &ticket));
+    if let Some(staged) = installed {
+        drop(recover(&mut control, &staged));
+    }
     drop(control);
     finish(&mut retirement);
 }
