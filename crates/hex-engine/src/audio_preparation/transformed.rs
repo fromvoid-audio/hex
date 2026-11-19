@@ -556,7 +556,12 @@ fn install_compiled_origin(
         if compiled.start != slot.start
             || compiled.end != slot.end
             || metadata.is_some_and(|metadata| {
-                metadata.source_phase != 0
+                (metadata.source_phase != 0
+                    && (!compiled.looping
+                        || metadata.source_phase >= compiled.source_length as u64
+                        || metadata.sparse.is_some()
+                        || slot.reserved_phase.map(std::num::NonZeroU64::get)
+                            != Some(metadata.source_phase)))
                     || metadata.streamed.is_some()
                     || metadata.fade.is_some_and(|fade| {
                         !slot.reserve_fade || fade.validate_segment(slot.end - slot.start).is_err()
