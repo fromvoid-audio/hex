@@ -5,7 +5,8 @@
 use crate::{Frame, Invalid};
 use hex_project::{
     Asset, AssetId, AudioClipTiming, AudioDomainClock, AudioEvent, AudioEvents,
-    AudioViewProjection, Clip, ClipFade, ClipGain, MAX_AUDIO_EVENTS, TempoMap,
+    AudioViewProjection, Clip, ClipFade, ClipGain, MAX_AUDIO_EVENTS, ProjectedOuterAudioFade,
+    TempoMap,
 };
 use std::ops::Range;
 
@@ -46,6 +47,9 @@ impl FrameFadeSample {
 #[derive(Clone, Copy, Default)]
 pub struct FrameFadeOverrides<'a> {
     pub fade: Option<ClipFade>,
+    /// Use the retained-root law when an existing overlap needs its Legacy
+    /// ramp proof. Callers obtain the policy from the arrangement project.
+    pub legacy_root_fade: bool,
     /// The editor's existing preview, edited from `Clip::editable_audio_events()`
     /// when a crop creates virtual fragments. This preserves local event IDs.
     pub events: Option<&'a AudioEvents>,
@@ -87,6 +91,7 @@ pub struct FrameFadePreview<'a> {
     clip: &'a Clip,
     tempo: &'a TempoMap,
     projection: Option<AudioViewProjection<'a>>,
+    outer_fade: Option<ProjectedOuterAudioFade<'a>>,
     source_frames: u64,
     overrides: FrameFadeOverrides<'a>,
     events: Option<&'a AudioEvents>,
@@ -113,10 +118,6 @@ impl<'a> FrameFadePreview<'a> {
         }
         let source_frames = asset.playback_frames();
         let projection = if let Some(edit) = clip.audio_edit() {
-            edit.domain
-                .fade_clock
-                .require_supported()
-                .map_err(|error| Invalid(error.0))?;
             if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
                 || !matches!(edit.timing, AudioClipTiming::Frames)
                 || edit.domain.warp_enabled
@@ -159,6 +160,17 @@ impl<'a> FrameFadePreview<'a> {
         {
             return Err(Invalid("edited fade must match the current clip"));
         }
+        let outer_fade = if projection.is_none() {
+            None
+        } else if let Some(fade) = overrides.fade.filter(|_| !overrides.legacy_root_fade) {
+            Some(
+                clip.projected_outer_fade_preview(tempo, fade)
+                    .map_err(|error| Invalid(error.0))?,
+            )
+        } else {
+            clip.projected_outer_fade(tempo)
+                .map_err(|error| Invalid(error.0))?
+        };
         let events = overrides.events.or_else(|| {
             clip.audio_edit()
                 .and_then(|edit| edit.domain.events.as_deref())
@@ -185,6 +197,7 @@ impl<'a> FrameFadePreview<'a> {
             clip,
             tempo,
             projection,
+            outer_fade,
             source_frames,
             overrides,
             events,
@@ -208,7 +221,13 @@ impl<'a> FrameFadePreview<'a> {
             else {
                 return Ok(None);
             };
-            self.root_sample(root)
+            let Some(mut sample) = self.root_sample(root)? else {
+                return Ok(None);
+            };
+            if let Some(gain) = self.outer_gain(frame)? {
+                sample.gains[2] = gain;
+            }
+            Ok(Some(sample))
         } else {
             let Some(elapsed) = frame
                 .checked_sub(self.clip.start())
@@ -219,6 +238,15 @@ impl<'a> FrameFadePreview<'a> {
             self.root_sample(elapsed)
         }
     }
+
+    fn outer_gain(&self, frame: u64) -> Result<Option<f32>, Invalid> {
+        self.outer_fade
+            .as_ref()
+            .map(|fade| fade.gain_at(frame))
+            .transpose()
+            .map_err(|error| Invalid(error.0))
+    }
+
     /// Sample in the retained processing root's destination-frame clock, before
     /// outer placement. This is the clip editor's event timeline coordinate.
     pub fn root_sample(&self, frame: u64) -> Result<Option<FrameFadeSample>, Invalid> {
@@ -282,15 +310,13 @@ impl<'a> FrameFadePreview<'a> {
         } else {
             1.0
         };
-        let clip_fade = if let Some(fade) = self.overrides.fade {
+        let clip_fade = if self.outer_fade.is_some() {
+            1.0
+        } else if let Some(fade) = self.overrides.fade {
             let start = self.clip.audio_edit().map_or(0, |edit| edit.view_start);
-            if self.clip.audio_edit().is_some() && fade.is_neutral() {
-                1.0
-            } else {
-                frame
-                    .checked_sub(start)
-                    .map_or(0.0, |age| fade.gain_at(age))
-            }
+            frame
+                .checked_sub(start)
+                .map_or(0.0, |age| fade.gain_at(age))
         } else if let Some(edit) = self.clip.audio_edit() {
             edit.projected_fade(self.tempo)
                 .and_then(|fade| fade.gain_at(frame))

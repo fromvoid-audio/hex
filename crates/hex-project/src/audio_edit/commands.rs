@@ -569,11 +569,14 @@ pub(crate) fn set_fades(
     fade_in: u64,
     fade_out: u64,
 ) -> Result<crate::Created, Invalid> {
-    let duration = project
+    let mut clip = project
         .clip(id)
-        .ok_or(Invalid("audio clip is missing"))?
-        .duration;
-    set_fade_envelope(project, id, ClipFade::new(duration, 0, fade_in, fade_out)?)
+        .cloned()
+        .ok_or(Invalid("audio clip is missing"))?;
+    let fade = ClipFade::new(clip.duration, 0, fade_in, fade_out)?;
+    set_clip_fade_envelope(&mut clip, fade, project.tempo_map())?;
+    validate_clip(project, &clip)?;
+    crate::clip_group::replace_audio(project, clip)
 }
 
 pub(crate) fn set_fade_envelope(
@@ -585,7 +588,11 @@ pub(crate) fn set_fade_envelope(
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
-    set_clip_fade_envelope(&mut clip, fade, project.tempo_map())?;
+    if project.arrangement_fade_edit_uses_outer(&clip) {
+        clip = clip.with_authored_outer_fade(project.tempo_map(), fade)?;
+    } else {
+        set_clip_fade_envelope(&mut clip, fade, project.tempo_map())?;
+    }
     validate_clip(project, &clip)?;
     crate::clip_group::replace_audio(project, clip)
 }

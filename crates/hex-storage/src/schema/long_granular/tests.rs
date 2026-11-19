@@ -31,21 +31,8 @@ fn fixture() -> (Project, Project) {
                 fade_out: 0,
             })
             .unwrap();
-        let warp = hex_project::default_audio_warp(
-            editor.project().clip(clip).unwrap(),
-            editor.project().tempo_map(),
-            mode,
-        )
-        .unwrap();
-        editor
-            .execute(Command::SetAudioClipWarp {
-                clip,
-                settings: Some(warp),
-            })
-            .unwrap();
-        editor
-            .execute(Command::SetAudioClipPitch { clip, cents: 300 })
-            .unwrap();
+        // Author while the clip is plain so its captured root is a true
+        // predecessor fixture rather than a newly authored Outer envelope.
         let fade = editor
             .project()
             .clip(clip)
@@ -61,6 +48,21 @@ fn fixture() -> (Project, Project) {
             ]);
         editor
             .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        let warp = hex_project::default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            mode,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 300 })
             .unwrap();
         let start = editor.project().clip(clip).unwrap().start();
         editor
@@ -250,4 +252,25 @@ fn long_inactive_warp_wraps_schema120_and_round_trips_with_overwrite_warning() {
     let mut malformed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     malformed["clips"][0]["edit"]["domain"]["warp_enabled"] = true.into();
     assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+}
+
+#[test]
+fn authored_neutral_outer_fade_composes_over_schema120() {
+    let (_, legacy) = fixture();
+    let mut editor = Editor::new(legacy, 4).unwrap();
+    let row = &editor.project().tracks()[0].clips()[0];
+    let clip = row.id();
+    let fade = row.retained_fade().reanchor(row.duration()).unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::OUTER_CLIP_FADE_SCHEMA_VERSION
+    );
+    let bytes = crate::encode(project).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(document["base"]["version"], LONG_GRANULAR_SCHEMA_VERSION);
+    assert_eq!(&crate::decode(&bytes).unwrap(), project);
 }

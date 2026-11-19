@@ -60,7 +60,20 @@ impl FrameFadePreview<'_> {
                 None,
             ]
         };
-        self.visit_admitted(roots, silence, remaining, visit)
+        // Root unions can collapse several occurrences. The outer envelope
+        // belongs to the column's destination midpoint, never any root phase.
+        let gain = if first < last {
+            self.outer_gain(first + (last - first - 1) / 2)?
+        } else {
+            None
+        };
+        let mut visit = visit;
+        self.visit_admitted(roots, silence, remaining, |mut part| {
+            if let Some(gain) = gain {
+                part.sample.gains[2] = gain;
+            }
+            visit(part);
+        })
     }
 
     /// Root-destination frames before outer placement, for the event editor.

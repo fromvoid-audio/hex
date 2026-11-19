@@ -465,7 +465,12 @@ impl EditorView {
     }
     pub(super) fn fade_preview(&self, clip: ClipId) -> Option<ClipFade> {
         self.displayed_fade_drag()
-            .filter(|drag| drag.clip.id() == clip && drag.moved && drag.preview != drag.original)
+            .filter(|drag| {
+                drag.clip.id() == clip
+                    && drag.moved
+                    && drag.preview != drag.original
+                    && drag.preview_clip.is_none()
+            })
             .map(|drag| drag.preview)
     }
     pub(super) fn fade_trim_preview(&self, clip: ClipId) -> Option<&Clip> {
@@ -520,18 +525,37 @@ impl EditorView {
         let controls = fade.reanchor(clip.duration()).ok()?;
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
+        let project = &self.state.as_ref()?.project;
+        let tempo = project.tempo_map();
+        let outer = if let Some(fade) =
+            preview.filter(|_| project.arrangement_fade_edit_uses_outer(clip))
+        {
+            Some(clip.projected_outer_fade_preview(tempo, fade).ok()?)
+        } else {
+            clip.projected_outer_fade(tempo).ok()?
+        };
+        let shape = if outer.is_some() { fade } else { controls };
         let mut positions = Vec::with_capacity(6);
-        for (handle, (domain_frame, subframe), gain) in knots(controls) {
-            if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
-                || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
+        for (handle, (domain_frame, subframe), gain) in knots(shape) {
+            if matches!(handle, Handle::InCurve) && shape.fade_in() < 3
+                || matches!(handle, Handle::OutCurve) && shape.fade_out() < 3
             {
                 continue;
             }
-            // Subtract integer origins before conversion, preserving short-clip
-            // precision even near the maximum absolute project frame. Local
-            // knots are clip frames, so a subframe is already a frame fraction.
-            let relative = (i128::from(domain_frame) - i128::from(visible.0 - clip.start())) as f64
-                + subframe.max(0.0);
+            let project_frame = match &outer {
+                Some(projection) => {
+                    let Some(frame) = projection.frame_at_domain_position(domain_frame).ok()?
+                    else {
+                        continue;
+                    };
+                    frame
+                }
+                None => clip.start().checked_add(domain_frame)?,
+            };
+            // Subtract integer origins before casting to preserve nearby knots
+            // near the high end of the timeline.
+            let relative =
+                (i128::from(project_frame) - i128::from(visible.0)) as f64 + subframe.max(0.0);
             if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
             {
                 continue;
