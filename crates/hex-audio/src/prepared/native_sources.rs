@@ -532,7 +532,10 @@ impl PublicationControl {
             || self.status.closing.load(Acquire)
             || self.output_identity() != Some(source.output_identity)
             || binding.root != source.output_identity
-            || self.native_source_endpoint_installed(binding) != Some(true)
+            || self
+                .candidate_root
+                .try_native_source_endpoint_installed(binding)?
+                != Some(true)
         {
             return Err("vst3 delivery source differs or is closing");
         }
@@ -716,7 +719,10 @@ impl PublicationControl {
                 .live_native_parameter_source()
                 .map(|(source, _)| source)
                 != Some(expected)
-                || self.native_source_endpoint_installed(binding) != Some(true)
+                || self
+                    .candidate_root
+                    .try_native_source_endpoint_installed(binding)?
+                    != Some(true)
             {
                 return Err("native parameter hold source is not applied");
             }
@@ -1090,7 +1096,9 @@ impl PublicationControl {
             return None;
         }
         self.candidate_root
-            .native_source_endpoint_installed(binding)
+            .try_native_source_endpoint_installed(binding)
+            .ok()
+            .flatten()
     }
     /// Exclude transport/publication while the callback acknowledges the exact
     /// current native runtime after the admitted command prefix. This witness

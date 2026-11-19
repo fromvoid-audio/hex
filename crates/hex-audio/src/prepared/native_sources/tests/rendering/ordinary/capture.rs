@@ -565,6 +565,29 @@ fn actual_ordinary_hold_requires_the_matching_applied_output_and_restores_read()
         audio_revision: revision + 1,
         ..source
     };
+    #[cfg(feature = "allocation-probe")]
+    crate::candidate_custody::native_source_test_fixture::with_source_bank_held_for_test(
+        &root,
+        || {
+            assert!(matches!(
+                f.control
+                    .native_source_parameter_hold_on_control(source, f.binding, begin),
+                Err("native preparation is busy")
+            ));
+            assert!(matches!(
+                f.control
+                    .native_source_parameter_hold_with_delivery_on_control(
+                        source, f.binding, begin
+                    ),
+                Err("native preparation is busy")
+            ));
+            assert!(matches!(
+                f.control
+                    .native_source_parameter_hold_on_control(stale, f.binding, begin),
+                Err("native parameter hold source is not applied")
+            ));
+        },
+    );
     assert!(
         f.control
             .native_source_parameter_hold_on_control(stale, f.binding, begin)
