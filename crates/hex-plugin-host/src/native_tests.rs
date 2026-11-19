@@ -1058,6 +1058,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
         None,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(0),
+        None,
     )
     .err()
     .unwrap();
@@ -1068,6 +1069,7 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
     ));
     assert!(!case.trace().exists());
     let case = Case::new();
+    let mut timings = StartupTimings::default();
     let mut failed = Pending::prepare_retained(
         &build(),
         source(),
@@ -1075,9 +1077,12 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
         None,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(30),
+        Some(&mut timings),
     )
     .err()
     .unwrap();
+    assert!(timings.waitable_probe.is_some());
+    assert!(timings.instance_to_facts.is_none());
     assert!(matches!(failed.cause(), Error::Protocol(_)));
     assert!(matches!(
         &failed.custody,
@@ -1130,6 +1135,7 @@ fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal()
                 state,
                 PreparationCancellation::new_on_control().unwrap(),
                 case.setup_restore(if restored { 37 } else { 0 }),
+                None,
             )
             .unwrap();
             assert_eq!(
