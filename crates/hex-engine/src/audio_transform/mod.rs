@@ -19,11 +19,12 @@
 //! roots and outer pitch/warp/source processing refuse before history commit.
 mod budget;
 mod content;
+mod content_fade_clock;
 mod events;
 mod frame_fade_preview;
 pub use frame_fade_preview::{
-    FrameFadeCoverage, FrameFadeEvent, FrameFadeOverrides, FrameFadePreview, FrameFadeRange,
-    FrameFadeSample, MusicalEventFadePreview,
+    DirectedMusicalDestinationFade, FrameFadeCoverage, FrameFadeEvent, FrameFadeOverrides,
+    FrameFadePreview, FrameFadeRange, FrameFadeSample, MusicalEventFadePreview,
 };
 mod granular_requirements;
 mod group;

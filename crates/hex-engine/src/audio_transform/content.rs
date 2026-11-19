@@ -261,31 +261,19 @@ impl AudioTransformPreparation {
         projection: &AudioViewProjection<'_>,
         frames: &mut [crate::Frame],
     ) -> Result<(), Invalid> {
-        let view = edit
-            .content_view
-            .ok_or(Invalid("directed audio view missing"))?;
         if !edit.domain.fade.is_neutral() {
             // A fade keeps its original forward container clock. Iterate base
             // occurrences once; no fade buffer or callback work is introduced.
-            let consumed = view
-                .base_start_delta
-                .checked_neg()
-                .ok_or(Invalid("audio content fade displacement overflow"))?;
+            let clock = super::content_fade_clock::DirectedFadeClock::new(projection)?;
             let mut covered = 0usize;
             for i in 0..projection.occurrence_count() {
                 let occurrence = projection.occurrence(i)?;
-                let a = (i128::from(occurrence.elapsed_start) - consumed).max(0);
-                let b = (i128::from(occurrence.elapsed_end) - consumed)
-                    .min(i128::from(view.window.length()?));
-                if a >= b {
+                let destination = clock.destination(projection, occurrence)?;
+                if destination.is_empty() {
                     continue;
                 }
-                let first = projection.frame_at_elapsed(a as u64)?.max(clip.start());
-                let last = projection
-                    .frame_at_elapsed(b as u64)?
-                    .min(clip.start() + clip.duration());
-                let start = (first - clip.start()) as usize;
-                let end = (last - clip.start()) as usize;
+                let start = (destination.start - clip.start()) as usize;
+                let end = (destination.end - clip.start()) as usize;
                 for f in frames
                     .get_mut(covered..start)
                     .ok_or(Invalid("directed fade coverage overflow"))?
@@ -297,16 +285,8 @@ impl AudioTransformPreparation {
                 let fade = root_edit
                     .projected_fade(tempo_map)
                     .map_err(|e| Invalid(e.0))?;
-                for frame in first..last {
-                    let elapsed =
-                        u64::try_from(consumed + i128::from(projection.elapsed_at_frame(frame)?))
-                            .map_err(|_| Invalid("directed fade clock overflow"))?;
-                    let base = projection.base_frame_at_elapsed(elapsed)?;
-                    let sample = occurrence
-                        .root_start
-                        .checked_add(base.saturating_sub(occurrence.destination_start))
-                        .ok_or(Invalid("directed fade sample overflow"))?
-                        .clamp(occurrence.root_start, occurrence.root_end - 1);
+                for frame in destination {
+                    let sample = clock.root_sample(projection, occurrence, frame)?;
                     let gain = fade.gain_at(sample).map_err(|e| Invalid(e.0))?;
                     let f = frames
                         .get_mut((frame - clip.start()) as usize)

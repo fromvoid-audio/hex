@@ -122,6 +122,41 @@ impl PreparedDirectedEventRead {
         else {
             return Ok(None);
         };
+        self.base_position(span, frame).map(Some)
+    }
+
+    /// Intersect a display column with the audible spans, in destination order.
+    /// The second range bounds the read centers in forward virtual base frames.
+    /// Fractional centers include their two neighboring frames. Peak previews
+    /// approximate interpolation without reconstructing samples from extrema.
+    pub fn source_ranges(
+        &self,
+        destination: Range<u64>,
+    ) -> impl Iterator<Item = Result<(Range<u64>, Range<u64>), Invalid>> + '_ {
+        let first = self
+            .spans
+            .partition_point(|span| span.destination.end <= destination.start);
+        self.spans[first..]
+            .iter()
+            .take_while(move |span| span.destination.start < destination.end)
+            .map(move |span| {
+                let start = destination.start.max(span.destination.start);
+                let end = destination.end.min(span.destination.end);
+                (span, start..end)
+            })
+            .filter(|(_, output)| !output.is_empty())
+            .map(move |(span, output)| {
+                let a = self.base_position(span, output.start)?;
+                let b = self.base_position(span, output.end - 1)?;
+                let first = a.min(b).div_euclid(Q32);
+                let last = 1 - (-a.max(b)).div_euclid(Q32);
+                let bound =
+                    |frame| i128::clamp(frame, self.base.start.into(), self.base.end.into()) as u64;
+                Ok((output, bound(first)..bound(last)))
+            })
+    }
+
+    fn base_position(&self, span: &PreparedDirectedEventSpan, frame: u64) -> Result<i128, Invalid> {
         let local = i128::from(frame - span.destination.start) + i128::from(span.offset);
         let read = span.map.position_q32(local).map_err(warp_error)?;
         let forward = if self.reversed {
@@ -129,6 +164,6 @@ impl PreparedDirectedEventRead {
         } else {
             i128::from(self.base.start) * Q32 + read
         };
-        Ok(Some(forward))
+        Ok(forward)
     }
 }
