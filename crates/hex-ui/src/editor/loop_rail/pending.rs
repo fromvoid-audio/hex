@@ -2,8 +2,8 @@
 //! Section focus is a view-only consequence of its successful canonical install,
 //! guarded by the captured selection intent and current stable section scope.
 use super::{EditorView, LoopRegion, PendingLoop};
+use crate::editor::section_launch::CapturedSectionLaunch;
 use hex_project::Command;
-use hex_session::arrangement_seek::SectionLaunch;
 use hex_session::service::{Event, Request};
 
 impl EditorView {
@@ -120,7 +120,7 @@ impl EditorView {
 
     pub(in crate::editor) fn submit_section_launch_loop(
         &mut self,
-        launch: SectionLaunch,
+        launch: CapturedSectionLaunch,
         region: LoopRegion,
     ) {
         if self.submit_loop_preview(self.project_generation, region)

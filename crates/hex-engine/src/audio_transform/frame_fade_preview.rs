@@ -113,6 +113,10 @@ impl<'a> FrameFadePreview<'a> {
         }
         let source_frames = asset.playback_frames();
         let projection = if let Some(edit) = clip.audio_edit() {
+            edit.domain
+                .fade_clock
+                .require_supported()
+                .map_err(|error| Invalid(error.0))?;
             if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
                 || !matches!(edit.timing, AudioClipTiming::Frames)
                 || edit.domain.warp_enabled

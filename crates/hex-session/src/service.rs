@@ -3305,9 +3305,8 @@ fn run_worker(
         &document_intent,
         &mut recording_barrier,
         session.native_reservation.is_some() || pending_recovery_outcome.is_some(),
-        pending_plugin_effect
-            .as_ref()
-            .map(|pending| &pending.insertion),
+        pending_plugin_effect.as_ref(),
+        device_gesture.snapshot().is_some(),
         pending_device_insert.as_ref(),
         pending_stopped_restore,
         hex_engine::AudioSourceContext {
@@ -3557,6 +3556,13 @@ fn run_worker(
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
+                || (matches!(&queued.request, Request::ContinuePluginEffect)
+                    && pending_plugin_effect.as_ref().is_some_and(|pending| {
+                        pending.matches_context(hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        }) && !pending.insertion.control.is_cancelled()
+                    }))
                 || matches!(
                     &queued.request,
                     Request::MoveExistingClips { .. }
@@ -3713,6 +3719,12 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        if publication_wait_failure.is_some()
+            && matches!(&request, Request::ContinuePluginEffect)
+            && let Some(pending) = pending_plugin_effect.take()
+        {
+            plugin_effect_complete.push(pending.finish(events.sampler_edit_audio(), false));
+        }
         let mut device_insert_confirmation = None;
         let mut device_insert_complete = None;
         let plugin_parameter_observation = request.is_read_only_observation();
@@ -5829,6 +5841,14 @@ fn run_worker(
                     }
                 }
                 Request::DeviceGesture(gesture) => {
+                    let independent_plugin_eq = device_gesture
+                        .snapshot()
+                        .filter(|active| active.key == gesture.key())
+                        .and_then(|active| {
+                            pending_plugin_effect
+                                .as_ref()?
+                                .independent_eq_gesture(session.project(), active.target)
+                        });
                     gesture_request = true;
                     gesture_protocol_ack = true;
                     let mut deferred = false;
@@ -5958,6 +5978,20 @@ fn run_worker(
                             crate::device_gesture::GesturePhase::Commit
                                 | crate::device_gesture::GesturePhase::Cancel
                         );
+                    if native_terminal_accepted
+                        && outcome.canonical_changed
+                        && let Some(device) = independent_plugin_eq
+                        && let Some(pending) = pending_plugin_effect.as_mut()
+                    {
+                        pending.rebase_after_accepted_eq_write(
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            session.project(),
+                            device,
+                        );
+                    }
                     if deferred {
                         request_complete = false;
                         plugin_recording.defer(gesture);
@@ -6522,7 +6556,7 @@ fn run_worker(
                                             return Err("vst3 preparation did not finish".into());
                                         };
                                         // Recheck the captured target before preparing the canonical transaction.
-                                        pending.insertion.validate(context, session.project())?;
+                                        pending.validate(context, session.project())?;
                                         let command = pending.insertion.command(state)?;
                                         let sink = events
                                             .resident_audio()
@@ -8696,6 +8730,16 @@ fn run_worker(
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
+                                    if let Some(pending) = pending_plugin_effect.as_mut() {
+                                        pending.rebase_after_accepted_eq_write(
+                                            hex_engine::AudioSourceContext {
+                                                project_generation,
+                                                editor_revision: revision,
+                                            },
+                                            session.project(),
+                                            device,
+                                        );
+                                    }
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     status = Some(
@@ -11094,14 +11138,16 @@ fn run_worker(
         // A lease resolved for this request but not consumed is released here.
         events.finish_stopped_fence();
         if pending_plugin_effect.as_ref().is_some_and(|pending| {
-            pending.insertion.context
-                != hex_engine::AudioSourceContext {
-                    project_generation,
-                    editor_revision: revision,
-                }
-                || pending.insertion.control.is_cancelled()
+            !pending.matches_context(hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            }) || pending.insertion.control.is_cancelled()
                 || pending_sampler_parameter.is_some()
-                || device_gesture.snapshot().is_some()
+                || device_gesture.snapshot().is_some_and(|gesture| {
+                    pending
+                        .independent_eq_gesture(session.project(), gesture.target)
+                        .is_none()
+                })
                 || tuning_gesture.snapshot().is_some()
         }) && let Some(pending) = pending_plugin_effect.take()
         {
@@ -12025,6 +12071,7 @@ mod service_tests {
         );
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::On,
                 mode: ArrangementSeekMode::LinearArrangement,
                 generation: 9,
                 revision: 4,
@@ -12073,6 +12120,7 @@ mod service_tests {
         );
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::On,
                 mode: ArrangementSeekMode::Interactive,
                 generation: 2,
                 revision: 1,
@@ -12193,6 +12241,7 @@ mod service_tests {
         let destination = 8_192;
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::On,
                 mode: ArrangementSeekMode::Interactive,
                 generation: 3,
                 revision: installed.state.revision,

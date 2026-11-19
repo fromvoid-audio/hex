@@ -198,6 +198,10 @@ impl AudioTransformPreparation {
         source: PreparedAudioSourceRef<'_>,
         projection: AudioViewProjection<'_>,
     ) -> Result<Clip, Invalid> {
+        edit.domain
+            .fade_clock
+            .require_supported()
+            .map_err(|error| Invalid(error.0))?;
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }

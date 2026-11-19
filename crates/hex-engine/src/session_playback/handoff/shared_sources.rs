@@ -884,7 +884,7 @@ fn analytic_source_has_precut(
                     return Ok(true);
                 }
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let Some(clip) = crate::session_inventory::EffectiveSessionMidi::new(
                     revision.session(),
                     admission,
@@ -4476,6 +4476,7 @@ mod tests {
                 .unwrap();
             failed.routes[route].current_incarnation = u64::MAX;
             failed.routes[route].pending = Some(crate::session_playback::PendingRoute {
+                note_chase: crate::NoteChase::On,
                 frame: 39,
                 beat: BeatTime::ZERO,
                 target: crate::session_playback::RouteTarget::Silence,
@@ -5099,6 +5100,7 @@ mod tests {
             let incarnation = runtime.routes[route].current_incarnation;
             runtime.routes[route].current_incarnation = u64::MAX;
             runtime.routes[route].pending = Some(crate::session_playback::PendingRoute {
+                note_chase: crate::NoteChase::On,
                 frame: 39,
                 beat: BeatTime::ZERO,
                 target: crate::session_playback::RouteTarget::Silence,

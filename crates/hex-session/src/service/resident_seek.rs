@@ -33,6 +33,8 @@ fn preparation_mode(
 /// Scalar control intent; prepared graphs, original PCM and runtime owners stay worker-private.
 #[derive(Clone, Debug)]
 pub struct ResidentArrangementSeekIntent {
+    /// Captured ordinary-start policy; history-preserving requests require On.
+    pub note_chase: hex_engine::NoteChase,
     pub request_id: u64,
     pub project_generation: u64,
     pub project_revision: u64,
@@ -51,6 +53,7 @@ pub struct ResidentArrangementSeekIntent {
 /// Submission is distinct from the later callback's exact output/context/revision ACK.
 #[derive(Debug)]
 pub struct ResidentArrangementSeekResult {
+    pub note_chase: hex_engine::NoteChase,
     pub request_id: u64,
     pub project_generation: u64,
     pub project_revision: u64,
@@ -92,6 +95,7 @@ fn result_matches_intent(
         && result.destination_frame == intent.destination_frame
         && result.work_budget_frames == crate::arrangement_seek::MAX_SEEK_WORK_FRAMES
         && result.start_playing == intent.start_playing
+        && result.note_chase == intent.note_chase
 }
 
 struct Active {
@@ -184,6 +188,11 @@ impl Lane {
             return Err("locator quantization requires an ordinary playing seek".into());
         }
         let mode = preparation_mode(intent.history, intent.section)?;
+        if intent.history != ResidentSeekHistory::Fresh
+            && intent.note_chase != hex_engine::NoteChase::On
+        {
+            return Err("history-preserving playback requires note chase on".into());
+        }
         let selected = selected_source(&intent, current, admission.preview)?;
         let files = selected
             .file_sources
@@ -319,6 +328,7 @@ impl Lane {
             .ok_or("seek worker unavailable")?
             .submit_resident(
                 ArrangementSeekSpec {
+                    note_chase: intent.note_chase,
                     mode,
                     generation: intent.project_generation,
                     revision: intent.project_revision,
@@ -489,6 +499,7 @@ fn completion(
     result: Result<ResidentPublicationAcceptance, String>,
 ) -> ResidentArrangementSeekResult {
     ResidentArrangementSeekResult {
+        note_chase: intent.note_chase,
         request_id: intent.request_id,
         project_generation: intent.project_generation,
         project_revision: intent.project_revision,

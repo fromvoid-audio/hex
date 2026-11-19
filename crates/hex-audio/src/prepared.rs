@@ -326,7 +326,9 @@ fn starts_playback(action: PlaybackAction) -> bool {
         ) | PlaybackAction::Session(
             hex_engine::SessionPlaybackCommand::Play
                 | hex_engine::SessionPlaybackCommand::LaunchClip { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
         ) | PlaybackAction::LaunchAndPlay(_)
     )
@@ -11555,6 +11557,13 @@ mod tests {
     #[test]
     #[cfg(feature = "allocation-probe")]
     fn source_bound_start_rejects_same_project_replacement_and_preserves_stop() {
+        for note_chase in [hex_engine::NoteChase::On, hex_engine::NoteChase::Off] {
+            source_bound_start_fences(note_chase);
+        }
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn source_bound_start_fences(note_chase: hex_engine::NoteChase) {
         use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
         use hex_engine::AudioSourceContext;
 
@@ -11590,7 +11599,7 @@ mod tests {
         };
         assert!(
             client
-                .play_from_source_with_ticket(1, wrong_output)
+                .play_from_with_note_chase_source_with_ticket(1, note_chase, wrong_output)
                 .is_err()
         );
         let wrong_context = AppliedAudioSource {
@@ -11602,11 +11611,36 @@ mod tests {
         };
         assert!(
             client
-                .play_from_source_with_ticket(1, wrong_context)
+                .play_from_with_note_chase_source_with_ticket(1, note_chase, wrong_context)
                 .is_err()
         );
 
-        let ticket = client.play_from_source_with_ticket(17, source).unwrap();
+        let wrong_revision = AppliedAudioSource {
+            audio_revision: source.audio_revision + 1,
+            ..source
+        };
+        assert!(
+            client
+                .play_from_with_note_chase_source_with_ticket(17, note_chase, wrong_revision)
+                .is_err()
+        );
+        let ticket = client
+            .play_from_with_note_chase_source_with_ticket(17, note_chase, source)
+            .unwrap();
+        // Inspect the actual borrowed consumer slot without removing it: a
+        // cursor-only oracle would miss an endpoint that discarded the choice.
+        data.owner_mut().unwrap().run(|callback, _| {
+            let queued = callback.commands.peek().unwrap();
+            assert_eq!(queued.ticket, ticket);
+            assert_eq!(
+                queued.action,
+                PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 17,
+                    note_chase
+                })
+            );
+            assert_eq!(queued.expected_source, Some(source));
+        });
         let measured =
             allocation_counter::measure(|| data.owner_mut().unwrap().run(|c, _| c.begin_block()));
         assert_eq!(
@@ -11626,6 +11660,7 @@ mod tests {
             })
         );
         assert!(client.status().unwrap().playing.load(Acquire));
+        assert_eq!(client.status().unwrap().position.load(Acquire), 17);
         client.stop();
         data.owner_mut().unwrap().run(|c, _| c.begin_block());
 
@@ -11655,7 +11690,9 @@ mod tests {
                 })
             });
             barrier.wait();
-            let ticket = client.play_from_source_with_ticket(47, source).unwrap();
+            let ticket = client
+                .play_from_with_note_chase_source_with_ticket(47, note_chase, source)
+                .unwrap();
             barrier.wait();
             let measured = callback.join().unwrap();
             assert_eq!(
@@ -11690,16 +11727,33 @@ mod tests {
                 .audio_revision,
             source.audio_revision
         );
-        assert!(client.play_from_source_with_ticket(47, source).is_err());
+        assert!(
+            client
+                .play_from_with_note_chase_source_with_ticket(47, note_chase, source)
+                .is_err()
+        );
         let source = client.status().unwrap().recording_source().unwrap();
         for _ in 0..COMMANDS {
-            client.play_from_source_with_ticket(2, source).unwrap();
+            client
+                .play_from_with_note_chase_source_with_ticket(2, note_chase, source)
+                .unwrap();
         }
-        assert!(client.play_from_source_with_ticket(2, source).is_err());
+        assert!(
+            client
+                .play_from_with_note_chase_source_with_ticket(2, note_chase, source)
+                .is_err()
+        );
         client.stop();
         data.owner_mut().unwrap().run(|c, _| c.begin_block());
         assert!(!client.status().unwrap().playing.load(Acquire));
         client.close();
+        assert_eq!(
+            client.play_from_with_note_chase_source_with_ticket(2, note_chase, source),
+            Err(PlaybackCommand::PlayFromWithNoteChase {
+                frame: 2,
+                note_chase
+            }),
+        );
         publication.close();
         drop(data);
         drop(errors);
