@@ -153,9 +153,13 @@ pub(crate) fn prepare_device(
     };
     let overflow = || PreparationError::Source(Error::Overflow);
     let bytes = program.backing_bytes().ok_or_else(overflow)?;
-    hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
-        .map(Some)
-        .map_err(|_| overflow())
+    let mut prepared =
+        hex_lattice::PreparedForeignAutomation::new(source.binding, revision, program, bytes)
+            .map_err(|_| overflow())?;
+    if !processor.is_instrument_profile() {
+        prepared.bind_effect_clock_on_control(std::num::NonZeroU64::MIN, false);
+    }
+    Ok(Some(prepared))
 }
 
 pub(crate) fn exact_source<'a>(

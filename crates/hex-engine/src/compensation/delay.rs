@@ -69,6 +69,10 @@ impl<T: Copy + Default> RingPair<T> {
         previous
     }
 
+    pub(super) fn valid_len(&self) -> usize {
+        self.scratch_cursor.valid
+    }
+
     pub(super) fn at_delay(&self, delay: usize) -> Option<T> {
         self.at_delay_ref(delay).copied()
     }

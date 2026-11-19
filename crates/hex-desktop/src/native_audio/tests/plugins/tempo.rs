@@ -1,5 +1,8 @@
 //! Check the actual Session tempo edit against the hosted worker's PCM.
-use super::{instruments::render_completed_block, *};
+use super::{
+    instruments::{render_completed_block, render_replay_block},
+    *,
+};
 use hex_engine::playback::PlaybackCommand;
 use hex_project::Tempo;
 
@@ -13,6 +16,22 @@ fn running_tempo_edit_preserves_hosted_pcm_and_beat() {
 }
 
 fn start_playback(files: &Files, streamed: bool, looped: bool) -> (ResidentHarness, Event, u64) {
+    let (mut h, accepted, revision) = prepare_graph(files, streamed, looped, false);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    (h, accepted, revision)
+}
+
+fn prepare_graph(
+    files: &Files,
+    streamed: bool,
+    looped: bool,
+    upstream_limiter: bool,
+) -> (ResidentHarness, Event, u64) {
     let frames = if streamed { 96_000 } else { 8192 };
     let mut h = ResidentHarness::with_plugins(
         host(),
@@ -45,6 +64,19 @@ fn start_playback(files: &Files, streamed: bool, looped: bool) -> (ResidentHarne
         }));
         (imported_revision, _) = h.applied(imported_revision);
     }
+    if upstream_limiter {
+        let limiter = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        imported = h.run(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter,
+        }));
+        (imported_revision, _) = h.applied(imported_revision);
+    }
     h.service
         .submit(Request::InsertPluginEffect(request(
             &imported.state,
@@ -57,12 +89,6 @@ fn start_playback(files: &Files, streamed: bool, looped: bool) -> (ResidentHarne
     assert!(accepted.plugin_effect_complete[0].accepted);
     let (applied, _) = h.applied(imported_revision);
 
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
     (h, accepted, applied)
 }
 
@@ -138,6 +164,208 @@ fn run(streamed: bool) {
         assert_pcm(ordinal, &render_completed_block(&h));
         ordinal += 1;
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn delayed_effect_automation_follows_the_source_clock_at_a_live_tempo_cut() {
+    use hex_project::{
+        AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, DeviceAutomationTarget,
+    };
+    use hex_session::service::PluginParameterQuery;
+    const CHILD: &str = "HEX_DESKTOP_TEST_DELAYED_TEMPO_EFFECT";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            result.status.success() && stdout.contains("1 passed"),
+            "{stdout}
+{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        print!("{stdout}");
+        return;
+    }
+    let _native = native_fixture();
+    let files = Files::new();
+    let (mut h, installed, revision) = prepare_graph(&files, false, false, true);
+    let device = installed.state.project.tracks()[0]
+        .devices()
+        .last()
+        .unwrap()
+        .id();
+    let context = h.submitted.unwrap().1.context;
+    let output_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.run(Request::QueryPluginParameters(PluginParameterQuery {
+        context,
+        device,
+        output_identity,
+        request_id: 10,
+        page_first: None,
+    }));
+    let rows = h.next().plugin_parameters.unwrap().rows.unwrap();
+    let gain = rows
+        .iter()
+        .find(|row| row.name.eq_ignore_ascii_case("gain"))
+        .unwrap();
+    let end = BeatTime::from_ratio(1, 4).unwrap();
+    let points = [(BeatTime::ZERO, 0.1), (end, 0.8)]
+        .map(|(beat, value)| AutomationPoint {
+            beat,
+            value: AutomationValue::new(value).unwrap(),
+            outgoing: AutomationInterpolation::Linear,
+        })
+        .to_vec();
+    let authored = super::automation::edit_with_running_callback(
+        &mut h,
+        Request::DeviceAutomation {
+            project_generation: context.project_generation,
+            revision: context.editor_revision,
+            device,
+            target: DeviceAutomationTarget::Vst3 { parameter: gain.id },
+            vst3_class: gain.automation_class,
+            points,
+        },
+    );
+    assert!(authored.error.is_none(), "{:?}", authored.error);
+    let applied = h.applied(revision).0;
+    let stage = h
+        .submitted_observation()
+        .unwrap()
+        .processor_latency(
+            device.value(),
+            installed
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .type_id(),
+        )
+        .unwrap();
+    assert!(stage.upstream_frames > 0);
+    assert_eq!(stage.stage_frames, 512);
+    let latency = u64::from(stage.upstream_frames + stage.stage_frames + stage.downstream_frames);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..5 {
+        render_completed_block(&h);
+    }
+    let binding = |h: &ResidentHarness| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .iter()
+            .flatten()
+            .find(|(id, _, _)| *id == device.value())
+            .map(|(_, binding, _)| *binding)
+            .expect("active effect binding")
+    };
+    let original = binding(&h);
+    let phase = h
+        .callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .native_worker_phase_for_test()
+        .unwrap();
+    let effect_cut_phase = (u32::try_from(phase).unwrap() + stage.upstream_frames) % 256;
+    assert_ne!(effect_cut_phase, 0);
+    let origin = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .performance_frame
+        .load(Acquire);
+    h.service
+        .submit(Request::Edit(Command::SetProjectTempo {
+            tempo: Tempo::new(90_000_000).unwrap(),
+        }))
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut cut = None;
+    let mut edited = None;
+    let mut pcm = Vec::new();
+    while edited.is_none() || cut.is_none() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.state.revision > authored.state.revision {
+                edited = Some(event);
+            }
+        }
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let before = status.applied_revision.load(Acquire);
+        let performance = status.performance_frame.load(Acquire);
+        let cursor = status.position.load(Acquire);
+        // Source preparation can wait for a callback acknowledgement.
+        // Pace the callback while the tempo edit is still in flight.
+        pcm.extend(render_replay_block(&h));
+        assert_eq!(status.performance_frame.load(Acquire), performance + 256);
+        if before == applied && status.applied_revision.load(Acquire) > applied {
+            cut = Some((performance, cursor, status.position.load(Acquire)));
+        }
+        assert!(
+            Instant::now() < until,
+            "tempo edit did not reach the callback"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    for _ in 0..5 {
+        pcm.extend(render_completed_block(&h));
+    }
+    let (performance, old_cursor, new_after) = cut.unwrap();
+    let old = authored.state.project.tempo_map();
+    let edited = edited.unwrap();
+    let new = edited.state.project.tempo_map();
+    let new_cursor = new
+        .beat_to_frame(old.frame_to_beat(old_cursor).unwrap())
+        .unwrap();
+    assert_eq!(new_after, new_cursor + 256);
+    let old_end = old.beat_to_frame(end).unwrap();
+    let new_end = new.beat_to_frame(end).unwrap();
+    for (index, frame) in pcm.iter().enumerate() {
+        let source = origin + index as u64 - latency;
+        let progress = if source < performance {
+            source as f64 / old_end as f64
+        } else {
+            (new_cursor + source - performance) as f64 / new_end as f64
+        };
+        let expected = (0.1 + 0.7 * progress.min(1.0)) as f32;
+        assert!(
+            frame.iter().all(|sample| (sample - expected).abs() < 2e-5),
+            "source {source} cut {performance} latency {latency}: {frame:?}, expected {expected}"
+        );
+    }
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(output_identity)
+    );
+    assert_eq!(binding(&h), original);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire) && status.rejected_revision().is_none());
+    assert!(status.render_fault_snapshot().is_none());
+    println!(
+        "delayed effect tempo cut performance={performance} old={old_cursor} new={new_cursor} latency={latency} effect_phase={effect_cut_phase}"
+    );
 }
 
 #[test]

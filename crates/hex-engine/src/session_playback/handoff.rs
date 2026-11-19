@@ -1655,6 +1655,20 @@ impl SessionPlayback {
                         }));
         let carried_cut =
             tempo_cut.filter(|_| planned_transfer == Some(1) && fresh_history.is_none());
+        if !self.revision.proves_delayed_effect_clocks(
+            &previous.revision,
+            (planned_transfer == Some(1) && fresh_history.is_none())
+                .then_some(previous.compensation.as_ref())
+                .flatten()
+                .map(|runtime| &runtime.delays),
+            previous.authored_clock_epoch,
+            authored_clock_epoch,
+            carried_cut.is_some(),
+        ) {
+            return Err(SessionPlaybackError::Arrangement(
+                "vst3 effect tempo clock differs from the retained playback source",
+            ));
+        }
         if foreign_handoff.requires_clock_continuity
             && (force_restart
                 || (relocate && !keep_foreign_gates)

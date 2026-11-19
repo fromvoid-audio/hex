@@ -31,6 +31,54 @@ impl PreparedRevision {
         nodes(&self.arrangement).any(|node| node.automation.foreign().is_some())
     }
 
+    /// For each opted-in effect use its own input arrival to bound the
+    /// retained clocks still in the copied compensation ring.
+    pub(crate) fn proves_delayed_effect_clocks(
+        &self,
+        previous: &Self,
+        history: Option<&crate::compensation::CompensationRuntime>,
+        old_clock: NonZeroU64,
+        new_clock: NonZeroU64,
+        carries_clock: bool,
+    ) -> bool {
+        nodes(&self.arrangement).all(|node| {
+            let Some(current) = node
+                .automation
+                .foreign()
+                .filter(|program| program.effect_clock_splices())
+            else {
+                return true;
+            };
+            if self.authored_clock_epoch != new_clock
+                || previous.authored_clock_epoch != old_clock
+                || (old_clock != new_clock && !carries_clock)
+            {
+                return false;
+            }
+            let view = current.borrow();
+            let Some(actual) = nodes(&previous.arrangement)
+                .filter_map(|node| node.automation.foreign().map(|program| program.borrow()))
+                .find(|program| program.binding == view.binding)
+            else {
+                return false;
+            };
+            if old_clock != new_clock && !view.retains_program_from(actual, actual.revision) {
+                return false;
+            }
+            let Some(stage) = self
+                .arrangement
+                .signal_graph
+                .as_ref()
+                .and_then(|graph| graph.processor_latency(node.device_id, None))
+            else {
+                return false;
+            };
+            history
+                .and_then(|history| history.oldest_pending_stage_clock(stage.upstream_frames))
+                .is_none_or(|oldest| current.covers_effect_clock_range(oldest, new_clock))
+        })
+    }
+
     /// Whether an unchanged original binding has exhausted its bounded
     /// predecessor history. This is a control-side hint only: matching
     /// installation, a stopped fence and the open quantum must be established
@@ -67,9 +115,24 @@ impl PreparedRevision {
         if !self.foreign_automation.is_empty() || !previous.foreign_automation.is_empty() {
             return Err(Invalid("legacy foreign program history is unsupported"));
         }
+        self.authored_clock_epoch = if self
+            .session()
+            .timing()
+            .same_map(previous.session().timing())
+        {
+            previous.authored_clock_epoch
+        } else {
+            previous
+                .authored_clock_epoch
+                .checked_add(1)
+                .ok_or(Invalid("authored arrangement clock exhausted"))?
+        };
         if self.has_arrangement_foreign_programs() {
-            self.arrangement
-                .retain_foreign_programs(&previous.arrangement, &mut received)?;
+            self.arrangement.retain_foreign_programs(
+                &previous.arrangement,
+                [previous.authored_clock_epoch, self.authored_clock_epoch],
+                &mut received,
+            )?;
         }
         Ok(self)
     }
@@ -97,12 +160,15 @@ fn nodes(project: &PlaybackProject) -> impl Iterator<Item = &PreparedRuntimeInst
 fn retain_node(
     node: &mut PreparedRuntimeInstance,
     previous: &PlaybackProject,
+    clocks: [NonZeroU64; 2],
     received: &mut dyn FnMut(Binding) -> ForeignProgramFrontier,
 ) -> Result<(), Invalid> {
     let Some(program) = node.automation.foreign() else {
         return Ok(());
     };
     let binding = program.borrow().binding;
+    let effect = matches!(node.definition, Some(PreparedProcessorFactory::Foreign(facts))
+        if !facts.is_instrument_profile());
     if !matches!(node.definition, Some(PreparedProcessorFactory::Foreign(facts))
         if facts.binding() == Some(binding))
     {
@@ -114,6 +180,10 @@ fn retain_node(
         )
     });
     let Some(old_node) = old.next() else {
+        if effect {
+            node.automation
+                .bind_foreign_effect_clock_on_control(clocks[1], false);
+        }
         return Ok(());
     };
     if old.next().is_some()
@@ -126,6 +196,14 @@ fn retain_node(
                 if a == b && a.binding() == Some(binding))
     {
         return Err(Invalid("foreign program predecessor source differs"));
+    }
+    if effect {
+        let clock_splices = old_node
+            .automation
+            .foreign()
+            .is_some_and(|old| clocks[0] != clocks[1] || old.effect_clock_splices());
+        node.automation
+            .bind_foreign_effect_clock_on_control(clocks[1], clock_splices);
     }
     let frontier = received(binding);
     if old_node.automation.foreign().is_none() {
@@ -145,6 +223,15 @@ fn retain_node(
         };
     }
     let result = match frontier {
+        ForeignProgramFrontier::Stopped { .. }
+            if node
+                .automation
+                .foreign()
+                .is_some_and(|program| program.effect_clock_splices()) =>
+        {
+            node.automation
+                .retain_foreign_history_on_control(&old_node.automation, None)
+        }
         ForeignProgramFrontier::Stopped { open_quantum, .. } => {
             let required = open_quantum.as_slice();
             node.automation
@@ -157,12 +244,21 @@ fn retain_node(
             .automation
             .retain_foreign_history_on_control(&old_node.automation, None),
     };
-    result.map_err(|_| Invalid("foreign program history or frontier exceeds its contract"))
+    result.map_err(|_| Invalid("foreign program history or frontier exceeds its contract"))?;
+    if node.automation.foreign().is_some_and(|program| {
+        program.effect_clock_splices() && !program.effect_clock_splice_fits()
+    }) {
+        return Err(Invalid(
+            "vst3 effect tempo edit exceeds the open automation block",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn retain_project(
     project: &mut PlaybackProject,
     previous: &PlaybackProject,
+    clocks: [NonZeroU64; 2],
     received: &mut dyn FnMut(Binding) -> ForeignProgramFrontier,
 ) -> Result<(), Invalid> {
     if project.sample_rate != previous.sample_rate {
@@ -170,7 +266,7 @@ pub(crate) fn retain_project(
     }
     for track in &mut project.tracks {
         if let Some(instrument) = &mut track.foreign_instrument {
-            retain_node(instrument, previous, received)?;
+            retain_node(instrument, previous, clocks, received)?;
         }
     }
     for chain in project
@@ -191,7 +287,7 @@ pub(crate) fn retain_project(
         let nodes =
             Arc::get_mut(chain).ok_or(Invalid("foreign program chain is already shared"))?;
         for node in nodes {
-            retain_node(node, previous, received)?;
+            retain_node(node, previous, clocks, received)?;
         }
     }
     Ok(())

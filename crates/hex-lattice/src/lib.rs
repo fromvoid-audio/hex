@@ -3630,7 +3630,14 @@ impl NativeRuntimeChain {
                 automation: entry
                     .automation
                     .foreign()
-                    .map(PreparedForeignAutomation::borrow),
+                    .map(|program| {
+                        program.borrow_for_effect_clock(if entry.automation_frozen {
+                            None
+                        } else {
+                            clock.and_then(|clock| clock.authored_clock_epoch_at_offset(0))
+                        })
+                    })
+                    .transpose()?,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
                 output_gain: if entry.automation_frozen {
