@@ -119,9 +119,32 @@ fn auto_pan_power_transition_uses_its_history_until_off_and_restarts_fresh() {
     );
 }
 #[test]
-fn gate_bypass_transition_preserves_real_detector_history() {
-    check(&crate::gate::GATE_DEFINITION);
+fn gate_power_transition_uses_its_detector_until_off_and_reopens_fresh() {
+    check_rate(&crate::gate::GATE_DEFINITION, 48_000, RestartHistory::Fresh);
 }
+
+#[test]
+fn gate_power_reversal_preserves_the_open_detector() {
+    const QUIET: [f32; 2] = [0.001, -0.001];
+    let definition = &crate::gate::GATE_DEFINITION;
+    let mut on = chain(definition, false, 48_000);
+    let mut off = chain(definition, true, 48_000);
+    let mut back_on = chain(definition, false, 48_000);
+    render(&mut on, 1024, 64);
+    off.transfer_history_from(&mut on);
+    let mut partial_fade = [QUIET; 64];
+    off.begin_block();
+    off.process_block(&mut partial_fade).unwrap();
+    off.commit_block();
+    back_on.transfer_history_from(&mut off);
+    let mut reversed = [QUIET; 241];
+    back_on.begin_block();
+    back_on.process_block(&mut reversed).unwrap();
+    back_on.commit_block();
+    let open_gain = 10.0_f32.powf(6.0 / 20.0);
+    assert!((reversed[240][0] - QUIET[0] * open_gain).abs() < 1.0e-8);
+}
+
 #[test]
 fn compressor_power_transition_uses_its_detector_until_off_and_restarts_fresh() {
     check_rate(
