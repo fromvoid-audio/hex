@@ -1,4 +1,4 @@
-//! The real Utility filter owner keeps one history through reversible host bypass.
+//! The real Utility filters keep history through a reversal and reset at settled Off.
 use super::*;
 use hex_lattice::{
     DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeRuntimeChain, PreparedRuntimeInstance,
@@ -67,7 +67,7 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<Ste
 }
 
 #[test]
-fn utility_filter_bypass_pcm_history_reversal_and_rollback_match_uninterrupted_reference() {
+fn utility_power_reverses_warm_rolls_back_and_restarts_from_a_fresh_filter() {
     for (dc, bass, muted) in [
         (true, false, false),
         (false, true, false),
@@ -105,6 +105,9 @@ fn utility_filter_bypass_pcm_history_reversal_and_rollback_match_uninterrupted_r
                         next.rollback_block();
                     }
                     let actual = render(&mut next, count, block);
+                    if phase == 4 {
+                        wet_reference = chain(&state, false, rate);
+                    }
                     let wet = render(&mut wet_reference, count, 127);
                     for (i, (actual, wet)) in actual.iter().zip(wet).enumerate() {
                         let progress = (i + 1).min(ramp) as f32 / ramp as f32;
@@ -112,7 +115,7 @@ fn utility_filter_bypass_pcm_history_reversal_and_rollback_match_uninterrupted_r
                             0 | 1 => 1.0 - (off_frames + i + 1) as f32 / ramp as f32,
                             2 => reverse_from + (1.0 - reverse_from) * progress,
                             3 => 1.0 - progress,
-                            _ => progress,
+                            _ => 1.0,
                         };
                         for (lane, dry) in [0.25, -0.125].into_iter().enumerate() {
                             let expected = dry + (wet[lane] - dry) * mix;
