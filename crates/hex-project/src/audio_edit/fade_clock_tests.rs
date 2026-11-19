@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Command, Created, Editor, Project, TrackContentSnapshot};
+use crate::{Command, Created, Editor, Project};
 
 fn fixture() -> (Project, crate::ClipId) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -43,52 +43,60 @@ fn capture_and_existing_edits_keep_legacy_clock_through_snapshot() {
 }
 
 #[test]
-fn outer_clock_is_refused_even_for_neutral_fades_and_never_admitted() {
+fn snapshot_admits_checked_outer_context_but_root_queries_do_not_own_it() {
     let (project, id) = fixture();
     for neutral in [false, true] {
-        let mut snapshot = project.snapshot();
-        let TrackContentSnapshot::Hybrid { audio_clips, .. } = &mut snapshot.tracks[0].content
-        else {
-            panic!("hybrid fixture")
-        };
-        let edit = audio_clips[0].edit.as_mut().unwrap();
-        let domain = Arc::make_mut(&mut edit.domain);
-        domain.fade_clock = AudioClipFadeClock::Outer;
-        if neutral {
-            domain.fade = ClipFade::neutral(domain.fade.span()).unwrap();
-        }
         let clip = project.clip(id).unwrap();
-        let asset = project.asset(clip.asset()).unwrap();
+        let fade = if neutral {
+            ClipFade::neutral(clip.duration()).unwrap()
+        } else {
+            ClipFade::new(clip.duration(), 0, 120, 240).unwrap()
+        };
+        let authored = clip
+            .with_authored_outer_fade(project.tempo_map(), fade)
+            .unwrap();
+        let mut snapshot = project.snapshot();
+        snapshot.tracks[0].audio_clips_mut().unwrap()[0] = authored.retained_snapshot();
+        let restored = Project::from_snapshot(snapshot).unwrap();
+        let actual = restored.clip(id).unwrap();
+        assert_eq!(actual, &authored);
         assert_eq!(
-            edit.validate(clip, project.tempo_map(), asset.playback_frames())
-                .unwrap_err()
+            actual
+                .audio_edit()
+                .unwrap()
+                .projected_fade(project.tempo_map())
+                .err()
+                .unwrap()
                 .0,
             "outer clip fades are not supported yet"
         );
-        assert_eq!(
-            edit.projected_fade(project.tempo_map()).err().unwrap().0,
-            "outer clip fades are not supported yet"
-        );
-        assert_eq!(
-            Project::from_snapshot(snapshot).unwrap_err().0,
-            "outer clip fades are not supported yet"
-        );
     }
-    assert_eq!(Project::from_snapshot(project.snapshot()).unwrap(), project);
 }
 
 #[test]
-fn retained_root_admission_also_refuses_outer_clock() {
+fn retained_root_admission_checks_normalized_outer_context() {
     let (project, id) = fixture();
-    let mut snapshot = project.clip(id).unwrap().retained_snapshot();
-    Arc::make_mut(&mut snapshot.edit.as_mut().unwrap().domain).fade_clock =
-        AudioClipFadeClock::Outer;
+    let clip = project.clip(id).unwrap();
+    let mut snapshot = clip
+        .with_authored_outer_fade(
+            project.tempo_map(),
+            ClipFade::new(clip.duration(), 0, 120, 240).unwrap(),
+        )
+        .unwrap()
+        .retained_snapshot();
+    let restored = project
+        .restore_retained_audio_root(1, snapshot.clone(), Arc::new(project.tempo_map().clone()))
+        .unwrap();
+    assert_eq!(restored.clip.retained_snapshot(), snapshot);
+    let domain = Arc::make_mut(&mut snapshot.edit.as_mut().unwrap().domain);
+    domain.fade = ClipFade::new(clip.duration() + 1, 1, 120, 240).unwrap();
+    domain.fade_start = 1;
     assert_eq!(
         project
             .restore_retained_audio_root(1, snapshot, Arc::new(project.tempo_map().clone()))
             .unwrap_err()
             .0,
-        "outer clip fades are not supported yet"
+        "outer frame fade context must be normalized"
     );
 }
 

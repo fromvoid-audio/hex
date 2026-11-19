@@ -27,6 +27,7 @@ pub(super) fn retime(
             "stretching a separated musical event source is unsupported",
         ));
     }
+    let outer_fade = edit.domain.fade_clock == AudioClipFadeClock::Outer;
     let (_, old_frames, _, _) = edit.projected_domain(tempo)?;
     let old_fade = edit.domain.fade;
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;
@@ -69,7 +70,9 @@ pub(super) fn retime(
     edit.timing = AudioClipTiming::Musical(tempo.frame_to_beat(start)?);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
-    domain.fade_start = scale(domain.fade_start, numerator, denominator)?;
+    if !outer_fade {
+        domain.fade_start = scale(domain.fade_start, numerator, denominator)?;
+    }
     if let Some(warp) = &mut domain.warp {
         for marker in &mut warp.markers {
             marker.beat = BeatTime::from_raw(scale(marker.beat.raw(), numerator, denominator)?);
@@ -87,6 +90,11 @@ pub(super) fn retime(
         }
     }
     edit.sync_content_length()?;
+    // Source retiming changes the visible geometry. Its outer instance law
+    // keeps the captured author clock and the elapsed destination context.
+    if outer_fade {
+        return Ok(());
+    }
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
     // Callers project the completed clip and apply its source-specific extent

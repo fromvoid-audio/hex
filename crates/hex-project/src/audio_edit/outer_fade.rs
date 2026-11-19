@@ -1,5 +1,5 @@
-//! Instance envelope in the unwrapped, forward destination clock. This query
-//! grants no canonical admission, saved-format support or playback activation.
+//! Instance envelope in the unwrapped, forward destination clock. Admission
+//! verifies the same projection consumed by prepared playback.
 use super::{
     AudioClipDomain, AudioClipFadeClock, AudioDomainClock, AudioFadeProjection,
     AudioViewProjection, audio_projection_beat, audio_projection_frame,
@@ -27,7 +27,7 @@ enum Author<'a> {
 }
 
 impl Clip {
-    /// Project an explicitly Outer instance fade without admitting that clock.
+    /// Project an explicitly Outer instance fade.
     /// Legacy roots and ordinary clips return None; their existing fade paths
     /// remain unchanged. Callers must separately admit/prepare supported state.
     pub fn projected_outer_fade<'a>(
@@ -128,6 +128,33 @@ impl Clip {
         }
         Ok(clip)
     }
+}
+
+pub(super) fn validate_context(
+    clip: &Clip,
+    edit: &super::AudioClipEdit,
+    tempo: &TempoMap,
+) -> Result<(), Invalid> {
+    if !clip.fade.is_neutral() || clip.audio_edit() != Some(edit) {
+        return Err(Invalid(
+            "outer fade differs from its clip's processing state",
+        ));
+    }
+    let projection = clip
+        .projected_outer_fade(tempo)?
+        .ok_or(Invalid("outer fade projection missing"))?;
+    if matches!(edit.domain.clock, AudioDomainClock::Frames(_)) {
+        projection.frame_playback_envelope()?;
+    } else {
+        if !projection.is_neutral() && clip.duration() > crate::MAX_AUDIO_DOMAIN_FRAMES {
+            return Err(Invalid(
+                "musical outer fade exceeds bounded preparation frames",
+            ));
+        }
+        let (_, end) = projection.view.outer_frame_bounds();
+        projection.domain_position_at_frame(end)?;
+    }
+    Ok(())
 }
 
 impl AudioClipDomain {

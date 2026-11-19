@@ -224,7 +224,7 @@ fn legacy_and_malformed_author_context_are_distinct_from_outer_capability() {
             .validate(&clip, &tempo, 19_174)
             .unwrap_err()
             .0,
-        "outer clip fades are not supported yet"
+        "outer fade authoring clock differs from its placement"
     );
 }
 
