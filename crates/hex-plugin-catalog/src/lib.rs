@@ -38,6 +38,10 @@
 //! folder recursion and512 bundles, with4096-byte/64-component paths. Class/JSON/output limits remain fixed. Enumeration alone does not load vendor
 //! code or establish compatibility.
 //!
+//! Default folder scans reuse successful cacheable inventories when the native
+//! tools, bundle metadata and executable still match. Full scans run discovery
+//! for all eligible bundles. Neither mode changes the admission checks for use.
+//!
 //! A batch retains at most one owned outer scanner/native helper chain at a time.
 //! Normal per-module failures are recorded alongside successful modules; missing or
 //! unconfirmed direct retirement stops the batch before another launch; that bundle
@@ -68,9 +72,10 @@
 //! must verify current source and resources.
 //!
 //! Catalog version 4 records the verified discovery tools alongside the bundle
-//! identity for a failed scan. A folder scan skips a failure only when both
-//! identities match. A single-bundle scan always retries. Versions 2 and 3
-//! migrate in memory and retain last-good reports and failure diagnostics;
+//! identity for a failed scan. An incremental folder scan skips a failure only
+//! when both identities match. A full folder or single-bundle scan always
+//! retries. Versions 2 and 3 migrate in memory and retain last-good reports
+//! and failure diagnostics;
 //! their failures lack tool provenance and are eligible for retry. Only a
 //! catalog update publishes version 4. Version 1 and newer unsupported files
 //! remain intact. A binary change with an unchanged Info.plist still requires
@@ -669,9 +674,9 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    struct Fixture(PathBuf);
+    pub(super) struct Fixture(pub(super) PathBuf);
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
                 "hex-plugin-catalog-{}-{}",
                 std::process::id(),

@@ -15,12 +15,15 @@ use gpui::AnimationExt;
 use hex_plugin_catalog::{Catalog, PluginRole, Row};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use hex_plugin_catalog::worker::ScanMode;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 enum PluginScan {
     #[cfg(all(test, feature = "ui-test-support"))]
     Selected(PathBuf),
-    Configured(hex_preferences::Vst3ScanSources),
+    Configured(hex_preferences::Vst3ScanSources, ScanMode),
     #[cfg(all(test, feature = "ui-test-support"))]
-    TestFolders(Vec<PathBuf>),
+    TestFolders(Vec<PathBuf>, ScanMode),
 }
 
 #[derive(Default)]
@@ -358,7 +361,7 @@ impl EditorView {
             .cursor_pointer()
             .tooltip(|_, cx| {
                 layout::browser_label_tooltip(
-                    "scan enabled folders · executes trusted plugin code",
+                    "scan for changes · option-click to scan all · executes trusted plugin code",
                     cx,
                 )
             })
@@ -369,7 +372,7 @@ impl EditorView {
             })))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, _, cx| {
+                cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
                     if view.browser.plugins.busy {
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         if let Some(cancel) = &view.browser.plugins.cancellation {
@@ -381,7 +384,7 @@ impl EditorView {
                             cx.notify();
                         }
                     } else if can_scan {
-                        view.scan_configured_plugins(cx);
+                        view.scan_configured_plugins(event.modifiers.alt, cx);
                     }
                 }),
             )
@@ -559,19 +562,24 @@ impl EditorView {
         self.start_plugin_scan(PluginScan::Selected(path), cx);
     }
 
-    fn scan_configured_plugins(&mut self, cx: &mut Context<Self>) {
+    fn scan_configured_plugins(&mut self, full_scan: bool, cx: &mut Context<Self>) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            let mode = if full_scan {
+                ScanMode::Full
+            } else {
+                ScanMode::Incremental
+            };
             #[cfg(all(test, feature = "ui-test-support"))]
             if let Some(roots) = self.browser.plugins.test_roots.clone() {
-                self.start_plugin_scan(PluginScan::TestFolders(roots), cx);
+                self.start_plugin_scan(PluginScan::TestFolders(roots, mode), cx);
                 return;
             }
             let scan = self.browser.source_preferences.vst3_scan_sources.clone();
-            self.start_plugin_scan(PluginScan::Configured(scan), cx);
+            self.start_plugin_scan(PluginScan::Configured(scan, mode), cx);
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let _ = cx;
+        let _ = (full_scan, cx);
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn start_plugin_scan(&mut self, request: PluginScan, cx: &mut Context<Self>) {
@@ -632,19 +640,20 @@ impl EditorView {
                                 token,
                                 ScanDeadline::interactive(),
                             ),
-                            PluginScan::Configured(scan) => {
+                            PluginScan::Configured(scan, mode) => {
                                 let folder = scan.custom_folder.filter(|_| scan.custom_enabled);
                                 match hex_plugin_catalog::roots::macos_scan_paths(
                                     scan.system,
                                     scan.user,
                                     folder,
                                 ) {
-                                    Ok(roots) => worker::scan_folders_with_deadline(
+                                    Ok(roots) => worker::scan_folders_with_mode(
                                         &catalog,
                                         &app,
                                         &roots,
                                         token,
                                         ScanDeadline::interactive(),
+                                        mode,
                                     ),
                                     Err(status) => worker::Update {
                                         catalog: None,
@@ -654,12 +663,13 @@ impl EditorView {
                                 }
                             }
                             #[cfg(all(test, feature = "ui-test-support"))]
-                            PluginScan::TestFolders(roots) => worker::scan_folders_with_deadline(
+                            PluginScan::TestFolders(roots, mode) => worker::scan_folders_with_mode(
                                 &catalog,
                                 &app,
                                 &roots,
                                 token,
                                 ScanDeadline::interactive(),
+                                mode,
                             ),
                         };
                         if let Some(catalog) = &mut update.catalog
