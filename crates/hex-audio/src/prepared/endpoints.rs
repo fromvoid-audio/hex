@@ -314,6 +314,20 @@ impl Client {
     ) -> Result<u64, PlaybackCommand> {
         self.command_from_source_with_ticket(PlaybackCommand::PlayFrom(frame), expected)
     }
+    /// Enqueue an interactive start with its captured MIDI admission choice on
+    /// the exact callback-applied source. Admission, replacement receipts and
+    /// backpressure follow [`Self::play_from_source_with_ticket`].
+    pub fn play_from_with_note_chase_source_with_ticket(
+        &mut self,
+        frame: u64,
+        note_chase: hex_engine::NoteChase,
+        expected: AppliedAudioSource,
+    ) -> Result<u64, PlaybackCommand> {
+        self.command_from_source_with_ticket(
+            PlaybackCommand::PlayFromWithNoteChase { frame, note_chase },
+            expected,
+        )
+    }
     /// Enqueue a strict seek only for the exact callback-applied source.
     /// A later replacement is reported through the ordinary action receipt.
     pub fn seek_from_source_with_ticket(
