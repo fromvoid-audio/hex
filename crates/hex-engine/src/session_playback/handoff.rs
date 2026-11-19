@@ -4718,11 +4718,19 @@ impl SessionPlayback {
                         0..old_chain.len(),
                         continuation,
                     );
-                // Appending the first lookahead suffix leaves this exact old
-                // prefix in the current chain. Transfer its history normally;
-                // classifying it as detached would duplicate/strand the tail.
-                let retained_prefix_extension = first_compensation
-                    && old_chain.len() < candidate_chain.len()
+                // An append can leave the old chain processing at the same
+                // origin, including an active hosted endpoint. Keep its
+                // history on the current path instead of also asking it to
+                // render a detached tail. Delay/clock admission is separate.
+                let native_zero_latency_append = !relocate
+                    && candidate_chain.len() == old_chain.len() + 1
+                    && candidate_track.device_chain.len() == candidate_chain.len()
+                    && candidate_track.device_chain.last().is_some_and(|node| {
+                        node.foreign_processor().is_none()
+                            && node.algorithmic_latency_frames() == Some(0)
+                    });
+                let retained_prefix_extension = old_chain.len() < candidate_chain.len()
+                    && (first_compensation || native_zero_latency_append)
                     && configuration_matches_continuation(
                         old_chain,
                         candidate_chain,
