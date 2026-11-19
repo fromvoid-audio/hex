@@ -1,7 +1,7 @@
 //! Bounded, control-owned display summaries of prepared audio.
 use super::budget::{Budget, Reservation};
 use crate::{Frame, Invalid, PreparedAudioPeak};
-use hex_project::{BeatTime, TempoMap, audio_projection_frame};
+use hex_project::{AudioClipEdit, BeatTime, TempoMap, audio_projection_frame};
 use std::sync::{Arc, OnceLock};
 
 const EVENT_SOURCE_BINS: usize = 1_024;
@@ -33,6 +33,31 @@ pub struct PreparedMusicalEventSourceClock {
 }
 
 impl PreparedMusicalEventSourceClock {
+    /// Affine composition can use a sample-for-sample read at the retained
+    /// zero. Exact constant-tempo translations may share the cached clock.
+    pub(super) fn aligned_destination_zero(
+        &self,
+        destination: &AudioClipEdit,
+        tempo: &TempoMap,
+        zero: u64,
+    ) -> Result<Option<u64>, Invalid> {
+        let destination_tempo = destination.processing_tempo(tempo);
+        if self.tempo.as_ref() != destination_tempo {
+            return Ok(None);
+        }
+        let origin = destination.processing_origin()?;
+        let cached_destination = self
+            .origin
+            .checked_sub(i128::from(zero))
+            .ok_or(Invalid("audio event source origin overflow"))?;
+        let aligned = origin == cached_destination
+            || (super::translation_free_origin(destination_tempo, origin)?
+                && super::translation_free_origin(destination_tempo, cached_destination)?);
+        Ok(aligned
+            .then(|| destination.root_frame_at(zero, tempo))
+            .transpose()?)
+    }
+
     pub(super) fn new(
         tempo: Arc<TempoMap>,
         origin: i128,

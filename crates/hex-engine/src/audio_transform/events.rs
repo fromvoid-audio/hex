@@ -1,6 +1,6 @@
 //! Worker-side event composition before the container fade. No callback work.
 use crate::{Frame, Invalid};
-use hex_project::{AudioClipEdit, AudioDomainClock, TempoMap};
+use hex_project::{AudioClipEdit, AudioDomainClock, AudioEvent, TempoMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The finite PCM root and the authored destination coordinate corresponding
@@ -10,6 +10,21 @@ pub(super) struct EventSource<'a> {
     pub(super) frames: &'a [Frame],
     pub(super) root: &'a AudioClipEdit,
     pub(super) zero_in_destination: u64,
+}
+
+pub(super) fn event_source_frame(
+    edit: &AudioClipEdit,
+    tempo: &TempoMap,
+    event: &AudioEvent,
+    frame: u64,
+    source_frame_at: impl FnOnce(u64) -> Result<u64, Invalid>,
+) -> Result<u64, Invalid> {
+    let position = edit.root_position_at(frame, tempo)?;
+    let source_position = event
+        .source_start
+        .checked_add(position.saturating_sub(event.start))
+        .ok_or(Invalid("audio event source position overflow"))?;
+    source_frame_at(source_position)
 }
 
 pub(super) fn compose(
@@ -113,12 +128,9 @@ pub(super) fn compose(
                         .checked_add(index as u64)
                         .ok_or(Invalid("audio event source position overflow"))?
                 } else {
-                    let position = edit.root_position_at((start + index) as u64, tempo)?;
-                    let source_position = event
-                        .source_start
-                        .checked_add(position.saturating_sub(event.start))
-                        .ok_or(Invalid("audio event source position overflow"))?;
-                    source.root.root_frame_at(source_position, tempo)?
+                    event_source_frame(edit, tempo, event, (start + index) as u64, |position| {
+                        Ok(source.root.root_frame_at(position, tempo)?)
+                    })?
                 };
                 *sample = *source
                     .frames

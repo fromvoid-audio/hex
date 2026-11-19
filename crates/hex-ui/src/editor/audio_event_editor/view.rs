@@ -1,6 +1,7 @@
 use super::super::{
     waveform, waveform_frame,
     waveform_geometry::{WaveformMapping, WaveformWindow},
+    waveform_musical_event,
 };
 use super::*;
 use crate::diagnostics::ActionTraceContext as _;
@@ -198,15 +199,17 @@ pub(in crate::editor) fn view(
     let source = state.waveforms.get(&clip.asset());
     // Structural edits retain their existing prepared/placement previews. The
     // amplitude path consumes this pane's same resolved events and receipt.
-    let frame_source = if placement.is_none() && operation.is_none_or(is_event_amplitude_edit) {
+    let event_source = state
+        .audio_clip_waveforms
+        .get(&clip_id)
+        .and_then(|view| view.event_source.as_ref());
+    let live_amplitude = placement.is_none() && operation.is_none_or(is_event_amplitude_edit);
+    let frame_source = if live_amplitude {
         waveform_frame::Projection::for_display(
             &state.project,
             &clip,
             source,
-            state
-                .audio_clip_waveforms
-                .get(&clip_id)
-                .and_then(|view| view.event_source.as_ref()?.frame_waveform()),
+            event_source.and_then(|source| source.frame_waveform()),
             None,
             Some(preview.clone()),
             gain_preview,
@@ -214,6 +217,18 @@ pub(in crate::editor) fn view(
     } else {
         None
     };
+    let musical_source =
+        if live_amplitude && event_source.is_some_and(|source| source.musical_clock.is_some()) {
+            waveform_musical_event::Projection::for_display(
+                &state.project,
+                &clip,
+                event_source,
+                Some(preview.clone()),
+                gain_preview,
+            )
+        } else {
+            None
+        };
     for event in &preview.events {
         let raw_a = event.start.max(content_bounds(&root).0);
         let raw_b = event.end.min(content_bounds(&root).1);
@@ -379,7 +394,9 @@ pub(in crate::editor) fn view(
                         waveform_frame::event_source_window(*event, visible_start..visible_end)?;
                     Some((source, visible))
                 });
-            let waveform_active = clip.active() || (frame_window.is_none() && prepared.is_some());
+            let musical_window = musical_source.as_ref().filter(|_| event.active);
+            let waveform_active = clip.active()
+                || (frame_window.is_none() && musical_window.is_none() && prepared.is_some());
             let displayed = if let Some(((waveform, projection), visible)) = frame_window {
                 Some(WaveformWindow {
                     waveform: Arc::clone(waveform),
@@ -389,6 +406,16 @@ pub(in crate::editor) fn view(
                         fallback: fallback.map(Arc::new),
                     },
                     visible,
+                })
+            } else if let Some((waveform, projection)) = musical_window {
+                Some(WaveformWindow {
+                    waveform: Arc::clone(waveform),
+                    mapping: WaveformMapping::MusicalEventFade {
+                        projection: Arc::clone(projection),
+                        clock: waveform_musical_event::Clock::Event(*event),
+                        fallback: fallback.map(Arc::new),
+                    },
+                    visible: visible_start..visible_end,
                 })
             } else {
                 fallback

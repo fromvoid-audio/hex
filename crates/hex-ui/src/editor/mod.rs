@@ -300,6 +300,7 @@ mod waveform_columns;
 mod waveform_frame;
 mod waveform_geometry;
 mod waveform_loop;
+mod waveform_musical_event;
 mod waveform_overrange;
 mod waveform_prepared_fade;
 mod waveform_source;

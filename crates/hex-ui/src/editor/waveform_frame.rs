@@ -264,29 +264,39 @@ pub(super) fn coarse(
     range: Range<u64>,
     remaining: &mut usize,
 ) -> Option<[CachedPeak; 2]> {
+    coarse_peaks(waveform, |visit| {
+        query.visit_ranges(range, remaining, visit)
+    })
+}
+
+pub(super) fn coarse_peaks(
+    waveform: &CachedWaveform,
+    visit_ranges: impl FnOnce(
+        &mut dyn FnMut(FrameFadeRange),
+    ) -> Result<Option<FrameFadeCoverage>, Invalid>,
+) -> Option<[CachedPeak; 2]> {
     let mut peaks = None;
     let mut available = true;
-    let coverage = query
-        .visit_ranges(range, remaining, |part| {
-            for range in part.source.into_iter().flatten() {
-                let Some(mut pair) = usize::try_from(range.start).ok().and_then(|start| {
-                    aggregate_peaks(waveform, start, usize::try_from(range.end).ok()?)
-                }) else {
-                    available = false;
-                    continue;
-                };
-                for gain in part.sample.gains() {
-                    if gain != 1.0 {
-                        for peak in &mut pair {
-                            peak.min *= gain;
-                            peak.max *= gain;
-                        }
+    let coverage = visit_ranges(&mut |part| {
+        for range in part.source.into_iter().flatten() {
+            let Some(mut pair) = usize::try_from(range.start).ok().and_then(|start| {
+                aggregate_peaks(waveform, start, usize::try_from(range.end).ok()?)
+            }) else {
+                available = false;
+                continue;
+            };
+            for gain in part.sample.gains() {
+                if gain != 1.0 {
+                    for peak in &mut pair {
+                        peak.min *= gain;
+                        peak.max *= gain;
                     }
                 }
-                merge(&mut peaks, pair);
             }
-        })
-        .ok()??;
+            merge(&mut peaks, pair);
+        }
+    })
+    .ok()??;
     if !available {
         return None;
     }

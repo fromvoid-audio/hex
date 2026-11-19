@@ -1,0 +1,84 @@
+//! Cached source peaks and their accepted clock for live musical event bends.
+use super::waveform_frame::coarse_peaks;
+use hex_engine::audio_transform::{MusicalEventFadePreview, PreparedMusicalEventSourceClock};
+use hex_project::{AudioDomainClock, AudioEvent, AudioEvents, Clip, ClipGain, Project, TempoMap};
+use hex_session::{CachedPeak, CachedWaveform, service::AudioEventSourceWaveform};
+use std::{ops::Range, sync::Arc};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Clock {
+    Arrangement,
+    Event(AudioEvent),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Projection {
+    clip: Clip,
+    tempo: TempoMap,
+    source_clock: PreparedMusicalEventSourceClock,
+    events: AudioEvents,
+    gain: ClipGain,
+}
+
+impl Projection {
+    pub(super) fn for_display(
+        project: &Project,
+        clip: &Clip,
+        prepared: Option<&AudioEventSourceWaveform>,
+        events: Option<AudioEvents>,
+        gain: Option<ClipGain>,
+    ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
+        let edit = clip.audio_edit()?;
+        let prepared = prepared?;
+        let source_clock = prepared.musical_clock.as_ref()?;
+        if project.clip(clip.id())? != clip
+            || !matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+            || edit.placement.is_some()
+            || edit.content_view.is_some()
+        {
+            return None;
+        }
+        let projection = Self {
+            clip: clip.clone(),
+            tempo: project.tempo_map().clone(),
+            source_clock: source_clock.clone(),
+            events: match events {
+                Some(events) => events,
+                None => clip.editable_audio_events().ok()?,
+            },
+            gain: gain.unwrap_or_else(|| clip.gain()),
+        };
+        Some((Arc::clone(&prepared.waveform), Arc::new(projection)))
+    }
+
+    pub(super) fn query(&self, clock: &Clock) -> Option<MusicalEventFadePreview<'_>> {
+        if !self.events.sources.is_empty() {
+            return None;
+        }
+        let events = match clock {
+            Clock::Arrangement => &self.events.events,
+            Clock::Event(event) => std::slice::from_ref(event),
+        };
+        MusicalEventFadePreview::new(
+            &self.clip,
+            &self.tempo,
+            &self.source_clock,
+            events,
+            self.gain,
+        )
+        .ok()?
+    }
+}
+
+pub(super) fn peaks(
+    query: &MusicalEventFadePreview<'_>,
+    clock: Clock,
+    waveform: &CachedWaveform,
+    range: Range<u64>,
+    remaining: &mut usize,
+) -> Option<[CachedPeak; 2]> {
+    coarse_peaks(waveform, |visit| match clock {
+        Clock::Arrangement => query.visit_arrangement(range, remaining, visit),
+        Clock::Event(event) => query.visit_event(event.id, range, remaining, visit),
+    })
+}

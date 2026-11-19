@@ -23,7 +23,7 @@ mod events;
 mod frame_fade_preview;
 pub use frame_fade_preview::{
     FrameFadeCoverage, FrameFadeEvent, FrameFadeOverrides, FrameFadePreview, FrameFadeRange,
-    FrameFadeSample,
+    FrameFadeSample, MusicalEventFadePreview,
 };
 mod granular_requirements;
 mod group;
