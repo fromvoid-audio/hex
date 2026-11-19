@@ -292,6 +292,7 @@ pub(super) fn render(source: Source, cache: Rc<RefCell<Cache>>, active: Option<(
             waveform: theme::color(theme::PaletteRole::Waveform),
             inactive: theme::color(theme::PaletteRole::Muted),
             centerline: theme::color(theme::PaletteRole::Border),
+            overrange: theme::color(theme::PaletteRole::Border),
         },
         emphasis,
     )

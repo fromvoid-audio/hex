@@ -14,17 +14,23 @@ struct Route {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
-    let mut snapshot = project.snapshot();
-    let routes: Vec<_> = std::mem::take(&mut snapshot.sidechains)
-        .into_iter()
-        .map(|route| Route {
-            device: route.device,
-            source: route.source,
-        })
-        .collect();
-    let neutral =
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let mut value = super::retained_receiver::encode(&neutral)?;
+    // Newer schemas retain this field even when the project has no corresponding state.
+    let (neutral, routes) = if !project.sidechains().is_empty() {
+        let mut snapshot = project.snapshot();
+        let routes: Vec<_> = std::mem::take(&mut snapshot.sidechains)
+            .into_iter()
+            .map(|route| Route {
+                device: route.device,
+                source: route.source,
+            })
+            .collect();
+        let neutral =
+            Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+        (Some(neutral), routes)
+    } else {
+        (None, Vec::new())
+    };
+    let mut value = super::retained_receiver::encode(neutral.as_ref().unwrap_or(project))?;
     value["sidechains"] = serde_json::to_value(routes)?;
     value["version"] = crate::SIDECHAIN_SCHEMA_VERSION.into();
     Ok(value)

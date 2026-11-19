@@ -142,6 +142,9 @@ impl EditorView {
         let Some(p) = self.audio_event_editor.pending.take() else {
             return false;
         };
+        if is_gain(&p.operation) {
+            self.service.retire_arrangement_gain_audition();
+        }
         if self.audio_event_editor.owner == Some(p.owner)
             && p.intent.is_some()
             && p.intent == self.selection_intent_epoch
@@ -168,6 +171,9 @@ impl EditorView {
             }
             Disposition::Terminal => {
                 let p = self.audio_event_editor.pending.take()?;
+                if is_gain(&p.operation) {
+                    self.service.retire_arrangement_gain_audition();
+                }
                 if let Some(clipboard) = p.clipboard {
                     self.audio_event_editor.clipboard = Some(clipboard);
                 }
@@ -193,6 +199,9 @@ impl EditorView {
                 }
             }
             Disposition::Invalidated => {
+                if is_gain(&p.operation) {
+                    self.service.retire_arrangement_gain_audition();
+                }
                 self.audio_event_editor.pending = None;
             }
         }
@@ -219,4 +228,11 @@ impl EditorView {
         }
         editor.retained_selection = None;
     }
+}
+
+fn is_gain(operation: &AudioEventEdit) -> bool {
+    matches!(
+        operation,
+        AudioEventEdit::SetGain { .. } | AudioEventEdit::SetRetainedGain { .. }
+    )
 }

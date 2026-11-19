@@ -249,16 +249,37 @@ pub(super) fn render(track: TrackId, peak: [f32; 2], height: f32) -> Div {
     render_meter(
         format!("track-output-meter-{}", track.value()),
         peak,
-        height,
+        compact_meter_height(height),
     )
 }
 
+pub(super) fn render_arrangement(track: TrackId, peak: [f32; 2], row_height: f32) -> Div {
+    render_meter(
+        format!("track-output-meter-{}", track.value()),
+        peak,
+        row_height - 6.0,
+    )
+    .mt(px(2.0))
+}
+
 pub(super) fn render_return(id: ReturnId, peak: [f32; 2], height: f32) -> Div {
-    render_meter(format!("return-output-meter-{}", id.value()), peak, height)
+    render_meter(
+        format!("return-output-meter-{}", id.value()),
+        peak,
+        compact_meter_height(height),
+    )
 }
 
 pub(super) fn render_main(peak: [f32; 2], height: f32) -> Div {
-    render_meter("main-output-meter".into(), peak, height)
+    render_meter(
+        "main-output-meter".into(),
+        peak,
+        compact_meter_height(height),
+    )
+}
+
+fn compact_meter_height(height: f32) -> f32 {
+    (height - 8.0).clamp(10.0, 42.0)
 }
 
 fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
@@ -278,7 +299,7 @@ fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
         .w(px(
             2.0 * hex_widgets::STEREO_PEAK_BAR_WIDTH + hex_widgets::STEREO_PEAK_BAR_GAP
         ))
-        .h(px((height - 8.0).clamp(10.0, 42.0)))
+        .h(px(height))
         .flex_shrink_0();
     for (side, peak) in ["left", "right"].into_iter().zip(peaks) {
         let channel_id = format!("{id}-{side}");
@@ -347,9 +368,11 @@ mod tests {
         }
         impl Render for Fixture {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .size_full()
-                    .child(render_meter("scale-probe".into(), self.peak, self.height))
+                div().size_full().child(render_meter(
+                    "scale-probe".into(),
+                    self.peak,
+                    compact_meter_height(self.height),
+                ))
             }
         }
         let handle = cx.add_window(|_, _| Fixture {

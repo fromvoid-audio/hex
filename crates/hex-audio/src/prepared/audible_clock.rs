@@ -33,6 +33,8 @@ struct Block {
     /// Monotonic performance frame at block start.
     performance: u64,
     frames: u64,
+    /// Loop coordinates from the clock that rendered this block.
+    region: Option<LoopFrames>,
 }
 
 impl Block {
@@ -66,7 +68,13 @@ impl AudibleClock {
 
     /// Record one rendered playing block that started at `position` and
     /// `performance`. A performance discontinuity discards the history.
-    pub(super) fn push(&mut self, position: u64, performance: u64, frames: usize) {
+    pub(super) fn push(
+        &mut self,
+        position: u64,
+        performance: u64,
+        frames: usize,
+        region: Option<LoopFrames>,
+    ) {
         let Ok(frames) = u64::try_from(frames) else {
             self.len = 0;
             return;
@@ -82,6 +90,7 @@ impl AudibleClock {
                 position,
                 performance,
                 frames,
+                region,
             };
         }
         self.next = (self.next + 1) % self.blocks.len();
@@ -98,13 +107,7 @@ impl AudibleClock {
 
     /// Audible Arrangement frame for the current scheduled `position` and
     /// `performance` frame, `latency` output frames behind.
-    pub(super) fn audible(
-        &self,
-        position: u64,
-        performance: u64,
-        latency: u32,
-        region: Option<LoopFrames>,
-    ) -> u64 {
+    pub(super) fn audible(&self, position: u64, performance: u64, latency: u32) -> u64 {
         let Some(newest) = self.newest() else {
             return position;
         };
@@ -120,7 +123,7 @@ impl AudibleClock {
             };
             oldest = block;
             if back <= block.frames {
-                return content_frame(block.position, block.frames - back, region);
+                return content_frame(block.position, block.frames - back, block.region);
             }
             back -= block.frames;
         }
@@ -166,7 +169,7 @@ mod tests {
         let mut played = 0;
         while played < frames {
             let count = block.min(frames - played);
-            clock.push(position, performance, count as usize);
+            clock.push(position, performance, count as usize, region);
             for _ in 0..count {
                 history.push(position);
                 position = step(position);
@@ -174,7 +177,7 @@ mod tests {
             performance += count;
             played += count;
         }
-        let audible = clock.audible(position, performance, latency, region);
+        let audible = clock.audible(position, performance, latency);
         let expected = history
             .len()
             .checked_sub(latency as usize)
@@ -197,43 +200,43 @@ mod tests {
     #[test]
     fn seek_stop_and_pause_have_defined_values() {
         let mut clock = AudibleClock::new();
-        clock.push(0, 0, 512);
-        assert_eq!(clock.audible(512, 512, 288, None), 224);
+        clock.push(0, 0, 512, None);
+        assert_eq!(clock.audible(512, 512, 288), 224);
         // Pause: the performance clock stops, so the value is frozen.
-        assert_eq!(clock.audible(512, 512, 288, None), 224);
+        assert_eq!(clock.audible(512, 512, 288), 224);
         // Seek before the next block: the new scheduled frame.
-        assert_eq!(clock.audible(48_000, 48_000, 288, None), 48_000);
+        assert_eq!(clock.audible(48_000, 48_000, 288), 48_000);
         // First block after the seek is shorter than L: still the seek target.
-        clock.push(48_000, 48_000, 128);
-        assert_eq!(clock.audible(48_128, 48_128, 288, None), 48_000);
-        clock.push(48_128, 48_128, 128);
-        assert_eq!(clock.audible(48_256, 48_256, 288, None), 48_000);
-        clock.push(48_256, 48_256, 128);
-        assert_eq!(clock.audible(48_384, 48_384, 288, None), 48_096);
+        clock.push(48_000, 48_000, 128, None);
+        assert_eq!(clock.audible(48_128, 48_128, 288), 48_000);
+        clock.push(48_128, 48_128, 128, None);
+        assert_eq!(clock.audible(48_256, 48_256, 288), 48_000);
+        clock.push(48_256, 48_256, 128, None);
+        assert_eq!(clock.audible(48_384, 48_384, 288), 48_096);
         // No latency: audible is scheduled.
-        assert_eq!(clock.audible(48_384, 48_384, 0, None), 48_384);
+        assert_eq!(clock.audible(48_384, 48_384, 0), 48_384);
         // Stop rewinds both clocks to zero.
-        assert_eq!(clock.audible(0, 0, 288, None), 0);
+        assert_eq!(clock.audible(0, 0, 288), 0);
     }
 
     #[test]
     fn fresh_seek_clears_history_even_with_a_continuous_performance_clock() {
         let mut clock = AudibleClock::new();
-        clock.push(100, 100, 20);
+        clock.push(100, 100, 20, None);
         clock.clear();
-        clock.push(4_000, 120, 10);
-        assert_eq!(clock.audible(4_010, 130, 20, None), 4_000);
+        clock.push(4_000, 120, 10, None);
+        assert_eq!(clock.audible(4_010, 130, 20), 4_000);
     }
 
     #[test]
     fn history_capacity_bounds_the_lookback() {
         let mut clock = AudibleClock::new();
         for index in 0..(CAPACITY as u64 + 10) {
-            clock.push(index, index, 1);
+            clock.push(index, index, 1, None);
         }
         let now = CAPACITY as u64 + 10;
-        assert_eq!(clock.audible(now, now, 288, None), now - 288);
+        assert_eq!(clock.audible(now, now, 288), now - 288);
         // Beyond the retained blocks, the oldest retained start.
-        assert_eq!(clock.audible(now, now, 60_000, None), 10);
+        assert_eq!(clock.audible(now, now, 60_000), 10);
     }
 }

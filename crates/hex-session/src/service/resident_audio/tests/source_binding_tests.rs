@@ -108,6 +108,140 @@ fn rebased_resident_publication_does_not_claim_the_old_preparation_origin() {
     );
 }
 
+#[test]
+fn submitted_snapshots_match_only_their_actual_applied_output_and_revision() {
+    let files = sampler_export::tests::Files::new(false);
+    let session = interactive_sampler_session(&files);
+    let observed = Arc::new(Observed::default());
+    let mut sink = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    let offline = session
+        .publish_resident_snapshot(
+            context(0),
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    assert!(offline.submission.is_none());
+    *observed.next_submission.lock().unwrap() = Some((7, 11));
+    let first = session
+        .publish_resident_snapshot(
+            context(0),
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    *observed.next_submission.lock().unwrap() = Some((7, 12));
+    let second = session
+        .publish_resident_snapshot(
+            context(0),
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    let applied = |output_identity, audio_revision, source_context, publication_in_flight| {
+        ResidentPublicationReadiness::Applied {
+            submission: ResidentRuntimeLoop {
+                output_identity,
+                audio_revision,
+                source_context,
+                source_origin: ResidentSourceOrigin::CanonicalCandidate,
+                section_loop: None,
+            },
+            publication_in_flight,
+        }
+    };
+    let exact = applied(7, 11, Some(context(0)), false);
+    let ResidentPublicationReadiness::Applied { submission, .. } = exact else {
+        panic!("applied fixture")
+    };
+    for readiness in [
+        ResidentPublicationReadiness::Pending {
+            submission,
+            applied_revision: 11,
+            publication_in_flight: true,
+        },
+        ResidentPublicationReadiness::Refused {
+            submission,
+            applied_revision: 10,
+            publication_in_flight: false,
+        },
+    ] {
+        assert!(!first.submission.unwrap().matches_applied(readiness));
+    }
+    assert!(first.submission.unwrap().matches_applied(exact));
+    assert!(!second.submission.unwrap().matches_applied(exact));
+    assert!(
+        !first
+            .submission
+            .unwrap()
+            .matches_applied(applied(8, 11, Some(context(0)), false))
+    );
+    assert!(
+        !first
+            .submission
+            .unwrap()
+            .matches_applied(applied(7, 11, Some(context(1)), false))
+    );
+    assert!(
+        !first
+            .submission
+            .unwrap()
+            .matches_applied(applied(7, 11, Some(context(0)), true))
+    );
+    assert!(
+        !first
+            .submission
+            .unwrap()
+            .matches_applied(ResidentPublicationReadiness::NoOutput)
+    );
+    observed.refuse.store(true, Ordering::Release);
+    let inputs = session
+        .resident_seek_inputs(sampler_export::Admission::default(), None, None)
+        .unwrap();
+    let mut snapshot = first;
+    assert!(
+        inputs
+            .publish(&mut snapshot, session.project(), &mut sink, context(0))
+            .is_err()
+    );
+    assert!(snapshot.submission.unwrap().matches_applied(exact));
+    observed.refuse.store(false, Ordering::Release);
+    *observed.next_submission.lock().unwrap() = Some((7, 13));
+    inputs
+        .publish(&mut snapshot, session.project(), &mut sink, context(1))
+        .unwrap();
+    assert!(
+        snapshot.submission.is_none(),
+        "a rebased context cannot identify the original preparation"
+    );
+    *observed.next_submission.lock().unwrap() = Some((0, 14));
+    inputs
+        .publish(&mut snapshot, session.project(), &mut sink, context(0))
+        .unwrap();
+    assert!(
+        snapshot.submission.is_none(),
+        "zero output identity is not a submitted source"
+    );
+    *observed.next_submission.lock().unwrap() = Some((7, 15));
+    inputs
+        .publish(&mut snapshot, session.project(), &mut sink, context(0))
+        .unwrap();
+    assert_eq!(snapshot.submission.unwrap().audio_revision, 15);
+    inputs
+        .publish(&mut snapshot, session.project(), &mut sink, context(0))
+        .unwrap();
+    assert!(
+        snapshot.submission.is_none(),
+        "offline custody is not an installed source"
+    );
+}
+
 fn render(snapshot: &Snapshot) -> Vec<hex_engine::Frame> {
     let mut playback = super::super::playback_with_loop(snapshot, None).unwrap();
     playback
@@ -1023,4 +1157,173 @@ fn resident_worker_loads_and_replaces_unassigned_sampler_originals() {
     assert!(refused.error.is_some());
     assert_eq!(refused.sampler_edit_complete, Some(20));
     assert_eq!(refused.state.project, assigned.state.project);
+}
+
+#[test]
+fn preview_runtime_publication_updates_only_the_audible_snapshot() {
+    use crate::service::resident_preview::{Identity, Preview};
+    let files = sampler_export::tests::Files::new(false);
+    let session = interactive_sampler_session(&files);
+    let observed = Arc::new(Observed::default());
+    let mut sink = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    *observed.next_submission.lock().unwrap() = Some((7, 11));
+    let canonical = session
+        .publish_resident_snapshot(
+            context(0),
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    let original = canonical.submission.unwrap();
+    let overlay = prepare(&session, &mut sink);
+    let identity = Identity::Tuning(crate::service::TuningPreviewIdentity {
+        project_generation: 0,
+        canonical_revision: 0,
+        sequence: 1,
+        key: crate::tuning_gesture::TuningGestureKey {
+            generation: 0,
+            token: 1,
+        },
+    });
+    let mut current = Some(canonical);
+    let mut preview = Some(Preview {
+        project: Arc::new(session.project().clone()),
+        snapshot: overlay,
+        identity,
+    });
+    let metadata = canonical_metadata(current.as_ref().unwrap(), context(0));
+    *observed.next_submission.lock().unwrap() = Some((7, 12));
+    crate::service::resident_preview::publish_inputs(
+        &session,
+        &mut current,
+        &mut preview,
+        &mut sink,
+        sampler_export::Admission::default(),
+        metadata,
+        ResidentPublicationPolicy::InheritRuntime,
+        RuntimeInputs::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(current.as_ref().unwrap().submission, Some(original));
+    assert_eq!(
+        preview
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .submission
+            .unwrap()
+            .audio_revision,
+        12
+    );
+    observed.refuse.store(true, Ordering::Release);
+    assert!(
+        crate::service::resident_preview::publish_inputs(
+            &session,
+            &mut current,
+            &mut preview,
+            &mut sink,
+            sampler_export::Admission::default(),
+            metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            RuntimeInputs::default(),
+            None,
+        )
+        .is_err()
+    );
+    assert_eq!(current.as_ref().unwrap().submission, Some(original));
+    assert_eq!(
+        preview
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .submission
+            .unwrap()
+            .audio_revision,
+        12
+    );
+    observed.refuse.store(false, Ordering::Release);
+    *observed.next_submission.lock().unwrap() = Some((7, 13));
+    session
+        .publish_resident_runtime_inputs(
+            current.as_mut().unwrap(),
+            &mut sink,
+            sampler_export::Admission::default(),
+            metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            RuntimeInputs::default(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        current.as_ref().unwrap().submission.unwrap().audio_revision,
+        13
+    );
+}
+
+#[test]
+fn seek_publication_never_attributes_a_different_prepared_graph_to_current() {
+    let files = sampler_export::tests::Files::new(false);
+    let session = interactive_sampler_session(&files);
+    let observed = Arc::new(Observed::default());
+    let mut sink = OfflineSink {
+        observed: Arc::clone(&observed),
+        pending: None,
+    };
+    *observed.next_submission.lock().unwrap() = Some((7, 11));
+    let mut current = session
+        .publish_resident_snapshot(
+            context(0),
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    let different = prepare(&session, &mut sink);
+    assert!(!Arc::ptr_eq(&current.prepared, &different.prepared));
+    let playback = playback_with_loop(&different, None).unwrap();
+    *observed.next_submission.lock().unwrap() = Some((7, 12));
+    session
+        .publish_resident_seek(
+            &different,
+            session.project(),
+            &mut current,
+            playback,
+            &mut sink,
+            sampler_export::Admission::default(),
+            canonical_metadata(&different, context(0)),
+            ResidentPublicationPolicy::InheritRuntime,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(current.submission.is_none());
+    let same = Snapshot {
+        source_origin: current.source_origin,
+        prepared_context: current.prepared_context,
+        submission: None,
+        prepared: Arc::clone(&current.prepared),
+        resources: current.resources.capture_on_control(usize::MAX).unwrap(),
+        inputs: current.inputs.clone(),
+        file_sources: current.file_sources.clone(),
+    };
+    let playback = playback_with_loop(&same, None).unwrap();
+    *observed.next_submission.lock().unwrap() = Some((7, 13));
+    session
+        .publish_resident_seek(
+            &same,
+            session.project(),
+            &mut current,
+            playback,
+            &mut sink,
+            sampler_export::Admission::default(),
+            canonical_metadata(&same, context(0)),
+            ResidentPublicationPolicy::InheritRuntime,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(current.submission.unwrap().audio_revision, 13);
 }

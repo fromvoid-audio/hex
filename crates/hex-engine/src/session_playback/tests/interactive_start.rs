@@ -401,37 +401,51 @@ fn stateful_seek_candidate_chases_held_note_with_empty_tails_at_fixed_block_size
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             for limiter in [None, Some(false), Some(true)] {
-                let prepared = start_fixture(0, 1 << 32, limiter);
+                // A 3,000-frame gate keeps the seek inside a held note while
+                // retaining enough frames to verify its release and tails.
+                let prepared = start_fixture(0, 1 << 29, limiter);
                 assert!(prepared.arrangement_seek_requires_preroll());
                 let latency = prepared.arrangement().main_latency_frames() as usize;
                 // Independently authored music whose note starts at the seek
                 // point and ends at the original gate; any replayed feedback
                 // or limiter history would change the PCM.
                 let mut oracle =
-                    SessionPlayback::new(start_fixture(1 << 31, 1 << 31, limiter)).unwrap();
+                    SessionPlayback::new(start_fixture(1 << 28, 1 << 28, limiter)).unwrap();
                 oracle.apply(SessionPlaybackCommand::Play).unwrap();
-                let _ = render_checkpoint_prefix(&mut oracle, 12_000);
-                let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064 + latency);
+                let _ = render_checkpoint_prefix(&mut oracle, 1_500);
+                let expected = render_checkpoint_partitioned(&mut oracle, &[256], 1_564 + latency);
+                assert!(
+                    expected[..1_500]
+                        .iter()
+                        .flatten()
+                        .any(|sample| *sample != 0.0)
+                );
+                assert!(
+                    expected[1_540 + latency..]
+                        .iter()
+                        .flatten()
+                        .all(|sample| *sample == 0.0)
+                );
                 for playing in [true, false] {
                     for block in [1, 64, 256, 512] {
                         let candidate =
                             SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
                                 Arc::clone(&prepared),
-                                12_000,
-                                12_000,
+                                1_500,
+                                1_500,
                                 playing,
                                 &AtomicBool::new(false),
                             )
                             .unwrap();
                         let mut playback =
                             Playback::from_interactive_arrangement_preroll(candidate).unwrap();
-                        assert_eq!(playback.position(), 12_000);
+                        assert_eq!(playback.position(), 1_500);
                         assert_eq!(playback.playing(), playing);
                         if !playing {
                             let mut frozen = [[1.0; 2]; 19];
                             playback.render(&mut frozen).unwrap();
                             assert_eq!(frozen, [[0.0; 2]; 19]);
-                            assert_eq!(playback.position(), 12_000);
+                            assert_eq!(playback.position(), 1_500);
                             playback.apply(PlaybackCommand::Play);
                         }
                         let mut actual = vec![[0.0; 2]; expected.len()];
@@ -445,6 +459,55 @@ fn stateful_seek_candidate_chases_held_note_with_empty_tails_at_fixed_block_size
                     }
                 }
             }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn long_stateful_seek_candidate_releases_the_held_note() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let limiter = Some(true);
+            let prepared = start_fixture(0, 1 << 32, limiter);
+            assert!(prepared.arrangement_seek_requires_preroll());
+            let latency = prepared.arrangement().main_latency_frames() as usize;
+            let mut oracle =
+                SessionPlayback::new(start_fixture(1 << 31, 1 << 31, limiter)).unwrap();
+            oracle.apply(SessionPlaybackCommand::Play).unwrap();
+            let _ = render_checkpoint_prefix(&mut oracle, 12_000);
+            let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064 + latency);
+            assert!(
+                expected[..12_000]
+                    .iter()
+                    .flatten()
+                    .any(|sample| *sample != 0.0)
+            );
+            assert!(
+                expected[12_040 + latency..]
+                    .iter()
+                    .flatten()
+                    .all(|sample| *sample == 0.0)
+            );
+            let candidate = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                prepared,
+                12_000,
+                12_000,
+                false,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            let mut playback = Playback::from_interactive_arrangement_preroll(candidate).unwrap();
+            assert_eq!(playback.position(), 12_000);
+            assert!(!playback.playing());
+            playback.apply(PlaybackCommand::Play);
+            let mut actual = vec![[0.0; 2]; expected.len()];
+            for frame in actual.chunks_mut(1) {
+                playback.render(frame).unwrap();
+            }
+            assert_eq!(actual, expected);
         })
         .unwrap()
         .join()

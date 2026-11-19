@@ -118,6 +118,64 @@ fn captures(project: &Project) -> Vec<PluginStateCapture> {
 }
 
 #[test]
+fn export_capture_projects_live_state_without_editing_the_project() {
+    struct Sink {
+        fail: bool,
+    }
+    impl WorkerAudioSink for Sink {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn capture_plugin_states(
+            &mut self,
+            input: PluginStateCaptureInput<'_>,
+        ) -> Result<Vec<PluginStateCapture>, String> {
+            assert_eq!(input.context().editor_revision, 2);
+            if self.fail {
+                return Err("capture refused".into());
+            }
+            Ok(captures(input.project))
+        }
+    }
+    let project = fixture();
+    let original = project.clone();
+    let cancellation = RequestCancellation::new(
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        0,
+    );
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 1,
+        editor_revision: 2,
+    };
+    let mut sink = Sink { fail: false };
+    let projected =
+        project_for_export_with_capture(&project, context, &cancellation, &mut sink).unwrap();
+    assert_ne!(projected, original);
+    assert_eq!(project, original);
+    assert_eq!(
+        projected,
+        project_with_captures(original.clone(), captures(&original)).unwrap()
+    );
+    sink.fail = true;
+    assert_eq!(
+        project_for_export_with_capture(&project, context, &cancellation, &mut sink).unwrap_err(),
+        "capture refused"
+    );
+    assert_eq!(project, original);
+    let control = hex_export::ExportControl::default();
+    let cancelled = cancellation.clone().with_bounce(&control);
+    assert!(control.cancel());
+    assert_eq!(
+        project_for_export_with_capture(&project, context, &cancelled, &mut sink).unwrap_err(),
+        "export cancelled"
+    );
+}
+
+#[test]
 fn save_projection_preserves_complete_model_comparison_and_host_trims() {
     let original = fixture();
     let saved = project_with_captures(original.clone(), captures(&original)).unwrap();

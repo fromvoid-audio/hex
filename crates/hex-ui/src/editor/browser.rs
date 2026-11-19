@@ -30,7 +30,10 @@ use gpui::{
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::{BrowserBuiltin, BrowserPlaces};
-use hex_session::service::{AudioPreview, PreviewFailure, PreviewSources, Request};
+use hex_session::service::{
+    AudioPreview, BROWSER_PREVIEW_WINDOW_FRAMES, PreviewFailure, PreviewSources,
+    PreviewWindowSource, Request,
+};
 use hex_widgets::TextInput;
 use std::{
     cell::{Cell, RefCell},
@@ -88,6 +91,13 @@ struct PlaybackPreviewRequest {
 enum BrowserPlaybackSource {
     File(PathBuf),
     ProjectSample(BrowserItemKey, hex_engine::Audio),
+}
+
+enum WindowDelivery {
+    Accepted,
+    Full(hex_engine::Audio),
+    Stale,
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -806,11 +816,19 @@ impl EditorView {
         self.cancel_browser_playback_preparation();
         self.browser.playback_pending = None;
         self.browser.playback_phase = Phase::Idle;
-        self.browser.playback_output = None;
+        let output = self.browser.playback_output.take();
         self.browser.playback_path = None;
         self.browser.playback_project_sample = None;
         self.browser.playback_fraction = 0.0;
-        if let Some(audio) = self.audio.as_mut() {
+        if let Some((identity, generation)) = output
+            && let Some(audio) = self.audio.as_mut().filter(|audio| {
+                audio.control.output_identity() == Some(identity)
+                    && audio
+                        .control
+                        .preview_snapshot()
+                        .is_some_and(|snapshot| snapshot.generation == generation)
+            })
+        {
             audio.control.preview_cancel();
         }
     }
@@ -973,6 +991,18 @@ impl EditorView {
         request: PlaybackPreviewRequest,
         cx: &mut Context<Self>,
     ) {
+        if let BrowserPlaybackSource::File(path) = &request.source {
+            self.start_windowed_browser_sample_playback(request.clone(), path.clone(), cx);
+        } else {
+            self.start_resident_browser_sample_playback(request, cx);
+        }
+    }
+
+    fn start_resident_browser_sample_playback(
+        &mut self,
+        request: PlaybackPreviewRequest,
+        cx: &mut Context<Self>,
+    ) {
         let cancel = Arc::new(AtomicBool::new(false));
         self.browser.playback_in_flight = Some(Arc::clone(&cancel));
         let sources = self.browser.preview_sources.clone();
@@ -1053,6 +1083,228 @@ impl EditorView {
             });
         })
         .detach();
+    }
+
+    fn start_windowed_browser_sample_playback(
+        &mut self,
+        request: PlaybackPreviewRequest,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.browser.playback_in_flight = Some(Arc::clone(&cancel));
+        #[cfg(test)]
+        let test_environment = Arc::clone(&self.test_environment);
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            #[cfg(test)]
+            let _test_environment = test_environment;
+            let open_cancel = Arc::clone(&cancel);
+            let rate = request.sample_rate;
+            let opened = cx
+                .background_executor()
+                .spawn(async move { PreviewWindowSource::open(path, rate, &open_cancel) })
+                .await;
+            let mut source = match opened {
+                Ok(source) => source,
+                Err(PreviewFailure::Cancelled) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(None, &request, cx)
+                    });
+                    return;
+                }
+                Err(PreviewFailure::SourceChanged) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(
+                            Some(PreviewFailure::SourceChanged.to_string()),
+                            &request,
+                            cx,
+                        )
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.browser.playback_in_flight = None;
+                        if request.generation == view.browser.playback_generation
+                            && !cancel.load(Ordering::Relaxed)
+                        {
+                            view.start_resident_browser_sample_playback(request, cx);
+                        } else if let Some(pending) = view.browser.playback_pending.take() {
+                            view.start_browser_sample_playback(pending, cx);
+                        }
+                    });
+                    return;
+                }
+            };
+            let total = match usize::try_from(source.output_frames()) {
+                Ok(total) => total,
+                Err(_) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(
+                            Some("sample preview length is too large".into()),
+                            &request,
+                            cx,
+                        )
+                    });
+                    return;
+                }
+            };
+            let mut position = audition_geometry::frame_at_fraction(total, request.start_fraction);
+            let started = this.update(cx, |view, _| {
+                if cancel.load(Ordering::Relaxed)
+                    || request.generation != view.browser.playback_generation
+                {
+                    return Ok(false);
+                }
+                let Some(audio) = view.audio.as_mut().filter(|audio| {
+                    audio.control.output_identity() == Some(request.output_identity)
+                        && audio.sample_rate == request.sample_rate
+                        && audio.control.preview_snapshot().is_some_and(|snapshot| {
+                            snapshot.generation == request.output_generation
+                        })
+                }) else {
+                    return Ok(false);
+                };
+                audio
+                    .control
+                    .preview_begin_windows(request.output_generation, position, total)
+                    .map(|()| true)
+                    .map_err(|error| error.to_string())
+            });
+            match started {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) | Err(_) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(None, &request, cx)
+                    });
+                    return;
+                }
+                Ok(Err(error)) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.finish_browser_window_preparation(Some(error), &request, cx)
+                    });
+                    return;
+                }
+            }
+            let mut failure = None;
+            while position < total && !cancel.load(Ordering::Relaxed) {
+                let count = (total - position).min(BROWSER_PREVIEW_WINDOW_FRAMES);
+                let read_cancel = Arc::clone(&cancel);
+                let read = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let result = source.read_window(position as u64, count, &read_cancel);
+                        (source, result)
+                    })
+                    .await;
+                source = read.0;
+                let frames = match read.1 {
+                    Ok(frames) => frames,
+                    Err(PreviewFailure::Cancelled) => break,
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                };
+                let mut window = match hex_engine::Audio::new(rate, frames) {
+                    Ok(window) => window,
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                };
+                loop {
+                    let delivery = this.update(cx, |view, _| {
+                        if cancel.load(Ordering::Relaxed)
+                            || request.generation != view.browser.playback_generation
+                        {
+                            return WindowDelivery::Stale;
+                        }
+                        let Some(audio) = view.audio.as_mut().filter(|audio| {
+                            audio.control.output_identity() == Some(request.output_identity)
+                                && audio.sample_rate == request.sample_rate
+                                && audio.control.preview_snapshot().is_some_and(|snapshot| {
+                                    snapshot.generation == request.output_generation
+                                })
+                        }) else {
+                            return WindowDelivery::Stale;
+                        };
+                        audio.control.reclaim_preview();
+                        match audio.control.preview_publish_window(
+                            request.output_generation,
+                            position,
+                            window,
+                        ) {
+                            Ok(()) => WindowDelivery::Accepted,
+                            Err(refusal)
+                                if refusal.reason
+                                    == hex_audio::sample_preview::WindowRefusalReason::Full =>
+                            {
+                                WindowDelivery::Full(refusal.audio)
+                            }
+                            Err(refusal) => WindowDelivery::Failed(refusal.to_string()),
+                        }
+                    });
+                    match delivery {
+                        Ok(WindowDelivery::Accepted) => {
+                            position += count;
+                            break;
+                        }
+                        Ok(WindowDelivery::Full(returned)) => {
+                            window = returned;
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(5))
+                                .await;
+                        }
+                        Ok(WindowDelivery::Failed(error)) => {
+                            failure = Some(error);
+                            break;
+                        }
+                        Ok(WindowDelivery::Stale) | Err(_) => {
+                            cancel.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+                if failure.is_some() {
+                    break;
+                }
+            }
+            let _ = this.update(cx, |view, cx| {
+                view.finish_browser_window_preparation(failure, &request, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn finish_browser_window_preparation(
+        &mut self,
+        failure: Option<String>,
+        request: &PlaybackPreviewRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.browser.playback_in_flight = None;
+        if request.generation == self.browser.playback_generation
+            && let Some(error) = failure
+            && let Some(audio) = self.audio.as_mut().filter(|audio| {
+                audio.control.output_identity() == Some(request.output_identity)
+                    && audio
+                        .control
+                        .preview_snapshot()
+                        .is_some_and(|snapshot| snapshot.generation == request.output_generation)
+            })
+        {
+            audio.control.preview_cancel();
+            self.browser.playback_output = None;
+            self.browser.playback_phase = Phase::Unavailable;
+            self.status = "sample preview failed".into();
+            self.error = Some(format!("sample preview failed · {error}").into());
+        }
+        if let Some(pending) = self.browser.playback_pending.take() {
+            self.start_browser_sample_playback(pending, cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -1348,7 +1600,7 @@ impl EditorView {
             Ok(preview) => *request.slot.metadata.borrow_mut() = Some(Rc::new(preview)),
             // A superseded job leaves its slot empty, so a later request retries.
             Err(PreviewFailure::Cancelled) => {}
-            Err(PreviewFailure::Failed(_)) => {
+            Err(PreviewFailure::Failed(_) | PreviewFailure::SourceChanged) => {
                 *request.slot.error.borrow_mut() =
                     Some("audio preview could not be prepared".into());
             }

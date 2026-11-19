@@ -1646,3 +1646,194 @@ fn fade_handle_hover_keeps_the_arrow_cursor(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert_style(&mut visual, selector, Idle);
 }
+
+#[gpui::test]
+fn clip_fade_shading_survives_idle_selection_and_narrow_repaints(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::TrimClip {
+            clip,
+            start: 0,
+            duration: 128,
+            source_offset: 0,
+            source_length: 128,
+        })
+        .unwrap();
+    model
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 32,
+            fade_out: 32,
+        })
+        .unwrap();
+    let (window, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let lane_width = editor.read_with(&visual, |v, _| v.drag_lanes.get(&track).unwrap().width);
+    let selector: &'static str =
+        Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
+    let shade: gpui::Background = gpui::rgba(theme::CLIP_FADE_SHADE).into();
+    for width in [160.0, 2.0] {
+        for selected in [true, false] {
+            editor.update(&mut visual, |v, cx| {
+                v.viewport = Some(Viewport {
+                    start: 0,
+                    length: (128.0 * lane_width / width) as u64,
+                });
+                v.selected_clip = selected.then_some(clip);
+                v.hovered_fade_clip = None;
+                v.fade_key_held = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let clip_selector: &'static str =
+                Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+            let actual_width = f32::from(visual.debug_bounds(clip_selector).unwrap().size.width);
+            assert!(
+                (actual_width - width).abs() < 1.0,
+                "expected width={width}, actual={actual_width}"
+            );
+            let paths = visual.rendered_path_triangles(selector);
+            assert!(
+                paths.iter().any(|path| path.color == shade),
+                "fade shade missing at width={width}, selected={selected}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn repeated_clip_shade_keeps_the_held_mesh_through_delayed_ack_and_history(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::{AudioEventEdit, AudioEventFade, AudioViewResizeOperation};
+    use std::time::Instant;
+    let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
+    let path = files.wav("original-repeat.wav", 48_000, 19_174);
+    let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(window, cx);
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Import(path)))
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
+    });
+    for command in [
+        Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    AudioEventFade::new(0, ClipFade::new(19_174, 0, 301, 3_787).unwrap()).unwrap(),
+                ),
+            },
+        },
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 76_696,
+            },
+        },
+        Command::SetClipFades {
+            clip,
+            fade_in: 13_184,
+            fade_out: 23_254,
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(Viewport {
+            start: 0,
+            // End inside the fourth fade-in: the fill then spans the complete
+            // selected bounds used by the completed-scene triangle probe.
+            length: 60_000,
+        });
+        cx.notify();
+    });
+    key(&mut visual, true, "f");
+    let shade_selector: &'static str =
+        Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
+    let shade: gpui::Background = gpui::rgba(theme::CLIP_FADE_SHADE).into();
+    let mesh = |visual: &mut VisualTestContext| {
+        visual
+            .rendered_path_triangles(shade_selector)
+            .into_iter()
+            .filter(|p| p.color == shade)
+            .map(|p| {
+                p.vertices
+                    .map(|p| [f64::from(p.x).to_bits(), f64::from(p.y).to_bits()])
+            })
+            .collect::<Vec<_>>()
+    };
+    let original = mesh(&mut visual);
+    assert!(
+        !original.is_empty(),
+        "committed repeated shade is actually painted"
+    );
+    let handle: &'static str =
+        Box::leak(format!("fade-in-curve-{}", clip.value()).into_boxed_str());
+    let from = visual.debug_bounds(handle).unwrap().center();
+    let to = point(from.x + px(9.0), from.y + px(8.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = mesh(&mut visual);
+    assert!(!held.is_empty());
+    assert_ne!(held, original, "held shade responds to the real curve drag");
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    let deadline = crate::test_wait::hang_deadline();
+    let event = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                break event;
+            }
+            editor.update(&mut visual, |v, _| v.receive(event));
+        }
+        assert!(Instant::now() < deadline, "real repeated fade terminal");
+        std::thread::yield_now();
+    };
+    assert!(event.error.is_none(), "{:?}", event.error);
+    key(&mut visual, false, "f");
+    for _ in 0..3 {
+        editor.update(&mut visual, |v, cx| {
+            v.cancel_fade_gesture(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            mesh(&mut visual),
+            held,
+            "released preview remains painted before ACK"
+        );
+        editor.read_with(&visual, |v, _| assert!(v.pending_fade.is_some()));
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.pending_fade.is_none()));
+    assert_eq!(
+        mesh(&mut visual),
+        held,
+        "canonical installation retires the same shade"
+    );
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    assert_eq!(mesh(&mut visual), original);
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    assert_eq!(mesh(&mut visual), held);
+}

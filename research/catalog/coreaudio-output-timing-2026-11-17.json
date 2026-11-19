@@ -1,0 +1,35 @@
+{
+  "platform": "macos arm64",
+  "observed_at": "2026-11-17T17:33:00Z",
+  "source_base": "af2c5d5ab8f1d34228ac522d2cfabdba45c6ab55",
+  "sources": [
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreAudio.framework/Versions/A/Headers/AudioHardwareBase.h",
+      "sha256": "cbac54e8edb7ee99bf10c18a2db044e01c47645985b2f2824623f3f8371a7c4e"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/AudioToolbox.framework/Versions/A/Headers/AudioUnitProperties.h",
+      "sha256": "985fd288a180868db0f8ffccaad4c9151d20a28f0c685c63e846031ce6b0de43"
+    }
+  ],
+  "primary_web_sources": [
+    "https://developer.apple.com/documentation/avfaudio/avaudioionode/presentationlatency",
+    "https://chromium.googlesource.com/chromium/src/+/0a7de7854244b9838d94f596a312b9a15036efed/audio/mac/core_audio_util_mac.cc"
+  ],
+  "observations": [
+    "Apple SDK declares device and stream latency in frames and sums those two hardware contributions; safety offset and buffer are separate properties. AudioUnit latency is a separate seconds-valued property.",
+    "The current pinned CPAL callback timestamp only adds buffer duration.",
+    "Actual unstarted pinned output unit probe reported device/client44100Hz, buffer512, safety13, device13, stream0, AudioUnit0seconds. This is declared data, not physical measurement.",
+    "Chromium primary implementation records a later Apple clarification that AudioUnit latency includes device latency; this is implementation evidence of overlap risk, not an independently verified universal rule."
+  ],
+  "inference": [
+    "Read all declared components separately through the existing Core Audio boundary; do not blindly sum AudioUnit and device values.",
+    "Uniform stream latency permits a common declared hardware path across current output streams; refuse nonuniform streams instead of assuming a channel mapping."
+  ],
+  "unknowns": [
+    "AudioUnit/device overlap and full presentation composition for every supported route.",
+    "Ongoing validity across device, stream, buffer, safety, latency and format changes.",
+    "Actual physical output latency, callback deadlines and listening acceptance."
+  ],
+  "boundary_decision": "Extend only excluded CPAL native property queries with a safe control-only copied observation. No Hex unsafe, callback native queries, extra device ownership, live-known timing or transport change. A future source-bound consumer must establish composition and invalidation before using a known live plan."
+}

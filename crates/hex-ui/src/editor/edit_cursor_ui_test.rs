@@ -6,6 +6,37 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn plugin_transport_space_uses_the_current_arrangement_play_start(cx: &mut TestAppContext) {
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        view.audio_events = rx;
+        let generation = view.project_generation;
+        tx.send(crate::EditorAudioEvent::PluginTransportToggle {
+            project_generation: generation + 1,
+        })
+        .unwrap();
+        assert!(!view.poll_editor_audio_events(cx));
+        assert_eq!(view.last_transport_command, None);
+
+        tx.send(crate::EditorAudioEvent::PluginTransportToggle {
+            project_generation: generation,
+        })
+        .unwrap();
+        assert!(view.poll_editor_audio_events(cx));
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(
+                view.playback_start_frame()
+            ))
+        );
+    });
+}
+
+#[gpui::test]
 fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut TestAppContext) {
     use gpui::{MouseDownEvent, MouseUpEvent};
     use hex_engine::PlaybackCommand::PlayFrom;
@@ -332,6 +363,67 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
     editor.read_with(&visual, |view, _| {
         assert_ne!(view.project_point_cursor().unwrap().frame, placed);
     });
+}
+
+#[gpui::test]
+fn dragging_below_the_last_track_selects_project_time(cx: &mut TestAppContext) {
+    let (project, first, last, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let viewport = super::viewport::Viewport {
+        start: 48_000,
+        length: 128_000,
+    };
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(viewport);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let (lane, last_row) = editor.read_with(&visual, |view, _| {
+        (
+            view.drag_lanes[&first],
+            view.painted_track_drop_lane(last).unwrap(),
+        )
+    });
+    let body = visual.debug_bounds("arrangement-content").unwrap();
+    let last_bottom = px(last_row.top + last_row.height);
+    assert!(
+        last_bottom < body.bottom(),
+        "the drag starts in visible space below the last track"
+    );
+    let y = (last_bottom + body.bottom()) / 2.0;
+    let at = |fraction| point(px(lane.left + lane.width * fraction), y);
+    let frame_at = |x| super::seek::pointer_to_frame(x, lane.left, lane.width, viewport).unwrap();
+    let start = at(0.65);
+    let end = at(0.25);
+    let free = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(start, MouseButton::Left, free);
+    visual.simulate_mouse_move(end, MouseButton::Left, free);
+    visual.run_until_parked();
+
+    let assert_range = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let range = view
+                .normalized_time_selection()
+                .expect("project range from empty space");
+            assert!(view.time_selection_project_scope);
+            assert_eq!(range.tracks(), &[first, last]);
+            assert_eq!(
+                (range.start(), range.end()),
+                (frame_at(f32::from(end.x)), frame_at(f32::from(start.x)))
+            );
+            assert_eq!(view.last_transport_command, None);
+        });
+    };
+    assert_range(&visual);
+    visual.simulate_mouse_up(end, MouseButton::Left, free);
+    visual.run_until_parked();
+    assert_range(&visual);
+    assert!(visual.debug_bounds("main-project-time-selection").is_some());
 }
 
 #[gpui::test]
@@ -1761,8 +1853,11 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         sampler_load_complete: None,
         sampler_edit_complete: None,
         plugin_effect_complete: Vec::new(),
+        device_insert_confirmation: None,
+        device_insert_complete: None,
         plugin_parameter_observation: false,
         plugin_parameters: None,
+        plugin_parameter_conversion: None,
         computer_keyboard_complete: None,
         midi_take_complete: None,
         device_automation_take_complete: None,
@@ -3171,7 +3266,12 @@ fn locked_point_moves_on_click_but_not_range_or_loop_and_invalidates_on_replacem
     visual.simulate_click(at(0.125), Modifiers::default());
     visual.run_until_parked();
     let bottom = visual.debug_bounds("time-marker-bottom-start").unwrap();
-    visual.simulate_click(bottom.center(), Modifiers::default());
+    visual.simulate_mouse_down(bottom.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.valid_locked_play_start().is_some());
+        assert!(v.time_selection_gesture.is_none());
+    });
+    visual.simulate_mouse_up(bottom.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let original = editor.read_with(&visual, |v, _| v.valid_locked_play_start().unwrap().frame);
     visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());

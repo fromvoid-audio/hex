@@ -499,22 +499,53 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                 .is_err()
             );
             let path = directory.0.join("refused.wav");
-            for (start, frames, resources, control) in [
-                (0, 1, &foreign.resources, ExportControl::default()),
-                (u64::MAX, 2, &f.resources, ExportControl::default()),
+            let mut retained = std::collections::BTreeSet::new();
+            let mut assert_refused = |result: Result<
+                hex_export::ExportReport,
+                hex_export::ExportError,
+            >,
+                                      expect_stage: bool| {
+                match result {
+                    Err(hex_export::ExportError::StagingRetained { path, .. }) if expect_stage => {
+                        assert!(path.is_file(), "reported stage must exist");
+                        assert!(retained.insert(path), "each stage has a distinct location");
+                    }
+                    Err(hex_export::ExportError::StagingRetained { .. }) => {
+                        panic!("unexpected retained stage");
+                    }
+                    Err(_) if !expect_stage => {}
+                    other => panic!("unexpected export result: {other:?}"),
+                }
+                assert!(!path.exists(), "refused export must not publish output");
+                let actual: std::collections::BTreeSet<_> = fs::read_dir(&directory.0)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(actual, retained, "every retained file must be reported");
+            };
+            for (start, frames, resources, control, expect_stage) in [
+                (0, 1, &foreign.resources, ExportControl::default(), true),
+                (u64::MAX, 2, &f.resources, ExportControl::default(), false),
                 (
                     hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES + 1,
                     1,
                     &f.resources,
                     ExportControl::default(),
+                    true,
                 ),
-                (0, 1, &f.resources, {
-                    let control = ExportControl::default();
-                    control.cancel();
-                    control
-                }),
+                (
+                    0,
+                    1,
+                    &f.resources,
+                    {
+                        let control = ExportControl::default();
+                        control.cancel();
+                        control
+                    },
+                    false,
+                ),
             ] {
-                assert!(
+                assert_refused(
                     hex_export::render_prepared_controlled_with_device_resources(
                         &path,
                         Arc::clone(&f.revision),
@@ -522,27 +553,28 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                         start,
                         frames,
                         ExportSignal::Main,
-                        &control
-                    )
-                    .is_err()
+                        &control,
+                    ),
+                    expect_stage,
                 );
-                assert!(!path.exists());
-                assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
             }
-            assert!(hex_export::render_prepared_new(&path, Arc::clone(&f.revision), 0, 1).is_err());
-            assert!(
+            assert_refused(
+                hex_export::render_prepared_new(&path, Arc::clone(&f.revision), 0, 1),
+                true,
+            );
+            assert_refused(
                 hex_export::render_bounce_new_with_device_resources(
                     &path,
                     Arc::clone(&f.revision),
                     &f.resources,
                     0,
                     1,
-                    f32::NAN
-                )
-                .is_err()
+                    f32::NAN,
+                ),
+                false,
             );
             let looped = fixture(true);
-            assert!(
+            assert_refused(
                 hex_export::render_prepared_controlled_with_device_resources(
                     &path,
                     looped.revision,
@@ -550,11 +582,10 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                     129,
                     1,
                     ExportSignal::Main,
-                    &ExportControl::default()
-                )
-                .is_err()
+                    &ExportControl::default(),
+                ),
+                true,
             );
-            assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
         })
         .unwrap()
         .join()

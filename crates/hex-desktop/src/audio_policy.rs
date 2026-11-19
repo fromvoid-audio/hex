@@ -8,6 +8,7 @@ use hex_session::SourcePlanReservation;
 pub(super) struct AudioPolicy {
     pub(super) plugins: PluginPolicy,
     pub(super) stream: hex_stream::StreamConfig,
+    pub(super) granular: GranularPolicy,
     pub(super) readiness: hex_stream::StreamReadinessReservation,
     pub(super) publication: AudioCandidatePublicationReservation,
     pub(super) resident_native: hex_session::ResidentNativeReservation,
@@ -17,6 +18,28 @@ pub(super) struct AudioPolicy {
     pub(super) ordinary_graph_metadata_bytes: usize,
     pub(super) ordinary_stream_metadata_bytes: usize,
     pub(super) ordinary_domains: hex_audio::AudioCandidateDomainReservation,
+}
+/// Per-domain control construction and retained bank DATA; no source-duration PCM.
+/// At most two domains coexist. Root separately admits actual runtime backing,
+/// handles/readers/workers; opaque allocator/Arc/OS/thread costs are not bytes here.
+#[derive(Clone, Copy)]
+pub(crate) struct GranularPolicy {
+    pub max_bank_bytes: usize,
+    pub max_construction_bytes: usize,
+}
+impl GranularPolicy {
+    pub const fn initial() -> Self {
+        Self {
+            max_bank_bytes: 512 * 1024 * 1024,
+            max_construction_bytes: 640 * 1024 * 1024,
+        }
+    }
+    // The host re-quotes actual complete runtime DATA before starting workers.
+    // This allowance includes the bank and bounded queues/metadata/loan rows;
+    // exceeding it refuses there, rather than silently enlarging the pool.
+    pub const fn runtime_allowance(self) -> usize {
+        self.max_bank_bytes + 16 * 1024 * 1024
+    }
 }
 /// Finite native source/history custody, independent of PCM/ordinary graph caps.
 /// Actual Root construction validates this reserved pool before client exposure.
@@ -108,6 +131,7 @@ impl AudioPolicy {
     }
     pub(super) fn new() -> Result<Self, String> {
         let plugins = PluginPolicy::new()?;
+        let granular = GranularPolicy::initial();
         let stream = hex_stream::StreamConfig::initial();
         let readiness = hex_stream::StreamReadinessReservation {
             extents_per_role: stream
@@ -161,10 +185,12 @@ impl AudioPolicy {
         let domain_data = fixed
             .retained_data_bytes
             .checked_add(variable)
+            .and_then(|n| n.checked_add(granular.runtime_allowance()))
             .ok_or("source reservation overflow")?;
         let domain_peak = fixed
             .construction_peak_data_bytes
             .checked_add(variable)
+            .and_then(|n| n.checked_add(granular.runtime_allowance()))
             .ok_or("source reservation overflow")?;
         let retained = graph
             .max_prepared_data_bytes
@@ -199,6 +225,9 @@ impl AudioPolicy {
                 )
             })
             .ok_or("audio handle reservation overflow")?;
+        let handles = handles
+            .checked_add((8 + 2 * stream.max_sources) * 2)
+            .ok_or("granular handle reservation overflow")?;
         let publication = AudioCandidatePublicationReservation {
             runtime_slots: RUNTIME_CELLS,
             archive_slots: RUNTIME_CELLS,
@@ -328,6 +357,7 @@ impl AudioPolicy {
         Ok(Self {
             plugins,
             stream,
+            granular,
             readiness,
             publication,
             resident_native,

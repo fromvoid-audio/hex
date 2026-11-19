@@ -203,6 +203,7 @@ fn original_root_extends_only_acknowledged_targets_with_isolated_constructor_bas
             ])
             .env("HEX_ROOT_PARAMETER_EXTENSION_CHILD", "1")
             .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .env("RUST_MIN_STACK", "16777216")
             .output()
             .unwrap();
         assert!(

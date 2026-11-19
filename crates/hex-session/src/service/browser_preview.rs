@@ -2,21 +2,22 @@
 //! decoding, source-rate waveform summaries for drag feedback and output-rate
 //! conversion for audition.
 //!
-//! One [`PreviewSources`] handle is shared by every preview job of a browser.
-//! It decodes each source once and shares the decoded PCM through a small
-//! least-recently-used cache, keyed by path, file length and modification
-//! time, so a waveform summary followed by audition of the same unchanged file
-//! decodes it once. Concurrent requests for one path wait for the single
-//! in-flight decode instead of starting another. The waveform never resamples:
-//! its bins summarise the source at its own rate and span the converted
-//! playback length.
+//! One [`PreviewSources`] handle is shared by the browser's waveform and
+//! resident-fallback jobs. It shares decoded PCM through a small least-recently-
+//! used cache keyed by path, file length and modification time; concurrent
+//! resident requests for a path wait for the same in-flight decode. Incremental
+//! fixed-frame WAV audition instead uses [`PreviewWindowSource`] and can open a
+//! separate descriptor while waveform preparation is still running. The
+//! waveform never resamples: its bins summarise the source at its own rate and
+//! span the converted playback length.
 //!
-//! Every job takes a cooperative cancellation flag. Decoding polls it every
+//! Every job takes a cooperative cancellation flag. Resident decoding polls it every
 //! 16 KiB read and 65,536 PCM frames, conversion every 65,536 output frames and
 //! a waiter every [`LOADING_POLL`], so a superseded job stops within that
 //! bounded work and reports [`PreviewFailure::Cancelled`]. Waveform peak scanning
 //! also polls at most every 65,536 frames, including for an already cached source.
-//! A cancelled or failed decode caches nothing.
+//! A cancelled or failed decode caches nothing. Window reads check before and
+//! after their bounded read and conversion; an individual OS read can still block.
 //!
 //! Does not own audition playback, publication to the audio callback or the
 //! browser's request sequencing; `hex-ui` decides which job is current.
@@ -67,6 +68,8 @@ pub struct AudioPreview {
 pub enum PreviewFailure {
     /// The caller's cancellation flag was observed; nothing was cached.
     Cancelled,
+    /// The opened file no longer matches its observed path or identity.
+    SourceChanged,
     /// A lowercase, user-presentable explanation.
     Failed(String),
 }
@@ -75,6 +78,7 @@ impl PreviewFailure {
     fn from_import(error: ImportError) -> Self {
         match error {
             ImportError::Cancelled => Self::Cancelled,
+            ImportError::SourceChanged => Self::SourceChanged,
             other => Self::Failed(hex_storage::text::lowercase_outside_verbatim(
                 &other.to_string(),
             )),
@@ -86,6 +90,9 @@ impl fmt::Display for PreviewFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cancelled => f.write_str("sample preview cancelled"),
+            Self::SourceChanged => {
+                f.write_str("audio file changed while preparing preview · retry")
+            }
             Self::Failed(reason) => f.write_str(reason),
         }
     }

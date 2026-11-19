@@ -443,13 +443,10 @@ fn timed_project_taps_keep_pcm_clock_and_offsets_across_partitions() {
 }
 
 #[test]
-fn timed_project_tap_handles_section_split_invalid_schedule_and_reuse() {
+fn timed_project_tap_handles_transport_splits_invalid_schedule_and_reuse() {
     use crate::{ProjectOutputTap, ProjectSignal};
     let (mut playback, samples) = fixture(true);
     playback.apply(PlaybackCommand::Play);
-    playback
-        .arm_section_once(hex_project::LoopRegion::new(0, 64, false).unwrap())
-        .unwrap();
     let mut seen = Vec::new();
     let mut observe = |signal, offset, frames: &[Frame]| {
         if signal == ProjectSignal::Master {
@@ -473,10 +470,16 @@ fn timed_project_tap_handles_section_split_invalid_schedule_and_reuse() {
     );
     assert_eq!(output, [[9.0; 2]; 96]);
     assert!(playback.playing());
-    let commands = [TimedTransportCommand {
-        offset: 16,
-        command: PlaybackCommand::Play,
-    }];
+    let commands = [
+        TimedTransportCommand {
+            offset: 16,
+            command: PlaybackCommand::Play,
+        },
+        TimedTransportCommand {
+            offset: 64,
+            command: PlaybackCommand::Pause,
+        },
+    ];
     playback
         .render_with_timed_transport_and_signal_observers(
             &mut output,

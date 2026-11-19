@@ -408,6 +408,149 @@ mod tests {
         QueuedRequest::continuation(request, &std::sync::atomic::AtomicU64::new(intent))
     }
 
+    #[derive(Default)]
+    struct ControlledCallback {
+        ready: bool,
+        cancelled: bool,
+    }
+    impl WorkerAudioSink for ControlledCallback {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {}
+        fn begin_section_edit(
+            &mut self,
+            _: hex_engine::AudioSourceContext,
+            _: bool,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
+            self.ready
+                .then(|| ArrangementEditPosition::from_frames(0, false, None))
+        }
+        fn cancel_section_edit(&mut self) {
+            self.cancelled = true;
+        }
+    }
+
+    #[test]
+    fn parked_lease_serves_query_orders_mutation_and_resolves_or_expires() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "test".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let hex_project::Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let query = || {
+            queued(
+                Request::SaveDevicePreset {
+                    owner: preset::Owner {
+                        project_generation: 0,
+                        revision: 0,
+                        device,
+                        class: hex_engine::NativeDeviceClass::Effect,
+                        type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    },
+                    path: "unused".into(),
+                },
+                0,
+            )
+        };
+        let mut sink = ControlledCallback::default();
+        let mut fence = Fence::default();
+        assert!(
+            fence
+                .defer(Some(&mut sink), queued(Request::Undo, 0), CONTEXT, false)
+                .is_none()
+        );
+        // A future start holds the logical clock before the deadline even if the
+        // test process is descheduled; no runtime timing behavior is changed.
+        let Some(State::Pending { begun, .. }) = &mut fence.state else {
+            panic!("pending")
+        };
+        *begun = Instant::now() + Duration::from_secs(3600);
+        let served = fence
+            .next(Some(&mut sink), false, |_| false, || Some(query()))
+            .unwrap();
+        assert!(matches!(served.request, Request::SaveDevicePreset { .. }));
+        assert!(
+            fence
+                .next(
+                    Some(&mut sink),
+                    false,
+                    |_| false,
+                    || Some(queued(Request::Redo, 0))
+                )
+                .is_none()
+        );
+        sink.ready = true;
+        let parked = fence
+            .next(
+                Some(&mut sink),
+                false,
+                |_| false,
+                || panic!("held request blocks fifo"),
+            )
+            .unwrap();
+        assert!(matches!(parked.request, Request::Undo));
+        assert!(fence.take(CONTEXT).unwrap().result.is_ok());
+        fence.finish_request(Some(&mut sink));
+        assert!(matches!(
+            fence
+                .next(Some(&mut sink), false, |_| false, || panic!("fifo"))
+                .unwrap()
+                .request,
+            Request::Redo
+        ));
+        assert!(!sink.cancelled);
+
+        sink.ready = false;
+        assert!(
+            fence
+                .defer(Some(&mut sink), queued(Request::Undo, 0), CONTEXT, false)
+                .is_none()
+        );
+        let Some(State::Pending { begun, .. }) = &mut fence.state else {
+            panic!("pending")
+        };
+        *begun = Instant::now() - FENCE_DEADLINE;
+        let expired = fence
+            .next(
+                Some(&mut sink),
+                false,
+                |_| false,
+                || panic!("expired before fifo"),
+            )
+            .unwrap();
+        assert!(matches!(expired.request, Request::Undo));
+        assert!(matches!(
+            fence.take(CONTEXT).unwrap().result,
+            Err(SessionError::Invalid(NOT_ACKNOWLEDGED))
+        ));
+        assert!(sink.cancelled);
+    }
+
     #[test]
     fn project_replacement_releases_a_parked_lease_without_waiting() {
         let mut sink = SilentCallback::default();

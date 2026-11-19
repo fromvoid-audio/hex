@@ -23,7 +23,10 @@ pub(crate) type DrawOrder = u32;
 
 #[derive(Default)]
 pub(crate) struct Scene {
-    pub(crate) paint_operations: Vec<PaintOperation>,
+    paint_operations: Vec<PaintOperation>,
+    // Sorted paint indices immediately after an outermost start or end.
+    outer_layer_boundaries: Vec<usize>,
+    unmatched_layer_end: Option<usize>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
     pub(crate) shadows: Vec<Shadow>,
@@ -38,6 +41,8 @@ pub(crate) struct Scene {
 impl Scene {
     pub fn clear(&mut self) {
         self.paint_operations.clear();
+        self.outer_layer_boundaries.clear();
+        self.unmatched_layer_end = None;
         self.primitive_bounds.clear();
         self.layer_stack.clear();
         self.paths.clear();
@@ -55,14 +60,32 @@ impl Scene {
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
+        let outermost = self.layer_stack.is_empty();
         self.layer_stack.push(order);
-        self.paint_operations
-            .push(PaintOperation::StartLayer(bounds));
+        self.record_layer_start(bounds, outermost);
     }
 
     pub fn pop_layer(&mut self) {
-        self.layer_stack.pop();
+        let matched = self.layer_stack.pop().is_some();
+        self.record_layer_end(matched && self.layer_stack.is_empty());
+        if !matched && self.unmatched_layer_end.is_none() {
+            self.unmatched_layer_end = Some(self.len());
+        }
+    }
+
+    fn record_layer_start(&mut self, bounds: Bounds<ScaledPixels>, outermost: bool) {
+        self.paint_operations
+            .push(PaintOperation::StartLayer(bounds));
+        if outermost {
+            self.outer_layer_boundaries.push(self.len());
+        }
+    }
+
+    fn record_layer_end(&mut self, outermost: bool) {
         self.paint_operations.push(PaintOperation::EndLayer);
+        if outermost {
+            self.outer_layer_boundaries.push(self.len());
+        }
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
@@ -172,27 +195,17 @@ impl Scene {
         let Some(operations) = prev_scene.paint_operations.get(range.clone()) else {
             return false;
         };
-        let mut depth = 0_usize;
-        for operation in &prev_scene.paint_operations[..range.start] {
-            match operation {
-                PaintOperation::StartLayer(_) => {
-                    let Some(next) = depth.checked_add(1) else {
-                        return false;
-                    };
-                    depth = next;
-                }
-                PaintOperation::EndLayer => {
-                    let Some(next) = depth.checked_sub(1) else {
-                        return false;
-                    };
-                    depth = next;
-                }
-                PaintOperation::Primitive(_) => {}
-            }
-        }
-        if depth != 0 {
+        let preceding_boundaries = prev_scene
+            .outer_layer_boundaries
+            .partition_point(|end| *end <= range.start);
+        if !preceding_boundaries.is_multiple_of(2)
+            || prev_scene
+                .unmatched_layer_end
+                .is_some_and(|end| end <= range.start)
+        {
             return false;
         }
+        let mut depth = 0_usize;
         let mut union = None::<Bounds<ScaledPixels>>;
         let mut min_order = u32::MAX;
         let mut max_order = 0_u32;
@@ -268,10 +281,14 @@ impl Scene {
                         );
                     }
                 }
-                PaintOperation::StartLayer(bounds) => self
-                    .paint_operations
-                    .push(PaintOperation::StartLayer(*bounds)),
-                PaintOperation::EndLayer => self.paint_operations.push(PaintOperation::EndLayer),
+                PaintOperation::StartLayer(bounds) => {
+                    self.record_layer_start(*bounds, depth == 0);
+                    depth += 1;
+                }
+                PaintOperation::EndLayer => {
+                    depth -= 1;
+                    self.record_layer_end(depth == 0);
+                }
             }
         }
         true
@@ -1755,10 +1772,30 @@ mod replay_verification {
         refused(&mut destination, 2..3, &previous)?; // End without start.
         refused(&mut destination, 4..5, &previous)?; // Invalid internal range.
         refused(&mut destination, 0..0, &previous)?; // Empty range safely falls back.
+        let mut nested = Scene::default();
+        nested.push_layer(area);
+        nested.push_layer(area);
+        nested.insert_primitive(primitive(1, 1, area, area));
+        nested.pop_layer();
+        nested.insert_primitive(primitive(1, 2, area, area));
+        nested.pop_layer();
+        nested.insert_primitive(primitive(1, 3, area, area));
+        refused(&mut destination, 2..3, &nested)?;
+        refused(&mut destination, 4..5, &nested)?;
+        let mut replayed = Scene::default();
+        require(
+            replayed.try_bulk_replay(0..7, &nested),
+            "balanced nested layer should replay",
+        )?;
+        refused(&mut destination, 2..3, &replayed)?;
+        refused(&mut destination, 4..5, &replayed)?;
+        require(
+            destination.try_bulk_replay(6..7, &replayed),
+            "range after outer layer should replay",
+        )?;
+        destination.clear();
         let mut malformed_prefix = Scene::default();
-        malformed_prefix
-            .paint_operations
-            .push(PaintOperation::EndLayer);
+        malformed_prefix.pop_layer();
         malformed_prefix
             .paint_operations
             .push(PaintOperation::Primitive(primitive(1, 2, area, area)));
@@ -1791,15 +1828,11 @@ mod replay_verification {
         }
         let negative = bounds(0.0, 0.0, -1.0, 10.0, 1.0);
         let mut invalid_layer = Scene::default();
-        invalid_layer
-            .paint_operations
-            .push(PaintOperation::StartLayer(negative));
+        invalid_layer.push_layer(negative);
         invalid_layer
             .paint_operations
             .push(PaintOperation::Primitive(primitive(1, 7, area, area)));
-        invalid_layer
-            .paint_operations
-            .push(PaintOperation::EndLayer);
+        invalid_layer.pop_layer();
         refused(&mut destination, 0..3, &invalid_layer)?;
         for (extent, mask) in [
             (negative, area),

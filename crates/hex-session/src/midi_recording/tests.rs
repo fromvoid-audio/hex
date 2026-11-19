@@ -347,6 +347,72 @@ fn capture_source() -> hex_engine::midi_capture::MidiCaptureSource {
 }
 
 #[test]
+fn latency_corrected_take_clips_preroll_and_finishes_at_the_audible_end() {
+    use hex_engine::midi_capture::*;
+    let source = capture_source();
+    let mut take = MidiTake::new_with_latency(
+        100,
+        110,
+        MidiCaptureClock {
+            content_frame: 100,
+            performance_frame: 1_000,
+        },
+        3,
+    )
+    .unwrap();
+    for (id, performance_frame, frame, event) in [
+        (
+            1,
+            1_001,
+            100,
+            MidiCaptureEvent::On {
+                pitch: 60,
+                velocity: 90,
+            },
+        ),
+        (1, 1_002, 100, MidiCaptureEvent::Off),
+        (
+            2,
+            1_004,
+            101,
+            MidiCaptureEvent::On {
+                pitch: 64,
+                velocity: 80,
+            },
+        ),
+        (2, 1_012, 109, MidiCaptureEvent::Off),
+    ] {
+        take.push(
+            AcceptedMidiNote {
+                source,
+                occurrence_id: id,
+                performance_frame,
+                event,
+            },
+            frame,
+        )
+        .unwrap();
+    }
+    let end = take
+        .finish(MidiCaptureClock {
+            content_frame: 113,
+            performance_frame: 1_013,
+        })
+        .unwrap();
+    assert_eq!(end, 110);
+    assert_eq!(
+        take.notes(),
+        &[RecordedMidiNote {
+            start_frame: 101,
+            end_frame: 109,
+            pitch: 64,
+            channel: 0,
+            velocity: 80,
+        }]
+    );
+}
+
+#[test]
 fn delivered_short_notes_chords_and_stop_pair_by_occurrence_and_keep_take_until_ack() {
     use hex_engine::midi_capture::*;
     let source = capture_source();
@@ -442,6 +508,51 @@ fn delivered_short_notes_chords_and_stop_pair_by_occurrence_and_keep_take_until_
             .is_some()
     );
     assert_eq!(take.notes().len(), 3);
+}
+
+#[test]
+fn seven_frame_corrected_note_commits_at_the_heard_arrangement_beat() {
+    use hex_engine::midi_capture::*;
+    let (project, track, clip) = fixture();
+    let binding = MidiTakeBinding::capture(&project, track, clip).unwrap();
+    let mut take = MidiTake::new_with_latency(
+        8_000,
+        16_000,
+        MidiCaptureClock {
+            content_frame: 8_507,
+            performance_frame: 100,
+        },
+        7,
+    )
+    .unwrap();
+    let mut event = AcceptedMidiNote {
+        source: capture_source(),
+        occurrence_id: 1,
+        performance_frame: 100,
+        event: MidiCaptureEvent::On {
+            pitch: 60,
+            velocity: 93,
+        },
+    };
+    take.push(event, 8_500).unwrap();
+    event.performance_frame = 104;
+    event.event = MidiCaptureEvent::Off;
+    take.push(event, 8_504).unwrap();
+    let end = take
+        .finish(MidiCaptureClock {
+            content_frame: 8_512,
+            performance_frame: 105,
+        })
+        .unwrap();
+    let Command::AddMidiNotes { notes, .. } = finish_take(&project, &binding, take.notes(), end)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("midi take command")
+    };
+    // At 120 bpm and 8 kHz the audible frame is 1/8 beat into the clip,
+    // whose source starts at beat 1.
+    assert_eq!(notes[0].start, BeatTime::from_ratio(9, 8).unwrap());
 }
 
 #[test]

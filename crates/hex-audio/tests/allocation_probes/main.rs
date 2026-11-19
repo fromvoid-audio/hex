@@ -12,6 +12,7 @@ mod delay_timing_fork_allocations;
 mod eq8_audition_allocations;
 mod eq8_oversampling_study;
 mod fm4_modulation_allocations;
+mod foreign_continuation_match;
 mod fresh_publication_cancellation;
 mod gate_modulation_allocations;
 mod host_output_modulation_allocations;

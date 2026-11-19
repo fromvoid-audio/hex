@@ -93,6 +93,58 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     for device in [healthy, faulted] {
         assert!(visual.debug_bounds(selector("pending", device)).is_some());
     }
+    let trace = |visual: &mut VisualTestContext| {
+        view.update(visual, |view, _| {
+            let mut trace = String::new();
+            trace_vst3_track_panel(view, &mut trace);
+            trace
+        })
+    };
+    view.update(&mut visual, |view, _| {
+        view.device_panel.selected_device = Some(faulted);
+    });
+    assert!(trace(&mut visual).contains("vst3_panel=pending vst3_wait=AppliedGraphMissing"));
+    let button = selector("editor", healthy);
+    let button_color = |open| {
+        let role = if open {
+            theme::DeviceActionRole::Enabled
+        } else {
+            theme::DeviceActionRole::Normal
+        };
+        gpui::Background::from(gpui::rgb(
+            theme::device_header_action_style(false, role).background,
+        ))
+    };
+    assert_eq!(
+        visual.rendered_background(button),
+        Some(button_color(false))
+    );
+    for (generation, output, devices, changed, open) in [
+        (0, identity, vec![healthy.value()], false, false),
+        (
+            generation,
+            identity + 1,
+            vec![healthy.value()],
+            false,
+            false,
+        ),
+        (generation, identity, vec![healthy.value()], true, true),
+        (generation, identity, Vec::new(), true, false),
+    ] {
+        events
+            .send(EditorAudioEvent::PluginEditorWindows {
+                project_generation: generation,
+                output_identity: output,
+                devices,
+            })
+            .unwrap();
+        view.update(&mut visual, |view, cx| {
+            assert_eq!(view.poll_editor_audio_events(cx), changed);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_background(button), Some(button_color(open)));
+    }
     // A notice from an output that is no longer current is ignored.
     deliver(
         &mut visual,
@@ -113,6 +165,7 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     );
     assert!(visual.debug_bounds(selector("degraded", faulted)).is_some());
     assert!(visual.debug_bounds(selector("pending", faulted)).is_none());
+    assert!(trace(&mut visual).contains("vst3_panel=degraded"));
     assert!(visual.debug_bounds(selector("degraded", healthy)).is_none());
     assert!(visual.debug_bounds(selector("pending", healthy)).is_some());
     // An empty set clears the marker.

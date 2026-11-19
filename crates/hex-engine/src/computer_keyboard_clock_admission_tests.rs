@@ -7,7 +7,7 @@ use hex_lattice::{
 use hex_lattice_contract::DeviceContractError;
 use std::any::Any;
 
-struct ClockRequiredInstrument;
+pub(crate) struct ClockRequiredInstrument;
 #[derive(Clone, Default)]
 struct ClockRequiredRuntime {
     active: bool,

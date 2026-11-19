@@ -65,6 +65,51 @@ fn selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats(cx: &mut 
     }
 }
 #[gpui::test]
+fn selected_long_clip_warp_toggle_enables_tones(cx: &mut TestAppContext) {
+    use hex_project::{Created, Editor, Project};
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, clip, .. } = model
+        .execute(Command::ImportAudioTrack {
+            name: "long".into(),
+            path: "long.wav".into(),
+            sample_rate: 48_000,
+            frames: 20_000_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import");
+    };
+    model
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let toggle = visual.debug_bounds("audio-clip-warp-toggle").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    let edit = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    assert!(matches!(&edit,
+        Command::SetAudioClipWarp { clip: id, settings: Some(settings) }
+        if *id == clip && matches!(settings.mode, WarpMode::Tones { .. })
+    ));
+    model.execute(edit).unwrap();
+    let result = model.project().clip(clip).unwrap();
+    assert_eq!(result.duration(), 20_000_000);
+    assert!(result.audio_edit().unwrap().domain.warp_enabled);
+}
+
+#[gpui::test]
 fn algorithm_picker_dispatches_direct_choice_without_resetting_current_settings(
     cx: &mut TestAppContext,
 ) {

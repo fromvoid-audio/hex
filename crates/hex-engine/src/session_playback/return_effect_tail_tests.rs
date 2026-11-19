@@ -1,4 +1,4 @@
-use super::return_effect_tails::{ReturnEffectTail, ReturnEffectTailPlan};
+use super::return_effect_tails::{DeviceEditTailPolicy, ReturnEffectTail, ReturnEffectTailPlan};
 use super::*;
 use hex_lattice::{
     NativeProcessorRuntime, NativeRuntimeChain, OutputTail, PreparedNativeProcessor,
@@ -1162,6 +1162,14 @@ fn muted_or_zero_gain_return_removal_does_not_capture_an_inaudible_chain() {
                 .all(Option::is_none)
         );
         assert!(!previous.return_chains[0].is_empty());
+
+        let mut previous = playback(&old_project);
+        previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+        let mut candidate = playback(&target);
+        candidate.request_live_restart();
+        candidate
+            .try_inherit_state_live_from(&mut previous)
+            .unwrap();
     }
 }
 
@@ -1227,6 +1235,8 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
+            DeviceEditTailPolicy::Preserve,
         )
         .is_ok()
     );
@@ -1248,6 +1258,8 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
+            DeviceEditTailPolicy::Preserve,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1266,6 +1278,8 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
+            DeviceEditTailPolicy::Preserve,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1284,6 +1298,8 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
             &mut processors,
             &mut bytes,
             &mut entries,
+            None,
+            DeviceEditTailPolicy::Preserve,
         )
         .err(),
         Some(SessionPlaybackError::ReleaseBankFull)
@@ -1578,13 +1594,13 @@ fn detached_track_tail_reaches_group_once_and_unsafe_reparent_refuses() {
 }
 
 #[test]
-fn removing_unused_return_refuses_while_a_retained_return_tail_is_active() {
+fn removing_owning_return_transfers_tail_and_refuses_restart() {
     for later_return in [false, true] {
-        retained_tail_refuses_unused_return_removal(later_return);
+        retained_tail_transfers_with_return_removal(later_return);
     }
 }
 
-fn retained_tail_refuses_unused_return_removal(later_return: bool) {
+fn retained_tail_transfers_with_return_removal(later_return: bool) {
     use hex_project::{Command, Created, Editor};
 
     let mut editor = Editor::new(super::tests::project(1.0, 0, 8 << 32), 8).unwrap();
@@ -1622,8 +1638,9 @@ fn retained_tail_refuses_unused_return_removal(later_return: bool) {
     }
     editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
     let mut candidate = playback(editor.project());
+    candidate.request_live_restart();
     assert_eq!(
-        candidate.try_inherit_state_from(&mut previous),
+        candidate.try_inherit_state_live_from(&mut previous),
         Err(SessionPlaybackError::LatencyLayoutChanged)
     );
     assert!(
@@ -1632,9 +1649,13 @@ fn retained_tail_refuses_unused_return_removal(later_return: bool) {
             .unwrap()
             .output_active
     );
+    let mut candidate = playback(editor.project());
+    candidate
+        .try_inherit_state_live_from(&mut previous)
+        .unwrap();
     let mut actual = [[0.0; 2]; 8];
     let mut expected = actual;
-    previous.render(&mut actual).unwrap();
+    candidate.render(&mut actual).unwrap();
     reference.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 }
@@ -1765,4 +1786,1412 @@ fn real_return_tail_survives_or_refuses_later_main_latency() {
     bounced
         .try_inherit_state_fenced_restart_from(&mut reference_tail)
         .unwrap();
+}
+
+fn real_main_limiter_reverb_fixture() -> (
+    hex_project::Editor,
+    hex_project::TrackId,
+    hex_project::ReturnId,
+    hex_project::DeviceId,
+    std::collections::BTreeMap<hex_project::AssetId, crate::Audio>,
+    Arc<hex_devices::SineTable>,
+) {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, Created, Editor, Project};
+    use std::collections::BTreeMap;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "impulse".into(),
+            path: "memory.wav".into(),
+            sample_rate: 48_000,
+            frames: 12_000,
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let state = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let mut samples = vec![[0.0; 2]; 12_000];
+    samples[..512].fill([0.25, -0.125]);
+    let media = BTreeMap::from([(asset, crate::Audio::new(48_000, samples).unwrap())]);
+    let table = Arc::new(hex_devices::SineTable::new());
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    (editor, track, bus, device, media, table)
+}
+
+#[test]
+fn disconnect_send_preserves_detached_real_return_tail() {
+    use hex_project::{Command, Created, Project};
+    let (mut editor, track, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let Created::ReturnTrack(other_bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "other".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: other_bus,
+            gain: 0.25,
+        })
+        .unwrap();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut original = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(initial).unwrap();
+    for playback in [&mut original, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut detached = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(
+        !detached
+            .try_inherit_state_live_from(&mut original)
+            .unwrap()
+            .running_audio_restart
+    );
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut stale = SessionPlayback::new(prepare(editor.project())).unwrap();
+    detached.performance_frame += 1;
+    assert!(matches!(
+        stale.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    detached.performance_frame -= 1;
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: other_bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut changed_route = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        changed_route.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: other_bus,
+            gain: 0.25,
+        })
+        .unwrap();
+    let mut forced = SessionPlayback::new(prepare(editor.project())).unwrap();
+    forced.request_live_restart();
+    assert!(matches!(
+        forced.try_inherit_state_live_from(&mut detached),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut disconnected = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(
+        !disconnected
+            .try_inherit_state_live_from(&mut detached)
+            .unwrap()
+            .running_audio_restart
+    );
+    let active = |playback: &SessionPlayback| {
+        playback
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count()
+    };
+    assert_eq!(active(&detached), 0);
+    assert_eq!(active(&disconnected), 1);
+    let id = OutputCaptureId::Return(bus);
+    let actual_plan = disconnected.output_capture_plan(&[id], 257).unwrap();
+    let expected_plan = reference.output_capture_plan(&[id], 257).unwrap();
+    for count in [1, 257, 254] {
+        let mut actual = vec![[0.0; 2]; count];
+        let mut expected = actual.clone();
+        let mut actual_return = actual.clone();
+        let mut expected_return = actual.clone();
+        let mut actual_buffers = [&mut actual_return[..]];
+        let mut expected_buffers = [&mut expected_return[..]];
+        let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+        let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+        disconnected
+            .render_with_capture(&mut actual, &mut actual_capture)
+            .unwrap();
+        reference
+            .render_with_capture(&mut expected, &mut expected_capture)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual_capture.output(0), expected_capture.output(0));
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+    // The inverse edit is not the zero-delay removal this handoff proves.
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    let mut reconnected = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        reconnected.try_inherit_state_live_from(&mut disconnected),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    assert_eq!(active(&disconnected), 1);
+}
+
+#[test]
+fn disconnect_send_stops_live_input_without_cutting_the_tail() {
+    use hex_project::{Command, Project};
+    let (mut editor, track, bus, device, mut media, table) = real_main_limiter_reverb_fixture();
+    let silent_media = media.clone();
+    let asset = *media.keys().next().unwrap();
+    let mut samples = vec![[0.0; 2]; 12_000];
+    samples[..512].fill([0.25, -0.125]);
+    samples[6000..].fill([0.125, 0.0625]);
+    media.insert(asset, crate::Audio::new(48_000, samples).unwrap());
+    let prepare = |project: &Project, input| {
+        Arc::new(PreparedRevision::prepare(project, input, Arc::clone(&table), None).unwrap())
+    };
+    let mut original = SessionPlayback::new(prepare(editor.project(), &media)).unwrap();
+    let mut reference = SessionPlayback::new(prepare(editor.project(), &silent_media)).unwrap();
+    for playback in [&mut original, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut detached = SessionPlayback::new(prepare(editor.project(), &media)).unwrap();
+    detached.try_inherit_state_live_from(&mut original).unwrap();
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut disconnected = SessionPlayback::new(prepare(editor.project(), &media)).unwrap();
+    disconnected
+        .try_inherit_state_live_from(&mut detached)
+        .unwrap();
+    let id = OutputCaptureId::Return(bus);
+    let actual_plan = disconnected.output_capture_plan(&[id], 257).unwrap();
+    let expected_plan = reference.output_capture_plan(&[id], 257).unwrap();
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    let mut actual_return = actual;
+    let mut expected_return = actual;
+    let mut actual_buffers = [&mut actual_return[..]];
+    let mut expected_buffers = [&mut expected_return[..]];
+    let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+    let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+    disconnected
+        .render_with_capture(&mut actual, &mut actual_capture)
+        .unwrap();
+    reference
+        .render_with_capture(&mut expected, &mut expected_capture)
+        .unwrap();
+    assert_eq!(actual_capture.output(0), expected_capture.output(0));
+    assert!(
+        actual_capture
+            .output(0)
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
+    assert_ne!(actual, expected);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeInsertLocation {
+    Return,
+    Track,
+    Group,
+    Main,
+}
+
+#[test]
+fn staged_return_append_preserves_reverb_and_uses_the_native_transition() {
+    native_insert_case(NativeInsertLocation::Return, false);
+}
+
+#[test]
+fn staged_track_group_and_main_append_preserves_reverb_and_uses_the_native_transition() {
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Main,
+    ] {
+        native_insert_case(location, false);
+    }
+}
+
+#[test]
+fn staged_native_mid_insert_preserves_the_running_prefix_and_suffix() {
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        native_insert_case(location, true);
+    }
+}
+
+fn native_insert_case(location: NativeInsertLocation, middle: bool) {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+    use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
+
+    const CUT: usize = 6_000;
+    const DELAY: usize = 480;
+    const RAMP: usize = 240;
+    const SUFFIX_DELAY: usize = 960;
+    const OUTPUT_FRAMES: usize = DELAY * 4;
+    let delay = |milliseconds| {
+        let mut state = DEFINITION.default_state().unwrap();
+        for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+            state = DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Bool(false))
+                .unwrap();
+        }
+        for (parameter, value) in [(TIME, milliseconds), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+            state = DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Float(value))
+                .unwrap();
+        }
+        state
+    };
+    let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let capture_id = match location {
+        NativeInsertLocation::Return => Some(OutputCaptureId::Return(bus)),
+        NativeInsertLocation::Track => Some(OutputCaptureId::Track(track)),
+        NativeInsertLocation::Group => {
+            let Created::Track(group) = editor
+                .execute(Command::GroupTracks {
+                    tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "room group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            Some(OutputCaptureId::Track(group))
+        }
+        NativeInsertLocation::Main => None,
+    };
+    let insert = |before, state| match capture_id {
+        Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
+            return_track,
+            before,
+            state,
+        },
+        Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
+            track,
+            before,
+            state,
+        },
+        None => Command::InsertMainDevice { before, state },
+    };
+    if !matches!(location, NativeInsertLocation::Return) {
+        let state = editor.project().device(reverb).unwrap().state().clone();
+        editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+        editor.execute(insert(None, state)).unwrap();
+    }
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let prefix = prepare(editor.project());
+    let before = if middle {
+        let Created::Device(suffix) = editor.execute(insert(None, delay(20.0))).unwrap() else {
+            panic!("suffix");
+        };
+        Some(suffix)
+    } else {
+        None
+    };
+    let original = if middle {
+        prepare(editor.project())
+    } else {
+        Arc::clone(&prefix)
+    };
+    let mut incompatible = Editor::new(editor.project().clone(), 8).unwrap();
+    incompatible
+        .execute(insert(
+            before,
+            crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap(),
+        ))
+        .unwrap();
+    let higher_latency = prepare(incompatible.project());
+    assert!(
+        higher_latency.arrangement().main_latency_frames()
+            > original.arrangement().main_latency_frames()
+    );
+    editor.execute(insert(before, delay(10.0))).unwrap();
+    let inserted = prepare(editor.project());
+    assert_eq!(
+        inserted.arrangement().main_latency_frames(),
+        original.arrangement().main_latency_frames()
+    );
+
+    for partition in [1, 257] {
+        let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut oracle = SessionPlayback::new(Arc::clone(&prefix)).unwrap();
+        let mut retained = middle.then(|| SessionPlayback::new(Arc::clone(&original)).unwrap());
+        for runtime in [&mut old, &mut oracle].into_iter().chain(retained.as_mut()) {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; CUT]).unwrap();
+        }
+
+        let mut refused = SessionPlayback::new(Arc::clone(&higher_latency)).unwrap();
+        refused.require_continuous_insert = true;
+        assert!(matches!(
+            refused.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+
+        let mut candidate = SessionPlayback::new(Arc::clone(&inserted)).unwrap();
+        candidate.require_continuous_insert = true;
+        let result = candidate
+            .try_inherit_state_live_from(&mut old)
+            .unwrap_or_else(|error| panic!("{location:?} middle={middle} {error:?}"));
+        assert!(!result.running_audio_restart);
+        assert_eq!(candidate.performance_frame(), CUT as u64);
+        assert!(candidate.playing());
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+
+        assert!(candidate.tail_groups.iter().all(Option::is_none));
+        let capture = |playback: &mut SessionPlayback| {
+            let plan = capture_id.map(|id| playback.output_capture_plan(&[id], partition).unwrap());
+            let mut main = vec![[0.0; 2]; OUTPUT_FRAMES];
+            let mut output = main.clone();
+            for (main, output) in main.chunks_mut(partition).zip(output.chunks_mut(partition)) {
+                if let Some(plan) = &plan {
+                    playback
+                        .render_with_capture(main, &mut OutputCapture::new(plan, &mut [output]))
+                        .unwrap();
+                } else {
+                    playback.render(main).unwrap();
+                }
+            }
+            if plan.is_some() { output } else { main }
+        };
+        let input = capture(&mut oracle);
+        let actual = capture(&mut candidate);
+        assert!(
+            input[..RAMP]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-6)
+        );
+        assert!(
+            actual[DELAY..]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-6)
+        );
+        let mut expected = vec![[0.0; 2]; OUTPUT_FRAMES];
+        for (frame, output) in expected.iter_mut().enumerate() {
+            let mix = (frame + 1).min(RAMP) as f32 / RAMP as f32;
+            for lane in 0..2 {
+                let wet: f32 = (1..=frame / DELAY)
+                    .map(|tap| input[frame - tap * DELAY][lane] * 0.5_f32.powi(tap as i32 - 1))
+                    .sum();
+                let dry = input[frame][lane];
+                output[lane] = dry + (wet - dry) * mix;
+            }
+        }
+        if let Some(retained) = retained.as_mut() {
+            // The uninterrupted suffix already owns every sample admitted
+            // before the cut. Feed it only the change in input after the cut
+            // to calculate the independently expected edited output.
+            let baseline = capture(retained);
+            assert!(
+                baseline[..SUFFIX_DELAY]
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 1e-6)
+            );
+            let upstream = std::mem::replace(&mut expected, baseline);
+            let mut heard_insert_through_suffix = false;
+            for (frame, output) in expected.iter_mut().enumerate() {
+                let unchanged = *output;
+                for lane in 0..2 {
+                    for tap in 1..=frame / SUFFIX_DELAY {
+                        let source = frame - tap * SUFFIX_DELAY;
+                        output[lane] += (upstream[source][lane] - input[source][lane])
+                            * 0.5_f32.powi(tap as i32 - 1);
+                    }
+                }
+                heard_insert_through_suffix |= output
+                    .iter()
+                    .zip(unchanged)
+                    .any(|(edited, old)| (edited - old).abs() > 2e-6);
+            }
+            assert!(heard_insert_through_suffix);
+        }
+        for (frame, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            for lane in 0..2 {
+                assert!(
+                    (actual[lane] - expected[lane]).abs() < 2e-6,
+                    "location={location:?} middle={middle} partition={partition} frame={frame} lane={lane}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn main_only_latency_preserves_real_return_reverb_and_captures() {
+    use hex_project::{Command, Editor, Project};
+    let (mut editor, track, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let starting_project = editor.project().clone();
+    let initial = prepare(editor.project());
+    assert!(initial.arrangement().main_latency_frames() > 0);
+    let mut original = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut unchanged = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut forced = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut quiet = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    for playback in [&mut original, &mut reference, &mut unchanged, &mut forced] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    let mut same_candidate = SessionPlayback::new(initial).unwrap();
+    same_candidate.request_live_restart();
+    same_candidate
+        .try_inherit_state_live_from(&mut unchanged)
+        .unwrap();
+
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let removed = prepare(editor.project());
+    let mut quiet_candidate = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+    quiet_candidate.request_live_restart();
+    quiet_candidate
+        .try_inherit_state_live_from(&mut quiet)
+        .unwrap();
+    let mut refused = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+    refused.request_live_restart();
+    assert!(matches!(
+        refused.try_inherit_state_live_from(&mut forced),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+
+    let mut candidate = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+    let report = candidate
+        .try_inherit_state_live_from(&mut original)
+        .unwrap();
+    assert!(!report.running_audio_restart);
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        1
+    );
+    let id = OutputCaptureId::Return(bus);
+    let actual_plan = candidate.output_capture_plan(&[id], 257).unwrap();
+    let expected_plan = reference.output_capture_plan(&[id], 257).unwrap();
+    for count in [1, 257, 254] {
+        let mut actual = vec![[0.0; 2]; count];
+        let mut expected = actual.clone();
+        let mut actual_return = actual.clone();
+        let mut expected_return = actual.clone();
+        let mut actual_buffers = [&mut actual_return[..]];
+        let mut expected_buffers = [&mut expected_return[..]];
+        let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+        let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+        candidate
+            .render_with_capture(&mut actual, &mut actual_capture)
+            .unwrap();
+        reference
+            .render_with_capture(&mut expected, &mut expected_capture)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual_capture.output(0), expected_capture.output(0));
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+
+    // A later equivalent revision must carry the already detached tail.
+    let mut later = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+    let report = later.try_inherit_state_live_from(&mut candidate).unwrap();
+    assert!(!report.running_audio_restart);
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        0
+    );
+    assert_eq!(
+        later
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        1
+    );
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    later.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+
+    let mut bounced = SessionPlayback::new(removed).unwrap();
+    bounced.request_live_restart();
+    bounced
+        .try_inherit_state_fenced_restart_from(&mut reference)
+        .unwrap();
+
+    // Neither an upstream latency nor an outgoing Return feed may enter the
+    // direct-to-Main path. In both cases refusal must preserve the old audio.
+    let mut routed_snapshot = starting_project.snapshot();
+    let target = routed_snapshot.next_id;
+    let feed = target + 1;
+    routed_snapshot.next_id += 2;
+    routed_snapshot.return_tracks.push(ReturnTrackSnapshot {
+        id: target,
+        name: "downstream".into(),
+        gain: 1.0,
+        muted: false,
+        devices: Vec::new(),
+    });
+    routed_snapshot
+        .return_feeds
+        .push(hex_project::ReturnFeedSnapshot {
+            id: feed,
+            source: bus.value(),
+            destination: target,
+            gain: 0.5,
+        });
+    let routed_project = Project::from_snapshot(routed_snapshot).unwrap();
+    for (project, upstream_latency) in [(routed_project, false), (starting_project, true)] {
+        let mut editor = Editor::new(project, 16).unwrap();
+        if upstream_latency {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                        "hex.limiter",
+                    ))
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        let initial = prepare(editor.project());
+        let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+        let mut oracle = SessionPlayback::new(initial).unwrap();
+        for runtime in [&mut previous, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+        }
+        editor.execute(Command::RemoveDevice(device)).unwrap();
+        let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(&mut previous),
+            Err(SessionPlaybackError::LatencyLayoutChanged)
+        ));
+        let mut actual = [[0.0; 2]; 257];
+        let mut expected = actual;
+        previous.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+}
+
+#[test]
+fn main_only_latency_preserves_real_return_reverb_through_loop_wrap() {
+    use hex_project::{Command, Project};
+    let (editor, _, _, device, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    // The same real tail must remain continuous through an actual loop wrap.
+    let mut loop_editor = editor;
+    loop_editor
+        .execute(Command::SetLoopRegion {
+            start: 6000,
+            end: 6032,
+            enabled: true,
+        })
+        .unwrap();
+    let initial = prepare(loop_editor.project());
+    let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    loop_editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(loop_editor.project())).unwrap();
+    let report = candidate
+        .try_inherit_state_live_from(&mut previous)
+        .unwrap();
+    assert!(!report.running_audio_restart);
+    let mut heard_tail = false;
+    for count in [1, 31, 257] {
+        let mut actual = vec![[0.0; 2]; count];
+        let mut expected = actual.clone();
+        candidate.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+        heard_tail |= actual.iter().flatten().any(|sample| *sample != 0.0);
+    }
+    assert!(heard_tail);
+    assert!((6000..6032).contains(&candidate.arrangement_frame));
+}
+
+#[test]
+fn main_only_latency_rejects_a_stale_return_tail_clock() {
+    use hex_project::{Command, Project};
+    let (mut editor, _, _, device, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    previous.performance_frame += 1;
+    let stale_frame = previous.performance_frame;
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    assert_eq!(previous.performance_frame, stale_frame);
+    previous.performance_frame -= 1;
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn restart_refuses_incompatible_return_history_with_matching_configuration() {
+    let project = prepared_return_project(true, 1.0);
+    let return_id = project.return_tracks()[0].id();
+    let mut previous = playback(&project);
+    previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+    let mut candidate = playback(&project);
+    let mut instances = processor_instances(return_id, StereoMatrix::identity());
+    instances[0].definition = Some(Arc::new(ScaleDefinition(0.5)));
+    candidate.return_chains[0] = NativeRuntimeChain::new(instances).unwrap();
+    assert!(
+        previous.return_chains[0].configuration_matches_range(&candidate.return_chains[0], 0..2)
+    );
+    assert!(!candidate.return_chains[0].can_inherit_from(&previous.return_chains[0]));
+    candidate.request_live_restart();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+}
+
+#[test]
+fn main_only_latency_refuses_a_new_return_feed_without_losing_the_tail() {
+    use hex_project::{Command, Created, Project};
+    let (mut editor, _, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let Created::ReturnTrack(downstream) = editor
+        .execute(Command::AddReturnTrack {
+            name: "downstream".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor
+        .execute(Command::SetReturnFeed {
+            source: bus,
+            destination: downstream,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut previous),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn main_only_latency_rejects_missing_return_tail_clock_history() {
+    use hex_project::{Command, Project};
+    let (mut editor, _, _, device, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut previous, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    previous.compensation.as_mut().unwrap().delays.reset_epoch();
+    oracle.compensation.as_mut().unwrap().delays.reset_epoch();
+    let stale_frame = previous.performance_frame;
+    let result = candidate.try_inherit_state_live_from(&mut previous);
+    assert!(
+        matches!(result, Err(SessionPlaybackError::LatencyLayoutChanged)),
+        "{result:?}"
+    );
+    assert_eq!(previous.performance_frame, stale_frame);
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn removing_unused_return_keeps_a_real_return_tail_with_main_latency() {
+    use hex_project::{Command, Created, Editor, Project};
+    for earlier in [false, true] {
+        let (mut editor, _, bus, device, media, table) = real_main_limiter_reverb_fixture();
+        let Created::ReturnTrack(unused) = editor
+            .execute(Command::AddReturnTrack {
+                name: "unused".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        if earlier {
+            let mut snapshot = editor.project().snapshot();
+            snapshot.return_tracks.swap(0, 1);
+            editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+        }
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let initial = prepare(editor.project());
+        let mut previous = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+        let mut oracle = SessionPlayback::new(initial).unwrap();
+        for runtime in [&mut previous, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+        }
+        editor.execute(Command::RemoveDevice(device)).unwrap();
+        let mut with_tail = SessionPlayback::new(prepare(editor.project())).unwrap();
+        let report = with_tail
+            .try_inherit_state_live_from(&mut previous)
+            .unwrap();
+        assert!(!report.running_audio_restart);
+        assert_eq!(
+            with_tail
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .filter(|tail| tail.output_active)
+                .count(),
+            1
+        );
+        editor.execute(Command::RemoveReturnTrack(unused)).unwrap();
+        let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+        let report = candidate
+            .try_inherit_state_live_from(&mut with_tail)
+            .unwrap();
+        assert!(!report.running_audio_restart);
+        assert_eq!(
+            with_tail
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .filter(|tail| tail.output_active)
+                .count(),
+            0
+        );
+        assert_eq!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .filter(|tail| tail.output_active)
+                .count(),
+            1
+        );
+        let id = OutputCaptureId::Return(bus);
+        let actual_plan = candidate.output_capture_plan(&[id], 257).unwrap();
+        let expected_plan = oracle.output_capture_plan(&[id], 257).unwrap();
+        for count in [1, 257] {
+            let mut actual = vec![[0.0; 2]; count];
+            let mut expected = actual.clone();
+            let mut actual_return = actual.clone();
+            let mut expected_return = actual.clone();
+            let mut actual_buffers = [&mut actual_return[..]];
+            let mut expected_buffers = [&mut expected_return[..]];
+            let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+            let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+            candidate
+                .render_with_capture(&mut actual, &mut actual_capture)
+                .unwrap();
+            oracle
+                .render_with_capture(&mut expected, &mut expected_capture)
+                .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual_capture.output(0), expected_capture.output(0));
+            assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+        }
+    }
+}
+
+#[test]
+fn removing_unused_return_refuses_stale_or_missing_tail_clock() {
+    use hex_project::{Command, Created, Project};
+    let (mut editor, _, _, device, media, table) = real_main_limiter_reverb_fixture();
+    let Created::ReturnTrack(unused) = editor
+        .execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut source = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut source, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut with_tail = SessionPlayback::new(prepare(editor.project())).unwrap();
+    with_tail.try_inherit_state_live_from(&mut source).unwrap();
+    editor.execute(Command::RemoveReturnTrack(unused)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    with_tail.performance_frame += 1;
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    with_tail.performance_frame -= 1;
+    with_tail
+        .compensation
+        .as_mut()
+        .unwrap()
+        .delays
+        .reset_epoch();
+    oracle.compensation.as_mut().unwrap().delays.reset_epoch();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    with_tail.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn removing_unused_return_refuses_new_return_feed_with_tail() {
+    use hex_project::{Command, Created, Project};
+    let (mut editor, _, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let Created::ReturnTrack(unused) = editor
+        .execute(Command::AddReturnTrack {
+            name: "unused".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let Created::ReturnTrack(downstream) = editor
+        .execute(Command::AddReturnTrack {
+            name: "downstream".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut source = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut source, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut with_tail = SessionPlayback::new(prepare(editor.project())).unwrap();
+    with_tail.try_inherit_state_live_from(&mut source).unwrap();
+    editor
+        .execute(Command::SetReturnFeed {
+            source: bus,
+            destination: downstream,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor.execute(Command::RemoveReturnTrack(unused)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut with_tail),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut actual = [[0.0; 2]; 257];
+    let mut expected = actual;
+    with_tail.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn removing_the_return_keeps_its_real_detached_tail() {
+    use hex_project::{Command, Project};
+    let (mut editor, track, bus, device, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut original = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut oracle = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut original, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let mut detached = SessionPlayback::new(prepare(editor.project())).unwrap();
+    detached.try_inherit_state_live_from(&mut original).unwrap();
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut disconnected = SessionPlayback::new(prepare(editor.project())).unwrap();
+    disconnected
+        .try_inherit_state_live_from(&mut detached)
+        .unwrap();
+    editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let mut stale = SessionPlayback::new(prepare(editor.project())).unwrap();
+    disconnected.performance_frame += 1;
+    assert!(matches!(
+        stale.try_inherit_state_live_from(&mut disconnected),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    disconnected.performance_frame -= 1;
+    let mut forced = SessionPlayback::new(prepare(editor.project())).unwrap();
+    forced.request_live_restart();
+    assert!(matches!(
+        forced.try_inherit_state_live_from(&mut disconnected),
+        Err(SessionPlaybackError::LatencyLayoutChanged)
+    ));
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    let result = candidate.try_inherit_state_live_from(&mut disconnected);
+    assert!(result.is_ok(), "owning return removal refused: {result:?}");
+    assert_eq!(
+        disconnected
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        0
+    );
+    assert_eq!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .flatten()
+            .filter(|tail| tail.output_active)
+            .count(),
+        1
+    );
+    let id = OutputCaptureId::Return(bus);
+    let actual_plan = candidate.output_capture_plan(&[id], 257).unwrap();
+    let expected_plan = oracle.output_capture_plan(&[id], 257).unwrap();
+    for count in [1, 257] {
+        let mut actual = vec![[0.0; 2]; count];
+        let mut expected = actual.clone();
+        let mut actual_return = actual.clone();
+        let mut expected_return = actual.clone();
+        let mut actual_buffers = [&mut actual_return[..]];
+        let mut expected_buffers = [&mut expected_return[..]];
+        let mut actual_capture = OutputCapture::new(&actual_plan, &mut actual_buffers);
+        let mut expected_capture = OutputCapture::new(&expected_plan, &mut expected_buffers);
+        candidate
+            .render_with_capture(&mut actual, &mut actual_capture)
+            .unwrap();
+        oracle
+            .render_with_capture(&mut expected, &mut expected_capture)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual_capture.output(0), expected_capture.output(0));
+        assert!(
+            actual_capture
+                .output(0)
+                .unwrap()
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0)
+        );
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+}
+
+#[test]
+fn native_return_removal_without_a_stage_fade_requires_confirmation() {
+    use hex_project::{Command, Project};
+
+    let (mut editor, _, _, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let mut old = SessionPlayback::new(prepare(editor.project())).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+    editor.execute(Command::RemoveDevice(reverb)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    candidate.require_continuous_insert = true;
+    assert!(matches!(
+        candidate.try_inherit_state_live_from(&mut old),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    ));
+    assert_eq!(old.performance_frame(), 6_000);
+}
+
+#[test]
+fn native_removal_fades_its_stage_and_keeps_the_running_downstream_delay() {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_devices::delay::{
+        DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
+    };
+    use hex_project::{Command, Created, Project, TrackSelectionIds};
+
+    const CUT: u64 = 6_000;
+    const RAMP: usize = 240;
+    const DELAY: usize = 480;
+    const SAMPLE_COUNT: usize = DELAY * 3;
+
+    for location in [
+        NativeInsertLocation::Track,
+        NativeInsertLocation::Group,
+        NativeInsertLocation::Return,
+        NativeInsertLocation::Main,
+    ] {
+        let (mut editor, track, bus, reverb, media, table) = real_main_limiter_reverb_fixture();
+        let owner = match location {
+            NativeInsertLocation::Return => Some(OutputCaptureId::Return(bus)),
+            NativeInsertLocation::Track => Some(OutputCaptureId::Track(track)),
+            NativeInsertLocation::Group => {
+                let Created::Track(group) = editor
+                    .execute(Command::GroupTracks {
+                        tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                        name: "room group".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("group");
+                };
+                Some(OutputCaptureId::Track(group))
+            }
+            NativeInsertLocation::Main => None,
+        };
+        let append = |state| match owner {
+            Some(OutputCaptureId::Track(track)) => Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            },
+            Some(OutputCaptureId::Return(return_track)) => Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            },
+            None => Command::InsertMainDevice {
+                before: None,
+                state,
+            },
+        };
+        let removed = if matches!(location, NativeInsertLocation::Return) {
+            reverb
+        } else {
+            let state = editor.project().device(reverb).unwrap().state().clone();
+            editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+            let Created::Device(device) = editor.execute(append(state)).unwrap() else {
+                panic!("reverb");
+            };
+            device
+        };
+
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let mut upstream = SessionPlayback::new(prepare(editor.project())).unwrap();
+        let mut delay = DEFINITION.default_state().unwrap();
+        for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+            delay = DEFINITION
+                .patch_parameter(&delay, parameter, ParameterValue::Bool(false))
+                .unwrap();
+        }
+        for (parameter, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
+            delay = DEFINITION
+                .patch_parameter(&delay, parameter, ParameterValue::Float(value))
+                .unwrap();
+        }
+        editor.execute(append(delay)).unwrap();
+        let original = prepare(editor.project());
+        let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut untouched = SessionPlayback::new(original).unwrap();
+        for runtime in [&mut upstream, &mut old, &mut untouched] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; CUT as usize]).unwrap();
+        }
+        let capture = |runtime: &mut SessionPlayback, output: &mut [[f32; 2]]| {
+            let plan = owner.map(|owner| runtime.output_capture_plan(&[owner], 127).unwrap());
+            for output in output.chunks_mut(127) {
+                if let Some(plan) = &plan {
+                    runtime
+                        .render_with_capture(
+                            &mut [[0.0; 2]; 127][..output.len()],
+                            &mut OutputCapture::new(plan, &mut [output]),
+                        )
+                        .unwrap();
+                } else {
+                    runtime.render(output).unwrap();
+                }
+            }
+        };
+        editor.execute(Command::RemoveDevice(removed)).unwrap();
+        let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+        candidate.require_continuous_insert = true;
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut old),
+            Ok(NativeRemovalProgress::Fading),
+            "{location:?}"
+        );
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceTransitionBusy)
+        ));
+        let mut actual = [[0.0; 2]; SAMPLE_COUNT];
+        capture(&mut old, &mut actual[..RAMP - 1]);
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut old),
+            Ok(NativeRemovalProgress::Fading)
+        );
+        capture(&mut old, &mut actual[RAMP - 1..RAMP]);
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut old),
+            Ok(NativeRemovalProgress::Ready)
+        );
+        let report = candidate.try_inherit_state_live_from(&mut old).unwrap();
+        assert!(!report.running_audio_restart);
+        assert_eq!(candidate.performance_frame(), CUT + RAMP as u64);
+        assert!(candidate.playing());
+        assert!(candidate.tail_groups.iter().all(Option::is_none));
+        assert!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        capture(&mut candidate, &mut actual[RAMP..]);
+
+        let mut wet = [[0.0; 2]; SAMPLE_COUNT];
+        let mut expected = wet;
+        capture(&mut upstream, &mut wet);
+        capture(&mut untouched, &mut expected);
+        assert!(
+            expected[..DELAY]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-6)
+        );
+        let mut heard_fade = false;
+        for (frame, (actual, reference)) in actual.iter().zip(&expected).enumerate() {
+            for lane in 0..2 {
+                // The retained delay plays admitted samples, then the
+                // independently derived fade starts reaching its taps.
+                let delta: f32 = (1..=frame / DELAY)
+                    .map(|tap| {
+                        let source = frame - tap * DELAY;
+                        let fade = (source + 1).min(RAMP) as f32 / RAMP as f32;
+                        -wet[source][lane] * fade * 0.5_f32.powi(tap as i32 - 1)
+                    })
+                    .sum();
+                heard_fade |= delta.abs() > 2e-6;
+                assert!(
+                    (actual[lane] - (reference[lane] + delta)).abs() < 2e-6,
+                    "location={location:?} frame={frame} lane={lane}"
+                );
+            }
+        }
+        assert!(heard_fade);
+    }
+}
+
+#[test]
+fn cancelling_a_native_removal_restores_the_wet_predecessor() {
+    use hex_project::{Command, Editor, Project};
+
+    let (mut editor, _, _, reverb, media, table) = real_main_limiter_reverb_fixture();
+    let prepare = |project: &Project| {
+        Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+    };
+    let initial = prepare(editor.project());
+    let mut old = SessionPlayback::new(Arc::clone(&initial)).unwrap();
+    let mut reference = SessionPlayback::new(initial).unwrap();
+    for runtime in [&mut old, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6_000]).unwrap();
+    }
+    let mut different_clock = Editor::new(editor.project().clone(), 8).unwrap();
+    let limiter = different_clock.project().main_devices()[0].id();
+    different_clock
+        .execute(Command::RemoveDevice(limiter))
+        .unwrap();
+    let mut ineligible = SessionPlayback::new(prepare(different_clock.project())).unwrap();
+    ineligible.require_continuous_insert = true;
+    assert_eq!(
+        ineligible.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::NotApplicable)
+    );
+    let mut unchanged = [[0.0; 2]; 127];
+    let mut baseline = unchanged;
+    old.render(&mut unchanged).unwrap();
+    reference.render(&mut baseline).unwrap();
+    assert_eq!(unchanged, baseline);
+    editor.execute(Command::RemoveDevice(reverb)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(editor.project())).unwrap();
+    candidate.require_continuous_insert = true;
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    let mut fading = [[0.0; 2]; 120];
+    let mut original = fading;
+    old.render(&mut fading).unwrap();
+    reference.render(&mut original).unwrap();
+    assert_ne!(fading, original);
+    candidate.cancel_native_removal_from(&mut old);
+    let mut restored = [[0.0; 2]; 512];
+    let mut expected = restored;
+    old.render(&mut restored).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(old.performance_frame(), reference.performance_frame());
+    // The rollback ramp and the unchanged Main limiter both have time to
+    // drain before comparing the continuing original Reverb history.
+    assert_eq!(restored[400..], expected[400..]);
+    assert!(
+        restored[400..]
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-6)
+    );
 }

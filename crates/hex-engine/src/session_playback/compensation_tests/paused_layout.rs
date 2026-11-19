@@ -215,3 +215,669 @@ fn primed_pcm_origin_requires_processing_clock_offset() {
         }
     }
 }
+
+#[derive(Clone, Copy)]
+enum SilentLatencyCase {
+    Eligible,
+    ActiveChangedTrack,
+    BufferedUnmutedTrack,
+    StaleMutedHistory,
+    IncreasedMaximum,
+    ChangedReturnArrival,
+    ChangedGroupArrival,
+}
+
+#[test]
+fn silent_isolated_latency_addition_preserves_other_track_reverb() {
+    for partition in [1, 257] {
+        silent_latency_addition_case(SilentLatencyCase::Eligible, partition);
+    }
+}
+
+#[test]
+fn isolated_latency_insert_keeps_unchanged_operator_note_and_release() {
+    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Insert, false);
+}
+
+#[test]
+fn isolated_latency_removal_keeps_unchanged_operator_note_and_release() {
+    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Remove, false);
+}
+
+#[test]
+fn approved_isolated_latency_cut_keeps_operator_gate_and_release() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        isolated_latency_edit_keeps_operator(edit, true);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IsolatedLatencyEdit {
+    Insert,
+    Remove,
+}
+
+fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit, approved: bool) {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_project::{BeatTime, Created};
+
+    let mut f = fixture(&[&[], &[]], 8_192);
+    let edited = f.tracks[0];
+    let instrument = f.tracks[1];
+    for (index, audio) in f.media.values_mut().enumerate() {
+        let sample = if approved && index == 0 {
+            [0.25, -0.125]
+        } else {
+            [0.0; 2]
+        };
+        *audio = crate::Audio::new(48_000, vec![sample; 8_192]).unwrap();
+    }
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: instrument,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Instrument,
+                crate::DeviceTypeId::from_static("hex.instrument.operator"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: instrument,
+            before: None,
+            state: limiter(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = f
+        .editor
+        .execute(Command::PlaceMidiClip {
+            track: instrument,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(1).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument clip")
+    };
+    f.editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(17, 64).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let (old_revision, new_revision) = isolated_latency_revisions(&mut f, edited, edit);
+    let latency = old_revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(new_revision.arrangement().main_latency_frames(), latency);
+    let device = f
+        .editor
+        .project()
+        .track(instrument)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    let new_state = crate::patch_native_device_parameter_for_class(
+        crate::NativeDeviceClass::Instrument,
+        device.state(),
+        hex_devices::operator_state::parameter::oscillator_level(1),
+        hex_lattice_contract::ParameterValue::Float(0.43),
+    )
+    .unwrap();
+    f.editor
+        .execute(Command::ReplaceDeviceState {
+            device: device.id(),
+            state: new_state,
+        })
+        .unwrap();
+    let changed_instrument = prepare(&f);
+
+    const CUT: u64 = 6_000;
+    const FRAMES: usize = 1_024;
+    for partition in [1, 257] {
+        let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        assert!(old.mutable_instruments.iter().any(Option::is_some));
+        for runtime in [&mut old, &mut uninterrupted] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; CUT as usize]).unwrap();
+        }
+        let mut mixed = SessionPlayback::new(Arc::clone(&changed_instrument)).unwrap();
+        mixed.require_continuous_insert = true;
+        assert!(matches!(
+            mixed.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+        assert_eq!(old.performance_frame(), CUT);
+        let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        inherit_isolated_latency_edit(&mut candidate, &mut old, approved);
+        let render = |runtime: &mut SessionPlayback| {
+            let plan = runtime
+                .output_capture_plan(&[OutputCaptureId::Track(instrument)], partition)
+                .unwrap();
+            let mut main = [[0.0; 2]; FRAMES];
+            let mut notes = [[0.0; 2]; FRAMES];
+            for (main, notes) in main.chunks_mut(partition).zip(notes.chunks_mut(partition)) {
+                runtime
+                    .render_with_capture(main, &mut OutputCapture::new(&plan, &mut [notes]))
+                    .unwrap();
+            }
+            notes
+        };
+        let expected = render(&mut uninterrupted);
+        let actual = render(&mut candidate);
+        let bits = |frames: [[f32; 2]; FRAMES]| frames.map(|frame| frame.map(f32::to_bits));
+        assert_eq!(bits(actual), bits(expected), "partition {partition}");
+        let release = 375 + latency as usize;
+        assert!(expected[..release].iter().flatten().any(|x| x.abs() > 1e-6));
+        assert!(expected[release..].iter().flatten().any(|x| x.abs() > 1e-6));
+        let mut restarted = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        restarted.play_from(CUT).unwrap();
+        assert_ne!(bits(render(&mut restarted)), bits(expected));
+    }
+}
+
+#[test]
+fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
+    latency_edit_keeps_group_and_return(
+        IsolatedLatencyEdit::Insert,
+        LatencyEditRoute::Direct,
+        false,
+    );
+}
+
+#[test]
+fn isolated_latency_removal_keeps_unchanged_group_and_return_tails() {
+    latency_edit_keeps_group_and_return(
+        IsolatedLatencyEdit::Remove,
+        LatencyEditRoute::Direct,
+        false,
+    );
+}
+
+#[test]
+fn approved_isolated_latency_cut_keeps_group_and_return_tails() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        latency_edit_keeps_group_and_return(edit, LatencyEditRoute::Direct, true);
+    }
+}
+
+#[test]
+fn quiet_send_track_latency_edit_keeps_its_return_tail() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        latency_edit_keeps_group_and_return(edit, LatencyEditRoute::ReturnSend, false);
+    }
+}
+
+#[test]
+fn quiet_group_child_latency_edit_preserves_shared_history() {
+    for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+        latency_edit_keeps_group_and_return(edit, LatencyEditRoute::GroupAndReturn, false);
+    }
+}
+
+#[test]
+fn approved_routed_latency_cut_preserves_only_admitted_group_and_return_pcm() {
+    for route in [
+        LatencyEditRoute::ReturnSend,
+        LatencyEditRoute::GroupAndReturn,
+    ] {
+        for edit in [IsolatedLatencyEdit::Insert, IsolatedLatencyEdit::Remove] {
+            latency_edit_keeps_group_and_return(edit, route, true);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LatencyEditRoute {
+    Direct,
+    ReturnSend,
+    GroupAndReturn,
+}
+
+fn latency_edit_keeps_group_and_return(
+    edit: IsolatedLatencyEdit,
+    route: LatencyEditRoute,
+    approved: bool,
+) {
+    use crate::{OutputCapture, OutputCaptureId};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Created, TrackSelectionIds};
+
+    const CUT: usize = 6_000;
+    const PENDING_HIT_FRAMES: usize = 8;
+    let edited_track_sends = route != LatencyEditRoute::Direct;
+    let grouped = route == LatencyEditRoute::GroupAndReturn;
+    let cut_pending_hit = approved && edited_track_sends;
+    let mut f = fixture(&[&[], &[], &[]], 12_000);
+    for (index, audio) in f.media.values_mut().enumerate() {
+        let mut samples = vec![[0.0; 2]; 12_000];
+        let end = if approved && !edited_track_sends && index == 0 {
+            samples.len()
+        } else {
+            512
+        };
+        // In the send-track case, the limiter child holds the Return clock,
+        // and the edited track supplies all of the Return's audible input.
+        if !(edited_track_sends && index == 1) {
+            samples[..end].fill([0.25, -0.125]);
+        }
+        if cut_pending_hit && index == 0 {
+            // Equally delayed by the old Limiter or the outgoing compensation
+            // edges. This hit has reached neither surviving bus at the cut.
+            samples[CUT - PENDING_HIT_FRAMES..CUT].fill([-0.375, 0.5]);
+        }
+        *audio = crate::Audio::new(48_000, samples).unwrap();
+    }
+    let changed = f.tracks[0];
+    let child = f.tracks[1];
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&f.tracks[usize::from(!grouped)..]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: child,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    if edited_track_sends {
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: changed,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    // The delayed child and its unprocessed sibling converge at the group.
+    // The same delayed child's send also reaches Main through the Return.
+    f.editor
+        .execute(Command::InsertDevice {
+            track: child,
+            before: None,
+            state: limiter(),
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let wet = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            // The dry path independently witnesses whether the pending hit
+            // leaks into the bus. The earlier hit still has a live wet tail.
+            ParameterValue::Float(if cut_pending_hit { 50.0 } else { 100.0 }),
+        )
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: wet.clone(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: wet,
+        })
+        .unwrap();
+    let (old_revision, new_revision) = isolated_latency_revisions(&mut f, changed, edit);
+    let latency = old_revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(new_revision.arrangement().main_latency_frames(), latency);
+    let changed_latency = |revision: &PreparedRevision| {
+        let arrangement = revision.arrangement();
+        let index = arrangement
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .track_index(changed)
+            .unwrap();
+        arrangement.tracks()[index]
+            .device_chain
+            .first()
+            .map_or(0, |device| device.algorithmic_latency_frames().unwrap())
+    };
+    let (before, after) = match edit {
+        IsolatedLatencyEdit::Insert => (0, latency),
+        IsolatedLatencyEdit::Remove => (latency, 0),
+    };
+    assert_eq!(changed_latency(&old_revision), before);
+    assert_eq!(changed_latency(&new_revision), after);
+
+    // A separate revision with the original topology and only the earlier
+    // hit is the independent oracle for history already admitted at the cut.
+    let reference_revision = if cut_pending_hit {
+        assert!(latency as usize > PENDING_HIT_FRAMES);
+        assert!(f.editor.undo());
+        let mut samples = vec![[0.0; 2]; 12_000];
+        samples[..512].fill([0.25, -0.125]);
+        *f.media.values_mut().next().unwrap() = crate::Audio::new(48_000, samples).unwrap();
+        prepare(&f)
+    } else {
+        Arc::clone(&old_revision)
+    };
+    let play_to_cut = |runtime: &mut SessionPlayback| {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = vec![[0.0; 2]; CUT];
+        runtime.render(&mut prefix).unwrap();
+        prefix
+    };
+    for partition in [1, 257] {
+        let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&reference_revision)).unwrap();
+        assert_eq!(play_to_cut(&mut old), play_to_cut(&mut uninterrupted));
+        let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        let mut fresh = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
+        fresh.play_from(CUT as u64).unwrap();
+        inherit_isolated_latency_edit(&mut candidate, &mut old, approved);
+        let render = |runtime: &mut SessionPlayback| {
+            let ids = [
+                OutputCaptureId::Track(group),
+                OutputCaptureId::Return(bus),
+                OutputCaptureId::Track(changed),
+            ];
+            let plan = runtime.output_capture_plan(&ids, partition).unwrap();
+            let mut pcm = [[0.0; 2]; 512];
+            let mut group = pcm;
+            let mut bus = pcm;
+            let mut changed = pcm;
+            for (((pcm, group), bus), changed) in pcm
+                .chunks_mut(partition)
+                .zip(group.chunks_mut(partition))
+                .zip(bus.chunks_mut(partition))
+                .zip(changed.chunks_mut(partition))
+            {
+                runtime
+                    .render_with_capture(
+                        pcm,
+                        &mut OutputCapture::new(&plan, &mut [group, bus, changed]),
+                    )
+                    .unwrap();
+            }
+            (pcm, group, bus, changed)
+        };
+        let (main, group, bus, affected) = render(&mut candidate);
+        let (old_main, old_group, old_bus, _) = render(&mut uninterrupted);
+        let (_, _, fresh_bus, fresh_affected) = render(&mut fresh);
+        let bits = |pcm: [[f32; 2]; 512]| pcm.map(|frame| frame.map(f32::to_bits));
+        if !approved || cut_pending_hit {
+            assert_eq!(bits(main), bits(old_main));
+        }
+        if cut_pending_hit {
+            let mut uncut = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+            play_to_cut(&mut uncut);
+            let (_, uncut_group, uncut_bus, _) = render(&mut uncut);
+            assert_ne!(bits(old_bus), bits(uncut_bus));
+            if grouped {
+                assert_ne!(bits(old_group), bits(uncut_group));
+            }
+        }
+        assert_eq!(bits(group), bits(old_group));
+        assert_eq!(bits(bus), bits(old_bus));
+        assert_ne!(bits(bus), bits(fresh_bus));
+        assert_eq!(bits(affected), bits(fresh_affected));
+        for tail in [group, bus] {
+            assert!(tail.iter().flatten().any(|sample| sample.abs() > 1e-7));
+        }
+    }
+}
+
+fn inherit_isolated_latency_edit(
+    candidate: &mut SessionPlayback,
+    predecessor: &mut SessionPlayback,
+    approved: bool,
+) {
+    candidate.require_continuous_insert = true;
+    if approved {
+        let cut = predecessor.performance_frame();
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(predecessor),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+        assert!(predecessor.playing());
+        assert_eq!(predecessor.performance_frame(), cut);
+        predecessor.set_playing_at_device_insert_cut(false);
+        candidate
+            .try_inherit_state_at_device_insert_cut(predecessor)
+            .unwrap();
+        assert_eq!(candidate.performance_frame(), cut);
+        candidate.set_playing_at_device_insert_cut(true);
+    } else {
+        candidate.try_inherit_state_live_from(predecessor).unwrap();
+    }
+}
+
+fn isolated_latency_revisions(
+    fixture: &mut crate::signal_graph::tests::Fixture,
+    track: TrackId,
+    edit: IsolatedLatencyEdit,
+) -> (Arc<PreparedRevision>, Arc<PreparedRevision>) {
+    let without = prepare(fixture);
+    let hex_project::Created::Device(device) = fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter(),
+        })
+        .unwrap()
+    else {
+        panic!("limiter");
+    };
+    let with = prepare(fixture);
+    match edit {
+        IsolatedLatencyEdit::Insert => (without, with),
+        IsolatedLatencyEdit::Remove => {
+            fixture
+                .editor
+                .execute(Command::RemoveDevice(device))
+                .unwrap();
+            (with, prepare(fixture))
+        }
+    }
+}
+
+#[test]
+fn unproven_latency_additions_keep_existing_restart_behavior() {
+    for case in [
+        SilentLatencyCase::ActiveChangedTrack,
+        SilentLatencyCase::BufferedUnmutedTrack,
+        SilentLatencyCase::StaleMutedHistory,
+        SilentLatencyCase::IncreasedMaximum,
+        SilentLatencyCase::ChangedReturnArrival,
+        SilentLatencyCase::ChangedGroupArrival,
+    ] {
+        silent_latency_addition_case(case, 257);
+    }
+}
+
+fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::Created;
+    let mut f = fixture(&[&[], &[]], 12000);
+    for (index, audio) in f.media.values_mut().enumerate() {
+        let mut samples = vec![[0.0; 2]; 12000];
+        if index == 0
+            && matches!(
+                case,
+                SilentLatencyCase::ActiveChangedTrack
+                    | SilentLatencyCase::BufferedUnmutedTrack
+                    | SilentLatencyCase::StaleMutedHistory
+            )
+        {
+            samples[..7000].fill([0.125, -0.0625]);
+        } else {
+            samples[..512].fill([0.25, -0.125]);
+        }
+        *audio = crate::Audio::new(48_000, samples).unwrap();
+    }
+    if !matches!(
+        case,
+        SilentLatencyCase::ActiveChangedTrack
+            | SilentLatencyCase::BufferedUnmutedTrack
+            | SilentLatencyCase::StaleMutedHistory
+    ) {
+        f.editor
+            .execute(Command::Mute {
+                track: f.tracks[0],
+                muted: true,
+            })
+            .unwrap();
+    }
+    if matches!(case, SilentLatencyCase::ChangedGroupArrival) {
+        f.editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&f.tracks[..1]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+    }
+    if matches!(case, SilentLatencyCase::ChangedReturnArrival) {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "room".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+    }
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[1],
+            before: None,
+            state: limiter(),
+        })
+        .unwrap();
+    let reverb = &hex_devices::reverb::REVERB_DEFINITION;
+    let state = reverb
+        .patch_parameter(
+            &reverb.default_state().unwrap(),
+            hex_devices::reverb::parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[1],
+            before: None,
+            state,
+        })
+        .unwrap();
+    let old_revision = prepare(&f);
+    let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(old_revision).unwrap();
+    for runtime in [&mut old, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut vec![[0.0; 2]; 6000]).unwrap();
+    }
+    if matches!(
+        case,
+        SilentLatencyCase::ActiveChangedTrack | SilentLatencyCase::StaleMutedHistory
+    ) {
+        f.editor
+            .execute(Command::Mute {
+                track: f.tracks[0],
+                muted: true,
+            })
+            .unwrap();
+        if matches!(case, SilentLatencyCase::StaleMutedHistory) {
+            let mut muted = SessionPlayback::new(prepare(&f)).unwrap();
+            muted.try_inherit_state_live_from(&mut old).unwrap();
+            old = muted;
+        }
+    }
+    let added = if matches!(case, SilentLatencyCase::IncreasedMaximum) {
+        let definition = &hex_devices::limiter::DEFINITION;
+        definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::limiter::parameter::LOOKAHEAD,
+                ParameterValue::Choice(2),
+            )
+            .unwrap()
+    } else {
+        limiter()
+    };
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: None,
+            state: added,
+        })
+        .unwrap();
+    let revision = prepare(&f);
+    if matches!(
+        case,
+        SilentLatencyCase::ChangedReturnArrival | SilentLatencyCase::ChangedGroupArrival
+    ) {
+        assert_eq!(
+            revision.arrangement().main_latency_frames(),
+            reference.revision.arrangement().main_latency_frames()
+        );
+    }
+    let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    if !matches!(case, SilentLatencyCase::Eligible) {
+        candidate.require_continuous_insert = true;
+        assert!(matches!(
+            candidate.try_inherit_state_live_from(&mut old),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        ));
+        assert_eq!(old.performance_frame(), 6_000);
+        assert!(old.playing());
+        candidate.require_continuous_insert = false;
+    }
+    candidate.try_inherit_state_live_from(&mut old).unwrap();
+    let mut actual = [[0.0; 2]; 512];
+    for chunk in actual.chunks_mut(partition) {
+        candidate.render(chunk).unwrap();
+    }
+    let mut expected = [[0.0; 2]; 512];
+    if matches!(case, SilentLatencyCase::Eligible) {
+        for chunk in expected.chunks_mut(partition) {
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            expected.iter().flatten().any(|sample| *sample != 0.0),
+            "reference tail must sound"
+        );
+    } else {
+        let mut restart = SessionPlayback::new(revision).unwrap();
+        restart.play_from(6000).unwrap();
+        for chunk in expected.chunks_mut(partition) {
+            restart.render(chunk).unwrap();
+        }
+    }
+    assert_eq!(actual, expected);
+}

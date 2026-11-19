@@ -35,7 +35,10 @@ pub use native_custody::{
     ConstructorStreamDomain, StreamDomainConstructorSummary, StreamDomainSealRefusal,
 };
 mod pending;
-pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
+pub use pending::{
+    GranularStreamPreparationAllowance, PendingStreamDomain, StreamPreparationAllowance,
+    StreamPreparationBound,
+};
 mod disposal;
 #[cfg(test)]
 mod read_outcome_tests;
@@ -78,7 +81,7 @@ struct CatalogOwner {
     config: StreamConfig,
     stop: Arc<AtomicBool>,
     worker_wake: Thread,
-    worker: Mutex<Option<JoinHandle<Vec<Box<PageBuffer>>>>>,
+    worker: Mutex<Option<JoinHandle<crate::worker::WorkerExit>>>,
     catalog_state: Mutex<CatalogState>,
     #[cfg(test)]
     worker_finished: Arc<AtomicBool>,
@@ -349,10 +352,91 @@ impl StreamRuntime {
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
         #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
+        Self::new_factory_with_granular(
+            config,
+            definitions,
+            scalar_definitions,
+            None,
+            reserve_disposal,
+            #[cfg(test)]
+            test_hooks,
+            #[cfg(feature = "test-support")]
+            page_gate,
+        )
+    }
+    /// Route an already prepared/admitted granular bank through this runtime's
+    /// existing endpoint and original page pool, alongside raw/scalar sources.
+    /// The allowance covers the dedicated worker's listed DATA/known handles;
+    /// ordinary runtime and loan metadata DATA remain separate. This blocking
+    /// control constructor is not pending aggregate admission. Hosts should use
+    /// PendingStreamDomain's combined granular preparation allowance.
+    /// At least three pool buffers are required: one granular loan, cached
+    /// content and ordinary turnover. Granular admission keeps only one loan
+    /// active and reduces the endpoint cache limit by one.
+    pub fn spawn_with_granular_sources(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        bank: crate::GranularWorkerBank,
+        allowance: crate::GranularWorkerAllowance,
+    ) -> Result<Self, StreamRuntimeError> {
         let config = config.validate()?;
+        let granular = crate::worker::granular::PreparedGranular::new(bank, config, allowance)?;
+        Self::new_factory_with_granular(
+            config,
+            definitions,
+            scalar_definitions,
+            Some(granular),
+            false,
+            #[cfg(test)]
+            None,
+            #[cfg(feature = "test-support")]
+            None,
+        )
+        .map(|(runtime, _)| runtime)
+    }
+    /// Hold the dedicated granular worker before its first active step. Stop
+    /// releases this real-worker test hold; raw/scalar service remains live.
+    #[cfg(feature = "test-support")]
+    pub fn new_with_granular_page_gate(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        bank: crate::GranularWorkerBank,
+        allowance: crate::GranularWorkerAllowance,
+        gate: crate::test_support::PageGate,
+    ) -> Result<Self, StreamRuntimeError> {
+        let config = config.validate()?;
+        let mut granular = crate::worker::granular::PreparedGranular::new(bank, config, allowance)?;
+        granular.gate = Some(gate);
+        Self::new_factory_with_granular(
+            config,
+            definitions,
+            scalar_definitions,
+            Some(granular),
+            false,
+            #[cfg(test)]
+            None,
+            None,
+        )
+        .map(|(runtime, _)| runtime)
+    }
+    #[allow(clippy::too_many_arguments)] // Closed source owners plus test-only gates.
+    fn new_factory_with_granular(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        granular: Option<crate::worker::granular::PreparedGranular>,
+        reserve_disposal: bool,
+        #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
+    ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
+        let config = config.validate()?;
+        let granular_count = granular.as_ref().map_or(0, |g| g.metadata().len());
         if definitions
             .len()
             .checked_add(scalar_definitions.len())
+            .and_then(|n| n.checked_add(granular_count))
             .is_none_or(|count| count > config.max_sources)
         {
             return Err(StreamRuntimeError::InvalidConfiguration);
@@ -367,7 +451,7 @@ impl StreamRuntime {
         .ok_or(StreamRuntimeError::InvalidConfiguration)?;
         let mut source_keys = Vec::new();
         source_keys
-            .try_reserve_exact(definitions.len() + scalar_definitions.len())
+            .try_reserve_exact(definitions.len() + scalar_definitions.len() + granular_count)
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         for definition in &definitions {
             if definition.key != definition.metadata.key()
@@ -383,6 +467,15 @@ impl StreamRuntime {
                 return Err(StreamRuntimeError::InvalidConfiguration);
             }
             source_keys.push(key);
+        }
+        if let Some(granular) = &granular {
+            for source in granular.metadata() {
+                let key = hex_engine::StreamResourceKey::from(source.key());
+                if source_keys.contains(&key) {
+                    return Err(StreamRuntimeError::InvalidConfiguration);
+                }
+                source_keys.push(key);
+            }
         }
         source_keys.sort_unstable();
         let mut free_pages = Vec::new();
@@ -484,7 +577,7 @@ impl StreamRuntime {
         #[cfg(test)]
         let test_panic = disposal::take_worker_test_panic();
         let pair_id = Arc::new(());
-        let endpoint = Endpoint::new(
+        let mut endpoint = Endpoint::new(
             config.page_buffers,
             config.request_capacity,
             source_keys,
@@ -496,6 +589,11 @@ impl StreamRuntime {
             },
         )
         .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        if granular.is_some() {
+            endpoint
+                .reserve_granular_loan_on_control()
+                .map_err(|_| StreamRuntimeError::InvalidConfiguration)?;
+        }
         let disposal = reserve_disposal
             .then(|| {
                 PreparedStreamDisposal::reserve_for_pair(Arc::clone(&pair_id), config.page_buffers)
@@ -507,12 +605,13 @@ impl StreamRuntime {
             // Now validate the actual control-side capacities before a live
             // JoinHandle can exist. Worker payload is separately capped by its
             // exact source/manifest/kernel/scratch constructor limits.
-            let bound = PendingStreamDomain::preparation_bound_with_scalar_sources(
+            let bound = PendingStreamDomain::preparation_bound_inner(
                 config,
                 &definitions,
                 definitions.capacity(),
                 &scalar_definitions,
                 scalar_definitions.capacity(),
+                granular.as_ref().map(|prepared| prepared.bank()),
                 None,
             )?;
             let (worker_data, worker_peak) =
@@ -544,17 +643,30 @@ impl StreamRuntime {
                 free_handles,
             ])
             .ok_or(StreamRuntimeError::AllocationFailed)?;
+            let granular_extra = granular
+                .as_ref()
+                .map_or(Some(0), |prepared| {
+                    prepared.data().bytes()?.checked_add(
+                        prepared.metadata().len().checked_mul(std::mem::size_of::<
+                            hex_engine::StreamedSourceMetadata,
+                        >())?,
+                    )
+                })
+                .ok_or(StreamRuntimeError::AllocationFailed)?;
             let actual = common
-                .checked_add(worker_data)
+                .checked_add(granular_extra)
+                .and_then(|n| n.checked_add(worker_data))
                 .ok_or(StreamRuntimeError::AllocationFailed)?;
             let peak = common
-                .checked_add(worker_peak)
+                .checked_add(granular_extra)
+                .and_then(|n| n.checked_add(worker_peak))
                 .and_then(|n| n.checked_add(transport_data.page_boxing_overlap))
                 .ok_or(StreamRuntimeError::AllocationFailed)?;
             if actual > bound.retained_data_bytes || peak > bound.construction_peak_data_bytes {
                 return Err(StreamRuntimeError::InvalidConfiguration);
             }
         }
+        let offline_consumer = config.wake_offline_consumer.then(thread::current);
         let worker = thread::Builder::new()
             .name("hex-stream-worker".to_owned())
             .spawn(move || {
@@ -566,10 +678,12 @@ impl StreamRuntime {
                     config,
                     definitions,
                     scalar_definitions,
+                    granular,
                     free_pages,
                     worker_queues,
                     thread_stop,
                     catalog_sender,
+                    offline_consumer,
                     #[cfg(test)]
                     test_hooks,
                     #[cfg(feature = "test-support")]
@@ -801,7 +915,8 @@ impl StreamControl {
             if let Some(worker) = worker_slot.take() {
                 let pages = worker
                     .join()
-                    .map_err(|_| ShutdownError::Runtime(StreamRuntimeError::WorkerJoinFailed))?;
+                    .map_err(|_| ShutdownError::Runtime(StreamRuntimeError::WorkerJoinFailed))?
+                    .map_err(ShutdownError::Runtime)?;
                 (pages, true)
             } else {
                 (Vec::new(), false)
@@ -1397,5 +1512,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod offline_wait_tests;
 #[cfg(test)]
 mod scalar_tests;

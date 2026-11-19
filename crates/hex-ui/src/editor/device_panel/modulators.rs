@@ -514,7 +514,10 @@ pub(super) fn source_effect_card(
     else {
         return outer.child(theme::text("source effect unavailable"));
     };
-    let mut body = crate::device_composition::body()
+    // The housing owns scrolling; let this compact card contribute its full
+    // content height so its lower mapping targets are not clipped.
+    let mut body = hex_widgets::device_body(theme::device_style(theme::DeviceStyleRole::Layout))
+        .w_full()
         .flex()
         .flex_col()
         .gap(px(1.0));

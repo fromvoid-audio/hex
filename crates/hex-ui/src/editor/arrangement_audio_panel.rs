@@ -66,6 +66,7 @@ pub(super) fn view(
     let (track, clip_id, position, length, source_start, source_length) =
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
+    let display_gain = view.waveform_clip_gain(clip).unwrap_or(clip.gain());
     let identity = state.project.track(track)?.color();
     let active = view.displayed_clip_active(clip_id, clip.active());
     let waveform_ink =
@@ -281,8 +282,7 @@ pub(super) fn view(
             super::waveform::prepared_waveform_view_cached(
                 prepared,
                 clip,
-                clip.start(),
-                clip.start() + clip.duration(),
+                display_gain,
                 std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                 waveform_ink,
             ),
@@ -369,7 +369,7 @@ pub(super) fn view(
                 waveform,
                 0,
                 first..end,
-                window.gain,
+                display_gain.linear(),
                 false,
                 std::rc::Rc::clone(&view.clip_waveform_geometry_cache),
                 waveform_ink,

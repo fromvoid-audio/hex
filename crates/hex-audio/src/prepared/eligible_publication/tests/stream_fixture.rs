@@ -115,10 +115,82 @@ pub(super) fn owner_with_context(
 ) -> hex_engine::AudioCandidateOwner {
     owner_sources(project, vec![metadata], context)
 }
+pub(super) fn project_with_return_feed(
+    project: hex_project::Project,
+    include_feed: bool,
+) -> hex_project::Project {
+    use hex_project::{Command, Created, Editor, RoutingOwner, TrackDeviceSlot};
+    let mut editor = Editor::new(project, 16).unwrap();
+    let source = editor.project().tracks()[0].id();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    editor
+        .execute(Command::RemoveInstrument { track: receiver })
+        .unwrap();
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track: source,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    if include_feed {
+        editor
+            .execute(Command::SetAudioFeed {
+                source: RoutingOwner::Return(bus),
+                destination: receiver,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    editor.project().clone()
+}
 pub(super) fn owner_sources(
     project: &hex_project::Project,
     sources: Vec<StreamedSourceMetadata>,
     context: Option<hex_engine::AudioSourceContext>,
+) -> hex_engine::AudioCandidateOwner {
+    owner_sources_impl(project, sources, context, false)
+}
+pub(super) fn owner_with_effects(
+    project: &hex_project::Project,
+    metadata: StreamedSourceMetadata,
+    context: Option<hex_engine::AudioSourceContext>,
+) -> hex_engine::AudioCandidateOwner {
+    owner_sources_impl(project, vec![metadata], context, true)
+}
+fn owner_sources_impl(
+    project: &hex_project::Project,
+    sources: Vec<StreamedSourceMetadata>,
+    context: Option<hex_engine::AudioSourceContext>,
+    with_effects: bool,
 ) -> hex_engine::AudioCandidateOwner {
     let sources = sources
         .into_iter()
@@ -147,6 +219,10 @@ pub(super) fn owner_sources(
     let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
     let mut input =
         hex_engine::AudioArrangementInput::new(project, 11, bank).with_audio_prepared_revision();
+    let registry = hex_devices::native_registry().unwrap();
+    if with_effects {
+        input = input.with_effect_registry(&registry);
+    }
     if let Some(context) = context {
         input = input.with_source_context(context);
     }
@@ -154,4 +230,39 @@ pub(super) fn owner_sources(
     hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
         .ok()
         .unwrap()
+}
+
+pub(super) fn prepare_candidate(
+    control: &mut crate::prepared::Control,
+    project: &hex_project::Project,
+    metadata: &hex_engine::StreamedSourceMetadata,
+    domain: crate::AudioCandidateDomainToken,
+    context: hex_engine::AudioSourceContext,
+) -> crate::AudioCandidatePreparationToken {
+    hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        let quote = effects.quote(project, 1).unwrap();
+        let token = control
+            .reserve_audio_candidate_preparation(
+                crate::AudioCandidatePreparationReservation {
+                    source_capacity: quote.source_capacity,
+                    storage: quote.storage_reservation(0).unwrap(),
+                    member_rows: quote.member_rows,
+                    transfer_rows: quote.transfer_rows,
+                    handle_rows: quote.handle_rows,
+                },
+                vec![domain],
+            )
+            .unwrap_or_else(|error| panic!("{}", error.reason));
+        assert_eq!(
+            control
+                .prepare_audio_candidate_on_control(token, |cell| {
+                    cell.add_streamed_source_on_control(metadata.clone())?;
+                    effects.prepare(cell, project, metadata.key().generation(), context, None)
+                })
+                .unwrap(),
+            crate::AudioCandidatePreparationProgress::Ready
+        );
+        Ok(token)
+    })
+    .unwrap()
 }

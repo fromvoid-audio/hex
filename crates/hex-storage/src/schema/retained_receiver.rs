@@ -12,11 +12,17 @@ pub(crate) fn contains(project: &Project) -> bool {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
-    let mut snapshot = project.snapshot();
-    let paths = std::mem::take(&mut snapshot.retained_source_paths);
-    let neutral =
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let mut value = super::sampler_crossfade::encode(&neutral)?;
+    // Newer schemas retain this field even when the project has no corresponding state.
+    let (neutral, paths) = if contains(project) {
+        let mut snapshot = project.snapshot();
+        let paths = std::mem::take(&mut snapshot.retained_source_paths);
+        let neutral =
+            Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+        (Some(neutral), paths)
+    } else {
+        (None, Vec::new())
+    };
+    let mut value = super::sampler_crossfade::encode(neutral.as_ref().unwrap_or(project))?;
     value["retained_source_paths"] = serde_json::to_value(paths)?;
     value["version"] = crate::RETAINED_RECEIVER_SCHEMA_VERSION.into();
     Ok(value)

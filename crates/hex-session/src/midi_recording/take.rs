@@ -17,18 +17,30 @@ pub struct MidiTake {
     first: u64,
     end: u64,
     origin: MidiCaptureClock,
+    latency_frames: u64,
     previous: Option<(u64, u64)>,
     held: Vec<Held>,
     notes: Vec<RecordedMidiNote>,
     onsets: usize,
-    finished: bool,
+    finished: Option<u64>,
     faulted: bool,
 }
 impl MidiTake {
     pub fn new(first: u64, end: u64, origin: MidiCaptureClock) -> Result<Self, &'static str> {
+        Self::new_with_latency(first, end, origin, 0)
+    }
+    /// Bind raw delivered clocks to the graph latency reported at Arm.
+    pub fn new_with_latency(
+        first: u64,
+        end: u64,
+        origin: MidiCaptureClock,
+        latency_frames: u32,
+    ) -> Result<Self, &'static str> {
         if first >= end || origin.content_frame < first || origin.content_frame >= end {
             return Err("midi take starts outside its clip");
         }
+        end.checked_add(u64::from(latency_frames))
+            .ok_or("midi take latency exceeds frame range")?;
         let mut notes = Vec::new();
         notes
             .try_reserve_exact(MAX_MIDI_TAKE_NOTES)
@@ -40,11 +52,12 @@ impl MidiTake {
             first,
             end,
             origin,
+            latency_frames: u64::from(latency_frames),
             previous: None,
             held,
             notes,
             onsets: 0,
-            finished: false,
+            finished: None,
             faulted: false,
         })
     }
@@ -60,14 +73,19 @@ impl MidiTake {
         result
     }
     fn push_inner(&mut self, event: AcceptedMidiNote, frame: u64) -> Result<(), &'static str> {
-        if self.finished || self.faulted {
+        if self.finished.is_some() || self.faulted {
             return Err("midi take is no longer recording");
         }
         let elapsed = event
             .performance_frame
             .checked_sub(self.origin.performance_frame)
             .ok_or("midi take performance clock moved backwards")?;
-        if self.origin.content_frame.checked_add(elapsed) != Some(frame)
+        let expected = self
+            .origin
+            .content_frame
+            .checked_add(elapsed)
+            .map(|raw| raw.saturating_sub(self.latency_frames).max(self.first));
+        if expected != Some(frame)
             || frame < self.first
             || frame >= self.end
             || self.previous.is_some_and(|(content, performance)| {
@@ -115,12 +133,16 @@ impl MidiTake {
                 // Releases of voices already held before Arm are audible but are
                 // deliberately absent from this take's onset set.
                 if let Some(index) = held {
-                    if frame <= self.held[index].note.start_frame {
+                    if frame <= self.held[index].note.start_frame
+                        && (self.latency_frames == 0 || frame != self.first)
+                    {
                         return Err("midi take note has no positive duration");
                     }
                     let mut held = self.held.swap_remove(index);
                     held.note.end_frame = frame;
-                    self.notes.push(held.note);
+                    if held.note.end_frame > held.note.start_frame {
+                        self.notes.push(held.note);
+                    }
                 }
             }
         }
@@ -129,28 +151,34 @@ impl MidiTake {
     }
     /// Close gates at the last confirmed delivered boundary. This never uses a
     /// reset transport position or wall clock. Repeated finish preserves notes.
-    pub fn finish(&mut self, clock: MidiCaptureClock) -> Result<(), &'static str> {
+    pub fn finish(&mut self, clock: MidiCaptureClock) -> Result<u64, &'static str> {
         let result = self.finish_inner(clock);
         if result.is_err() {
             self.faulted = true;
         }
         result
     }
-    fn finish_inner(&mut self, clock: MidiCaptureClock) -> Result<(), &'static str> {
+    fn finish_inner(&mut self, clock: MidiCaptureClock) -> Result<u64, &'static str> {
         if self.faulted {
             return Err("interrupted midi take must be retained or discarded");
         }
-        if self.finished {
-            return Ok(());
+        if let Some(frame) = self.finished {
+            return Ok(frame);
         }
         let elapsed = clock
             .performance_frame
             .checked_sub(self.origin.performance_frame)
             .ok_or("midi take end clock moved backwards")?;
+        let corrected_end = clock
+            .content_frame
+            .saturating_sub(self.latency_frames)
+            .clamp(self.first, self.end);
         if self.origin.content_frame.checked_add(elapsed) != Some(clock.content_frame)
-            || clock.content_frame > self.end
+            || clock.content_frame > self.end.saturating_add(self.latency_frames)
             || self.previous.is_some_and(|(frame, performance)| {
-                clock.content_frame <= frame || clock.performance_frame <= performance
+                corrected_end < frame
+                    || (corrected_end == frame && (self.latency_frames == 0 || frame != self.first))
+                    || clock.performance_frame <= performance
             })
         {
             self.faulted = true;
@@ -158,12 +186,14 @@ impl MidiTake {
         }
         for held in self.held.drain(..) {
             let mut note = held.note;
-            note.end_frame = clock.content_frame;
-            self.notes.push(note);
+            note.end_frame = corrected_end;
+            if note.end_frame > note.start_frame {
+                self.notes.push(note);
+            }
         }
         self.notes.sort_by_key(|note| note.start_frame);
-        self.finished = true;
-        Ok(())
+        self.finished = Some(corrected_end);
+        Ok(corrected_end)
     }
     /// Borrow captured spans without consuming them; only a successful commit
     /// acknowledgment authorizes the editor to retire this take.
@@ -171,7 +201,7 @@ impl MidiTake {
         &self.notes
     }
     pub fn complete(&self) -> bool {
-        self.finished && !self.faulted
+        self.finished.is_some() && !self.faulted
     }
     pub fn interrupt(&mut self) {
         self.faulted = true;

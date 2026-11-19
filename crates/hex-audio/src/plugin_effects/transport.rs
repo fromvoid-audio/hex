@@ -6,7 +6,7 @@ use hex_plugin_host::{
     native::{PreparedStorage, Quiescent},
     transport::{
         AcceptedEditorQuantum, ConstructorStorage, DenseEffectCallback, DenseParameterLane,
-        ParameterPoint, SegmentReply,
+        ParameterPoint,
     },
 };
 
@@ -16,6 +16,18 @@ pub(super) enum EffectTransport {
 }
 
 impl EffectTransport {
+    pub(super) fn reserve_observed_parameter_input(
+        &self,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<hex_plugin_host::transport::ParameterInputFence<'_>> {
+        match self {
+            Self::Ordinary(callback) => {
+                callback.reserve_observed_parameter_input_on_callback(source)
+            }
+            Self::Dense(callback) => callback.reserve_observed_parameter_input_on_callback(source),
+        }
+    }
+
     pub(super) fn matches_worker(&self, worker: &NativeWorker) -> bool {
         match self {
             Self::Ordinary(callback) => worker.owns_callback(callback),
@@ -71,7 +83,7 @@ impl EffectTransport {
     }
 
     #[allow(clippy::too_many_arguments)] // Borrowed request data stays within the physical extent.
-    pub(super) fn stage_effect_segment(
+    pub(super) fn stage_effect_pcm_segment(
         &mut self,
         offset: usize,
         input: &[[f32; 2]],
@@ -81,16 +93,17 @@ impl EffectTransport {
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
         lane: Option<DenseParameterLane<'_>>,
-    ) -> Result<SegmentReply, Fault> {
+    ) -> Result<Option<(usize, usize)>, Fault> {
         match self {
-            Self::Ordinary(callback) if lane.is_none() => callback
-                .stage_effect_segment(offset, input, events, parameters, frames, timing, origins),
+            Self::Ordinary(callback) if lane.is_none() => callback.stage_effect_pcm_segment(
+                offset, input, events, parameters, frames, timing, origins,
+            ),
             Self::Ordinary(callback) => {
                 callback.reject(Fault::InvalidParameters);
                 frames.fill([0.0; 2]);
                 Err(Fault::InvalidParameters)
             }
-            Self::Dense(callback) => callback.stage_effect_segment(
+            Self::Dense(callback) => callback.stage_effect_pcm_segment(
                 offset, input, events, parameters, frames, timing, origins, lane,
             ),
         }
@@ -103,10 +116,10 @@ impl EffectTransport {
         }
     }
 
-    pub(super) fn end_staging_at_pause(&mut self, frame: usize) {
+    pub(super) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         match self {
-            Self::Ordinary(callback) => callback.end_staging_at_pause(frame),
-            Self::Dense(callback) => callback.end_staging_at_pause(frame),
+            Self::Ordinary(callback) => callback.end_staging_at_rendered_prefix(frame),
+            Self::Dense(callback) => callback.end_staging_at_rendered_prefix(frame),
         }
     }
 

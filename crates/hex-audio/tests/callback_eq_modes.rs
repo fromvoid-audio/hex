@@ -21,6 +21,16 @@ use std::{
 };
 const RATE: u32 = 48000;
 const BLOCK: usize = 1024;
+
+// Keep channel construction in its own stack frame. The test holds four
+// prepared callbacks and compares them within the same measured blocks.
+#[inline(never)]
+fn boxed_callback_channel()
+-> Result<(prepared::Control, Box<prepared::Callback>), hex_engine::Invalid> {
+    let (control, callback) = prepared::channel(RATE)?;
+    Ok((control, Box::new(callback)))
+}
+
 fn close(a: &[[f32; 2]], b: &[[f32; 2]]) {
     for (a, b) in a.iter().zip(b) {
         for c in 0..2 {
@@ -109,10 +119,10 @@ fn mode_first_assignment_reading_rapid_curves_undo_bypass_and_shutdown_allocate_
                 None,
             )?))
         };
-        let (mut control, mut callback) = prepared::channel(RATE)?;
-        let (mut old_control, mut old_callback) = prepared::channel(RATE)?;
-        let (mut canonical_control, mut canonical_callback) = prepared::channel(RATE)?;
-        let (mut raw_control, mut raw_callback) = prepared::channel(RATE)?;
+        let (mut control, mut callback) = boxed_callback_channel()?;
+        let (mut old_control, mut old_callback) = boxed_callback_channel()?;
+        let (mut canonical_control, mut canonical_callback) = boxed_callback_channel()?;
+        let (mut raw_control, mut raw_callback) = boxed_callback_channel()?;
         for (owner, project) in [
             (&mut control, e.project()),
             (&mut old_control, e.project()),

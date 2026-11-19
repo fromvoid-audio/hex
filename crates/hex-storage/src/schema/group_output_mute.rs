@@ -32,24 +32,31 @@ pub(crate) fn contains(project: &Project) -> bool {
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     // Lower codecs temporarily flatten track hierarchy. Keep the group-only
     // fields in this envelope while the lower core composes its document.
-    let mut snapshot = project.snapshot();
-    let rows: Vec<_> = snapshot
-        .tracks
-        .iter_mut()
-        .filter(|track| !track.group_output_mutes.is_empty())
-        .map(|track| Assignment {
-            group: track.id,
-            ranges: std::mem::take(&mut track.group_output_mutes)
-                .into_iter()
-                .map(|range| Interval {
-                    start: range.start(),
-                    end: range.end(),
-                })
-                .collect(),
-        })
-        .collect();
-    let core = Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let mut value = super::track_tags::encode(&core)?;
+    // Newer schemas retain this field even when the project has no corresponding state.
+    let (core, rows) = if contains(project) {
+        let mut snapshot = project.snapshot();
+        let rows: Vec<_> = snapshot
+            .tracks
+            .iter_mut()
+            .filter(|track| !track.group_output_mutes.is_empty())
+            .map(|track| Assignment {
+                group: track.id,
+                ranges: std::mem::take(&mut track.group_output_mutes)
+                    .into_iter()
+                    .map(|range| Interval {
+                        start: range.start(),
+                        end: range.end(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let core =
+            Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+        (Some(core), rows)
+    } else {
+        (None, Vec::new())
+    };
+    let mut value = super::track_tags::encode(core.as_ref().unwrap_or(project))?;
     value["version"] = GROUP_OUTPUT_MUTE_SCHEMA_VERSION.into();
     value["group_output_mutes"] = serde_json::to_value(rows)?;
     Ok(value)

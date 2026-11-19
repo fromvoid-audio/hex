@@ -642,7 +642,8 @@ impl State {
 fn scalar_change(a: &Settings, b: &Settings) -> bool {
     a.0[..5] != b.0[..5] || a.0[8..] != b.0[8..]
 }
-struct Runtime {
+/// Original structural Limiter runtime; history custody remains private.
+pub struct Runtime {
     prepared: PreparedStructuralLimiter,
     primary: State,
     scratch: State,
@@ -650,6 +651,14 @@ struct Runtime {
     releasing: bool,
 }
 impl Runtime {
+    /// Borrow exact inline and committed/scratch heap storage on control.
+    /// This observation transfers no runtime or buffer ownership.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        Some((
+            size_of::<Self>(),
+            [self.primary.bytes()?, self.scratch.bytes()?],
+        ))
+    }
     fn plain(&mut self, frames: &mut [StereoFrame], bypassed: bool) {
         if !self.open {
             return;
@@ -708,9 +717,8 @@ impl Runtime {
 
 impl OwnedProcessorRuntime for Runtime {
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
-        size_of::<Self>()
-            .checked_add(self.primary.bytes()?)?
-            .checked_add(self.scratch.bytes()?)
+        let (inline, [committed, scratch]) = self.control_storage()?;
+        inline.checked_add(committed)?.checked_add(scratch)
     }
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         self.primary.controls.supports(&BINDINGS, id)

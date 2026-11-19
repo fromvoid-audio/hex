@@ -8,7 +8,7 @@ use crate::{
 };
 use gpui::{
     Context, IntoElement, MouseButton, PathBuilder, Point, Window, canvas, div, point, prelude::*,
-    px, rgb,
+    px, rgb, rgba,
 };
 use hex_project::{AudioEventFade, ClipFade, TempoMap};
 use std::ops::Range;
@@ -548,33 +548,51 @@ impl EditorView {
                     })
                 });
         }
+        let event_id = event.id;
         let mut elements = vec![
-            canvas(
-                |_, _, _| (),
-                move |b, _, window, _| {
-                    let mut path = PathBuilder::stroke(px(1.0));
-                    for (index, gain) in gains.into_iter().take(count).enumerate() {
-                        let p = point(
-                            b.left() + b.size.width * (index as f32 / (count - 1) as f32),
-                            b.top() + b.size.height * (1.0 - gain),
-                        );
-                        if index == 0 {
-                            path.move_to(p);
-                        } else {
-                            path.line_to(p);
-                        }
-                    }
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, rgb(theme::color(theme::PaletteRole::Primary)));
-                    }
-                },
-            )
-            .absolute()
-            .top(px(CONTENT_TOP))
-            .bottom_0()
-            .left_0()
-            .right_0()
-            .into_any_element(),
+            div()
+                .debug_selector(move || format!("audio-event-fade-shade-{event_id}"))
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |b, _, window, _| {
+                            let mut path = PathBuilder::stroke(px(1.0));
+                            let mut shade = PathBuilder::fill();
+                            shade.move_to(b.origin);
+                            for (index, gain) in gains.into_iter().take(count).enumerate() {
+                                let p = point(
+                                    b.left() + b.size.width * (index as f32 / (count - 1) as f32),
+                                    b.top() + b.size.height * (1.0 - gain),
+                                );
+                                shade.line_to(p);
+                                if index == 0 {
+                                    path.move_to(p);
+                                } else {
+                                    path.line_to(p);
+                                }
+                            }
+                            shade.line_to(point(b.right(), b.top()));
+                            shade.close();
+                            if let Ok(shade) = shade.build() {
+                                window.paint_path(shade, rgba(theme::CLIP_FADE_SHADE));
+                            }
+                            if let Ok(path) = path.build() {
+                                window.paint_path(
+                                    path,
+                                    rgb(theme::color(theme::PaletteRole::Primary)),
+                                );
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .absolute()
+                .top(px(CONTENT_TOP))
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .into_any_element(),
         ];
         // The event has a one-pixel border. Fit hit boxes to its inner width,
         // even when a short event is zoomed out.

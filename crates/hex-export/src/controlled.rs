@@ -1,4 +1,6 @@
 //! Control-worker rendering through one canonical linear Arrangement owner.
+#[cfg(test)]
+mod foreign_linear_tests;
 use super::*;
 use hex_engine::{Frame, OutputCapture, OutputCaptureId, OutputCapturePlan};
 use std::sync::atomic::{AtomicBool, AtomicU8};
@@ -423,6 +425,104 @@ pub fn render_prepared_with_pages_and_policy(
         publication,
         Some(pages),
     )
+}
+
+/// Render linear Main through independently owned offline processors and,
+/// optionally, verified pages. Both owners finish before publication. Their
+/// custody remains with the caller and failures abort the staged export.
+#[allow(clippy::too_many_arguments)]
+pub fn render_linear_main_with_foreign(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    format: ExportFormat,
+    control: &ExportControl,
+    publication: &Publication,
+    pages: Option<&mut dyn PreparedExportPages>,
+    foreign: &mut dyn crate::ForeignBounceRenderer,
+) -> Result<ExportReport, ExportError> {
+    let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
+    if block_frames == 0 || frames == 0 {
+        return Err(ExportError::Invalid(
+            "invalid foreign export block or range",
+        ));
+    }
+    control.claim()?;
+    let sample_rate = revision.arrangement().sample_rate();
+    let latency = main_compensation(&revision, &ExportSignal::Main, frames);
+    let rendered_frames = compensated_frames(start, frames, latency)?;
+    publish_encoded(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        format,
+        || {
+            let mut inputs = crate::bounce::RenderInputs {
+                pages,
+                foreign: Some(foreign),
+            };
+            let playback = prepare_runtime_with_inputs(
+                revision,
+                resources,
+                start,
+                rendered_frames,
+                control,
+                foreign_linear_runtime,
+                || {},
+                &mut inputs,
+                block_frames,
+            )?;
+            let mut renderer = ForeignLinearRenderer {
+                playback,
+                inputs,
+                block_frames,
+                control: control.clone(),
+            };
+            discard_latency(&mut renderer, latency)?;
+            Ok(renderer)
+        },
+    )
+}
+
+fn foreign_linear_runtime(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    _frames: u64,
+) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
+    SessionPlayback::new_linear_arrangement_export_with_foreign(revision, resources)
+}
+
+struct ForeignLinearRenderer<'p, 'pages, 'f> {
+    playback: SessionPlayback,
+    inputs: crate::bounce::RenderInputs<'p, 'pages, 'f>,
+    block_frames: usize,
+    control: ExportControl,
+}
+
+impl BlockRenderer for ForeignLinearRenderer<'_, '_, '_> {
+    fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+        for chunk in frames.chunks_mut(self.block_frames) {
+            self.control.check()?;
+            self.inputs
+                .render(&mut self.playback, chunk, &self.control)?;
+            self.control.advance(chunk.len());
+        }
+        self.control.check()
+    }
+
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        if let Some(pages) = self.inputs.pages.as_deref_mut() {
+            pages.finish(&self.control)?;
+        }
+        if let Some(foreign) = self.inputs.foreign.as_deref_mut() {
+            foreign.finish(&self.control)?;
+        }
+        self.control.begin_publication()
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Same renderer; optional exact borrowed page preparation.

@@ -642,7 +642,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
     let separator_selector =
         Box::leak(format!("lane-separator-{}", track.value()).into_boxed_str());
-    for target_height in [44.0, 88.0, 23.0] {
+    for target_height in [44.0, 88.0, 22.0] {
         let current_height = f32::from(visual.debug_bounds(lane_selector).unwrap().size.height);
         if current_height != target_height {
             let selector =

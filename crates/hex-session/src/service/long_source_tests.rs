@@ -276,10 +276,8 @@ fn timeline_edits_on_a_streamed_clip_past_the_edit_domain_survive_history_and_re
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
 }
 
-/// A full long plain reverse stays streamed and survives history and storage;
-/// other transforms still refuse outside the bounded resident workspace.
-#[test]
-fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
+// Each case owns a real 20M-frame source and the same imported state.
+fn long_plain_fixture() -> (Files, Service, Event, hex_project::ClipId) {
     let files = Files::new();
     let path = files.long_wav("twenty-million.wav", 20_000_000);
     let service = service_in(DocumentAudioMode::VerifiedStreaming);
@@ -287,6 +285,197 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
     let imported = next(&service);
     assert!(imported.error.is_none(), "{:?}", imported.error);
     let clip = imported.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }))
+        .unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    (files, service, imported, clip)
+}
+
+#[test]
+fn long_plain_original_reopens_after_verified_pitch() {
+    let (files, service, imported, clip) = long_plain_fixture();
+    let project_path = files.0.join("long-reversed.hex");
+    service
+        .submit(Request::SaveNew(project_path.clone()))
+        .unwrap();
+    let saved_base = next(&service);
+    assert!(saved_base.error.is_none(), "{:?}", saved_base.error);
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipPitch {
+            clip,
+            cents: 100,
+        }))
+        .unwrap();
+    let pitched = next(&service);
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    let pitch_path = files.0.join("long-pitch.hex");
+    service
+        .submit(Request::SaveNew(pitch_path.clone()))
+        .unwrap();
+    let saved_pitch = next(&service);
+    assert!(saved_pitch.error.is_none(), "{:?}", saved_pitch.error);
+    service
+        .submit(Request::OpenWithAudioMode {
+            source: ProjectSource::Saved(pitch_path),
+            relinks: BTreeMap::new(),
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(streaming_reservation()),
+        })
+        .unwrap();
+    let verified_pitch = next(&service);
+    assert!(verified_pitch.error.is_none(), "{:?}", verified_pitch.error);
+    assert_eq!(
+        verified_pitch.state.project.snapshot(),
+        pitched.state.project.snapshot()
+    );
+    assert_eq!(streamed_frames(&verified_pitch), 20_000_000);
+    service.submit(Request::Open(project_path.clone())).unwrap();
+    let restored = next(&service);
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    assert_eq!(
+        restored.state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
+    assert_eq!(streamed_frames(&restored), 20_000_000);
+}
+
+/// Stretch and plain pitch keep the original file through history and reopen.
+#[test]
+fn long_plain_pitch_round_trips_after_stretch_undo() {
+    use hex_project::{Command, TrimEdge, WarpMode};
+
+    let (files, service, imported, clip) = long_plain_fixture();
+    service
+        .submit(Request::Edit(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        }))
+        .unwrap();
+    let refused = next(&service);
+    let error = refused.error.as_deref().expect("musical timing refusal");
+    let expected = "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first";
+    assert!(error.contains(expected), "{error}");
+    assert_eq!(refused.state.project, imported.state.project);
+    assert_eq!(refused.state.revision, imported.state.revision);
+
+    let before = imported.state.project.clip(clip).unwrap();
+    let frame = 19_000_000;
+    service
+        .submit(Request::Edit(Command::StretchAudioClipEdge {
+            clip,
+            edge: TrimEdge::Right,
+            frame,
+        }))
+        .unwrap();
+    let stretched = next(&service);
+    assert!(stretched.error.is_none(), "{:?}", stretched.error);
+    let edited = stretched.state.project.clip(clip).unwrap();
+    assert_eq!(edited.duration(), frame);
+    assert_eq!(edited.asset(), before.asset());
+    let domain = &edited.audio_edit().unwrap().domain;
+    assert!(domain.warp_enabled);
+    assert_eq!(
+        domain.warp.as_ref().unwrap().mode,
+        WarpMode::Tones { grain_ms: 40 }
+    );
+    assert_eq!(streamed_frames(&stretched), 20_000_000);
+    let original_source = imported.state.canonical_audio_source.as_ref().unwrap();
+    let AudioSourceBinding::VerifiedFile(original_file) =
+        &original_source.sources()[&before.asset()]
+    else {
+        panic!("expected the verified original file");
+    };
+    let stretched_source = stretched.state.canonical_audio_source.as_ref().unwrap();
+    let mut roots = stretched_source.required_granular_roots(1);
+    let (file, root) = roots.next().unwrap().unwrap();
+    assert_eq!(file, original_file);
+    assert_eq!(root.metadata().playback_frames(), frame);
+    assert!(roots.next().is_none());
+
+    service.submit(Request::Undo).unwrap();
+    let undone = next(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project, imported.state.project);
+
+    service
+        .submit(Request::Edit(Command::SetAudioClipPitch {
+            clip,
+            cents: 100,
+        }))
+        .unwrap();
+    let pitched = next(&service);
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    let pitch_snapshot = pitched.state.project.snapshot();
+    assert_eq!(
+        pitched
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_plain_pitch_sources()
+            .count(),
+        1
+    );
+    assert_eq!(streamed_frames(&pitched), 20_000_000);
+    service.submit(Request::Undo).unwrap();
+    let undo_pitch = next(&service);
+    assert!(undo_pitch.error.is_none(), "{:?}", undo_pitch.error);
+    assert_eq!(
+        undo_pitch.state.project.snapshot(),
+        imported.state.project.snapshot()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redo_pitch = next(&service);
+    assert!(redo_pitch.error.is_none(), "{:?}", redo_pitch.error);
+    assert_eq!(redo_pitch.state.project.snapshot(), pitch_snapshot);
+    let pitch_path = files.0.join("long-pitch.hex");
+    service
+        .submit(Request::SaveNew(pitch_path.clone()))
+        .unwrap();
+    let saved_pitch = next(&service);
+    assert!(saved_pitch.error.is_none(), "{:?}", saved_pitch.error);
+    service.submit(Request::Open(pitch_path.clone())).unwrap();
+    let ordinary_pitch = next(&service);
+    assert!(ordinary_pitch.error.is_none(), "{:?}", ordinary_pitch.error);
+    assert_eq!(ordinary_pitch.state.project.snapshot(), pitch_snapshot);
+    assert_eq!(streamed_frames(&ordinary_pitch), 20_000_000);
+    let before = pitched.state.canonical_audio_source.as_ref().unwrap();
+    let after = ordinary_pitch
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap();
+    let (AudioSourceBinding::VerifiedFile(before), AudioSourceBinding::VerifiedFile(after)) = (
+        before.sources().values().next().unwrap(),
+        after.sources().values().next().unwrap(),
+    ) else {
+        panic!("verified file identity")
+    };
+    assert_eq!(before.fingerprint(), after.fingerprint());
+    service
+        .submit(Request::OpenWithAudioMode {
+            source: ProjectSource::Saved(pitch_path),
+            relinks: BTreeMap::new(),
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(streaming_reservation()),
+        })
+        .unwrap();
+    let reopened_pitch = next(&service);
+    assert!(reopened_pitch.error.is_none(), "{:?}", reopened_pitch.error);
+    assert_eq!(reopened_pitch.state.project.snapshot(), pitch_snapshot);
+    assert_eq!(streamed_frames(&reopened_pitch), 20_000_000);
+}
+
+/// Plain reverse remains streamed through history and format upgrade.
+#[test]
+fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
+    let (files, service, imported, clip) = long_plain_fixture();
     let project_path = files.0.join("long-reversed.hex");
     service
         .submit(Request::SaveNew(project_path.clone()))
@@ -294,30 +483,6 @@ fn long_plain_reverse_round_trips_while_other_transforms_refuse() {
     let saved_base = next(&service);
     assert!(saved_base.error.is_none(), "{:?}", saved_base.error);
     let original_project_bytes = fs::read(&project_path).unwrap();
-    for command in [
-        hex_project::Command::SetAudioClipPitch { clip, cents: 100 },
-        hex_project::Command::SetAudioClipMusical {
-            clip,
-            enabled: true,
-        },
-        hex_project::Command::StretchAudioClipEdge {
-            clip,
-            edge: hex_project::TrimEdge::Right,
-            frame: 19_000_000,
-        },
-    ] {
-        service.submit(Request::Edit(command.clone())).unwrap();
-        let refused = next(&service);
-        let error = refused.error.as_deref().expect("transform refusal");
-        assert!(
-            error.contains(
-                "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; \
-                 trim or split the clip first"
-            ),
-            "{command:?}: {error}"
-        );
-        assert_eq!(refused.state.project, imported.state.project);
-    }
     service
         .submit(Request::Edit(hex_project::Command::ReverseClips(vec![
             clip,
@@ -409,4 +574,82 @@ fn fifo_new_track_gain_applies_to_verified_file_imports() {
     let redo = next(&service);
     assert!(redo.error.is_none(), "{:?}", redo.error);
     assert_eq!(redo.state.project.tracks()[0].gain(), 0.25);
+}
+
+#[test]
+fn long_repitch_edit_survives_history_and_reopen_without_resident_pcm() {
+    let files = Files::new();
+    let path = files.long_wav("long-repitch.wav", 20_000_000);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service.submit(Request::Import(path)).unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }))
+        .unwrap();
+    let neutral = next(&service);
+    assert!(neutral.error.is_none(), "{:?}", neutral.error);
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }))
+        .unwrap();
+    let warped = next(&service);
+    assert!(warped.error.is_none(), "{:?}", warped.error);
+    let expected = warped.state.project.snapshot();
+    assert_eq!(streamed_frames(&warped), 20_000_000);
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipPitch {
+            clip,
+            cents: 100,
+        }))
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), expected);
+    let beats = hex_project::default_audio_warp(
+        warped.state.project.clip(clip).unwrap(),
+        warped.state.project.tempo_map(),
+        hex_project::WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: hex_project::BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(beats),
+        }))
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project.snapshot(), expected);
+    service.submit(Request::Undo).unwrap();
+    let undo = next(&service);
+    assert!(undo.error.is_none(), "{:?}", undo.error);
+    assert_eq!(
+        undo.state.project.snapshot(),
+        neutral.state.project.snapshot()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redo = next(&service);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    assert_eq!(redo.state.project.snapshot(), expected);
+    let reopened = save_and_reopen(&service, files.0.join("long-repitch.hex"));
+    assert_eq!(reopened.state.project.snapshot(), expected);
+    assert_eq!(streamed_frames(&reopened), 20_000_000);
 }

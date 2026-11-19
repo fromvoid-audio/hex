@@ -1,13 +1,13 @@
-//! Control-worker WAV windows for future incremental browser audition.
+//! Control-worker WAV windows for incremental browser audition.
 //!
 //! The reader pins one descriptor and retains the resampler's global phase. Each
 //! call reads at most one bounded output window and its bounded source halo;
 //! cancellation is checked before and after that work. No PCM is published to
-//! the callback here. File length and modification time are checked against the
-//! opened descriptor and path, but are not a fingerprint or atomic snapshot.
+//! the callback here. Unix also compares the path's device and inode with the
+//! open file; metadata checks are not a fingerprint or atomic snapshot.
 use super::{BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT, PreviewFailure};
 use hex_engine::Frame;
-use hex_media::{ImportError, ResamplePlan, SourceFileIdentity, WavFrameReader, WavReaderLimits};
+use hex_media::{ImportError, ResamplePlan, WavFrameReader, WavReaderLimits};
 use std::{
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -135,12 +135,12 @@ impl PreviewWindowSource {
     }
 
     fn check_path(&self) -> Result<(), PreviewFailure> {
-        let identity =
-            SourceFileIdentity::observe(self.reader.path()).map_err(PreviewFailure::from_import)?;
-        if !self.reader.matches_file_identity(identity) {
-            return Err(PreviewFailure::Failed(
-                "audio file changed while preparing preview · retry".into(),
-            ));
+        if !self
+            .reader
+            .path_matches_open_file()
+            .map_err(PreviewFailure::from_import)?
+        {
+            return Err(PreviewFailure::SourceChanged);
         }
         Ok(())
     }

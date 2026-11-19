@@ -42,6 +42,7 @@ fn native_intent_refuses_mislabeled_or_stale_worker_results() {
             route_generation: 0,
             admitted_command_ticket: 0,
             output_fault_epoch: 0,
+            consumed_stop_generation: 0,
         },
         device_preview: None,
         tuning_preview: None,

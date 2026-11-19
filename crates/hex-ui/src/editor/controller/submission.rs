@@ -76,7 +76,11 @@ pub(super) struct Refused {
 }
 
 fn is_initial_observation(request: &Request) -> bool {
-    request.is_read_only_observation() && !matches!(request, Request::ContinuePluginParameters)
+    request.is_read_only_observation()
+        && !matches!(
+            request,
+            Request::ContinuePluginParameters | Request::ContinuePluginParameterConversion
+        )
 }
 
 impl EditorView {
@@ -273,6 +277,14 @@ impl EditorView {
             visible |= self.cancel_new_preparation();
         }
         self.retire_unsubmitted_export(request);
+        if let Request::BounceArrangement { control, .. } = request
+            && self
+                .bounce_control
+                .as_ref()
+                .is_some_and(|active| active.same_job(control))
+        {
+            visible |= self.abandon_bounce();
+        }
         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, request);
         if matches!(request, Request::ImportAudioBatch { .. }) {
             if let Some(control) = self.audio_batch.take() {
@@ -395,6 +407,9 @@ mod observation_tests {
             &Request::QueryFailedPluginAutomation { request_id: 7 }
         ));
         assert!(!is_initial_observation(&Request::ContinuePluginParameters));
+        assert!(!is_initial_observation(
+            &Request::ContinuePluginParameterConversion
+        ));
         assert!(!is_initial_observation(&Request::Undo));
     }
 }

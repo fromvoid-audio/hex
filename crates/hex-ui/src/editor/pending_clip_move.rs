@@ -3,7 +3,7 @@
 //! This owns metadata paint only; the worker validates and commits the real edit.
 use super::pending_edit::{Disposition, Receipt};
 use super::{EditorView, drag::ClipDrag, edit_cursor::DropCursor, viewport::Viewport};
-use hex_project::{Command, Created, Project};
+use hex_project::{ClipId, Command, Created, Project};
 use hex_session::service::{Event, Request};
 use std::sync::{Arc, Weak};
 
@@ -368,7 +368,10 @@ impl EditorView {
         }
     }
 
-    pub(super) fn clip_move_request_complete(&mut self, event: &Event) -> Option<DropCursor> {
+    pub(super) fn clip_move_request_complete(
+        &mut self,
+        event: &Event,
+    ) -> Option<(DropCursor, Option<ClipId>)> {
         let p = self.pending_clip_move.as_mut()?;
         let disposition = p.receipt.observe(
             self.project_generation,
@@ -386,8 +389,17 @@ impl EditorView {
         let cursor = (disposition == Disposition::Terminal)
             .then(|| committed_drop_cursor(&pending.drag, pending.cursor_epoch, event))
             .flatten();
+        let moved_clip = matches!(
+            pending.command,
+            Command::MoveClipWithOverwrite { .. }
+                | Command::MoveMidiClipWithOverwrite { .. }
+                | Command::MoveClipToNewTrack { .. }
+                | Command::MoveMidiClipToNewTrack { .. }
+                | Command::MoveClipsWithOverwrite { copy: false, .. }
+        )
+        .then_some(pending.drag.clip);
         pending.drag.retire();
-        cursor
+        cursor.map(|cursor| (cursor, moved_clip))
     }
 
     pub(super) fn retire_pending_clip_move(&mut self) -> bool {

@@ -18,7 +18,10 @@ cores and bounded render-ahead where it improves headroom while preserving
 timing, automation, project recall, and plug-in fault isolation.
 
 Audio fidelity is part of the performance target. Changes must preserve
-sample-accurate timing, effect tails, and the selected processing quality.
+sample-accurate timing, surviving processors' effect history, and the selected
+processing quality. The [live track and device editing target](docs/design/live-repatching-brief.md)
+defines when edits deliberately end removed devices' output and how timing and
+running state should survive repatching; it is not a shipped-behavior claim.
 Performance comparisons use equivalent oversampling, interpolation, and
 plug-in quality settings.
 
@@ -44,6 +47,13 @@ launches. See
 [native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
+
+### keep spacebar on transport with a vst3 editor focused
+
+On macOS, plain Space starts or pauses playback when a VST3 editor has focus.
+Modified Space and other shortcuts still go to the plug-in. To give plain Space
+to the plug-in too, open **hex → settings…** and turn off **space controls
+transport in vst3 editors**. Restart hex to apply a change.
 
 To run the optimized desktop directly from source:
 

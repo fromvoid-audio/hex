@@ -593,7 +593,23 @@ fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_col
         cx.notify();
     });
     visual.run_until_parked();
+    f.editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiNote {
+            clip: f.midi,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })));
+    });
+    pump(&f.editor, &mut visual);
     for active in [false, true] {
+        f.editor.update(&mut visual, |view, _| {
+            view.waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
+        });
         for clip in [f.audio, f.midi] {
             f.editor.update(&mut visual, |view, _| {
                 assert!(view.enqueue(Request::Edit(Command::SetClipActive { clip, active })));
@@ -619,6 +635,58 @@ fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_col
                 visual.rendered_background(selector("clip-name", clip)),
                 Some(expected)
             );
+        }
+        let notes = visual.rendered_filled_quads(selector("clip-notes", f.midi));
+        let black: gpui::Background = gpui::rgb(0).into();
+        let expected_note = if active { black } else { black.opacity(0.28) };
+        assert!(
+            notes.iter().any(|(_, color)| *color == expected_note),
+            "MIDI note paint must reflect activation: {notes:?}",
+        );
+        if !active {
+            assert!(notes.iter().all(|(_, color)| *color != black));
+            let ink = f.editor.read_with(&visual, |view, _| {
+                view.waveform_geometry_cache
+                    .borrow()
+                    .painted_waveforms()
+                    .back()
+                    .expect("the muted clip still paints a waveform")
+                    .colors
+                    .waveform
+            });
+            let fill =
+                theme::clip_activity_fill(ElementColor::Cyan, ClipFlavor::Muted, false, false);
+            assert_eq!(ink >> 16, ink & 0xff);
+            assert_eq!(ink >> 16, (ink >> 8) & 0xff);
+            assert!(theme::contrast_ratio(ink, fill) < 3.0);
+            for (clip, prefix) in [(f.audio, "clip-visual"), (f.midi, "midi-clip-visual")] {
+                click(&mut visual, clip, Modifiers::default());
+                let surface = selector(prefix, clip);
+                assert_eq!(
+                    visual.rendered_background(surface),
+                    Some(
+                        gpui::rgb(theme::arrangement_clip_activity_body_fill(
+                            fill, true, false
+                        ))
+                        .into()
+                    )
+                );
+                let outline = visual.rendered_border(surface).unwrap().0;
+                assert_eq!(outline.s, 0.0, "muted selection remains neutral");
+                assert_eq!(
+                    outline,
+                    gpui::Hsla::from(gpui::rgb(theme::clip_activity_outline(
+                        false,
+                        theme::PaletteRole::Primary
+                    )))
+                );
+            }
+            f.editor.update(&mut visual, |view, cx| {
+                view.selected_clip = None;
+                view.reconcile_clip_selection();
+                cx.notify();
+            });
+            visual.run_until_parked();
         }
     }
 }

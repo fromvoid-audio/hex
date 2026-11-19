@@ -1,7 +1,7 @@
-//! Bounded ownership and rendering for residual output from replaced Returns.
+//! Bounded ownership and rendering for residual output from Return and Main chains.
 use super::{Frame, MAX_FINITE_EFFECT_TAIL_SECONDS, SessionPlaybackError};
 use crate::ReturnBus;
-use hex_lattice::{NativeRuntimeChain, OutputTail, StereoMatrix};
+use hex_lattice::{NativeRuntimeChain, OutputTail, PreparedRuntimeInstance, StereoMatrix};
 use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 use std::fmt;
 
@@ -241,12 +241,14 @@ impl ReturnEffectTailBank {
                     if frames.len() != 1 {
                         return Err(SessionPlaybackError::DeviceRuntime);
                     }
-                    let origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(arrival),
-                    );
-                    let output_origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(output_arrival),
-                    );
+                    let input_stamp = compensation.delays.stamp_at_delay_ref(arrival);
+                    let origin = crate::signal_graph::OriginClock(input_stamp);
+                    let output_origin =
+                        crate::signal_graph::OriginClock(if arrival == output_arrival {
+                            input_stamp
+                        } else {
+                            compensation.delays.stamp_at_delay_ref(output_arrival)
+                        });
                     tail.chain.process_range_with_foreign(
                         entry..entry + 1,
                         frames,
@@ -315,15 +317,76 @@ impl ReturnEffectTailBank {
     }
 }
 
-/// A fully preflighted transfer plan. It contains indices only; applying it
-/// moves runtime owners without allocating or dropping the previous chain.
+/// Publication policy for residual output made obsolete by a device edit.
+/// Already retained owners and clip releases follow their own handoff proof.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeviceEditTailPolicy {
+    Preserve,
+    RequireConfirmation,
+    Cut,
+    FadedNative(hex_lattice::ProcessorInstanceIdentity),
+}
+
+impl DeviceEditTailPolicy {
+    /// A changed topology has a different ordered set of stable device IDs.
+    /// State-only edits still use the ordinary tail and continuation proofs.
+    pub(super) fn for_chain(
+        self,
+        old: &[PreparedRuntimeInstance],
+        new: &[PreparedRuntimeInstance],
+    ) -> Self {
+        let policy = if let Self::FadedNative(identity) = self {
+            let matches = |entry: &PreparedRuntimeInstance| {
+                entry.owner == identity.owner() && entry.device_id == identity.device_id()
+            };
+            if old.iter().any(matches) && !new.iter().any(matches) {
+                Self::Cut
+            } else {
+                Self::RequireConfirmation
+            }
+        } else {
+            self
+        };
+        if policy != Self::Preserve
+            && old
+                .iter()
+                .map(|device| device.device_id)
+                .ne(new.iter().map(|device| device.device_id))
+        {
+            policy
+        } else {
+            Self::Preserve
+        }
+    }
+
+    pub(super) fn cut_obsolete_tail(self) -> Result<bool, SessionPlaybackError> {
+        match self {
+            Self::Preserve => Ok(false),
+            Self::RequireConfirmation | Self::FadedNative(_) => {
+                Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+            }
+            Self::Cut => Ok(true),
+        }
+    }
+}
+
+/// A fully preflighted transfer plan. Its bounded indices and transition
+/// choices move history without allocating or dropping the previous chain.
 pub(super) struct ReturnEffectTailPlan {
     carry: [Option<(usize, usize)>; RETURN_EFFECT_TAIL_CAPACITY],
     capture: [Option<(usize, usize)>; MAX_RETURN_TRACKS],
-    inherit_bus: [bool; MAX_RETURN_TRACKS],
+    bus_history: [ReturnBusHistory; MAX_RETURN_TRACKS],
     main_capture: Option<(usize, usize, u32)>,
     // A completed suffix needs no old DSP history and no retained tail owner.
     main_quiet_suffix: Option<usize>,
+    main_insert_transition: Option<hex_lattice::NativeInsertTransition>,
+}
+
+#[derive(Clone, Copy)]
+enum ReturnBusHistory {
+    Fresh,
+    Inherit,
+    SmoothInsert(hex_lattice::NativeInsertTransition),
 }
 
 impl ReturnEffectTailPlan {
@@ -419,6 +482,8 @@ impl ReturnEffectTailPlan {
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        tail_policy: DeviceEditTailPolicy,
     ) -> Result<Self, SessionPlaybackError> {
         if old_buses.len() > MAX_RETURN_TRACKS
             || new_buses.len() > MAX_RETURN_TRACKS
@@ -430,9 +495,10 @@ impl ReturnEffectTailPlan {
         let mut plan = Self {
             carry: [None; RETURN_EFFECT_TAIL_CAPACITY],
             capture: [None; MAX_RETURN_TRACKS],
-            inherit_bus: [false; MAX_RETURN_TRACKS],
+            bus_history: [ReturnBusHistory::Fresh; MAX_RETURN_TRACKS],
             main_capture: None,
             main_quiet_suffix: None,
+            main_insert_transition: None,
         };
         let mut occupied = [false; RETURN_EFFECT_TAIL_CAPACITY];
 
@@ -452,6 +518,7 @@ impl ReturnEffectTailPlan {
             reserve_chain(
                 &tail.chain,
                 tail.active_start(),
+                tail.return_id().is_none(),
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -470,18 +537,30 @@ impl ReturnEffectTailPlan {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let same_topology = old_chain.len() == new_chain.len();
                 let same_configuration = same_topology
-                    && old_chain.configuration_matches_range(new_chain, 0..old_chain.len());
+                    && super::handoff::configuration_matches_continuation(
+                        old_chain,
+                        new_chain,
+                        0..old_chain.len(),
+                        continuation,
+                    );
                 let retargetable_configuration = !same_configuration
                     && same_topology
                     && new_chain.can_retarget_parameters_from_range(old_chain, 0..old_chain.len());
-                if (same_configuration || retargetable_configuration)
+                let history = if (same_configuration || retargetable_configuration)
                     && new_chain.can_inherit_from(old_chain)
                 {
-                    if let Some(should_inherit) = plan.inherit_bus.get_mut(new_index) {
-                        *should_inherit = true;
-                    } else {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
+                    Some(ReturnBusHistory::Inherit)
+                } else if tail_policy == DeviceEditTailPolicy::RequireConfirmation {
+                    // The caller has proved continuous graph timing. Keep the
+                    // original Return stages on one route around the insertion.
+                    new_chain
+                        .native_insert_transition_from(old_chain, continuation)
+                        .map(ReturnBusHistory::SmoothInsert)
+                } else {
+                    None
+                };
+                if let Some(history) = history {
+                    plan.bus_history[new_index] = history;
                     true
                 } else {
                     false
@@ -494,6 +573,22 @@ impl ReturnEffectTailPlan {
                 || old_bus.gain == 0.0
                 || old_chain.committed_range_is_quiescent(0..old_chain.len())
             {
+                continue;
+            }
+            if let Some(index) = new_index
+                && tail_policy
+                    .for_chain(&old_bus.device_chain, &new_buses[index].device_chain)
+                    .cut_obsolete_tail()?
+            {
+                // The cut retires the obsolete chain with its donor. Transfer
+                // only compatible stable device histories to the active Return.
+                let new_chain = new_chains
+                    .get(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                if !new_chain.can_inherit_from(old_chain) {
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+                plan.bus_history[index] = ReturnBusHistory::Inherit;
                 continue;
             }
 
@@ -510,6 +605,7 @@ impl ReturnEffectTailPlan {
             reserve_chain(
                 old_chain,
                 0,
+                false,
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -530,12 +626,24 @@ impl ReturnEffectTailPlan {
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
+        continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        tail_policy: DeviceEditTailPolicy,
     ) -> Result<(), SessionPlaybackError> {
+        if tail_policy == DeviceEditTailPolicy::RequireConfirmation {
+            self.main_insert_transition = current.native_insert_transition_from(old, continuation);
+            if self.main_insert_transition.is_some() {
+                return Ok(());
+            }
+        }
         let mut start = 0;
         let mut arrival = pre_main_arrival;
         while start < old.len().min(current.len())
-            && (old.configuration_matches_range(current, start..start + 1)
-                || current.can_retarget_parameters_from_range(old, start..start + 1))
+            && (super::handoff::configuration_matches_continuation(
+                old,
+                current,
+                start..start + 1,
+                continuation,
+            ) || current.can_retarget_parameters_from_range(old, start..start + 1))
         {
             arrival = arrival
                 .checked_add(
@@ -559,6 +667,11 @@ impl ReturnEffectTailPlan {
             self.main_quiet_suffix = Some(start);
             return Ok(());
         }
+        if tail_policy.cut_obsolete_tail()? {
+            // Leave the suffix with the retiring graph. The ordinary Main
+            // history preflight still checks each surviving processor.
+            return Ok(());
+        }
         let target = (0..RETURN_EFFECT_TAIL_CAPACITY)
             .find(|slot| {
                 !self
@@ -578,6 +691,7 @@ impl ReturnEffectTailPlan {
         reserve_chain(
             old,
             start,
+            true,
             sample_rate,
             processor_count,
             runtime_bytes,
@@ -601,6 +715,18 @@ impl ReturnEffectTailPlan {
             current.can_inherit_with_completed_foreign_range(old, self.main_excluded(old.len()))
         } else {
             current.can_inherit_from_excluding_old_range(old, self.main_excluded(old.len()))
+        }
+    }
+
+    pub(super) fn transfer_main_history(
+        &self,
+        current: &mut NativeRuntimeChain,
+        old: &mut NativeRuntimeChain,
+    ) {
+        if let Some(transition) = self.main_insert_transition {
+            current.transfer_history_with_native_insert_from(old, transition);
+        } else {
+            current.transfer_history_from(old);
         }
     }
     pub(super) fn validate_main(
@@ -671,8 +797,19 @@ impl ReturnEffectTailPlan {
     pub(super) fn captures_bus(&self) -> bool {
         self.capture.iter().any(Option::is_some)
     }
-    pub(super) fn inherit_bus(&self, index: usize) -> bool {
-        self.inherit_bus.get(index).copied().unwrap_or(false)
+    pub(super) fn transfer_bus_history(
+        &self,
+        index: usize,
+        current: &mut NativeRuntimeChain,
+        old: &mut NativeRuntimeChain,
+    ) {
+        match self.bus_history.get(index) {
+            Some(ReturnBusHistory::Inherit) => current.transfer_history_from(old),
+            Some(ReturnBusHistory::SmoothInsert(transition)) => {
+                current.transfer_history_with_native_insert_from(old, *transition);
+            }
+            Some(ReturnBusHistory::Fresh) | None => {}
+        }
     }
 
     /// Validate every source and destination together before the owner commit
@@ -773,13 +910,14 @@ impl ReturnEffectTailPlan {
 fn reserve_chain(
     chain: &NativeRuntimeChain,
     active_start: usize,
+    allow_unbounded_foreign: bool,
     sample_rate: u32,
     processor_count: &mut usize,
     runtime_bytes: &mut usize,
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
     let active = active_start..chain.len();
-    if chain.range_has_unbounded_foreign_tail(active.clone()) {
+    if !allow_unbounded_foreign && chain.range_has_unbounded_foreign_tail(active.clone()) {
         return Err(SessionPlaybackError::DeviceRuntime);
     }
     match chain
@@ -796,6 +934,8 @@ fn reserve_chain(
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
         }
+        // The fixed tail bank retains this owner until Stop/seek or a proven
+        // drain. A full bank refuses a later handoff without discarding it.
         OutputTail::Unbounded => {}
     }
     *processor_count = processor_count
