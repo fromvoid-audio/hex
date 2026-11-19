@@ -326,7 +326,9 @@ fn starts_playback(action: PlaybackAction) -> bool {
         ) | PlaybackAction::Session(
             hex_engine::SessionPlaybackCommand::Play
                 | hex_engine::SessionPlaybackCommand::LaunchClip { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
         ) | PlaybackAction::LaunchAndPlay(_)
     )

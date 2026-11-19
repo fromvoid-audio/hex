@@ -2,7 +2,7 @@
 use super::*;
 const Q: u64 = 1 << 32;
 
-pub(in crate::session_playback) fn fixture(oracle: bool) -> Project {
+pub(crate) fn fixture(oracle: bool) -> Project {
     let mut snapshot = session_only_project(&project(1.0, 0, Q)).snapshot();
     snapshot.sample_rate = 8_000;
     let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content else {
@@ -339,4 +339,91 @@ fn profile_default_session_reset_and_first_block() -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+fn launch(
+    revision: Arc<PreparedRevision>,
+    scene: bool,
+    explicit: Option<crate::NoteChase>,
+) -> Playback {
+    let clip = revision.session().midi_clips()[0].id;
+    let scene_id = revision.session().scenes()[0].id;
+    let quantization = LaunchQuantization::Immediate;
+    let command = match (scene, explicit) {
+        (false, None) => SessionPlaybackCommand::LaunchClip { clip, quantization },
+        (true, None) => SessionPlaybackCommand::LaunchScene {
+            scene: scene_id,
+            quantization,
+        },
+        (false, Some(note_chase)) => SessionPlaybackCommand::LaunchClipWithNoteChase {
+            clip,
+            quantization,
+            note_chase,
+        },
+        (true, Some(note_chase)) => SessionPlaybackCommand::LaunchSceneWithNoteChase {
+            scene: scene_id,
+            quantization,
+            note_chase,
+        },
+    };
+    let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::LaunchAndPlay(command))
+        .unwrap();
+    playback
+}
+
+#[test]
+fn explicit_clip_and_scene_launch_choices_match_canonical_boundary_and_repeat_oracles() {
+    for (scene, mutable) in [(false, false), (true, true)] {
+        let mut off = launch(prepared(false, mutable), scene, Some(crate::NoteChase::Off));
+        let mut oracle = launch(prepared(true, mutable), scene, None);
+        let expected = render(&mut oracle, 1_100);
+        assert!(expected[..16].iter().flatten().any(|s| *s != 0.0));
+        assert!(expected[500..].iter().flatten().any(|s| *s != 0.0));
+        assert_eq!(render(&mut off, 1_100), expected);
+        let mut on = launch(prepared(false, mutable), scene, Some(crate::NoteChase::On));
+        let mut raw = launch(prepared(false, mutable), scene, None);
+        assert_eq!(render(&mut on, 32), render(&mut raw, 32));
+    }
+}
+
+#[test]
+fn queued_launch_keeps_its_captured_off_choice_until_the_actual_boundary() {
+    let actual_revision = prepared(false, false);
+    let clip = actual_revision.session().midi_clips()[0].id;
+    let mut actual = Playback::try_from_prepared_with_session(actual_revision).unwrap();
+    let oracle_revision = prepared(true, false);
+    let oracle_clip = oracle_revision.session().midi_clips()[0].id;
+    let mut oracle = Playback::try_from_prepared_with_session(oracle_revision).unwrap();
+    for playback in [&mut actual, &mut oracle] {
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+    }
+    actual
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClipWithNoteChase {
+                clip,
+                quantization: LaunchQuantization::ThirtySecond,
+                note_chase: crate::NoteChase::Off,
+            },
+        ))
+        .unwrap();
+    oracle
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip: oracle_clip,
+                quantization: LaunchQuantization::ThirtySecond,
+            },
+        ))
+        .unwrap();
+    actual
+        .try_apply_action(PlaybackAction::SetMetronome(false))
+        .unwrap();
+    assert_eq!(render(&mut actual, 500), vec![[0.0; 2]; 500]);
+    assert_eq!(render(&mut oracle, 500), vec![[0.0; 2]; 500]);
+    let expected = render(&mut oracle, 600);
+    assert!(expected.iter().flatten().any(|s| *s != 0.0));
+    assert_eq!(render(&mut actual, 600), expected);
 }

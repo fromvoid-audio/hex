@@ -849,17 +849,13 @@ fn selected_session_note_chase_off_handoff_and_pause_allocate_nothing() {
             .publish(Playback::try_from_prepared_with_session(Arc::clone(revision)).unwrap())
             .unwrap_or_else(|e| panic!("{}", e.reason));
         control
-            .session_command_with_ticket(SessionPlaybackCommand::LaunchClip {
+            .session_command_with_ticket(SessionPlaybackCommand::LaunchClipWithNoteChase {
                 clip: revision.session().midi_clips()[0].id,
                 quantization: LaunchQuantization::Immediate,
-            })
-            .unwrap();
-        control
-            .command(PlaybackCommand::PlayFromWithNoteChase {
-                frame: 0,
                 note_chase: hex_engine::NoteChase::Off,
             })
             .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
     }
     for step in 0..8 {
         if step == 1 {
