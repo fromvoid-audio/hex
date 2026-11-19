@@ -55,6 +55,99 @@ fn prepare(
     )
     .unwrap()
 }
+
+#[test]
+fn processed_frame_event_reads_apply_after_pitch_and_before_repeat_placement() {
+    let (mut editor, clip, media) = fixture(1_024, true);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let neutral = prepare(&editor, &media, &context);
+    let source = &neutral.arrangement().audio_clip_views()[0].audio;
+    assert_eq!(source.frames().len(), 1_024);
+
+    for operation in [
+        AudioEventEdit::Trim {
+            event: 1,
+            start: 128,
+            end: 900,
+        },
+        AudioEventEdit::Move {
+            event: 1,
+            start: 64,
+        },
+        AudioEventEdit::SetFade {
+            event: 1,
+            fade: Some(AudioEventFade::new(128, ClipFade::new(772, 0, 79, 157).unwrap()).unwrap()),
+        },
+        AudioEventEdit::SetGain {
+            event: 1,
+            gain: ClipGain::new(3_200).unwrap(),
+        },
+    ] {
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+    }
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 2_417,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(2_417, 0, 123, 203).unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    let row = project.clip(clip).unwrap();
+    let asset = project.asset(row.asset()).unwrap();
+    let request = |size| {
+        FrameFadePreview::with_prepared_source(
+            row,
+            project.tempo_map(),
+            asset,
+            FrameFadeOverrides::default(),
+            size,
+        )
+        .unwrap()
+    };
+    assert!(request(1_023).is_none());
+    let query = request(source.frames().len() as u64).unwrap();
+    let event = query.event(1).unwrap();
+    assert_eq!(event.sample(139).unwrap().unwrap().source_frame(), 139);
+    let mut remaining = 1;
+    let coverage = event
+        .visit_ranges(139..155, &mut remaining, |part| {
+            assert_eq!(part.root, 75..91);
+            assert_eq!(part.source, [Some(139..155), None]);
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(remaining, 0);
+    assert!(!coverage.has_silence);
+    let actual = crate::audio_transform::tests::render(
+        &prepare(&editor, &media, &context),
+        row.start(),
+        row.duration() as usize,
+        79,
+    );
+    for (index, actual) in actual.into_iter().enumerate() {
+        let sample = query.timeline_sample(row.start() + index as u64).unwrap();
+        let expected = sample.map_or([0.0; 2], |sample| {
+            sample.apply_to(source.frames()[sample.source_frame() as usize])
+        });
+        assert_eq!(
+            actual, expected,
+            "processed Repeat destination sample {index}"
+        );
+    }
+}
 fn assert_matches(
     editor: &Editor,
     clip: hex_project::ClipId,

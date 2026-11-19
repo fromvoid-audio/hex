@@ -780,6 +780,16 @@ pub(super) enum WaveformMapping {
     },
 }
 
+impl WaveformMapping {
+    fn can_prove_overrange(&self) -> bool {
+        match self {
+            Self::Frame { projection, .. } => projection.has_exact_pcm(),
+            Self::Clip { fade: Some(_), .. } | Self::PreparedFade(_) => true,
+            _ => false,
+        }
+    }
+}
+
 /// A waveform with its own visible coordinates. Events can have different
 /// origins in the prepared root and original source.
 pub(super) struct WaveformWindow {
@@ -971,12 +981,7 @@ pub(super) fn cached_waveform_geometry(
         *grid = request.grid.map(WaveformGrid::key);
     }
     let mut overrange = WaveformOverrange::NotApplicable;
-    if matches!(
-        request.mapping,
-        WaveformMapping::Clip { fade: Some(_), .. }
-            | WaveformMapping::Frame { .. }
-            | WaveformMapping::PreparedFade(_)
-    ) {
+    if request.mapping.can_prove_overrange() {
         let current = layout.or_else(|| WaveformLayout::new(request))?;
         if let Ok(mut cache) = cache.try_borrow_mut() {
             overrange = cache
@@ -1121,12 +1126,7 @@ pub(super) fn prepare_waveform_geometry_with_scale(
     waveform: &CachedWaveform,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<WaveformGeometry> {
-    let overrange = if matches!(
-        request.mapping,
-        WaveformMapping::Clip { fade: Some(_), .. }
-            | WaveformMapping::Frame { .. }
-            | WaveformMapping::PreparedFade(_)
-    ) {
+    let overrange = if request.mapping.can_prove_overrange() {
         WaveformOverrange::Unavailable
     } else {
         WaveformOverrange::NotApplicable
@@ -1184,7 +1184,8 @@ fn build_waveform_geometry(
         WaveformMapping::PreparedMusicalFade(fade) => Some(fade.projection()?),
         _ => None,
     };
-    let sampled_envelope = frame.is_some() || matches!(mapping, WaveformMapping::PreparedFade(_));
+    let sampled_envelope = (frame.is_some() && mapping.can_prove_overrange())
+        || matches!(mapping, WaveformMapping::PreparedFade(_));
     let mut exact_overrange =
         (sampled_envelope && layout.all_columns_exact()).then(|| Vec::with_capacity(last - first));
     let gain = match mapping {
@@ -1227,14 +1228,15 @@ fn build_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
-            WaveformMapping::Frame { .. } => {
+            WaveformMapping::Frame { projection, .. } => {
                 let frame = frame.as_ref()?;
                 let frame_detail_budget = layout.frame_detail_budget();
-                let peaks = if end - start <= frame_detail_budget as u64 {
-                    waveform_frame::detail(frame, waveform, start..end, frame_detail_budget)?
-                } else {
-                    waveform_frame::coarse(frame, waveform, start..end, &mut range_budget)?
-                };
+                let peaks =
+                    if projection.has_exact_pcm() && end - start <= frame_detail_budget as u64 {
+                        waveform_frame::detail(frame, waveform, start..end, frame_detail_budget)?
+                    } else {
+                        waveform_frame::coarse(frame, waveform, start..end, &mut range_budget)?
+                    };
                 Some(peaks)
             }
             WaveformMapping::PreparedFade(fade) => {

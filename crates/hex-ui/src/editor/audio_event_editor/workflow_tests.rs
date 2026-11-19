@@ -1332,9 +1332,40 @@ fn split_fade_handles_fit_each_event_and_remain_editable_through_history(cx: &mu
 
 #[gpui::test]
 fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppContext) {
+    event_fade_drag_across_waveform_views(cx, false);
+}
+
+#[gpui::test]
+fn pitched_frame_event_fade_keeps_both_waveforms_through_commit_and_history(
+    cx: &mut TestAppContext,
+) {
+    event_fade_drag_across_waveform_views(cx, true);
+}
+
+fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, pitched: bool) {
     use crate::editor::waveform_geometry::painted_clip_waveform_outline;
 
     let (files, mut visual, editor, clip) = open(cx);
+    if pitched {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::SetAudioClipPitch {
+                clip,
+                cents: 137
+            })));
+        });
+        pump(&editor, &mut visual);
+    }
+    let unfaded_pcm = editor.read_with(&visual, |view, _| render_accepted_event(view, clip));
+    let source = pitched.then(|| {
+        editor.read_with(&visual, |view, _| {
+            let source = view.state.as_ref().unwrap().audio_clip_waveforms[&clip]
+                .event_source
+                .as_ref()
+                .unwrap();
+            assert!(source.bounded_samples(0..1, 1).is_none());
+            Arc::clone(source)
+        })
+    });
     editor.update(&mut visual, |v, cx| {
         v.viewport = Some(Viewport::fit(96_000));
         cx.notify();
@@ -1449,6 +1480,15 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
     let accepted = editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
         assert!(v.audio_event_editor.pending.is_none());
+        if let Some(source) = &source {
+            assert!(Arc::ptr_eq(
+                source,
+                v.state.as_ref().unwrap().audio_clip_waveforms[&clip]
+                    .event_source
+                    .as_ref()
+                    .unwrap()
+            ));
+        }
         let event = v
             .state
             .as_ref()
@@ -1480,8 +1520,8 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
             .fade_in() as usize;
         assert_eq!(pcm[0], [0.0; 2]);
         let t = 1.0 / (count - 1) as f32;
-        assert!((pcm[1][0] - 0.25 * t * t * (3.0 - 2.0 * t)).abs() < 1e-7);
-        assert_eq!(pcm[count - 1], [0.25; 2]);
+        assert!((pcm[1][0] - unfaded_pcm[1][0] * t * t * (3.0 - 2.0 * t)).abs() < 1e-7);
+        assert_eq!(pcm[count - 1], unfaded_pcm[count - 1]);
     });
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
     visual.simulate_keystrokes("cmd-z");

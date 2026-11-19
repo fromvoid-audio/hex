@@ -1,4 +1,4 @@
-//! Bounded coarse range queries over the same eligible original-source law.
+//! Bounded coarse range queries over the same eligible frame-source law.
 use super::*;
 
 impl FrameFadePreview<'_> {
@@ -206,8 +206,8 @@ impl FrameFadePreview<'_> {
         };
         let mut length = root.end - root.start;
         let mut silence = false;
-        if !self.clip.looping() {
-            let available = self.clip.source_length().saturating_sub(read);
+        if !self.source.looping {
+            let available = self.source.length.saturating_sub(read);
             silence = length > available;
             length = length.min(available);
             if length == 0 {
@@ -215,14 +215,13 @@ impl FrameFadePreview<'_> {
             }
             root.end = root.start + length;
         }
-        let offset = self.clip.source_offset();
-        let period = self.clip.source_length();
-        let source = if self.clip.looping() && length >= period {
+        let offset = self.source.offset;
+        let period = self.source.length;
+        let source = if self.source.looping && length >= period {
             [Some(offset..offset + period), None]
         } else {
-            let phase = if self.clip.looping() {
-                ((u128::from(self.clip.source_phase()) + u128::from(read)) % u128::from(period))
-                    as u64
+            let phase = if self.source.looping {
+                ((u128::from(self.source.phase) + u128::from(read)) % u128::from(period)) as u64
             } else {
                 read
             };

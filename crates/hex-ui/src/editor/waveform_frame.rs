@@ -1,4 +1,4 @@
-//! Original resident-source amplitude for eligible clips and events.
+//! Frame-source amplitude for eligible clips and events.
 //! Geometry and the overrange worker share the engine's source clock and
 //! multiplication order. Wide columns use midpoint-weighted cached peaks.
 use super::waveform_source::aggregate_peaks;
@@ -26,6 +26,7 @@ pub(super) struct Key {
     pub(super) start: u64,
     duration: u64,
     root: AudioClipEdit,
+    prepared_frames: Option<u64>,
     gain: ClipGain,
 }
 
@@ -36,11 +37,42 @@ pub(super) struct Projection {
     fade: Option<ClipFade>,
     legacy_root_fade: bool,
     events: Option<Arc<AudioEvents>>,
+    prepared_frames: Option<u64>,
     gain: Option<ClipGain>,
     pub(super) key: Arc<Key>,
 }
 
 impl Projection {
+    pub(super) fn for_display(
+        project: &Project,
+        clip: &Clip,
+        original: Option<&Arc<CachedWaveform>>,
+        prepared: Option<&Arc<CachedWaveform>>,
+        fade: Option<ClipFade>,
+        events: Option<AudioEvents>,
+        gain: Option<ClipGain>,
+    ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
+        let (waveform, projection) = if let Some(waveform) = prepared {
+            // The prepared sidecar belongs to the accepted clip, not an
+            // unacknowledged structural preview with different source geometry.
+            if project.clip(clip.id())? != clip {
+                return None;
+            }
+            let frames = u64::try_from(waveform.source_frames()).ok()?;
+            (
+                waveform,
+                Self::with_source(project, clip, fade, events, gain, Some(frames))?,
+            )
+        } else {
+            let waveform = original?;
+            (
+                waveform,
+                Self::new(project, clip, waveform, fade, events, gain)?,
+            )
+        };
+        Some((Arc::clone(waveform), Arc::new(projection)))
+    }
+
     pub(super) fn new(
         project: &Project,
         clip: &Clip,
@@ -55,6 +87,18 @@ impl Projection {
         {
             return None;
         }
+        Self::with_source(project, clip, fade, events, gain, None)
+    }
+
+    fn with_source(
+        project: &Project,
+        clip: &Clip,
+        fade: Option<ClipFade>,
+        events: Option<AudioEvents>,
+        gain: Option<ClipGain>,
+        prepared_frames: Option<u64>,
+    ) -> Option<Self> {
+        let asset = project.asset(clip.asset())?;
         // Only frame edits reach this projection. The project rate matters
         // for validation, but tempo points do not participate in its source law.
         let tempo = TempoMap::constant(project.sample_rate(), Tempo::DEFAULT).ok()?;
@@ -83,11 +127,13 @@ impl Projection {
             fade,
             legacy_root_fade,
             events,
+            prepared_frames,
             gain,
             key: Arc::new(Key {
                 start: clip.start(),
                 duration: clip.duration(),
                 root,
+                prepared_frames,
                 gain: gain.unwrap_or_else(|| clip.gain()),
             }),
         };
@@ -95,18 +141,28 @@ impl Projection {
         Some(projection)
     }
 
+    pub(super) fn has_exact_pcm(&self) -> bool {
+        self.prepared_frames.is_none()
+    }
+
     pub(super) fn query(&self) -> Option<FrameFadePreview<'_>> {
-        FrameFadePreview::with_preview(
-            &self.clip,
-            &self.tempo,
-            &self.asset,
-            FrameFadeOverrides {
-                fade: self.fade,
-                legacy_root_fade: self.legacy_root_fade,
-                events: self.events.as_deref(),
-                gain: self.gain,
-            },
-        )
+        let overrides = FrameFadeOverrides {
+            fade: self.fade,
+            legacy_root_fade: self.legacy_root_fade,
+            events: self.events.as_deref(),
+            gain: self.gain,
+        };
+        if let Some(frames) = self.prepared_frames {
+            FrameFadePreview::with_prepared_source(
+                &self.clip,
+                &self.tempo,
+                &self.asset,
+                overrides,
+                frames,
+            )
+        } else {
+            FrameFadePreview::with_preview(&self.clip, &self.tempo, &self.asset, overrides)
+        }
         .ok()?
     }
 }

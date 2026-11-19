@@ -198,19 +198,22 @@ pub(in crate::editor) fn view(
     let source = state.waveforms.get(&clip.asset());
     // Structural edits retain their existing prepared/placement previews. The
     // amplitude path consumes this pane's same resolved events and receipt.
-    let frame_source = source
-        .filter(|_| placement.is_none() && operation.is_none_or(is_event_amplitude_edit))
-        .and_then(|waveform| {
-            let projection = waveform_frame::Projection::new(
-                &state.project,
-                &clip,
-                waveform,
-                None,
-                Some(preview.clone()),
-                gain_preview,
-            )?;
-            Some((waveform, Arc::new(projection)))
-        });
+    let frame_source = if placement.is_none() && operation.is_none_or(is_event_amplitude_edit) {
+        waveform_frame::Projection::for_display(
+            &state.project,
+            &clip,
+            source,
+            state
+                .audio_clip_waveforms
+                .get(&clip_id)
+                .and_then(|view| view.event_source.as_ref()),
+            None,
+            Some(preview.clone()),
+            gain_preview,
+        )
+    } else {
+        None
+    };
     for event in &preview.events {
         let raw_a = event.start.max(content_bounds(&root).0);
         let raw_b = event.end.min(content_bounds(&root).1);

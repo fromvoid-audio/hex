@@ -2651,20 +2651,15 @@ impl EditorView {
                     )
                 })
         };
-        let source = waveform.and_then(|waveform| {
-            let projection = super::waveform_frame::Projection::new(
-                &state.project,
-                clip,
-                waveform,
-                fade,
-                self.arrangement_event_amplitude(clip),
-                gain,
-            )?;
-            Some((
-                std::sync::Arc::clone(waveform),
-                std::sync::Arc::new(projection),
-            ))
-        });
+        let source = super::waveform_frame::Projection::for_display(
+            &state.project,
+            clip,
+            waveform,
+            prepared.and_then(|prepared| prepared.event_source.as_ref()),
+            fade,
+            self.arrangement_event_amplitude(clip),
+            gain,
+        );
         let displayed = match source {
             Some((waveform, projection)) => Some((
                 waveform,
