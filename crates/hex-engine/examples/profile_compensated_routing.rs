@@ -6,7 +6,10 @@
 #[path = "support/session_audio_fixture.rs"]
 mod session_audio_fixture;
 
-use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_engine::{
+    PreparedRevision, SineTable,
+    playback::{Playback, PlaybackCommand},
+};
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{BeatTime, Command, Created, Editor, TrackDeviceSlot};
 use std::{error::Error, hint::black_box, sync::Arc, time::Instant};
@@ -22,6 +25,7 @@ enum Workload {
     Track,
     Return,
     Mixed,
+    MeteredNotes,
 }
 
 fn prepared(workload: Workload) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
@@ -57,7 +61,7 @@ fn prepared(workload: Workload) -> Result<Arc<PreparedRevision>, Box<dyn Error>>
             state: limiter,
         })?;
     }
-    if matches!(workload, Workload::Mixed) {
+    if matches!(workload, Workload::Mixed | Workload::MeteredNotes) {
         // Interleave mutable instruments with already-aligned audio tracks,
         // including an instrument first in the Main mix order.
         let state = hex_devices::operator_state::OPERATOR_METADATA.default_state()?;
@@ -79,14 +83,29 @@ fn prepared(workload: Workload) -> Result<Arc<PreparedRevision>, Box<dyn Error>>
             else {
                 return Err("expected MIDI clip".into());
             };
-            editor.execute(Command::AddMidiNote {
-                clip,
-                start: BeatTime::ZERO,
-                duration: BeatTime::from_quarters(1)?,
-                pitch: 48 + ordinal as u8,
-                channel: 0,
-                velocity: 96,
-            })?;
+            if matches!(workload, Workload::MeteredNotes) {
+                let duration = editor.project().tempo_map().frame_to_beat(192)?;
+                for (note, frame) in (ordinal * 117..8_192).step_by(512).enumerate() {
+                    let start = editor.project().tempo_map().frame_to_beat(frame as u64)?;
+                    editor.execute(Command::AddMidiNote {
+                        clip,
+                        start,
+                        duration,
+                        pitch: 48 + ordinal as u8 + (note % 5) as u8,
+                        channel: 0,
+                        velocity: 96,
+                    })?;
+                }
+            } else {
+                editor.execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 48 + ordinal as u8,
+                    channel: 0,
+                    velocity: 96,
+                })?;
+            }
         }
     }
     editor.execute(Command::SetLoopRegion {
@@ -108,15 +127,16 @@ fn prepared(workload: Workload) -> Result<Arc<PreparedRevision>, Box<dyn Error>>
     Ok(revision)
 }
 
-fn playback(revision: Arc<PreparedRevision>) -> Result<SessionPlayback, Box<dyn Error>> {
-    let mut playback = SessionPlayback::new(revision)?;
-    playback.apply(SessionPlaybackCommand::Play)?;
+fn playback(revision: Arc<PreparedRevision>, metered: bool) -> Result<Playback, Box<dyn Error>> {
+    let mut playback = Playback::try_from_prepared_with_session(revision)?;
+    playback.set_device_metering(metered);
+    playback.apply(PlaybackCommand::Play);
     Ok(playback)
 }
 
-fn verify(revision: &Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
-    let mut scalar = playback(Arc::clone(revision))?;
-    let mut block = playback(Arc::clone(revision))?;
+fn verify(revision: &Arc<PreparedRevision>, metered: bool) -> Result<(), Box<dyn Error>> {
+    let mut scalar = playback(Arc::clone(revision), metered)?;
+    let mut block = playback(Arc::clone(revision), metered)?;
     let mut expected = vec![[0.0; 2]; VERIFY_FRAMES];
     let mut actual = vec![[0.0; 2]; VERIFY_FRAMES];
     for sample in expected.chunks_mut(1) {
@@ -125,7 +145,10 @@ fn verify(revision: &Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
     for chunk in actual.chunks_mut(BLOCK) {
         block.render(chunk)?;
     }
-    if actual != expected
+    if !actual
+        .iter()
+        .zip(&expected)
+        .all(|(actual, expected)| actual.map(f32::to_bits) == expected.map(f32::to_bits))
         || !actual.iter().flatten().all(|v| v.is_finite())
         || !actual.iter().flatten().any(|v| *v != 0.0)
     {
@@ -134,11 +157,13 @@ fn verify(revision: &Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn measure(label: &str, revision: Arc<PreparedRevision>) -> Result<(), Box<dyn Error>> {
-    verify(&revision)?;
+fn measure(label: &str, workload: Workload) -> Result<(), Box<dyn Error>> {
+    let revision = prepared(workload)?;
+    let metered = matches!(workload, Workload::MeteredNotes);
+    verify(&revision, metered)?;
     let latency = revision.arrangement().main_latency_frames();
     let tracks = revision.arrangement().tracks().len();
-    let mut playback = playback(revision)?;
+    let mut playback = playback(revision, metered)?;
     let mut output = [[0.0; 2]; BLOCK];
     for _ in 0..WARMUP {
         playback.render(&mut output)?;
@@ -171,8 +196,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::consts::ARCH,
         std::env::consts::OS
     );
-    measure("track_latency", prepared(Workload::Track)?)?;
-    measure("return_latency", prepared(Workload::Return)?)?;
-    measure("mixed_latency", prepared(Workload::Mixed)?)?;
+    measure("track_latency", Workload::Track)?;
+    measure("return_latency", Workload::Return)?;
+    measure("mixed_latency", Workload::Mixed)?;
+    measure("metered_notes", Workload::MeteredNotes)?;
     Ok(())
 }
