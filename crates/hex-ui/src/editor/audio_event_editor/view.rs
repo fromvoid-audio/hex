@@ -223,8 +223,9 @@ pub(in crate::editor) fn view(
                 &state.project,
                 &clip,
                 event_source,
-                Some(preview.clone()),
+                None,
                 gain_preview,
+                None,
             )
         } else {
             None

@@ -1,7 +1,9 @@
 //! Cached source peaks and their accepted clock for live musical event bends.
 use super::waveform_frame::coarse_peaks;
 use hex_engine::audio_transform::{MusicalEventFadePreview, PreparedMusicalEventSourceClock};
-use hex_project::{AudioDomainClock, AudioEvent, AudioEvents, Clip, ClipGain, Project, TempoMap};
+use hex_project::{
+    AudioDomainClock, AudioEvent, AudioEvents, Clip, ClipFade, ClipGain, Project, TempoMap,
+};
 use hex_session::{CachedPeak, CachedWaveform, service::AudioEventSourceWaveform};
 use std::{ops::Range, sync::Arc};
 
@@ -16,7 +18,7 @@ pub(super) struct Projection {
     clip: Clip,
     tempo: TempoMap,
     source_clock: PreparedMusicalEventSourceClock,
-    events: AudioEvents,
+    events: Arc<AudioEvents>,
     gain: ClipGain,
 }
 
@@ -27,6 +29,7 @@ impl Projection {
         prepared: Option<&AudioEventSourceWaveform>,
         events: Option<AudioEvents>,
         gain: Option<ClipGain>,
+        fade: Option<ClipFade>,
     ) -> Option<(Arc<CachedWaveform>, Arc<Self>)> {
         let edit = clip.audio_edit()?;
         let prepared = prepared?;
@@ -38,15 +41,23 @@ impl Projection {
         {
             return None;
         }
+        let events = events
+            .map(Arc::new)
+            .or_else(|| edit.domain.events.clone())
+            .unwrap_or_else(|| Arc::new(AudioEvents::identity(edit.domain.clock.length())));
+        let clip = match fade {
+            Some(fade) if project.arrangement_fade_edit_uses_outer(clip) => clip
+                .with_authored_outer_fade(project.tempo_map(), fade)
+                .ok()?,
+            Some(_) => return None,
+            None => clip.clone(),
+        };
         let projection = Self {
-            clip: clip.clone(),
             tempo: project.tempo_map().clone(),
             source_clock: source_clock.clone(),
-            events: match events {
-                Some(events) => events,
-                None => clip.editable_audio_events().ok()?,
-            },
+            events,
             gain: gain.unwrap_or_else(|| clip.gain()),
+            clip,
         };
         Some((Arc::clone(&prepared.waveform), Arc::new(projection)))
     }

@@ -2653,28 +2653,31 @@ impl EditorView {
         };
         let events = self.arrangement_event_amplitude(clip);
         let event_source = prepared.and_then(|prepared| prepared.event_source.as_ref());
-        let musical_source = if fade.is_none()
-            && event_source.is_some_and(|source| source.musical_clock.is_some())
-        {
+        let musical_source = if event_source.is_some_and(|source| source.musical_clock.is_some()) {
             super::waveform_musical_event::Projection::for_display(
                 &state.project,
                 clip,
                 event_source,
                 events.clone(),
                 gain,
+                fade,
             )
         } else {
             None
         };
-        let source = super::waveform_frame::Projection::for_display(
-            &state.project,
-            clip,
-            waveform,
-            event_source.and_then(|source| source.frame_waveform()),
-            fade,
-            events,
-            gain,
-        );
+        let source = if musical_source.is_none() {
+            super::waveform_frame::Projection::for_display(
+                &state.project,
+                clip,
+                waveform,
+                event_source.and_then(|source| source.frame_waveform()),
+                fade,
+                events,
+                gain,
+            )
+        } else {
+            None
+        };
         let displayed = if let Some((waveform, projection)) = musical_source {
             Some((
                 waveform,
