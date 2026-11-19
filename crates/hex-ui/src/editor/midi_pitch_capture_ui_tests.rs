@@ -1,6 +1,6 @@
 //! Actual key-gutter input with local viewport custody and no musical edit.
 use super::*;
-use crate::editor::EditorView;
+use crate::editor::{EditorView, midi_canvas::creation_tests::first_open_fixture};
 use gpui::{
     CursorStyle, Entity, IntoElement, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent,
     PlatformInput, Render, VisualTestContext, div, prelude::*,
@@ -47,10 +47,15 @@ fn mount(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Rc<Cell
 }
 #[gpui::test]
 fn key_zoom_owns_input_and_uses_outside_release_without_project_edit(cx: &mut TestAppContext) {
-    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    let (mut visual, editor, _environment, _clip) = first_open_fixture(cx);
     let actions = mount(&editor, &mut visual);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    let down = visual.debug_bounds("midi-piano-keys").unwrap().center();
+    let gutter = visual.debug_bounds("midi-piano-keys").unwrap();
+    let down = gutter.center();
+    let prior = editor.read_with(&visual, |v, _| v.piano_pitch);
+    let expected = prior
+        .zoom_at(f32::from(gutter.size.height), 0.5, 120.0)
+        .unwrap();
     let outside = point(px(640.), px(10.));
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
@@ -65,12 +70,12 @@ fn key_zoom_owns_input_and_uses_outside_release_without_project_edit(cx: &mut Te
         repaint(&editor, &mut visual);
         assert_eq!(
             visual.rendered_cursor_style(),
-            Some(CursorStyle::ResizeUpDown)
+            Some(CursorStyle::ResizeLeftRight)
         );
     }
     // Actual final coordinate differs from the preceding move and lies outside the gutter.
     visual.simulate_mouse_up(
-        point(outside.x, down.y - px(120.)),
+        point(down.x + px(120.), outside.y),
         MouseButton::Left,
         Modifiers::default(),
     );
@@ -78,13 +83,7 @@ fn key_zoom_owns_input_and_uses_outside_release_without_project_edit(cx: &mut Te
     repaint(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.piano_pitch_zoom.is_none());
-        assert_eq!(
-            (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
-            ),
-            (54, 12)
-        );
+        assert_eq!(v.piano_pitch, expected);
         assert!(!v.edit_pending());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -113,22 +112,21 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
         "window",
     ] {
         let cx = &mut cx.new_app();
-        let (mut visual, editor, _environment, _clip) = fixture(cx);
+        let (mut visual, editor, _environment, _clip) = first_open_fixture(cx);
         let actions = mount(&editor, &mut visual);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let down = visual.debug_bounds("midi-piano-keys").unwrap().center();
-        let end = down - point(px(0.), px(120.));
+        let gutter = visual.debug_bounds("midi-piano-keys").unwrap();
+        let down = gutter.center();
+        let prior = editor.read_with(&visual, |v, _| v.piano_pitch);
+        let expected = prior
+            .zoom_at(f32::from(gutter.size.height), 0.5, 120.0)
+            .unwrap();
+        let end = down + point(px(120.), px(0.));
         let outside = point(px(640.), px(10.));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         repaint(&editor, &mut visual);
-        assert_eq!(
-            editor.read_with(&visual, |v, _| (
-                v.piano_pitch.first_test_pitch(),
-                v.piano_pitch.test_row_count()
-            )),
-            (54, 12)
-        );
+        editor.read_with(&visual, |v, _| assert_eq!(v.piano_pitch, expected));
         match loss {
             "button" => visual.simulate_mouse_move(outside, None, Modifiers::default()),
             "escape" => visual.simulate_keystrokes("escape"),
@@ -195,20 +193,19 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
             _ => unreachable!(),
         }
         repaint(&editor, &mut visual);
+        let retired = editor.read_with(&visual, |v, _| {
+            if !matches!(loss, "generation" | "source" | "bounds") {
+                assert_eq!(v.piano_pitch, expected, "{loss}");
+            }
+            v.piano_pitch
+        });
         if loss != "focus" && loss != "invalid" {
             visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
         }
         assert_eq!(actions.get(), 0, "{loss}: trailing up");
         editor.read_with(&visual, |v, _| {
             assert!(v.piano_pitch_zoom.is_none(), "{loss}");
-            assert_eq!(
-                (
-                    v.piano_pitch.first_test_pitch(),
-                    v.piano_pitch.test_row_count()
-                ),
-                (54, 12),
-                "{loss}"
-            );
+            assert_eq!(v.piano_pitch, retired, "{loss}");
             assert!(!v.edit_pending());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
