@@ -1,4 +1,4 @@
-//! Bounded ownership and rendering for residual output from replaced Returns.
+//! Bounded ownership and rendering for residual output from Return and Main chains.
 use super::{Frame, MAX_FINITE_EFFECT_TAIL_SECONDS, SessionPlaybackError};
 use crate::ReturnBus;
 use hex_lattice::{NativeRuntimeChain, OutputTail, StereoMatrix};
@@ -317,6 +317,25 @@ impl ReturnEffectTailBank {
     }
 }
 
+/// Publication policy for residual output made obsolete by a device edit.
+/// Already retained owners and clip releases follow their own handoff proof.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeviceEditTailPolicy {
+    Preserve,
+    RequireConfirmation,
+    Cut,
+}
+
+impl DeviceEditTailPolicy {
+    pub(super) fn cut_obsolete_tail(self) -> Result<bool, SessionPlaybackError> {
+        match self {
+            Self::Preserve => Ok(false),
+            Self::RequireConfirmation => Err(SessionPlaybackError::DeviceInsertNeedsConfirmation),
+            Self::Cut => Ok(true),
+        }
+    }
+}
+
 /// A fully preflighted transfer plan. It contains indices only; applying it
 /// moves runtime owners without allocating or dropping the previous chain.
 pub(super) struct ReturnEffectTailPlan {
@@ -541,6 +560,7 @@ impl ReturnEffectTailPlan {
         runtime_bytes: &mut usize,
         entry_count: &mut usize,
         continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
+        tail_policy: DeviceEditTailPolicy,
     ) -> Result<(), SessionPlaybackError> {
         let mut start = 0;
         let mut arrival = pre_main_arrival;
@@ -572,6 +592,11 @@ impl ReturnEffectTailPlan {
             // endpoint may start fresh without copying that incompatible quiet
             // suffix or reserving a tail that will never produce more output.
             self.main_quiet_suffix = Some(start);
+            return Ok(());
+        }
+        if tail_policy.cut_obsolete_tail()? {
+            // Leave the suffix with the retiring graph. The ordinary Main
+            // history preflight still checks each surviving processor.
             return Ok(());
         }
         let target = (0..RETURN_EFFECT_TAIL_CAPACITY)

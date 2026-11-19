@@ -368,20 +368,42 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_track_effect_removal_keeps_one_native_endpoint_through_the_cut() {
+    verify_approved_effect_removal(false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_main_effect_removal_keeps_one_native_endpoint_through_the_cut() {
+    verify_approved_effect_removal(true);
+}
+
+fn verify_approved_effect_removal(main: bool) {
     use hex_lattice_contract::NativeDeviceMetadata;
 
     const QUANTUM: usize = 128;
     let _serial = serial();
-    let mut f = fixture_with_quantum("processing", 0, QUANTUM as u16);
+    let mut f = fixture_with_quantum("processing", if main { 2 } else { 0 }, QUANTUM as u16);
     let track = &f.editor.project().tracks()[0];
-    let hosted = track.devices()[0].id();
+    let hosted = if main {
+        f.editor.project().main_devices()[0].id()
+    } else {
+        track.devices()[0].id()
+    };
     let track = track.id();
+    let state = hex_devices::eq::EQ_DEFINITION.default_state().unwrap();
     let Created::Device(eq) = f
         .editor
-        .execute(Command::InsertDevice {
-            track,
-            before: Some(hosted),
-            state: hex_devices::eq::EQ_DEFINITION.default_state().unwrap(),
+        .execute(if main {
+            Command::InsertMainDevice {
+                before: Some(hosted),
+                state,
+            }
+        } else {
+            Command::InsertDevice {
+                track,
+                before: Some(hosted),
+                state,
+            }
         })
         .unwrap()
     else {

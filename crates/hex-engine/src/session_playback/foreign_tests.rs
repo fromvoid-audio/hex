@@ -1093,31 +1093,46 @@ struct QuietTrackEffect;
 
 #[test]
 fn confirmed_track_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    verify_confirmed_effect_removal(false);
+}
+
+#[test]
+fn confirmed_main_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    verify_confirmed_effect_removal(true);
+}
+
+fn verify_confirmed_effect_removal(main: bool) {
     use hex_devices::eq::EQ_DEFINITION;
 
     let mut f = fixture(&[&[], &[]], 64);
     let track = f.tracks[0];
-    let owner = ProcessorChainOwner::Track(track.value());
+    let owner = if main {
+        ProcessorChainOwner::Main
+    } else {
+        ProcessorChainOwner::Track(track.value())
+    };
+    let insert = |state| {
+        if main {
+            Command::InsertMainDevice {
+                before: None,
+                state,
+            }
+        } else {
+            Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            }
+        }
+    };
     let Created::Device(eq) = f
         .editor
-        .execute(Command::InsertDevice {
-            track,
-            before: None,
-            state: EQ_DEFINITION.default_state().unwrap(),
-        })
+        .execute(insert(EQ_DEFINITION.default_state().unwrap()))
         .unwrap()
     else {
         panic!("eq");
     };
-    let Created::Device(hosted) = f
-        .editor
-        .execute(Command::InsertDevice {
-            track,
-            before: None,
-            state: state(19).unwrap(),
-        })
-        .unwrap()
-    else {
+    let Created::Device(hosted) = f.editor.execute(insert(state(19).unwrap())).unwrap() else {
         panic!("hosted effect");
     };
     let definition = BorrowedDefinition {
@@ -1159,7 +1174,12 @@ fn confirmed_track_effect_removal_does_not_duplicate_the_remaining_hosted_worker
     predecessor
         .render_with_foreign_processors(&mut [[0.0; 2]; 7], None, None, None, &mut endpoint)
         .unwrap();
-    assert!(!predecessor.device_chains[0].committed_range_is_quiescent(0..2));
+    let chain = if main {
+        &predecessor.main_chain
+    } else {
+        &predecessor.device_chains[0]
+    };
+    assert!(!chain.committed_range_is_quiescent(0..chain.len()));
     assert_eq!(
         refused.try_inherit_state_live_from(&mut predecessor),
         Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)

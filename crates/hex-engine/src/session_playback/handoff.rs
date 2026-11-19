@@ -1,3 +1,4 @@
+use super::return_effect_tails::DeviceEditTailPolicy;
 use super::*;
 use crate::signal_graph::FreshHistory;
 use crate::{Invalid, MidiTiming, Track};
@@ -4471,6 +4472,25 @@ impl SessionPlayback {
         // complete current+retained owners are separately charged below.
         let mut suffix_entry_count = 0_usize;
         let sample_rate = self.revision.arrangement().sample_rate();
+        let tail_policy = if continuous_insert {
+            DeviceEditTailPolicy::RequireConfirmation
+        } else if confirmed_insert {
+            DeviceEditTailPolicy::Cut
+        } else {
+            DeviceEditTailPolicy::Preserve
+        };
+        let old_main = &previous.revision.arrangement().main_device_chain;
+        let new_main = &self.revision.arrangement().main_device_chain;
+        let main_tail_policy = if tail_policy != DeviceEditTailPolicy::Preserve
+            && old_main
+                .iter()
+                .map(|device| device.device_id)
+                .ne(new_main.iter().map(|device| device.device_id))
+        {
+            tail_policy
+        } else {
+            DeviceEditTailPolicy::Preserve
+        };
         let mut return_tail_plan = ReturnEffectTailPlan::preflight(
             previous.revision.arrangement().return_buses(),
             &previous.return_chains,
@@ -4497,6 +4517,7 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
             continuation,
+            main_tail_policy,
         )?;
         if clock_transfer == 2
             && self.compensation.is_none()
@@ -4773,7 +4794,7 @@ impl SessionPlayback {
                 }
                 continue;
             }
-            if (continuous_insert || confirmed_insert)
+            if tail_policy != DeviceEditTailPolicy::Preserve
                 && candidate_index
                     .and_then(|index| self.revision.arrangement().tracks().get(index))
                     .is_some_and(|candidate| {
@@ -4783,14 +4804,12 @@ impl SessionPlayback {
                             .map(|device| device.device_id)
                             .ne(candidate.device_chain.iter().map(|device| device.device_id))
                     })
+                && tail_policy.cut_obsolete_tail()?
             {
                 // The confirmed cut may discard residual output from a changed
                 // track chain. The normal history preflight still governs the
                 // surviving devices and the donor stays intact for retirement.
                 // A tail already reserved for an actual release was handled above.
-                if continuous_insert {
-                    return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
-                }
                 continue;
             }
             let Some(slot) = (0..self.tail_groups.len()).find(|slot| {
