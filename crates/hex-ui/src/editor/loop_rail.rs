@@ -689,7 +689,7 @@ fn loop_region_bar(
                     .debug_selector(|| "loop-binary-length-marker".into())
                     .absolute()
                     .left(px(4.0))
-                    .top(px(-6.0))
+                    .top_0()
                     .size(px(5.0))
                     .rounded_full()
                     .bg(rgb(theme::color(theme::PaletteRole::Background)))
