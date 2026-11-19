@@ -142,6 +142,11 @@ impl AudioClipDomain {
 }
 
 impl ProjectedOuterAudioFade<'_> {
+    /// Whether this instance envelope contributes unity throughout the clip.
+    pub fn is_neutral(&self) -> bool {
+        self.fade.is_neutral()
+    }
+
     /// Project a finite Frame envelope into the playback scalar fade slot.
     /// Positive prefix shifts both ramps. Padding after the authored end
     /// preserves its silent tail, and the retained offset stays unwrapped.

@@ -15,14 +15,12 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Clip, Invalid> {
-        let fade = clip
-            .projected_outer_fade(tempo_map)?
-            .map(|projection| projection.frame_playback_envelope())
-            .transpose()?;
+        let projection = clip.projected_outer_fade(tempo_map)?;
+        let fade = OuterPlaybackFade::projected(projection.as_ref(), edit.domain.clock)?;
         self.compile_content_with_outer_fade(tempo_map, clip, edit, asset, source, fade)
     }
 
-    /// The checked Frame slot belongs to the prepared clip, after reflection
+    /// The destination envelope belongs to the prepared clip, after reflection
     /// and crop. Directed PCM keeps the processing and retained event laws.
     pub(super) fn compile_content_with_outer_fade(
         &self,
@@ -31,10 +29,16 @@ impl AudioTransformPreparation {
         edit: &AudioClipEdit,
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
-        fade: Option<hex_project::ClipFade>,
+        fade: Option<OuterPlaybackFade<'_>>,
     ) -> Result<Clip, Invalid> {
         if fade.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
             return Err(Invalid("directed fade differs from its processing clock"));
+        }
+        if let Some(fade) = fade {
+            fade.admit(
+                clip.duration(),
+                matches!(&source, PreparedAudioSourceRef::Resident(_)),
+            )?;
         }
         edit.content_view
             .ok_or(Invalid("directed audio view missing"))?;
@@ -56,10 +60,7 @@ impl AudioTransformPreparation {
         };
         let finish = |audio: Audio| {
             let compiled = super::view::placed_clip(audio, clip)?;
-            match fade {
-                Some(fade) => compiled.with_fade(fade),
-                None => Ok(compiled),
-            }
+            self.finish_outer_fade(compiled, fade)
         };
         let processing = super::processing_root::unfaded_outer_edit(edit, tempo_map)?;
         let edit = processing.as_ref();

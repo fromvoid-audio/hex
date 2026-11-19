@@ -1016,3 +1016,247 @@ fn pasted_frame_placements_and_reverse_views_reuse_pcm_across_onsets_and_tempo()
         assert_eq!(render(&copied, length * 2, length as usize, 63), expected);
     }
 }
+
+#[test]
+fn musical_outer_fade_compiles_one_destination_envelope_across_tempo_seams() {
+    let (editor, clip, media) = musical_placement(WarpMode::RePitch);
+    assert_musical_outer_pcm(editor, clip, &media);
+}
+
+#[test]
+fn musical_outer_fade_follows_frozen_reflected_source_processing() {
+    let (mut editor, clip, media) = musical_placement(WarpMode::RePitch);
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: None,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    assert!(edit.content_view.is_some());
+    assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
+    assert_musical_outer_pcm(editor, clip, &media);
+}
+
+#[test]
+fn musical_outer_fade_follows_forward_source_processing() {
+    let (mut editor, clip, media) = fixture(false);
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    assert!(edit.content_view.is_none() && edit.placement.is_none());
+    assert_musical_outer_pcm(editor, clip, &media);
+}
+
+fn assert_musical_outer_pcm(
+    mut editor: Editor,
+    id: hex_project::ClipId,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+) {
+    editor
+        .execute(Command::SetClipFades {
+            clip: id,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let clip = editor.project().clip(id).unwrap();
+    let tempo = editor.project().tempo_map();
+    let asset = editor.project().asset(clip.asset()).unwrap();
+    let duration = clip.duration();
+    let context = AudioTransformPreparation::default();
+    let expected_source = render(
+        &prepare(&editor, media, &AudioTransformPreparation::default()),
+        clip.start(),
+        duration as usize,
+        73,
+    );
+    for (fade_in, block) in [(duration / 2, 31), (duration / 6, 256)] {
+        let fade = ClipFade::new(duration, 0, fade_in, duration / 3).unwrap();
+        let outer = clip.projected_outer_fade_preview(tempo, fade).unwrap();
+        let mut edit = clip.audio_edit().unwrap().clone();
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.fade_clock = hex_project::AudioClipFadeClock::Outer;
+        domain.fade = fade;
+        let hits = context.cache_hits();
+        let source = PreparedAudioSourceRef::Resident(&media[&clip.asset()]);
+        let compiled = if edit.content_view.is_some() {
+            context
+                .compile_content_with_outer_fade(
+                    tempo,
+                    clip,
+                    &edit,
+                    asset,
+                    source,
+                    Some(OuterPlaybackFade::Musical(&outer)),
+                )
+                .unwrap()
+        } else if edit.placement.is_some() {
+            context
+                .compile_view_with_outer_fade(
+                    tempo,
+                    clip,
+                    &edit,
+                    asset,
+                    source,
+                    hex_project::AudioViewProjection::new(clip, tempo).unwrap(),
+                    Some(&outer),
+                )
+                .unwrap()
+        } else {
+            context
+                .compile_captured_clip_at_tempo(
+                    tempo,
+                    clip,
+                    &edit,
+                    asset,
+                    source,
+                    Some(OuterPlaybackFade::Musical(&outer)),
+                )
+                .unwrap()
+                .unwrap()
+        };
+        if block == 256 {
+            assert!(
+                context.cache_hits() > hits,
+                "fade-only change must reuse source processing"
+            );
+        }
+        assert!(!compiled.looping);
+        assert_eq!(compiled.source_offset, 0);
+        assert_eq!(
+            compiled.audio.as_ref().unwrap().frames().len(),
+            duration as usize
+        );
+        let graph = crate::Project::new(
+            editor.project().sample_rate(),
+            vec![crate::Track::new(vec![compiled], 1.0, false).unwrap()],
+        )
+        .unwrap();
+        let mut output = vec![[0.0; 2]; duration as usize];
+        let mut renderer = crate::Renderer::new(&graph);
+        renderer.seek(clip.start());
+        renderer.play();
+        for part in output.chunks_mut(block) {
+            renderer.render(part).unwrap();
+        }
+        for (index, (actual, raw)) in output.iter().zip(&expected_source).enumerate() {
+            let gain = outer.gain_at(clip.start() + index as u64).unwrap();
+            assert_eq!(*actual, raw.map(|sample| sample * gain), "frame {index}");
+        }
+    }
+}
+
+#[test]
+fn musical_outer_fade_failure_keeps_source_and_releases_reservation() {
+    let (editor, id, media) = musical_placement(WarpMode::RePitch);
+    let clip = editor.project().clip(id).unwrap();
+    let tempo = editor.project().tempo_map();
+    let duration = clip.duration();
+    let faded = clip
+        .projected_outer_fade_preview(
+            tempo,
+            ClipFade::new(duration, 0, duration / 2, duration / 3).unwrap(),
+        )
+        .unwrap();
+    let fade = OuterPlaybackFade::Musical(&faded);
+    assert_eq!(
+        fade.admit(duration, false),
+        Err(Invalid("musical outer fade requires resident audio")),
+    );
+    assert!(
+        fade.admit(hex_project::MAX_AUDIO_DOMAIN_FRAMES + 1, true)
+            .is_err()
+    );
+
+    let source = &media[&clip.asset()];
+    let resident = Clip::region(
+        source.clone(),
+        clip.start(),
+        duration,
+        0,
+        source.frames().len() as u64,
+        true,
+    )
+    .unwrap();
+    let denied = isolated(
+        duration as usize * std::mem::size_of::<crate::Frame>() - 1,
+        0,
+        0,
+    );
+    assert!(
+        denied
+            .finish_outer_fade(resident.clone(), Some(fade))
+            .is_err()
+    );
+    assert_eq!(denied.retained_pcm_bytes(), 0);
+
+    let cancelled = AudioTransformPreparation::new(Arc::new(AtomicBool::new(true)));
+    assert!(matches!(
+        cancelled.finish_outer_fade(resident.clone(), Some(fade)),
+        Err(Invalid("audio preparation cancelled")),
+    ));
+    assert_eq!(cancelled.retained_pcm_bytes(), 0);
+
+    let neutral = clip
+        .projected_outer_fade_preview(tempo, ClipFade::neutral(duration).unwrap())
+        .unwrap();
+    let unchanged = denied
+        .finish_outer_fade(resident, Some(OuterPlaybackFade::Musical(&neutral)))
+        .unwrap();
+    assert!(unchanged.audio.as_ref().unwrap().shares_pcm_with(source));
+    assert!(unchanged.looping);
+    assert_eq!(denied.retained_pcm_bytes(), 0);
+
+    let streamed = Arc::new(
+        crate::StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(1, clip.asset()),
+            tempo.sample_rate(),
+            tempo.sample_rate(),
+            source.frames().len() as u64,
+            source.frames().len() as u64,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap(),
+    );
+    let region = Clip::streamed_region(
+        Arc::clone(&streamed),
+        clip.start(),
+        duration,
+        0,
+        source.frames().len() as u64,
+        true,
+    )
+    .unwrap();
+    let unchanged = denied
+        .finish_outer_fade(region, Some(OuterPlaybackFade::Musical(&neutral)))
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        unchanged
+            .metadata
+            .as_ref()
+            .unwrap()
+            .streamed
+            .as_ref()
+            .unwrap(),
+        &streamed,
+    ));
+    assert_eq!(denied.retained_pcm_bytes(), 0);
+}

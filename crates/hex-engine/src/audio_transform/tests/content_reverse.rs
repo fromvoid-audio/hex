@@ -1152,7 +1152,7 @@ fn directed_frame_crop_reflects_events_with_one_forward_outer_fade() {
                 &edit,
                 project.asset(clip.asset()).unwrap(),
                 PreparedAudioSourceRef::Resident(audio),
-                Some(slot),
+                Some(OuterPlaybackFade::Frame(slot)),
             )
             .unwrap()
     };

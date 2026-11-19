@@ -253,3 +253,24 @@ fn native_repeat_preparation_preserves_midcycle_source_phase_and_seek() {
     custody.cleanup_on_control();
     assert!(custody.recover_on_control(&token).is_some());
 }
+
+#[test]
+fn native_musical_outer_fade_quotes_placement_output_and_extra_pass() {
+    let (project, _, _) = phased_frame_fixture();
+    let mut edit = project.tracks()[0].clips()[0].audio_edit().unwrap().clone();
+    let domain = std::sync::Arc::make_mut(&mut edit.domain);
+    domain.clock = AudioDomainClock::Beats(hex_project::BeatTime::ONE);
+    domain.fade_clock = hex_project::AudioClipFadeClock::Outer;
+    domain.fade = ClipFade::new(12, 0, 6, 2).unwrap();
+    assert_eq!(quote_outer_fade_output(&edit, 12, 8, 20), Ok((12, 32)));
+    assert_eq!(
+        quote_outer_fade_output(&edit, MAX_AUDIO_DOMAIN_FRAMES + 1, 8, 20),
+        Err(AudioStorageError::Capacity),
+    );
+    assert_eq!(
+        quote_outer_fade_output(&edit, 12, 8, u64::MAX),
+        Err(AudioStorageError::Overflow),
+    );
+    std::sync::Arc::make_mut(&mut edit.domain).fade = ClipFade::neutral(12).unwrap();
+    assert_eq!(quote_outer_fade_output(&edit, 12, 8, 20), Ok((8, 20)));
+}

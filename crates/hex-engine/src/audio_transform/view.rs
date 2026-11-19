@@ -228,8 +228,8 @@ impl AudioTransformPreparation {
         )
     }
 
-    /// Assemble a checked finite placement on control. Its scalar envelope
-    /// belongs to the resulting playback Clip. The cached view PCM retains
+    /// Assemble a checked finite placement on control. The instance envelope
+    /// follows the source placement. The cached view PCM retains
     /// only its processing-root law, including the repeated event fades.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn compile_view_with_outer_fade(
@@ -247,13 +247,14 @@ impl AudioTransformPreparation {
                 "audio placement fade differs from its processing clock",
             ));
         }
-        let fade = outer
-            .map(ProjectedOuterAudioFade::frame_playback_envelope)
-            .transpose()?;
-        let attach_fade = |compiled: Clip| match fade {
-            Some(fade) => compiled.with_fade(fade),
-            None => Ok(compiled),
-        };
+        let fade = OuterPlaybackFade::projected(outer, edit.domain.clock)?;
+        if let Some(fade) = fade {
+            fade.admit(
+                clip.duration(),
+                matches!(&source, PreparedAudioSourceRef::Resident(_)),
+            )?;
+        }
+        let attach_fade = |compiled: Clip| self.finish_outer_fade(compiled, fade);
         let processing = super::processing_root::unfaded_outer_edit(edit, tempo_map)?;
         let edit = processing.as_ref();
         let canonical_cache = !projection.has_silent_repeat_gap();
