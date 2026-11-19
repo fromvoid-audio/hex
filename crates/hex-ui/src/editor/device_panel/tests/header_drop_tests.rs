@@ -99,6 +99,23 @@ fn drag_to_header(
     feedback
 }
 
+fn drop_on_arrangement_lane(visual: &mut VisualTestContext, track: TrackId, modifiers: Modifiers) {
+    let landing = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .expect("target lane")
+        .center();
+    visual.simulate_mouse_move(landing, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("arrangement-device-drop-preview")
+            .is_some()
+    );
+    visual.simulate_mouse_up(landing, MouseButton::Left, modifiers);
+}
+
 #[gpui::test]
 fn header_effect_drop_appends_to_unselected_track_once_and_keeps_history(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
@@ -609,9 +626,13 @@ fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestAppContext) {
+fn track_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
-    for mode in [EditorMode::Arrangement, EditorMode::Session] {
+    for (mode, lane) in [
+        (EditorMode::Arrangement, false),
+        (EditorMode::Session, false),
+        (EditorMode::Arrangement, true),
+    ] {
         let (service, _, source, first, _, _) = actor_utility_fixture();
         let add_effect = |track| {
             service
@@ -663,7 +684,12 @@ fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut Test
             assert!(view.device_panel.is_selected(first) && view.device_panel.is_selected(last));
             assert!(!view.device_panel.is_selected(middle));
         });
-        drag_to_header(&mut visual, target, mode, title(last));
+        if lane {
+            begin_device_drag(&mut visual, title(last));
+            drop_on_arrangement_lane(&mut visual, target, Modifiers::default());
+        } else {
+            drag_to_header(&mut visual, target, mode, title(last));
+        }
         pump_until(&editor, cx, idle);
         let moved = editor.read_with(cx, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
@@ -696,6 +722,15 @@ fn header_drag_moves_noncontiguous_selected_devices_in_chain_order(cx: &mut Test
 
 #[gpui::test]
 fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
+    option_drag_copies_device_to_another_track(cx, EditorMode::Session);
+}
+
+#[gpui::test]
+fn option_drag_copies_device_to_arrangement_lane(cx: &mut TestAppContext) {
+    option_drag_copies_device_to_another_track(cx, EditorMode::Arrangement);
+}
+
+fn option_drag_copies_device_to_another_track(cx: &mut TestAppContext, mode: EditorMode) {
     let (service, _, source, device, _, _) = actor_utility_fixture();
     service
         .submit(Request::Edit(Command::AddTrack {
@@ -707,18 +742,16 @@ fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
         panic!("target");
     };
     let (handle, editor) = actor_editor_window(cx, service, event.state, source);
+    editor.update(cx, |view, cx| {
+        view.mode = mode;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1600.0), px(800.0)));
     visual.run_until_parked();
     let title = visual
         .debug_bounds(Box::leak(
             format!("device-drag-title-{}", device.value()).into_boxed_str(),
-        ))
-        .unwrap()
-        .center();
-    let header = visual
-        .debug_bounds(Box::leak(
-            format!("session-track-{}", target.value()).into_boxed_str(),
         ))
         .unwrap()
         .center();
@@ -732,9 +765,19 @@ fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
         MouseButton::Left,
         option,
     );
-    visual.simulate_mouse_move(header, MouseButton::Left, option);
-    visual.run_until_parked();
-    visual.simulate_mouse_up(header, MouseButton::Left, option);
+    if mode == EditorMode::Arrangement {
+        drop_on_arrangement_lane(&mut visual, target, option);
+    } else {
+        let landing = visual
+            .debug_bounds(Box::leak(
+                format!("session-track-{}", target.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_move(landing, MouseButton::Left, option);
+        visual.run_until_parked();
+        visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    }
     pump_until(&editor, cx, |view| {
         view.state
             .as_ref()
