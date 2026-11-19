@@ -81,7 +81,10 @@ impl EditorView {
     pub(super) fn queue_normal_start(&mut self, start: Start) {
         self.playback_settings.pending = None;
         let source = match &start {
-            Start::Source { source, .. } => Some(StartSource::Applied(*source)),
+            Start::Source { source, .. } => self
+                .normal_start_source()
+                .filter(|current| current == source)
+                .map(StartSource::Applied),
             Start::Play { .. } if self.recovery.generation().is_some() => {
                 self.recovery.generation().map(StartSource::Recovery)
             }
