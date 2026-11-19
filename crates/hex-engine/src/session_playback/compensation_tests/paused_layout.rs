@@ -220,6 +220,7 @@ fn primed_pcm_origin_requires_processing_clock_offset() {
 enum SilentLatencyCase {
     Eligible,
     ActiveChangedTrack,
+    BufferedUnmutedTrack,
     StaleMutedHistory,
     IncreasedMaximum,
     SendsToReturn,
@@ -235,6 +236,21 @@ fn silent_isolated_latency_addition_preserves_other_track_reverb() {
 
 #[test]
 fn isolated_latency_insert_keeps_unchanged_operator_note_and_release() {
+    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Insert);
+}
+
+#[test]
+fn isolated_latency_removal_keeps_unchanged_operator_note_and_release() {
+    isolated_latency_edit_keeps_operator(IsolatedLatencyEdit::Remove);
+}
+
+#[derive(Clone, Copy)]
+enum IsolatedLatencyEdit {
+    Insert,
+    Remove,
+}
+
+fn isolated_latency_edit_keeps_operator(edit: IsolatedLatencyEdit) {
     use hex_project::{BeatTime, Created};
 
     let mut f = fixture(&[&[], &[]], 8_192);
@@ -243,12 +259,6 @@ fn isolated_latency_insert_keeps_unchanged_operator_note_and_release() {
     for audio in f.media.values_mut() {
         *audio = crate::Audio::new(48_000, vec![[0.0; 2]; 8_192]).unwrap();
     }
-    f.editor
-        .execute(Command::Mute {
-            track: edited,
-            muted: true,
-        })
-        .unwrap();
     f.editor
         .execute(Command::InsertInstrument {
             track: instrument,
@@ -287,15 +297,7 @@ fn isolated_latency_insert_keeps_unchanged_operator_note_and_release() {
             velocity: 100,
         })
         .unwrap();
-    let old_revision = prepare(&f);
-    f.editor
-        .execute(Command::InsertDevice {
-            track: edited,
-            before: None,
-            state: limiter(),
-        })
-        .unwrap();
-    let new_revision = prepare(&f);
+    let (old_revision, new_revision) = isolated_latency_revisions(&mut f, edited, edit);
     let latency = old_revision.arrangement().main_latency_frames();
     assert!(latency > 0);
     assert_eq!(new_revision.arrangement().main_latency_frames(), latency);
@@ -363,6 +365,15 @@ fn isolated_latency_insert_keeps_unchanged_operator_note_and_release() {
 
 #[test]
 fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
+    isolated_latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Insert);
+}
+
+#[test]
+fn isolated_latency_removal_keeps_unchanged_group_and_return_tails() {
+    isolated_latency_edit_keeps_group_and_return(IsolatedLatencyEdit::Remove);
+}
+
+fn isolated_latency_edit_keeps_group_and_return(edit: IsolatedLatencyEdit) {
     use crate::{OutputCapture, OutputCaptureId};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Created, TrackSelectionIds};
@@ -375,12 +386,6 @@ fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
     }
     let changed = f.tracks[0];
     let child = f.tracks[1];
-    f.editor
-        .execute(Command::Mute {
-            track: changed,
-            muted: true,
-        })
-        .unwrap();
     let Created::Track(group) = f
         .editor
         .execute(Command::GroupTracks {
@@ -438,15 +443,7 @@ fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
             state: wet,
         })
         .unwrap();
-    let old_revision = prepare(&f);
-    f.editor
-        .execute(Command::InsertDevice {
-            track: changed,
-            before: None,
-            state: limiter(),
-        })
-        .unwrap();
-    let new_revision = prepare(&f);
+    let (old_revision, new_revision) = isolated_latency_revisions(&mut f, changed, edit);
     let latency = old_revision.arrangement().main_latency_frames();
     assert!(latency > 0);
     assert_eq!(new_revision.arrangement().main_latency_frames(), latency);
@@ -460,8 +457,12 @@ fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
             .unwrap()
             .1
     };
-    assert_eq!(changed_arrival(&old_revision), 0);
-    assert_eq!(changed_arrival(&new_revision), latency);
+    let (before, after) = match edit {
+        IsolatedLatencyEdit::Insert => (0, latency),
+        IsolatedLatencyEdit::Remove => (latency, 0),
+    };
+    assert_eq!(changed_arrival(&old_revision), before);
+    assert_eq!(changed_arrival(&new_revision), after);
 
     for partition in [1, 257] {
         let mut old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
@@ -516,10 +517,41 @@ fn isolated_latency_insert_keeps_unchanged_group_and_return_tails() {
     }
 }
 
+fn isolated_latency_revisions(
+    fixture: &mut crate::signal_graph::tests::Fixture,
+    track: TrackId,
+    edit: IsolatedLatencyEdit,
+) -> (Arc<PreparedRevision>, Arc<PreparedRevision>) {
+    let without = prepare(fixture);
+    let hex_project::Created::Device(device) = fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter(),
+        })
+        .unwrap()
+    else {
+        panic!("limiter");
+    };
+    let with = prepare(fixture);
+    match edit {
+        IsolatedLatencyEdit::Insert => (without, with),
+        IsolatedLatencyEdit::Remove => {
+            fixture
+                .editor
+                .execute(Command::RemoveDevice(device))
+                .unwrap();
+            (with, prepare(fixture))
+        }
+    }
+}
+
 #[test]
 fn unproven_latency_additions_keep_existing_restart_behavior() {
     for case in [
         SilentLatencyCase::ActiveChangedTrack,
+        SilentLatencyCase::BufferedUnmutedTrack,
         SilentLatencyCase::StaleMutedHistory,
         SilentLatencyCase::IncreasedMaximum,
         SilentLatencyCase::SendsToReturn,
@@ -538,7 +570,9 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
         if index == 0
             && matches!(
                 case,
-                SilentLatencyCase::ActiveChangedTrack | SilentLatencyCase::StaleMutedHistory
+                SilentLatencyCase::ActiveChangedTrack
+                    | SilentLatencyCase::BufferedUnmutedTrack
+                    | SilentLatencyCase::StaleMutedHistory
             )
         {
             samples[..7000].fill([0.125, -0.0625]);
@@ -549,7 +583,9 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
     }
     if !matches!(
         case,
-        SilentLatencyCase::ActiveChangedTrack | SilentLatencyCase::StaleMutedHistory
+        SilentLatencyCase::ActiveChangedTrack
+            | SilentLatencyCase::BufferedUnmutedTrack
+            | SilentLatencyCase::StaleMutedHistory
     ) {
         f.editor
             .execute(Command::Mute {
@@ -656,6 +692,8 @@ fn silent_latency_addition_case(case: SilentLatencyCase, partition: usize) {
             candidate.try_inherit_state_live_from(&mut old),
             Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
         ));
+        assert_eq!(old.performance_frame(), 6_000);
+        assert!(old.playing());
         candidate.require_continuous_insert = false;
     }
     candidate.try_inherit_state_live_from(&mut old).unwrap();

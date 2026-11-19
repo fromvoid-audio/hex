@@ -557,19 +557,55 @@ fn earlier_unused_return_remove_and_undo_preserve_pcm_without_callback_allocatio
 #[test]
 fn silent_track_latency_addition_preserves_other_reverb_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    verify_silent_track_latency_addition(SilentLatencyRouting::TrackReverb)
+    verify_silent_track_latency_edit(
+        SilentLatencyRouting::TrackReverb,
+        IsolatedLatencyEdit::Insert,
+    )
 }
 
 #[test]
 fn isolated_latency_insert_preserves_group_and_return_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    verify_silent_track_latency_addition(SilentLatencyRouting::GroupAndReturn)
+    verify_silent_track_latency_edit(
+        SilentLatencyRouting::GroupAndReturn,
+        IsolatedLatencyEdit::Insert,
+    )
 }
 
 #[test]
 fn isolated_latency_insert_preserves_held_operator_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
-    verify_silent_track_latency_addition(SilentLatencyRouting::HeldOperator)
+    verify_silent_track_latency_edit(
+        SilentLatencyRouting::HeldOperator,
+        IsolatedLatencyEdit::Insert,
+    )
+}
+
+#[test]
+fn isolated_latency_removal_preserves_group_and_return_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_silent_track_latency_edit(
+        SilentLatencyRouting::GroupAndReturn,
+        IsolatedLatencyEdit::Remove,
+    )
+}
+
+#[test]
+fn isolated_latency_removal_preserves_held_operator_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    verify_silent_track_latency_edit(
+        SilentLatencyRouting::HeldOperator,
+        IsolatedLatencyEdit::Remove,
+    )
+}
+
+#[test]
+fn buffered_latency_insert_refuses_without_callback_allocations_or_source_replacement()
+-> Result<(), Box<dyn Error>> {
+    verify_silent_track_latency_edit(
+        SilentLatencyRouting::GroupAndReturn,
+        IsolatedLatencyEdit::BufferedInsert,
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -579,20 +615,29 @@ enum SilentLatencyRouting {
     HeldOperator,
 }
 
-fn verify_silent_track_latency_addition(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IsolatedLatencyEdit {
+    Insert,
+    Remove,
+    BufferedInsert,
+}
+
+fn verify_silent_track_latency_edit(
     routing: SilentLatencyRouting,
+    edit: IsolatedLatencyEdit,
 ) -> Result<(), Box<dyn Error>> {
+    use hex_audio::prepared::{AppliedAudioSource, PublicationPolicy};
     use hex_project::BeatTime;
 
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
     let mut tracks = Vec::new();
     let names = if routing == SilentLatencyRouting::GroupAndReturn {
-        &["muted", "limiter", "sibling"][..]
+        &["edited", "limiter", "sibling"][..]
     } else {
-        &["muted", "reverb"][..]
+        &["edited", "unchanged"][..]
     };
-    for &name in names {
+    for (index, &name) in names.iter().enumerate() {
         let Created::Imported { track, asset, .. } = editor.execute(Command::ImportAudioTrack {
             name: name.into(),
             path: "memory/source.wav".into(),
@@ -603,21 +648,30 @@ fn verify_silent_track_latency_addition(
             return Err("expected source".into());
         };
         let mut samples = vec![[0.0; 2]; 12_000];
-        if routing != SilentLatencyRouting::HeldOperator {
+        if index == 0 && edit == IsolatedLatencyEdit::BufferedInsert {
+            samples.fill([0.25, -0.125]);
+        } else if routing != SilentLatencyRouting::HeldOperator {
             samples[..512].fill([0.25, -0.125]);
         }
         media.insert(asset, Audio::new(RATE, samples)?);
         tracks.push(track);
     }
-    editor.execute(Command::Mute {
-        track: tracks[0],
-        muted: true,
-    })?;
-    editor.execute(Command::InsertDevice {
-        track: tracks[1],
-        before: None,
-        state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
-    })?;
+    if routing == SilentLatencyRouting::TrackReverb {
+        editor.execute(Command::Mute {
+            track: tracks[0],
+            muted: true,
+        })?;
+    }
+    let insert_limiter = |track| -> Result<Command, Box<dyn Error>> {
+        Ok(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.limiter",
+            ))?,
+        })
+    };
+    editor.execute(insert_limiter(tracks[1])?)?;
     let reverb = hex_engine::patch_native_device_parameter(
         &hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?,
         ParameterId::from_static(2),
@@ -683,6 +737,14 @@ fn verify_silent_track_latency_addition(
             velocity: 100,
         })?;
     }
+    let command = if edit == IsolatedLatencyEdit::Remove {
+        let Created::Device(device) = editor.execute(insert_limiter(tracks[0])?)? else {
+            return Err("expected limiter".into());
+        };
+        Command::RemoveDevice(device)
+    } else {
+        insert_limiter(tracks[0])?
+    };
     let table = Arc::new(SineTable::new());
     let prepare = |project: &Project| {
         PreparedRevision::prepare(project, &media, Arc::clone(&table), None).map(Arc::new)
@@ -691,8 +753,26 @@ fn verify_silent_track_latency_addition(
     let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&first))?;
     oracle.apply(PlaybackCommand::Play);
     let (mut control, mut callback) = prepared::channel(RATE)?;
-    control
-        .publish(Playback::try_from_prepared_with_session(first)?)
+    control.configure_device_resource_publication_on_control(
+        hex_engine::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 256,
+            root_rows: 128,
+            max_retained_bytes: 20_000_000,
+            max_construction_peak_bytes: 20_000_000,
+        },
+    )?;
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 1,
+        editor_revision: 0,
+    };
+    let initial = control
+        .publish_with_admission_and_source_on_control(
+            Playback::try_from_prepared_with_session(first)?,
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
         .map_err(|_| "initial publication")?;
     control.command(PlaybackCommand::Play).map_err(|_| "play")?;
     let mut actual = [[0.0; 2]; 512];
@@ -702,21 +782,48 @@ fn verify_silent_track_latency_addition(
         oracle.render(&mut expected)?;
         assert_eq!(actual, expected);
     }
-    editor.execute(Command::InsertDevice {
-        track: tracks[0],
-        before: None,
-        state: hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))?,
-    })?;
+    let active = control
+        .status
+        .recording_source()
+        .ok_or("missing original source")?;
+    assert_eq!((active.context, active.audio_revision), (context, initial));
+    editor.execute(command)?;
     let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())?)?;
     next.require_continuous_device_insert();
-    let submitted = control.publish(next).map_err(|_| "updated publication")?;
+    let context = hex_engine::AudioSourceContext {
+        editor_revision: 1,
+        ..context
+    };
+    let submitted = control
+        .publish_with_admission_and_source_on_control(
+            next,
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .map_err(|_| "updated publication")?;
     measured_block(&mut callback, &mut actual);
-    assert_eq!(
-        control.status.applied_revision.load(Ordering::Acquire),
-        submitted
-    );
+    if edit == IsolatedLatencyEdit::BufferedInsert {
+        assert_eq!(control.status.recording_source(), Some(active));
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((
+                submitted,
+                hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation
+            ))
+        );
+    } else {
+        assert_eq!(
+            control.status.recording_source(),
+            Some(AppliedAudioSource {
+                context,
+                audio_revision: submitted,
+                ..active
+            })
+        );
+        assert!(control.status.rejected_revision().is_none());
+    }
     oracle.render(&mut expected)?;
-    assert!(control.status.rejected_revision().is_none());
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
     assert_eq!(actual, expected);
     control.request_shutdown();

@@ -43,7 +43,7 @@ pub(crate) enum FreshHistory {
     ColdTrack(TrackId),
     /// A removed isolated source; its pre-Main PCM is cut at handoff.
     RemovedTrack(TrackId),
-    /// A muted, isolated existing track whose old and new local rings are silent.
+    /// An isolated existing track whose old and new local rings are silent.
     ChangedTrack(TrackId, u64),
     Return(ReturnId),
 }
@@ -162,7 +162,7 @@ impl Builder {
     }
 }
 impl SignalGraph {
-    /// Cheap prefilter for the single locally inserted processor case.
+    /// Cheap prefilter for one local processor added to or removed from a chain.
     pub(crate) fn has_one_more_node_than(&self, old: &Self) -> bool {
         old.typed.len().checked_add(1) == Some(self.typed.len())
     }
