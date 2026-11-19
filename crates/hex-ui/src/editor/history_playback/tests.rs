@@ -330,7 +330,11 @@ fn latest_history_intent_on_an_ordinary_graph_waits_for_prior_then_exact_ack(
 
 fn open_play_menu(visual: &mut VisualTestContext) {
     visual.run_until_parked();
-    let play = visual.debug_bounds("transport-play-icon").unwrap().center();
+    let play = visual
+        .debug_bounds("transport-play-icon")
+        .or_else(|| visual.debug_bounds("transport-pause-icon"))
+        .expect("playback options button")
+        .center();
     visual.simulate_mouse_down(play, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(play, MouseButton::Right, Modifiers::default());
     visual.run_until_parked();
@@ -547,6 +551,7 @@ fn saved_play_menu_toggle_controls_held_midi_on_the_next_arrangement_start(
             }
             editor.update(&mut visual, |view, cx| {
                 view.tick(cx);
+                cx.notify();
                 assert!(!view.audio_status().unwrap().playing.load(Acquire));
             });
         }
