@@ -8,6 +8,7 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
         (ControllerRequest::ToggleEditor, 6),
         (ControllerRequest::DetachEditor, 11),
         (ControllerRequest::ReopenEditor(None), 12),
+        (ControllerRequest::EditorVisibility, 15),
     ] {
         let wire = parameter_page_request(&config, 1, 7, request, false).unwrap();
         assert_eq!(&wire[..4], b"HXVM");
@@ -28,6 +29,86 @@ fn editor_receipt_requires_exact_controller_operation_and_discriminant() {
         reply.push(0);
         assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
     }
+}
+
+#[test]
+fn editor_visibility_only_accepts_open_and_closed() {
+    let config = config();
+    let request = ControllerRequest::EditorVisibility;
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 0]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Closed)
+    );
+    *reply.last_mut().unwrap() = 2;
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+}
+#[test]
+fn live_editor_detach_refusal_is_bound_to_its_new_wire_operation() {
+    let config = config();
+    let guarded = ControllerRequest::DetachEditorWhenIdle;
+    let wire = parameter_page_request(&config, 1, 7, guarded, false).unwrap();
+    assert_eq!(wire[82], 14);
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([4, 4]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, guarded).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::GestureActive)
+    );
+    assert!(parameter_page(&reply, &config, 1, 7, ControllerRequest::DetachEditor).is_err());
+    *reply.last_mut().unwrap() = 1;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, guarded).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Open)
+    );
+    *reply.last_mut().unwrap() = 2;
+    assert!(parameter_page(&reply, &config, 1, 7, guarded).is_err());
+    *reply.last_mut().unwrap() = 0;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, guarded).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Closed)
+    );
+}
+
+#[test]
+fn editor_seal_receipt_is_bound_to_its_operation_and_discriminant() {
+    let config = config();
+    let request = ControllerRequest::SealEditorEdits;
+    for poll in [false, true] {
+        let wire = parameter_page_request(&config, 1, 7, request, poll).unwrap();
+        assert_eq!(wire[82], 13);
+        assert!(wire[83..].iter().all(|byte| *byte == 0));
+    }
+    let mut reply = Vec::new();
+    stamp(&mut reply, config.binding);
+    for value in [1_u64, u64::from(config.quantum), 7] {
+        reply.extend(value.to_le_bytes());
+    }
+    reply.extend([5, 1]);
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::EditorSeal(EditorSealState::Sealed)
+    );
+    assert!(parameter_page(&reply, &config, 1, 8, request).is_err());
+    assert!(parameter_page(&reply, &config, 1, 7, ControllerRequest::CloseEditor).is_err());
+    *reply.last_mut().unwrap() = 0;
+    assert_eq!(
+        parameter_page(&reply, &config, 1, 7, request).unwrap(),
+        ParameterPageProgress::EditorSeal(EditorSealState::NotSealed)
+    );
+    *reply.last_mut().unwrap() = 2;
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    reply.pop();
+    assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
 }
 #[test]
 fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() {
@@ -57,6 +138,17 @@ fn editor_detach_placement_is_bounded_and_reopen_copies_its_exact_coordinates() 
     let detach = ControllerRequest::DetachEditor;
     assert_eq!(
         parameter_page(&reply, &config, 1, 7, detach).unwrap(),
+        ParameterPageProgress::Editor(PluginEditorState::Detached(position))
+    );
+    assert_eq!(
+        parameter_page(
+            &reply,
+            &config,
+            1,
+            7,
+            ControllerRequest::DetachEditorWhenIdle
+        )
+        .unwrap(),
         ParameterPageProgress::Editor(PluginEditorState::Detached(position))
     );
     assert!(parameter_page(&reply, &config, 1, 7, reopen).is_err());
@@ -1403,3 +1495,6 @@ fn authored_parameter_permission_is_stricter_than_edit_permission() {
         );
     }
 }
+
+#[path = "protocol_tests/presentation.rs"]
+mod presentation;

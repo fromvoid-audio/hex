@@ -146,3 +146,38 @@ fn rendering_predecessor_still_defers_and_stop_clears_transitions() {
     assert_eq!(probe.dropped_transitions(), 0);
     assert_eq!(probe.settled_transitions(), 0);
 }
+
+#[test]
+fn paused_handoff_preview_does_not_settle_the_live_predecessor() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let (project, device) = project_with_device_slot();
+    let probe = Arc::new(Probe::default());
+    let (mut previous, busy_mode) = saturated(&project, device, &table, &probe);
+    previous
+        .apply(SessionPlaybackCommand::Pause)
+        .expect("pause");
+    let mut candidate = playback(&project, &table);
+    candidate.device_chains[0] = fixture_chain(device, busy_mode, &probe);
+    let before = (previous.performance_frame(), previous.arrangement_frame());
+    for (playing, expected_frames) in [(None, 0), (Some(true), 64)] {
+        let window = candidate
+            .preview_stream_handoff_with_scope(&mut previous, 64, playing, &mut |_| Ok(()), true)
+            .expect("idle handoff can be planned without a running transport");
+        assert_eq!(window.frames, expected_frames);
+        assert_eq!(
+            probe.settled_transitions(),
+            0,
+            "preview must not settle the predecessor"
+        );
+        assert!(candidate.candidate_admission_open);
+    }
+    assert_eq!(
+        (previous.performance_frame(), previous.arrangement_frame()),
+        before
+    );
+    assert!(candidate.device_transition_busy(&previous));
+    candidate
+        .try_inherit_state_from(&mut previous)
+        .expect("commit settles and installs");
+    assert_eq!(probe.settled_transitions(), 2 * CAPACITY as u32);
+}

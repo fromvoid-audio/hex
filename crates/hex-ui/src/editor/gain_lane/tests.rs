@@ -186,6 +186,77 @@ pub(in crate::editor) mod native {
         (handle, entity, track)
     }
     #[gpui::test]
+    fn source_rebind_is_refused_while_gain_draft_is_owned(cx: &mut TestAppContext) {
+        let (_handle, entity, track) = window(cx);
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::NativeSource(source) = model
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![hex_project::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        entity.update(cx, |view, _| {
+            view.gain_lane.draft = Some(Draft {
+                generation: 0,
+                revision: 1,
+                track,
+                from: None,
+                point: point(2, 0.75),
+                pointer: None,
+            });
+            let request = Request::RebindNativeSource {
+                project_generation: 0,
+                revision: 1,
+                track,
+                expected_source: None,
+                source: None,
+            };
+            assert!(!view.admit_independent_edit_with_local_draft(&request));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::ChooseNativeSourceReceiver {
+                    project_generation: 0,
+                    revision: 1,
+                    source,
+                    expected_receiver: None,
+                    track,
+                }
+            ));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::DeleteRetainedSource {
+                    project_generation: 0,
+                    revision: 1,
+                    source,
+                }
+            ));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::CreateRetainedNativeSource {
+                    project_generation: 0,
+                    revision: 1,
+                    type_id: Box::new(hex_project::default_instrument_state().unwrap().type_id()),
+                    name: "source".into(),
+                }
+            ));
+            assert!(!view.admit_independent_edit_with_local_draft(
+                &Request::RenameRetainedSource {
+                    project_generation: 0,
+                    revision: 1,
+                    source,
+                    name: "renamed".into(),
+                }
+            ));
+            assert!(view.gain_lane.draft.is_some());
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("gain point gesture"))
+            );
+        });
+    }
+    #[gpui::test]
     fn pane_preserves_fixed_rows_and_right_header_alignment_at_minimum_size(
         cx: &mut TestAppContext,
     ) {

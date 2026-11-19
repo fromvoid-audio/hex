@@ -138,10 +138,15 @@ pub struct TransportFadeCompletion {
     pub applied: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceInsertCut {
+    FadingOut(u32),
+    Held,
+    FadingIn(u32),
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct TransportFade {
-    /// Content frame at which a one-shot Arrangement section pauses.
-    pub(super) section_end: Option<u64>,
     /// The deferred Pause/Stop, applied once `out_elapsed` reaches `F`.
     pending: Option<Pending>,
     out_elapsed: u32,
@@ -151,6 +156,7 @@ pub(crate) struct TransportFade {
     failure: Option<PlaybackActionRejection>,
     /// The latest completed deferred action, until taken.
     completion: Option<TransportFadeCompletion>,
+    device_insert_cut: Option<DeviceInsertCut>,
 }
 
 impl TransportFade {
@@ -167,6 +173,70 @@ impl TransportFade {
 
     pub(crate) fn begin_in(&mut self, frames: u32) {
         self.in_left = frames;
+    }
+
+    pub(crate) fn begin_device_insert_cut(&mut self) -> bool {
+        if self.pending.is_some() || self.in_left != 0 || self.device_insert_cut.is_some() {
+            return false;
+        }
+        self.device_insert_cut = Some(DeviceInsertCut::FadingOut(0));
+        true
+    }
+
+    pub(crate) fn device_insert_held(&self) -> bool {
+        self.device_insert_cut == Some(DeviceInsertCut::Held)
+    }
+
+    pub(crate) fn device_insert_cut_pending(&self) -> bool {
+        matches!(
+            self.device_insert_cut,
+            Some(DeviceInsertCut::FadingOut(_) | DeviceInsertCut::Held)
+        )
+    }
+
+    /// Release the hold, or reverse an incomplete fade from its current gain.
+    pub(crate) fn release_device_insert_cut(&mut self, frames: u32) -> bool {
+        let (remaining, held) = match self.device_insert_cut {
+            Some(DeviceInsertCut::FadingOut(elapsed)) => (elapsed, false),
+            Some(DeviceInsertCut::Held) => (frames, true),
+            _ => return false,
+        };
+        self.device_insert_cut = (remaining != 0).then_some(DeviceInsertCut::FadingIn(remaining));
+        held
+    }
+
+    /// Attenuate the complete output, including anything mixed after the
+    /// project signal. Returns true when the owner must freeze playback.
+    pub(crate) fn apply_device_insert_cut(&mut self, output: &mut [Frame], frames: u32) -> bool {
+        match self.device_insert_cut {
+            Some(DeviceInsertCut::FadingOut(mut elapsed)) => {
+                for [left, right] in output {
+                    elapsed = (elapsed + 1).min(frames);
+                    let gain = (frames - elapsed) as f32 / frames as f32;
+                    *left *= gain;
+                    *right *= gain;
+                }
+                if elapsed == frames {
+                    self.device_insert_cut = Some(DeviceInsertCut::Held);
+                    true
+                } else {
+                    self.device_insert_cut = Some(DeviceInsertCut::FadingOut(elapsed));
+                    false
+                }
+            }
+            Some(DeviceInsertCut::FadingIn(mut remaining)) => {
+                for [left, right] in output.iter_mut().take(remaining as usize) {
+                    remaining -= 1;
+                    let gain = (frames - remaining) as f32 / frames as f32;
+                    *left *= gain;
+                    *right *= gain;
+                }
+                self.device_insert_cut =
+                    (remaining != 0).then_some(DeviceInsertCut::FadingIn(remaining));
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Remove the pending action; the caller applies it immediately.
@@ -201,8 +271,12 @@ impl TransportFade {
 
     /// Frames to render before the next boundary at which state changes.
     pub(crate) fn part_len(&self, remaining: usize, frames: u32) -> usize {
-        if self.pending.is_some() {
-            let left = frames.saturating_sub(self.out_elapsed).max(1);
+        let elapsed = match self.device_insert_cut {
+            Some(DeviceInsertCut::FadingOut(elapsed)) => Some(elapsed),
+            _ => self.pending.map(|_| self.out_elapsed),
+        };
+        if let Some(elapsed) = elapsed {
+            let left = frames.saturating_sub(elapsed).max(1);
             remaining.min(usize::try_from(left).unwrap_or(usize::MAX))
         } else {
             remaining

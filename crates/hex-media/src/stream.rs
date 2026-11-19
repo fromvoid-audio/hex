@@ -98,6 +98,30 @@ impl WavFrameReader {
         })
     }
 
+    /// Check whether the supplied path still names this open source.
+    ///
+    /// Unix compares the device and inode as well as captured length and
+    /// modification time. Other platforms currently compare metadata only.
+    /// Neither check detects an in-place edit that preserves those values or
+    /// makes the pathname stable after this observation.
+    pub fn path_matches_open_file(&self) -> Result<bool, ImportError> {
+        let path = std::fs::metadata(&self.path)?;
+        let open = self.file.metadata()?;
+        let metadata_matches = path.len() == self.captured_len
+            && open.len() == self.captured_len
+            && path.modified()? == self.captured_modified
+            && open.modified()? == self.captured_modified;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(metadata_matches && path.dev() == open.dev() && path.ino() == open.ino())
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(metadata_matches)
+        }
+    }
+
     pub const fn sample_rate(&self) -> u32 {
         self.layout.format.sample_rate
     }
@@ -582,6 +606,7 @@ mod tests {
     fn captured_identity_matches_only_the_same_observed_file_metadata() {
         let original = TempFile::create(&wave(1, 1, 16, 8));
         let reader = WavFrameReader::open(original.path(), WINDOW_LIMITS).unwrap();
+        assert!(reader.path_matches_open_file().unwrap());
         let same = crate::decode_wav_file(original.path(), Limits::new(1024 * 1024, 4096)).unwrap();
         assert!(reader.matches_file_identity(same.file_identity()));
         assert!(!reader.matches_file_identity(None));
@@ -591,6 +616,7 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() + Duration::from_secs(5))
             .unwrap();
+        assert!(!reader.path_matches_open_file().unwrap());
         let changed =
             crate::decode_wav_file(original.path(), Limits::new(1024 * 1024, 4096)).unwrap();
         assert!(!reader.matches_file_identity(changed.file_identity()));

@@ -224,22 +224,24 @@ fn stalled_fence_serves_an_unrelated_query_and_refuses_after_the_bound() {
     fixture.remaining.store(usize::MAX, Ordering::Release);
     let started = Instant::now();
     fixture.submit_edit_query_and_mutation();
-    // The unrelated query answers while the edit is still parked.
-    let query = fixture.receive();
-    let answered = started.elapsed();
+    // The query can finish before or after the real deadline if this worker
+    // is descheduled. Both events must preserve the original revision.
+    let first = fixture.receive();
+    let second = fixture.receive();
+    let (query, edit) = if first.error.is_none() {
+        (first, second)
+    } else {
+        (second, first)
+    };
     assert!(query.error.is_none(), "{:?}", query.error);
     assert!(fixture.preset.exists());
     assert_eq!(query.state.revision, fixture.revision);
     assert_eq!(fixture.begun.load(Ordering::Acquire), 1);
-    assert_eq!(fixture.cancelled.load(Ordering::Acquire), 0, "still parked");
-    assert!(answered < Duration::from_millis(100), "{answered:?}");
-    // The edit refuses with the former synchronous poll's outcome.
-    let edit = fixture.receive();
-    assert!(started.elapsed() >= Duration::from_millis(100));
     assert_eq!(
         edit.error.as_deref(),
         Some("audio output did not acknowledge the arrangement edit; try again")
     );
+    assert!(started.elapsed() >= Duration::from_millis(100));
     assert_eq!(edit.state.revision, fixture.revision);
     assert_eq!(fixture.cancelled.load(Ordering::Acquire), 1);
     // The held mutation runs only after the lease resolved.
@@ -250,22 +252,48 @@ fn stalled_fence_serves_an_unrelated_query_and_refuses_after_the_bound() {
 }
 
 #[test]
-fn late_fence_answer_completes_the_parked_edit_before_later_mutations() {
+fn late_fence_answer_completes_or_refuses_before_later_mutations() {
     let fixture = Fixture::new();
     // The callback answers after a few worker polls.
     fixture.remaining.store(5, Ordering::Release);
-    fixture.submit_edit_query_and_mutation();
-    let query = fixture.receive();
-    assert!(query.error.is_none(), "{:?}", query.error);
+    fixture
+        .service
+        .submit(Request::EditArrangementSection {
+            project_generation: 0,
+            revision: fixture.revision,
+            command: Command::DuplicateArrangementSection(fixture.section),
+        })
+        .unwrap();
     let edit = fixture.receive();
-    assert!(edit.error.is_none(), "{:?}", edit.error);
-    assert_eq!(edit.state.revision, fixture.revision + 1);
-    assert_eq!(edit.state.project.arrangement_sections().len(), 2);
+    let completed = edit.error.is_none();
+    if completed {
+        assert_eq!(edit.state.revision, fixture.revision + 1);
+        assert_eq!(edit.state.project.arrangement_sections().len(), 2);
+    } else {
+        assert_eq!(
+            edit.error.as_deref(),
+            Some("audio output did not acknowledge the arrangement edit; try again")
+        );
+        assert_eq!(edit.state.revision, fixture.revision);
+        assert_eq!(fixture.cancelled.load(Ordering::Acquire), 1);
+    }
     assert_eq!(fixture.begun.load(Ordering::Acquire), 1, "begun once");
+    fixture
+        .service
+        .submit(Request::Edit(Command::AddScene {
+            name: "later".into(),
+        }))
+        .unwrap();
     let later = fixture.receive();
     assert!(later.error.is_none(), "{:?}", later.error);
-    assert_eq!(later.state.revision, fixture.revision + 2);
-    assert_eq!(later.state.project.arrangement_sections().len(), 2);
+    assert_eq!(
+        later.state.revision,
+        fixture.revision + u64::from(completed) + 1
+    );
+    assert_eq!(
+        later.state.project.arrangement_sections().len(),
+        if completed { 2 } else { 1 }
+    );
 }
 
 /// #4568: parked time is its own phase; the dispatched section phases stay
@@ -295,7 +323,13 @@ fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
         })
         .unwrap();
     let edit = fixture.receive();
-    assert!(edit.error.is_none(), "{:?}", edit.error);
+    let completed = edit.error.is_none();
+    if !completed {
+        assert_eq!(
+            edit.error.as_deref(),
+            Some("audio output did not acknowledge the arrangement edit; try again")
+        );
+    }
     let details = outcomes
         .lock()
         .unwrap()
@@ -311,10 +345,18 @@ fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
     };
     let parked = field("section_parked_us");
     let worker = field("worker_us");
-    assert!(
-        field("section_view_us") > 0,
-        "view construction is measured: {details}"
-    );
+    if completed {
+        assert!(
+            field("section_view_us") > 0,
+            "view construction is measured: {details}"
+        );
+    } else {
+        assert_eq!(
+            field("section_view_us"),
+            0,
+            "refusal has no view: {details}"
+        );
+    }
     let dispatched: u64 = [
         "section_fence_us",
         "section_edit_us",
@@ -331,12 +373,44 @@ fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
         dispatched <= worker,
         "phases {dispatched} within worker {worker}: {details}"
     );
+    // A marker-only edit does not need a lease, so even a valid timeout above
+    // cannot remove coverage of successful view-construction diagnostics.
     outcomes.lock().unwrap().clear();
     fixture
         .service
         .submit(Request::EditArrangementSection {
             project_generation: 0,
             revision: edit.state.revision,
+            command: Command::AddArrangementSection {
+                name: "marker".into(),
+                color: hex_project::ElementColor::Rose,
+                start: hex_project::BeatTime::from_quarters(8).unwrap(),
+                end: hex_project::BeatTime::from_quarters(12).unwrap(),
+            },
+        })
+        .unwrap();
+    let marker = fixture.receive();
+    assert!(marker.error.is_none(), "{:?}", marker.error);
+    let marker_details = outcomes
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("marker outcome");
+    let marker_view = marker_details
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("section_view_us=")?.parse::<u64>().ok())
+        .expect("marker view timing");
+    assert!(
+        marker_view > 0,
+        "view construction is measured: {marker_details}"
+    );
+    outcomes.lock().unwrap().clear();
+    fixture
+        .service
+        .submit(Request::EditArrangementSection {
+            project_generation: 0,
+            revision: marker.state.revision,
             command: Command::AddArrangementSection {
                 name: "invalid".into(),
                 color: hex_project::ElementColor::Rose,

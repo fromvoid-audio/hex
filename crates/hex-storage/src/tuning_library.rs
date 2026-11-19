@@ -1,16 +1,11 @@
 //! Eight named native tuning presets and bounded portable Freqs file I/O.
 //! Paths are supplied by the control worker; this module owns no project edits.
-//! Slot writes hold a persistent per-slot advisory lock and recheck the bytes
-//! read before replacement. Existing slots are exchanged with a retained file;
-//! a writer holding the displaced inode can continue to write to that file.
-//! Recovery entries are never removed by Hex, even after failed publication.
-//! The finite per-slot inventory refuses further replacement when full. An
-//! external writer with an open handle may grow a retained inode, so the entry
-//! limit is not a byte quota. External processes can still replace paths
-//! independently; this is not CAS. On filesystems without atomic exchange or
-//! directory synchronization, replacements refuse and retain staged bytes.
-//! The empty lock file is never removed: its open handle is held until the
-//! operation finishes, and the OS releases the lock if the process exits.
+//! Slot writes serialize cooperating Hex writers and recheck the existing
+//! preset before publishing a complete temporary file with an atomic rename.
+//! A noncooperating writer can still change a destination after that check;
+//! the rename is not an atomic compare-and-swap. Existing recovery files are
+//! never modified. The persistent empty lock file is not removed, so the OS can
+//! safely release the same advisory lock when a process exits.
 use hex_tuning::{
     Scale,
     preset::{self, MAX_PRESET_BYTES, Preset},
@@ -23,7 +18,6 @@ use std::{
 };
 
 pub const SLOT_COUNT: usize = 8;
-const RECOVERY_LIMIT: usize = 32;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slot {
     pub number: usize,
@@ -216,20 +210,18 @@ pub fn duplicate(directory: &Path, slot: usize) -> Result<usize, String> {
     }
     let name = format!("{}{suffix}", &old.name[..end]);
     let text = preset::encode(&name, old.scale).map_err(|e| e.to_string())?;
-    publish(&slot_path(directory, target)?, text.as_bytes(), false)?;
+    publish(&slot_path(directory, target)?, text.as_bytes())?;
     Ok(target)
 }
 /// Export is create-new; an existing file is never silently replaced.
-/// Filesystems without hardlinks use an exclusively created destination. A failed
-/// write may leave that new file incomplete; destinations are never deleted.
+/// Publication is atomic, including on supported volumes without hard links.
+/// Volumes without atomic create-new publication return an error.
 pub fn export_file(path: &Path, name: &str, scale: Scale) -> Result<(), String> {
     let text = preset::encode(name, scale).map_err(|e| e.to_string())?;
-    publish(path, text.as_bytes(), false)
+    publish(path, text.as_bytes())
 }
-fn publish(destination: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
-    publish_with_link(destination, bytes, replace, |source, target| {
-        fs::hard_link(source, target)
-    })
+fn publish(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+    publish_with_guard(destination, bytes, || Ok(()))
 }
 fn publish_slot(
     destination: &Path,
@@ -238,143 +230,52 @@ fn publish_slot(
     before_check: impl FnOnce(),
 ) -> Result<(), String> {
     if let Some(expected) = expected {
-        return replace_preserving(destination, bytes, expected, before_check);
+        return replace_existing(destination, bytes, expected, before_check);
     }
-    publish_with_guard(
+    publish_with_guard(destination, bytes, || {
+        before_check();
+        Ok(())
+    })
+}
+
+fn replace_existing(
+    destination: &Path,
+    bytes: &[u8],
+    expected: &[u8],
+    before_check: impl FnOnce(),
+) -> Result<(), String> {
+    publish_staged_with(
         destination,
         bytes,
-        false,
-        |source, target| fs::hard_link(source, target),
+        Some(expected),
         || {
             before_check();
             Ok(())
         },
+        |source, destination| fs::rename(source, destination),
     )
 }
 
-/// Stage each replacement under its permanent recovery name. Once exchanged,
-/// that name refers to the displaced inode and must never be cleaned up here.
-fn replace_preserving(
-    destination: &Path,
-    bytes: &[u8],
-    expected: &[u8],
-    before_check: impl FnOnce(),
-) -> Result<(), String> {
-    replace_preserving_with(
-        destination,
-        bytes,
-        expected,
-        before_check,
-        exchange_files,
-        || Ok(()),
-    )
-}
-fn replace_preserving_with(
-    destination: &Path,
-    bytes: &[u8],
-    expected: &[u8],
-    before_check: impl FnOnce(),
-    exchange: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-    after_exchange: impl FnOnce() -> std::io::Result<()>,
-) -> Result<(), String> {
-    let parent = destination
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let stem = destination
-        .file_stem()
-        .ok_or("invalid tuning slot name")?
-        .to_string_lossy();
-    let mut reserved = None;
-    for number in 1..=RECOVERY_LIMIT {
-        let path = parent.join(format!("{stem}-recovery-{number:02}.freqs"));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => {
-                reserved = Some((path, file));
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("cannot reserve tuning recovery file · {e}")),
-        }
-    }
-    let (recovery, mut file) = reserved.ok_or_else(|| format!(
-        "tuning recovery is full · close external writers, then inspect and move {stem}-recovery-*.freqs within the same volume from {} before retrying",
-        crate::text::verbatim(parent.display())
-    ))?;
-    let recovery_label = crate::text::verbatim(recovery.display());
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| {
-            format!("tuning save did not finish · retained recovery file {recovery_label} · {e}")
-        })?;
-    drop(file);
-    sync_recovery_parent(parent).map_err(|e| {
-        format!("tuning save did not publish · retained recovery file {recovery_label} · {e}")
-    })?;
-    before_check();
-    let actual = read_validated(destination)
-        .map_err(|_| format!("tuning slot changed · save retained at {recovery_label}"))?
-        .1;
-    if actual != expected {
-        return Err(format!(
-            "tuning slot changed · save retained at {recovery_label}"
-        ));
-    }
-    exchange(&recovery, destination).map_err(|e| {
-        format!("cannot safely replace tuning slot · save retained at {recovery_label} · {e}")
-    })?;
-    after_exchange().map_err(|e| format!("tuning saved; recovery retained at {recovery_label}, but publication did not finish · {e}"))?;
-    sync_recovery_parent(parent).map_err(|e| {
-        format!(
-            "tuning saved; recovery retained at {recovery_label}, but directory sync failed · {e}"
-        )
-    })?;
-    let displaced = read_validated(&recovery).map(|(_, bytes)| bytes);
-    if displaced.as_deref() != Ok(expected) {
-        return Err(format!(
-            "tuning saved but previous slot changed · preserve and inspect recovery file {recovery_label}"
-        ));
-    }
-    Ok(())
-}
-
-fn sync_recovery_parent(parent: &Path) -> std::io::Result<()> {
-    File::open(parent)?.sync_all()
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn exchange_files(left: &Path, right: &Path) -> std::io::Result<()> {
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        left,
-        rustix::fs::CWD,
-        right,
-        rustix::fs::RenameFlags::EXCHANGE,
-    )
-    .map_err(std::io::Error::from)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn exchange_files(_: &Path, _: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "atomic tuning replacement is unavailable",
-    ))
-}
-fn publish_with_link(
-    destination: &Path,
-    bytes: &[u8],
-    replace: bool,
-    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
-) -> Result<(), String> {
-    publish_with_guard(destination, bytes, replace, link, || Ok(()))
-}
 fn publish_with_guard(
     destination: &Path,
     bytes: &[u8],
-    replace: bool,
-    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
     before_publish: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    publish_staged_with(
+        destination,
+        bytes,
+        None,
+        before_publish,
+        |source, destination| fs::rename(source, destination),
+    )
+}
+
+fn publish_staged_with(
+    destination: &Path,
+    bytes: &[u8],
+    expected: Option<&[u8]>,
+    before_publish: impl FnOnce() -> Result<(), String>,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
     let parent = destination
         .parent()
@@ -386,12 +287,16 @@ fn publish_with_guard(
             }
         })
         .ok_or("tuning preset path has no parent")?;
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err("tuning destination is not a regular file".into());
-        }
-        if !replace {
-            return Err("tuning destination already exists".into());
+    if expected.is_none() {
+        match fs::symlink_metadata(destination) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err("tuning destination is not a regular file".into());
+                }
+                return Err("tuning destination already exists".into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect tuning destination · {error}")),
         }
     }
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -418,21 +323,22 @@ fn publish_with_guard(
             .map_err(|e| format!("cannot write tuning preset · {e}"))?;
         drop(file);
         before_publish()?;
-        if replace {
-            fs::rename(&temporary, destination)
-                .map_err(|e| format!("cannot publish tuning slot · {e}"))?;
-        } else {
-            if link(&temporary, destination).is_err() {
-                let mut destination = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(destination)
-                    .map_err(|e| format!("cannot publish new tuning preset · {e}"))?;
-                destination.write_all(bytes).and_then(|()| destination.sync_all())
-                    .map_err(|e| format!("new tuning preset could not be completed · incomplete file retained · {e}"))?;
+        if let Some(expected) = expected {
+            let actual = read_validated(destination)
+                .map_err(|_| "tuning slot changed · try again".to_owned())?
+                .1;
+            if actual != expected {
+                return Err("tuning slot changed · try again".into());
             }
-            fs::remove_file(&temporary)
-                .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
+            replace(&temporary, destination)
+                .map_err(|e| format!("cannot replace tuning preset atomically · {e}"))?;
+        } else {
+            let published = crate::publication::publish_new_atomic(&temporary, destination)
+                .map_err(|e| format!("cannot publish new tuning preset atomically · {e}"))?;
+            if published.staging_remains() {
+                fs::remove_file(&temporary)
+                    .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
+            }
         }
         #[cfg(unix)]
         fs::File::open(parent)
@@ -475,6 +381,60 @@ mod tests {
         fs::create_dir(&p).unwrap();
         Directory(p)
     }
+    #[test]
+    fn repeated_slot_saves_keep_working() {
+        let d = directory();
+        for number in 1..=32 {
+            fs::write(
+                d.0.join(format!("slot-1-recovery-{number:02}.freqs")),
+                b"preserve",
+            )
+            .unwrap();
+        }
+        for index in 0..34 {
+            save(&d.0, 1, "tuning", Scale::equal(12))
+                .unwrap_or_else(|error| panic!("save {index} failed: {error}"));
+            rename(&d.0, 1, "renamed").unwrap();
+        }
+        assert_eq!(load(&d.0, 1).unwrap().name, "renamed");
+        for number in 1..=32 {
+            assert_eq!(
+                fs::read(d.0.join(format!("slot-1-recovery-{number:02}.freqs"))).unwrap(),
+                b"preserve"
+            );
+        }
+        assert!(!d.0.join("slot-1-recovery-33.freqs").exists());
+        assert!(!fs::read_dir(&d.0).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
+    }
+    #[test]
+    fn export_refuses_without_atomic_publication_and_cleans_up() {
+        let d = directory();
+        let _volume = crate::publication::simulate::volume(
+            crate::publication::simulate::Volume::NoAtomicCreate,
+        );
+        let destination = d.0.join("export.freqs");
+        assert!(export_file(&destination, "scale", Scale::equal(19)).is_err());
+        assert!(!destination.exists());
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 0);
+    }
+    #[test]
+    fn destination_created_before_publication_is_preserved() {
+        let d = directory();
+        let destination = d.0.join("export.freqs");
+        let result = publish_with_guard(&destination, b"new preset", || {
+            fs::write(&destination, b"existing file").unwrap();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing file");
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
+    }
     #[cfg(unix)]
     #[test]
     fn slot_lock_releases_when_an_inherited_descriptor_remains_open() {
@@ -515,102 +475,39 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), competing.as_bytes());
         }
     }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn retained_recovery_keeps_late_external_writes_after_publisher_exit() {
-        use std::io::{Seek, SeekFrom};
-        const CHILD: &str = "HEX_TUNING_EXCHANGE_CHILD";
-        if let Some(directory) = std::env::var_os(CHILD) {
-            let path = Path::new(&directory).join("slot-1.freqs");
-            let (_, expected) = read_validated(&path).unwrap();
-            let new = preset::encode("new", Scale::equal(19)).unwrap();
-            let _ = replace_preserving_with(
-                &path,
-                new.as_bytes(),
-                &expected,
-                || {},
-                exchange_files,
-                || std::process::exit(0),
-            );
-            std::process::exit(1);
-        }
+    fn failed_atomic_replacement_preserves_slot_and_cleans_temporary() {
         let d = directory();
         save(&d.0, 1, "old", Scale::equal(12)).unwrap();
         let path = d.0.join("slot-1.freqs");
-        let mut external = OpenOptions::new().write(true).open(&path).unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tuning_library::tests::retained_recovery_keeps_late_external_writes_after_publisher_exit"])
-            .env(CHILD, &d.0)
-            .status().unwrap();
-        assert!(status.success());
-        let late = preset::encode("external", Scale::equal(24)).unwrap();
-        external.seek(SeekFrom::Start(0)).unwrap();
-        external.write_all(late.as_bytes()).unwrap();
-        external.set_len(late.len() as u64).unwrap();
-        assert_eq!(read_file(&path).unwrap().name, "new");
-        assert_eq!(
-            fs::read(d.0.join("slot-1-recovery-01.freqs")).unwrap(),
-            late.as_bytes()
-        );
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn final_window_change_is_retained_and_reported() {
-        let d = directory();
-        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
-        let path = d.0.join("slot-1.freqs");
-        let (_, expected) = read_validated(&path).unwrap();
+        let original = fs::read(&path).unwrap();
         let new = preset::encode("new", Scale::equal(19)).unwrap();
-        let external = preset::encode("external", Scale::equal(24)).unwrap();
-        let result = replace_preserving_with(
+        let error = publish_staged_with(
             &path,
             new.as_bytes(),
-            &expected,
-            || {},
-            |left, right| {
-                fs::write(right, external.as_bytes())?;
-                exchange_files(left, right)
-            },
+            Some(&original),
             || Ok(()),
-        );
-        let error = result.unwrap_err();
-        assert!(error.contains("tuning saved but previous slot changed"));
-        assert_eq!(read_file(&path).unwrap().name, "new");
-        assert_eq!(
-            fs::read(d.0.join("slot-1-recovery-01.freqs")).unwrap(),
-            external.as_bytes()
-        );
-    }
-    #[test]
-    fn unsupported_exchange_preserves_slot_and_new_candidate() {
-        let d = directory();
-        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
-        let path = d.0.join("slot-1.freqs");
-        let (_, expected) = read_validated(&path).unwrap();
-        let new = preset::encode("new", Scale::equal(19)).unwrap();
-        let error = replace_preserving_with(
-            &path,
-            new.as_bytes(),
-            &expected,
-            || {},
-            |_, _| Err(std::io::ErrorKind::Unsupported.into()),
-            || Ok(()),
+            |_, _| Err(std::io::Error::other("injected publication failure")),
         )
         .unwrap_err();
-        assert!(error.contains("cannot safely replace"));
-        assert_eq!(fs::read(&path).unwrap(), expected);
-        assert_eq!(
-            fs::read(d.0.join("slot-1-recovery-01.freqs")).unwrap(),
-            new.as_bytes()
-        );
+        assert!(error.contains("cannot replace tuning preset atomically"));
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert!(!fs::read_dir(&d.0).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
     }
+
     #[cfg(unix)]
     #[test]
-    fn failed_staged_write_retains_original_and_recovery_file() {
+    fn failed_staged_write_preserves_slot_and_cleans_temporary() {
         const CHILD: &str = "HEX_TUNING_WRITE_FAILURE_CHILD";
         if let Some(directory) = std::env::var_os(CHILD) {
             let error = save(Path::new(&directory), 1, "new", Scale::equal(19)).unwrap_err();
-            assert!(error.contains("tuning save did not finish"));
+            assert!(error.contains("cannot write tuning preset"));
             return;
         }
         let d = directory();
@@ -622,7 +519,7 @@ mod tests {
             .arg(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "tuning_library::tests::failed_staged_write_retains_original_and_recovery_file",
+                "tuning_library::tests::failed_staged_write_preserves_slot_and_cleans_temporary",
             ])
             .env(CHILD, &d.0)
             .output()
@@ -634,100 +531,45 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(fs::read(path).unwrap(), original);
-        assert!(d.0.join("slot-1-recovery-01.freqs").is_file());
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn occupied_recovery_symlink_is_preserved() {
-        let d = directory();
-        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
-        let target = d.0.join("other");
-        fs::write(&target, b"keep").unwrap();
-        let occupied = d.0.join("slot-1-recovery-01.freqs");
-        std::os::unix::fs::symlink(&target, &occupied).unwrap();
-        save(&d.0, 1, "new", Scale::equal(19)).unwrap();
-        assert_eq!(fs::read_link(&occupied).unwrap(), target);
-        assert_eq!(fs::read(&target).unwrap(), b"keep");
-        assert_eq!(
-            read_file(&d.0.join("slot-1-recovery-02.freqs"))
+        assert!(!fs::read_dir(&d.0).unwrap().any(|entry| {
+            entry
                 .unwrap()
-                .name,
-            "old"
-        );
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
     }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+
     #[test]
-    fn failure_after_exchange_reports_published_slot_and_retained_original() {
-        let d = directory();
-        save(&d.0, 1, "old", Scale::equal(12)).unwrap();
-        let path = d.0.join("slot-1.freqs");
-        let (_, expected) = read_validated(&path).unwrap();
-        let new = preset::encode("new", Scale::equal(19)).unwrap();
-        let error = replace_preserving_with(
-            &path,
-            new.as_bytes(),
-            &expected,
-            || {},
-            exchange_files,
-            || Err(std::io::Error::other("simulated interruption")),
-        )
-        .unwrap_err();
-        assert!(error.contains("tuning saved; recovery retained"));
-        assert_eq!(read_file(&path).unwrap().name, "new");
-        assert_eq!(
-            read_file(&d.0.join("slot-1-recovery-01.freqs"))
-                .unwrap()
-                .name,
-            "old"
-        );
-    }
-    #[test]
-    fn interrupted_prepublication_keeps_original_and_staged_candidate() {
+    fn interrupted_prepublication_keeps_original_and_complete_staged_candidate() {
         const CHILD: &str = "HEX_TUNING_PREPARE_CHILD";
         if let Some(directory) = std::env::var_os(CHILD) {
-            let path = Path::new(&directory).join("slot-1.freqs");
-            let (_, expected) = read_validated(&path).unwrap();
-            let new = preset::encode("new", Scale::equal(19)).unwrap();
-            let _ = replace_preserving(&path, new.as_bytes(), &expected, || std::process::exit(0));
+            let _ = save_with_hook(Path::new(&directory), 1, "new", Scale::equal(19), || {
+                std::process::exit(0)
+            });
             std::process::exit(1);
         }
         let d = directory();
         save(&d.0, 1, "old", Scale::equal(12)).unwrap();
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tuning_library::tests::interrupted_prepublication_keeps_original_and_staged_candidate"])
+            .args(["--exact", "tuning_library::tests::interrupted_prepublication_keeps_original_and_complete_staged_candidate"])
             .env(CHILD, &d.0).status().unwrap();
         assert!(status.success());
-        assert_eq!(read_file(&d.0.join("slot-1.freqs")).unwrap().name, "old");
-        assert_eq!(
-            read_file(&d.0.join("slot-1-recovery-01.freqs"))
-                .unwrap()
-                .name,
-            "new"
-        );
+        assert_eq!(load(&d.0, 1).unwrap().name, "old");
+        let staged: Vec<_> = fs::read_dir(&d.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".tuning-")
+            })
+            .collect();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(read_file(&staged[0]).unwrap().name, "new");
     }
-    #[test]
-    fn full_recovery_inventory_refuses_and_preserves_every_file() {
-        let d = directory();
-        save(&d.0, 1, "original", Scale::equal(12)).unwrap();
-        for number in 1..=RECOVERY_LIMIT {
-            fs::write(
-                d.0.join(format!("slot-1-recovery-{number:02}.freqs")),
-                b"keep",
-            )
-            .unwrap();
-        }
-        let original = fs::read(d.0.join("slot-1.freqs")).unwrap();
-        let error = save(&d.0, 1, "new", Scale::equal(19)).unwrap_err();
-        assert!(error.contains("recovery is full"));
-        assert!(error.contains(&d.0.to_string_lossy().to_string()));
-        assert_eq!(fs::read(d.0.join("slot-1.freqs")).unwrap(), original);
-        for number in 1..=RECOVERY_LIMIT {
-            assert_eq!(
-                fs::read(d.0.join(format!("slot-1-recovery-{number:02}.freqs"))).unwrap(),
-                b"keep"
-            );
-        }
-    }
+
     #[test]
     fn concurrent_hex_writer_is_refused_without_changing_slot() {
         const CHILD: &str = "HEX_TUNING_SLOT_LOCK_CHILD";
@@ -890,25 +732,28 @@ mod tests {
         assert_eq!(fs::read_link(&link).unwrap(), target);
         assert!(!target.exists());
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn review_create_new_export_does_not_require_hardlinks_or_replace_existing_files() {
+    fn export_and_new_slot_use_atomic_rename_without_hard_links() {
         let d = directory();
-        let path = d.0.join("removable.freqs");
-        let text = preset::encode("portable", Scale::equal(19)).unwrap();
-        let no_links =
-            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
-        publish_with_link(&path, text.as_bytes(), false, no_links).unwrap();
-        assert_eq!(read_file(&path).unwrap().scale, Scale::equal(19));
-        assert!(publish_with_link(&path, b"replacement", false, no_links).is_err());
-        assert_eq!(fs::read(&path).unwrap(), text.as_bytes());
+        let _volume = crate::publication::simulate::volume(
+            crate::publication::simulate::Volume::NoHardLinks(libc::ENOTSUP),
+        );
+        let path = d.0.join("export.freqs");
+        export_file(&path, "portable", Scale::equal(19)).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(export_file(&path, "replacement", Scale::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
-        let raced = d.0.join("raced.freqs");
-        let competing_writer = |_: &Path, target: &Path| {
-            fs::write(target, b"another writer's file")?;
-            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
-        };
-        assert!(publish_with_link(&raced, text.as_bytes(), false, competing_writer).is_err());
-        assert_eq!(fs::read(&raced).unwrap(), b"another writer's file");
+        save(&d.0, 1, "slot", Scale::equal(24)).unwrap();
+        assert_eq!(load(&d.0, 1).unwrap().scale, Scale::equal(24));
+        assert!(fs::read_dir(&d.0).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tuning-")
+        }));
     }
     #[test]
     fn library_roundtrip_rename_duplicate_and_full_refusal() {

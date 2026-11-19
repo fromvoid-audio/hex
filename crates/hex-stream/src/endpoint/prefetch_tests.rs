@@ -201,7 +201,7 @@ fn prefetch_yields_to_demand_and_never_evicts_the_read_or_pinned_page() {
     // Cached pages are never re-requested.
     endpoint.prefetch_page(key, 1);
     assert_eq!(endpoint.stats().prefetched_requests, 0);
-    // Room is made by evicting page 0 only, never the read page or the pin.
+    // Scheduling lookahead keeps all resident pages until the worker returns.
     endpoint.prefetch_page(key, 2);
     let cached = |endpoint: &Endpoint, page_index| {
         endpoint
@@ -211,8 +211,7 @@ fn prefetch_yields_to_demand_and_never_evicts_the_read_or_pinned_page() {
             })
             .is_some()
     };
-    assert!(!cached(endpoint, 0));
-    assert!(cached(endpoint, 1) && cached(endpoint, 5));
+    assert!(cached(endpoint, 0) && cached(endpoint, 1) && cached(endpoint, 5));
     assert_eq!(endpoint.stats().prefetched_requests, 1);
     assert_eq!(
         worker
@@ -222,6 +221,10 @@ fn prefetch_yields_to_demand_and_never_evicts_the_read_or_pinned_page() {
             .ok(),
         Some(2)
     );
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    assert_eq!(worker.endpoint.pump_ready(1), 1);
+    assert!(!cached(&worker.endpoint, 0));
+    assert!(cached(&worker.endpoint, 1) && cached(&worker.endpoint, 5));
     // With every other page protected nothing is evicted or requested.
     let mut pinned = SlowWorker::new(3, key);
     for page_index in [4, 5] {
@@ -270,4 +273,263 @@ fn prefetch_eviction_and_request_are_allocation_free() {
         (0, 0, 0, 0)
     );
     assert_eq!(worker.endpoint.stats().prefetched_requests, 1);
+}
+
+#[test]
+fn ready_lookahead_waits_for_demand_and_yields_its_buffer_to_a_missing_page() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    let current = [crate::StreamResourceExtent {
+        source: key.into(),
+        page_index: 1,
+        start: 0,
+        end: 1,
+    }];
+    worker.endpoint.protect_present(16, &current);
+    #[cfg(feature = "allocation-probe")]
+    let allocation = allocation_counter::measure(|| {
+        assert_eq!(
+            worker.endpoint.pump_ready_for_pending(3, &[(16, &current)]),
+            0
+        );
+    });
+    #[cfg(not(feature = "allocation-probe"))]
+    assert_eq!(
+        worker.endpoint.pump_ready_for_pending(3, &[(16, &current)]),
+        0
+    );
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocation.count_total,
+            allocation.bytes_total,
+            allocation.count_current,
+            allocation.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(worker.endpoint.ready_rx.peek().is_ok_and(|page| {
+        page.key
+            == Some(ResourcePageKey {
+                source: key.into(),
+                page_index: 2,
+            })
+    }));
+    assert!(worker.endpoint.has_extent(current[0]));
+    assert!(worker.returns.pop().is_err());
+
+    let missing = [crate::StreamResourceExtent {
+        page_index: 3,
+        ..current[0]
+    }];
+    assert_eq!(
+        worker.endpoint.pump_ready_for_pending(3, &[(16, &missing)]),
+        0
+    );
+    assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
+    worker.endpoint.request_page(key, 3);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+    assert!(worker.ready.push(full_page(key, 3)).is_ok());
+    assert_eq!(
+        worker.endpoint.pump_ready_for_pending(3, &[(16, &missing)]),
+        1
+    );
+    assert!(worker.endpoint.has_extent(missing[0]));
+    assert!(worker.endpoint.has_extent(current[0]));
+}
+
+#[test]
+fn ready_lookahead_is_installed_when_exactly_demanded() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    let demanded = [crate::StreamResourceExtent {
+        source: key.into(),
+        page_index: 2,
+        start: 0,
+        end: 1,
+    }];
+    assert_eq!(
+        worker
+            .endpoint
+            .pump_ready_for_pending(3, &[(16, &demanded)]),
+        1
+    );
+    assert!(worker.endpoint.has_extent(demanded[0]));
+    assert_eq!(worker.endpoint.pending_count, 0);
+    assert!(worker.endpoint.prefetch_key.is_none());
+}
+
+#[test]
+fn unrelated_queued_demand_cannot_be_blocked_by_ready_lookahead() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    worker.endpoint.request_page(key, 3);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+    let resident = [crate::StreamResourceExtent {
+        source: key.into(),
+        page_index: 1,
+        start: 0,
+        end: 1,
+    }];
+    assert_eq!(
+        worker
+            .endpoint
+            .pump_ready_for_pending(3, &[(16, &resident)]),
+        0
+    );
+    assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
+    assert!(worker.endpoint.prefetch_key.is_none());
+    assert_eq!(worker.endpoint.pending_count, 1);
+}
+
+#[test]
+fn direct_missing_demand_releases_ready_lookahead_before_requesting_worker() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    #[cfg(feature = "allocation-probe")]
+    let allocation = allocation_counter::measure(|| worker.endpoint.request_page(key, 3));
+    #[cfg(not(feature = "allocation-probe"))]
+    worker.endpoint.request_page(key, 3);
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            allocation.count_total,
+            allocation.bytes_total,
+            allocation.count_current,
+            allocation.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(worker.returns.pop().unwrap().key.unwrap().page_index, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+    assert!(worker.endpoint.prefetch_key.is_none());
+}
+
+#[test]
+fn cancelled_coalesced_demand_does_not_evict_a_resident_page() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    // A readiness intent for the prefetched page coalesces with its worker request.
+    worker.endpoint.queue_readiness_demand(
+        ResourcePageKey {
+            source: key.into(),
+            page_index: 2,
+        },
+        16,
+    );
+    worker.endpoint.cancel_readiness_demand(16);
+    // Before the worker returns, that intent is cancelled and current audio
+    // again needs only page 1; page 0 is resident for a later loop boundary.
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    let current = [crate::StreamResourceExtent {
+        source: key.into(),
+        page_index: 1,
+        start: 0,
+        end: 1,
+    }];
+    worker.endpoint.protect_present(16, &current);
+    worker.endpoint.pump_ready_for_pending(3, &[(16, &current)]);
+    assert!(worker.endpoint.has_extent(current[0]));
+    assert!(
+        worker.endpoint.has_extent(crate::StreamResourceExtent {
+            page_index: 0,
+            ..current[0]
+        }),
+        "cancelled lookahead evicted a resident future page"
+    );
+}
+
+#[test]
+fn coalesced_direct_demand_survives_competing_request() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    for index in [0, 1] {
+        assert!(
+            worker
+                .endpoint
+                .insert_ready_with_mask(full_page(key, index), 0)
+        );
+    }
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    worker.endpoint.request_page(key, 2);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    worker.endpoint.request_page(key, 3);
+    assert_eq!(worker.endpoint.pump_ready(1), 1);
+    assert!(worker.endpoint.page(key, 2).is_some());
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
+}
+
+#[test]
+fn competing_demand_preserves_a_page_still_wanted_by_another_role() {
+    let key = source();
+    let mut worker = SlowWorker::new(3, key);
+    worker.endpoint.prefetch_page(key, 2);
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 2);
+    let page = ResourcePageKey {
+        source: key.into(),
+        page_index: 2,
+    };
+    worker.endpoint.queue_readiness_demand(page, 16);
+    worker.endpoint.queue_readiness_demand(page, 32);
+    worker.endpoint.cancel_readiness_demand(16);
+    assert!(worker.ready.push(full_page(key, 2)).is_ok());
+    worker.endpoint.request_page(key, 3);
+    assert!(
+        worker
+            .endpoint
+            .ready_rx
+            .peek()
+            .is_ok_and(|ready| ready.key == Some(page))
+    );
+    assert_eq!(worker.requests.pop().unwrap().0.page_index, 3);
 }

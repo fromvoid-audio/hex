@@ -1,4 +1,4 @@
-//! Real callback and worker coverage for successor/current page-pool pressure.
+//! Real callback and worker coverage for held page reads during a graph handoff.
 #![cfg(all(feature = "allocation-probe", feature = "stream-test-support"))]
 
 use hex_audio::{prepared::PublicationPolicy, worker_fixture};
@@ -131,7 +131,7 @@ fn render(backend: &mut worker_fixture::HeadlessBackend, output: &mut [[f32; 2]]
 }
 
 #[test]
-fn held_successor_yields_to_current_page_and_then_hands_off() {
+fn held_successor_preserves_current_pcm_until_the_next_missing_page() {
     let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
     let a_wav = Wav::new(frames as u32, 8192, "a");
     let b_wav = Wav::new(frames as u32, 16384, "b");
@@ -268,13 +268,16 @@ fn held_successor_yields_to_current_page_and_then_hands_off() {
             |_| Ok::<_, ()>(()),
         )
         .unwrap_or_else(|_| panic!("second publication"));
+    // The gate blocks the sole reader. A's resident second page still plays,
+    // but A's third page cannot load until B's held read is released. At this
+    // boundary the current and successor windows fit the three-page pool.
+    let missing_page_start = 2 * hex_engine::STREAM_PAGE_FRAMES as u64;
     let mut held = false;
-    let mut yielded = false;
-    let mut attempts = 0usize;
-    while !yielded {
+    loop {
         let before = client.status().unwrap().performance_frame.load(Acquire);
         render(&mut backend, &mut block);
         let status = client.status().unwrap();
+        let position = status.position.load(Acquire);
         let committed = if status.stream_buffering.load(Acquire) {
             status.stream_committed_frames.load(Acquire) as usize
         } else {
@@ -290,21 +293,23 @@ fn held_successor_yields_to_current_page_and_then_hands_off() {
             assert_eq!(*frame, [if i < committed { 0.25 } else { 0.0 }; 2]);
         }
         held |= entered.try_recv().is_ok();
-        yielded = backend.stream_successor_yielded_on_control().unwrap();
-        attempts += 1;
-        assert!(
-            attempts <= 200,
-            "current window did not yield the held successor"
-        );
-        assert!(Instant::now() < deadline, "capacity yield did not occur");
-        if !yielded {
-            std::thread::sleep(Duration::from_millis(1));
+        if held && position == missing_page_start && committed == 0 {
+            break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "current audio did not reach the held read boundary"
+        );
+        std::thread::yield_now();
     }
-    if !held {
-        held = entered.recv_timeout(Duration::from_millis(100)).is_ok();
+    for _ in 0..2 {
+        render(&mut backend, &mut block);
+        let status = client.status().unwrap();
+        assert_eq!(status.position.load(Acquire), missing_page_start);
+        assert_eq!(status.applied_revision.load(Acquire), first);
+        assert!(status.stream_buffering.load(Acquire));
+        assert_eq!(block, [[0.0; 2]; 256]);
     }
-    assert!(held, "successor worker did not reach the held request");
     release.send(()).unwrap();
     while client.status().unwrap().applied_revision.load(Acquire) != second {
         let before = client.status().unwrap().performance_frame.load(Acquire);
@@ -328,7 +333,7 @@ fn held_successor_yields_to_current_page_and_then_hands_off() {
         }
         assert!(
             Instant::now() < deadline,
-            "replacement did not finish after yield"
+            "replacement did not finish after the worker resumed"
         );
         std::thread::sleep(Duration::from_millis(1));
     }

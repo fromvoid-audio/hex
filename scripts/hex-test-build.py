@@ -102,8 +102,10 @@ def require_delivery_source(root: Path) -> None:
         raise DeliveryError("delivery source mismatch: executed delivery differs from candidate source")
 
 
-def run(argv: list[str], root: Path = ROOT) -> str:
+def run(argv: list[str], root: Path = ROOT, *, env: dict[str, str] | None = None) -> str:
     bounded = {"timeout": 30} if __name__ == "hex_update_runtime" else {}
+    if env is not None:
+        bounded["env"] = env
     return subprocess.run(argv, cwd=root, check=True, capture_output=True, text=True, **bounded).stdout.strip()
 
 
@@ -119,13 +121,16 @@ def sha(path: Path) -> str:
 def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
                        expected_owner_sha256: str | None = None,
                        expected_recreated_target_identity: dict[str, int] | None = None,
-                       recovery_inactive_check=None, verification_check=None, discovery=False):
+                       recovery_inactive_check=None, verification_check=None, discovery=False,
+                       reservation=None, on_admission=None):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
     This helper never installs, activates or launches an application.
     """
     recovery = {"adopt": adopt}
+    if reservation is not None:
+        recovery["reservation"] = reservation
     argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
     if discovery:
         if package != "hex-desktop":
@@ -140,6 +145,8 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
         recovery.update(expected_recreated_target_identity=expected_recreated_target_identity,
                         recovery_inactive_check=recovery_inactive_check)
     with runner.guarded_release(**recovery) as ownership:
+        if on_admission is not None:
+            on_admission(ownership)
         log_path = runner.output_dir / "optimized-build.log"
         with log_path.open("w") as log, \
                 ci.terminal_progress("building optimized hex"):
@@ -982,7 +989,8 @@ def _require_delivery_sources(runner) -> None:
         raise DeliveryError("runner CI source mismatch: " + error)
 
 
-def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
+def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False,
+                reservation=None) -> dict:
     _require_delivery_sources(runner)
     evidence = json.loads(report.read_text())
     if not isinstance(evidence, dict):
@@ -1004,40 +1012,51 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]
     plan = evidence.get("plan")
-    expected_steps = [(step.step_id, list(step.argv)) for step in ci.FULL_STEPS]
+    if plan is not None and not isinstance(plan, dict):
+        raise DeliveryError("invalid scoped verification plan")
     allowed_mode = evidence.get("mode") == "full"
     if plan is not None:
-        if not isinstance(plan, dict):
-            raise DeliveryError("invalid scoped verification plan")
         if not allow_dev_profile and (plan.get("scope") != "full" or plan.get("reuse")):
             raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
         if (plan.get("profile") not in {"merge", "full", "release"}
                 or not plan.get("qualifies_merge") or plan.get("source") != candidate):
             raise DeliveryError("invalid scoped verification plan")
-        metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], runner.root))
+        if reservation is not None:
+            reservation.revalidate(runner.env.get("CARGO_TARGET_DIR"))
+        metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"],
+                                  runner.root, env=runner.env))
+        if reservation is not None:
+            reservation.revalidate(metadata.get("target_directory"))
+            if metadata.get("workspace_root") != str(runner.root):
+                raise DeliveryError("CI metadata changed the reserved workspace")
         _require_delivery_sources(runner)
         resolved = ci.ci_plan.resolve(runner.root, profile=plan["profile"], base=plan["base"], source=candidate,
-                                      metadata=metadata, allow_same_tree_merge=True)
+                                      metadata=metadata, allow_same_tree_merge=True, env=runner.env)
         if plan.get("reuse"):
-            resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]))
+            resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]), env=runner.env)
         _require_delivery_sources(runner)
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
-        expected_steps = [(step.step_id, list(step.argv)) for step in ci.planned_steps(plan)]
-        # Full Rust scope can use reduced Python coverage for ordinary merges.
-        # Qualified delivery still requires the complete freshly resolved audit.
-        if not allow_dev_profile and expected_steps != [
-                (step.step_id, list(step.argv)) for step in ci.FULL_STEPS]:
-            raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
         allowed_mode = evidence.get("mode") == plan["profile"]
+    try:
+        required = ci.qualification_steps(
+            evidence.get("mode"), plan, native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
+            sharded_full_python=evidence.get("sharded_full_python", False),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise DeliveryError(f"invalid verification configuration: {error}") from error
+    # Full Rust scope can use reduced Python coverage for ordinary merges.
+    # Qualified delivery still requires the complete freshly resolved audit.
+    if plan is not None and not allow_dev_profile and required != ci.planned_steps({"scope": "full"}):
+        raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
     if evidence.get("schema_version") == 2:
-        required = ci.planned_steps(plan or {"scope": "full"})
         for step, recorded in zip(required, evidence.get("steps", [])):
             counts = recorded.get("test_results", {})
             if step.requires_tests and (sum(counts.get("rust_passed_by_binary", []))
                     + sum(counts.get("python_executions", [])) - sum(counts.get("python_skipped", []))) <= 0:
                 raise DeliveryError("requested test configuration has no executed positive cases")
     actual_steps = [(step.get("step_id"), step.get("argv")) for step in evidence.get("steps", [])]
+    expected_steps = [(step.step_id, list(step.argv)) for step in required]
     if (not allowed_mode or evidence.get("status") != "passed"
             or evidence.get("stale") is not False or evidence.get("exit_code") != 0
             or actual_steps != expected_steps
@@ -1102,6 +1121,22 @@ def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
 
 def build(args) -> dict:
     require_delivery_source(ROOT)
+    if not getattr(args, "fresh_release_target", False):
+        return _build(args)
+    if (getattr(args, "adopt_release_target", False)
+            or getattr(args, "expected_release_owner_sha256", None) is not None
+            or getattr(args, "expected_recreated_target_device", None) is not None
+            or getattr(args, "expected_recreated_target_inode", None) is not None):
+        raise DeliveryError("fresh release target cannot adopt or recover an owner")
+    target = os.environ.get("CARGO_TARGET_DIR")
+    if not target or os.environ.get("CARGO_CACHE_RUSTC_INFO") != "0":
+        raise DeliveryError("fresh release target requires explicit CARGO_TARGET_DIR and CARGO_CACHE_RUSTC_INFO=0")
+    with ci.FreshTargetReservation.acquire(ROOT, target, {"operation": "fresh-release-delivery"}) as reservation:
+        return _build(args, reservation=reservation)
+
+
+def _build(args, *, reservation=None) -> dict:
+    require_delivery_source(ROOT)
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
     common = Path(run(["git", "rev-parse", "--git-common-dir"]))
@@ -1142,12 +1177,17 @@ def build(args) -> dict:
         source_evidence = validate_source(runner, args.candidate) if build_only else None
         release_ownership = None
 
+        def admitted(ownership) -> None:
+            nonlocal release_ownership
+            release_ownership = ownership
+
         def revalidate() -> None:
             if build_only:
                 validate_source(runner, args.candidate, expected=source_evidence)
             else:
                 validate_ci(args.ci_report, runner, args.candidate,
-                            **({"allow_dev_profile": True} if getattr(args, "dev_profile", False) else {}))
+                            **({"allow_dev_profile": True} if getattr(args, "dev_profile", False) else {}),
+                            **({"reservation": reservation} if reservation is not None and release_ownership is None else {}))
             if release_ownership is not None:
                 runner.validate_release_inputs(release_ownership)
 
@@ -1167,7 +1207,9 @@ def build(args) -> dict:
         if not checklist.strip():
             raise DeliveryError("finite user checklist required")
         runner.output_dir.mkdir(parents=True)
-        if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
+        resolved = (runner._resolve_cargo_identity() if reservation is None
+                    else runner._resolve_cargo_identity(reservation))
+        if not resolved or not runner._check_disk_headroom():
             raise DeliveryError(str(runner.summary))
         replacement = None
         device = getattr(args, "expected_recreated_target_device", None)
@@ -1189,8 +1231,10 @@ def build(args) -> dict:
         with optimized_artifact(runner, **({"discovery": True} if discovery_receipt else {}), adopt=getattr(args, "adopt_release_target", False),
                                 expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
                                 verification_check=revalidate,
+                                **({"reservation": reservation, "on_admission": admitted} if reservation is not None else {}),
                                 **recovery) as (binary, release_ownership):
-            metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
+            metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"],
+                                      runner.root, env=runner.env))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
             revalidate()
@@ -1282,7 +1326,9 @@ def main() -> int:
     parser.add_argument("--included", type=Path, required=True, help="JSON list of pr/head objects (ticket references optional)")
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
-                        help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+                        help="recover a pending release target with verified empty origin and identical inputs")
+    parser.add_argument("--fresh-release-target", action="store_true",
+                        help="reserve the explicit existing empty CARGO_TARGET_DIR before metadata")
     parser.add_argument("--vst3-instance-receipt", type=Path,
                         help="include exact-source minimal native instance helper")
     discovery = parser.add_mutually_exclusive_group()

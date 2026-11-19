@@ -453,6 +453,7 @@ mod ui_tests {
                         "global-launch-quantization",
                         "input-quantization",
                         "section-focus-control",
+                        "track-tag-filter-control",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(

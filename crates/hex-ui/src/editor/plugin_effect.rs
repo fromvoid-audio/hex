@@ -52,14 +52,15 @@ pub(crate) fn fixture_view(
                     .state
                     .as_ref()
                     .and_then(|state| device_panel::selected_owner(view, state))
-                    .map(|owner| match owner {
+                    .and_then(|owner| match owner {
                         device_panel::DevicePanelOwner::Track(id) => {
-                            PluginEffectDestination::Track(id)
+                            Some(PluginEffectDestination::Track(id))
                         }
                         device_panel::DevicePanelOwner::Return(id) => {
-                            PluginEffectDestination::Return(id)
+                            Some(PluginEffectDestination::Return(id))
                         }
-                        device_panel::DevicePanelOwner::Main => PluginEffectDestination::Main,
+                        device_panel::DevicePanelOwner::Main => Some(PluginEffectDestination::Main),
+                        device_panel::DevicePanelOwner::Source(_) => None,
                     }),
                 status: view.status.clone(),
                 applied: view
@@ -96,6 +97,51 @@ impl Drop for PendingPluginEffect {
 }
 
 impl EditorView {
+    pub(super) fn reconcile_device_insert_confirmation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.opening_project || self.close_prompt_open || self.save_dialog_open {
+            return;
+        }
+        let Some(offer) = self.device_insert_confirmation.take() else {
+            return;
+        };
+        cx.defer_in(window, move |_, window, cx| {
+            if !offer.is_pending() {
+                return;
+            }
+            use hex_session::service::GraphEditOperation;
+            let title = match offer.operation() {
+                GraphEditOperation::InsertDevice => "interrupt playback to insert this device?",
+                GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
+                GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
+            };
+            let answer = window.prompt(
+                gpui::PromptLevel::Warning,
+                &theme::text(title),
+                Some(&theme::text(
+                    "playback will fade out briefly and resume from the same position. \
+                     held notes and effect tails may reset.",
+                )),
+                &[
+                    gpui::PromptButton::cancel(theme::text("cancel")),
+                    gpui::PromptButton::new(theme::text("proceed")),
+                ],
+                cx,
+            );
+            cx.spawn(async move |_, _| {
+                if answer.await.ok() == Some(1) {
+                    offer.proceed();
+                } else {
+                    offer.cancel();
+                }
+            })
+            .detach();
+        });
+    }
+
     pub(super) fn cancel_plugin_effect(&self) {
         if let Some(pending) = &self.pending_plugin_effect {
             pending.control.cancel();
@@ -130,7 +176,7 @@ impl EditorView {
             Some(device_panel::DevicePanelOwner::Track(id)) => PluginEffectDestination::Track(id),
             Some(device_panel::DevicePanelOwner::Return(id)) => PluginEffectDestination::Return(id),
             Some(device_panel::DevicePanelOwner::Main) => PluginEffectDestination::Main,
-            None => {
+            None | Some(device_panel::DevicePanelOwner::Source(_)) => {
                 self.error =
                     Some("select a track, return or main before inserting an effect".into());
                 return;
@@ -171,7 +217,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let control = Arc::new(PluginEffectControl::default());
+        let control = Arc::new(PluginEffectControl::opening_editor());
         let request = PluginEffectInsertion {
             context: hex_engine::AudioSourceContext {
                 project_generation: self.project_generation,

@@ -526,6 +526,18 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
                 "stage=plugin_parameter_touched source={source:?} binding={binding:?} device={device} parameter={parameter} sequence={sequence}"
             )
         }
+        E::PluginTransportToggle { project_generation } => {
+            format!("stage=plugin_transport_toggle generation={project_generation}")
+        }
+        E::PluginEditorWindows {
+            project_generation,
+            output_identity,
+            devices,
+        } => {
+            format!(
+                "stage=plugin_editor_windows generation={project_generation} output={output_identity} devices={devices:?}"
+            )
+        }
         E::DegradedPlugins {
             project_generation,
             output_identity,
@@ -543,12 +555,16 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
                 P::Busy => "backpressure",
                 P::Submitted { .. }
                 | P::VerifiedPreviewSubmitted { .. }
+                | P::VerifiedArrangementGainSubmitted { .. }
                 | P::ResidentSubmitted { .. } => "submitted",
-                P::Refused(_) => "refused",
+                P::Refused(_) | P::VerifiedArrangementGainRefused(_) => "refused",
                 P::Fault(_) => "fault",
             };
             let (revision, preview, seek) = match state {
-                P::Submitted { audio_revision } => (Some(*audio_revision), None, None),
+                P::Submitted { audio_revision }
+                | P::VerifiedArrangementGainSubmitted { audio_revision } => {
+                    (Some(*audio_revision), None, None)
+                }
                 P::VerifiedPreviewSubmitted {
                     audio_revision,
                     identity,

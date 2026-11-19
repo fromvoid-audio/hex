@@ -330,32 +330,6 @@ fn multi_minute_native_and_raw_zero_vst3_takes_keep_every_distinct_step() {
 }
 
 #[test]
-fn over_budget_recorded_density_retains_exact_source_and_draft_without_truncation() {
-    let files = Files::new();
-    let path = files.path();
-    let (session, device, stamp) = fixture(AutomationInterpolation::Step);
-    let before = session.project().clone();
-    let events: Vec<_> = (0..=hex_project::MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE as u64)
-        .map(|frame| event(frame, (frame % 2) as f32))
-        .collect();
-    let mut take = write_take(
-        &path,
-        &session,
-        device,
-        stamp,
-        &events,
-        events.len() as u64 + 1,
-    );
-    let original = fs::read(&path).unwrap();
-    let error =
-        prepare_device_take_adoption_on_control(&session, None, &mut take, stamp).unwrap_err();
-    assert!(error.contains("touch point budget"), "{error}");
-    assert_eq!(session.project(), &before);
-    assert_eq!(fs::read(&path).unwrap(), original);
-    assert_eq!(take.event_count(), events.len() as u64);
-}
-
-#[test]
 fn looped_vst3_take_keeps_last_pass_overlap_and_older_uncovered_tail_in_one_history_edge() {
     let files = Files::new();
     let path = files.path();

@@ -519,7 +519,7 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
                 (root / "crates" / name / "src/lib.rs").write_text("changed")
                 git("add", ".");git("commit", "-qm", name)
                 source = git("rev-parse", "HEAD")
-                with patch.dict(os.environ, dict.fromkeys(impact.NATIVE_ACCEPTANCE_ENV, "")):
+                with patch.dict(os.environ, dict.fromkeys(impact.native_acceptance_inputs(os.environ), "")):
                     resolved = existing.plan.resolve(root, profile="merge", base=base,
                                                      source=source, metadata=metadata)
                 self.assertEqual(resolved["scope"], expected_scope)

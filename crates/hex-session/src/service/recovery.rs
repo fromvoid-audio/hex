@@ -466,7 +466,7 @@ pub(super) fn prepare_project(
         for asset in online_assets(&project) {
             let path = asset_media_path(project_dir, asset);
             let source = candidate
-                .verify_asset(path, asset)
+                .verify_asset(path, asset, None)
                 .map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -513,7 +513,7 @@ pub(super) fn prepare_project(
             && let Some(candidate) = file_candidate.as_mut()
         {
             let file = candidate
-                .verify_asset(media_path, asset)
+                .verify_asset(media_path, asset, current.verified_sources.get(&asset.id()))
                 .map_err(|e| e.to_string())?;
             if !file.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -790,12 +790,31 @@ fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, 
         .map_err(|error| format!("missing media: {error}"))
 }
 
-/// Keep every materialized processing dependency resident, including retained
-/// grouped roots. File selection must not turn a valid saved edit into an
-/// unsupported streamed transform merely because another plain asset is large.
+/// Keep materialized processing dependencies resident, including retained
+/// grouped roots. Complete plain pitch and supported long Re-Pitch/granular roots can
+/// use verified worker pages; other edits retain resident preparation.
 fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
     let requires = |clip: &hex_project::Clip| {
-        (clip.asset() == asset && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
+        let streamed_processing = clip.asset() == asset
+            && clip
+                .audio_edit()
+                .zip(project.asset(clip.asset()))
+                .is_some_and(|(edit, source)| {
+                    (clip.duration() > hex_project::MAX_AUDIO_DOMAIN_FRAMES
+                        || source.playback_frames() > hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+                        && (edit.is_streamed_granular_root()
+                            || hex_engine::audio_transform::streamed_repitch_map(
+                                edit,
+                                project.tempo_map(),
+                                source.playback_frames(),
+                                &std::sync::atomic::AtomicBool::new(false),
+                            )
+                            .is_ok())
+                });
+        (clip.asset() == asset
+            && crate::audio_sources::plain_pitch_requirement(project, clip).is_none()
+            && !streamed_processing
+            && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
             || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
                 .is_some_and(|events| events.sources.iter().any(|root| root.clip.asset() == asset))
     };
@@ -979,6 +998,128 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[test]
+    fn ordinary_file_recovery_only_exempts_complete_plain_pitch() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+            .unwrap();
+        assert!(!asset_requires_resident_processing(editor.project(), asset));
+        let mut cropped = hex_project::Editor::new(editor.project().clone(), 8).unwrap();
+        let start = cropped.project().clip(clip).unwrap().start();
+        cropped
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: start + 16,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(cropped.project(), asset));
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(editor.project(), asset));
+    }
+    #[test]
+    fn ordinary_recovery_preserves_short_repitch_resident_path() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let warp = hex_project::default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            hex_project::WarpMode::RePitch,
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+        assert!(asset_requires_resident_processing(editor.project(), asset));
+    }
+    #[test]
+    fn ordinary_loading_keeps_complete_long_granular_roots_streamed() {
+        for mode in [
+            hex_project::WarpMode::Tones { grain_ms: 32 },
+            hex_project::WarpMode::Texture {
+                grain_ms: 32,
+                fluctuation: 35,
+                seed: 42,
+            },
+        ] {
+            let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let hex_project::Created::Imported { clip, asset, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "long".into(),
+                    path: "long.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 20_000_000,
+                })
+                .unwrap()
+            else {
+                panic!("fixture")
+            };
+            editor
+                .execute(Command::SetClipFades {
+                    clip,
+                    fade_in: 0,
+                    fade_out: 0,
+                })
+                .unwrap();
+            let warp = hex_project::default_audio_warp(
+                editor.project().clip(clip).unwrap(),
+                editor.project().tempo_map(),
+                mode,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(warp),
+                })
+                .unwrap();
+            assert!(!asset_requires_resident_processing(editor.project(), asset));
+        }
+    }
     #[cfg(feature = "recovery-checkpoint-test-support")]
     #[test]
     fn test_checkpoint_gate_releases_registration_and_rejects_unentered_release() {

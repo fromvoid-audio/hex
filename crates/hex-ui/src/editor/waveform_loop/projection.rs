@@ -142,13 +142,21 @@ impl LoopProjection {
             && p.occurrence(first + 2).ok()?.destination_start < end
         {
             let edit = self.preview.audio_edit()?;
-            return self.peaks_for_root(
+            let mut peaks = self.peaks_for_root(
                 waveform,
                 self.root_frame(edit.view_start)?..self.root_frame(edit.view_end)?,
                 budget,
-            );
+            )?;
+            if p.has_silent_repeat_gap() {
+                for peak in &mut peaks {
+                    peak.min = peak.min.min(0.0);
+                    peak.max = peak.max.max(0.0);
+                }
+            }
+            return Some(peaks);
         }
         let mut peaks: Option<[CachedPeak; 2]> = None;
+        let mut covered = 0_u64;
         for index in first..p.occurrence_count().min(first.saturating_add(2)) {
             let occurrence = p.occurrence(index).ok()?;
             let a = start.max(occurrence.destination_start);
@@ -156,6 +164,7 @@ impl LoopProjection {
             if a >= b {
                 continue;
             }
+            covered = covered.checked_add(b - a)?;
             let a = self.at(occurrence, a)?;
             let b = self.at(occurrence, b)?.max(a.saturating_add(1));
             if let Some(next) = self.peaks_for_root(waveform, a..b, budget / 2) {
@@ -167,6 +176,15 @@ impl LoopProjection {
                 } else {
                     peaks = Some(next);
                 }
+            }
+        }
+        if p.has_silent_repeat_gap()
+            && covered < end - start
+            && let Some(peaks) = peaks.as_mut()
+        {
+            for peak in peaks {
+                peak.min = peak.min.min(0.0);
+                peak.max = peak.max.max(0.0);
             }
         }
         peaks
@@ -274,6 +292,54 @@ mod tests {
                 .max,
             0.0
         );
+    }
+
+    #[test]
+    fn held_and_committed_repeat_gap_projects_silence_at_the_same_frames() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd { project_frame: 26 },
+            })
+            .unwrap();
+        let original = editor.project().clip(clip).unwrap().clone();
+        let tempo = editor.project().tempo_map().clone();
+        let operation = AudioViewResizeOperation::CycleEnd { project_frame: 10 };
+        let preview = preview_audio_view_resize(&original, &tempo, 8, operation).unwrap();
+        editor
+            .execute(Command::ResizeAudioClipView { clip, operation })
+            .unwrap();
+        let committed = editor.project().clip(clip).unwrap().clone();
+        assert_eq!(preview, committed);
+        let waveform =
+            CachedWaveform::from_peaks(8, vec![[CachedPeak { min: 0.5, max: 0.5 }; 2]; 8]).unwrap();
+        for preview in [preview, committed] {
+            let projection = LoopProjection {
+                original: original.clone(),
+                preview,
+                tempo: tempo.clone(),
+                prepared: true,
+                accepted_origin: 0,
+                retimed: false,
+            };
+            assert!(projection.peaks(&waveform, 8..10).is_none());
+            assert!(projection.peaks(&waveform, 18..20).is_none());
+            assert_eq!(projection.peaks(&waveform, 10..11).unwrap()[0].max, 0.5);
+            assert_eq!(projection.peaks(&waveform, 20..21).unwrap()[0].max, 0.5);
+            assert_eq!(projection.peaks(&waveform, 7..11).unwrap()[0].min, 0.0);
+        }
     }
 
     #[test]

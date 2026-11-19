@@ -52,7 +52,7 @@ fn review_stale_tuning_export_creates_no_file_after_revision_or_generation_chang
 }
 
 #[test]
-fn full_tuning_recovery_reports_guidance_without_changing_the_slot() {
+fn existing_tuning_recovery_does_not_block_slot_save() {
     let directory = library_scratch();
     let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
     hex_storage::tuning_library::save(&directory.0, 1, "original", tuning(333.0).scale()).unwrap();
@@ -66,7 +66,6 @@ fn full_tuning_recovery_reports_guidance_without_changing_the_slot() {
         .unwrap();
     }
     let path = directory.0.join("slot-1.freqs");
-    let original = std::fs::read(&path).unwrap();
     let (result, prepared) = run_tuning_library_operation_in(
         &mut session,
         TuningLibraryContext {
@@ -83,12 +82,24 @@ fn full_tuning_recovery_reports_guidance_without_changing_the_slot() {
         None,
         &directory.0,
     );
-    let error = result.error.unwrap();
-    assert!(error.contains("recovery is full"));
-    assert!(error.contains(&directory.0.to_string_lossy().to_string()));
+    assert!(result.error.is_none(), "{:?}", result.error);
     assert!(prepared.is_none());
-    assert_eq!(std::fs::read(path).unwrap(), original);
-    assert_eq!(result.slots[0].name.as_deref(), Some("original"));
+    assert_eq!(
+        hex_storage::tuning_library::read_file(&path).unwrap().name,
+        "new"
+    );
+    assert_eq!(result.slots[0].name.as_deref(), Some("new"));
+    for number in 1..=32 {
+        assert_eq!(
+            std::fs::read(
+                directory
+                    .0
+                    .join(format!("slot-1-recovery-{number:02}.freqs"))
+            )
+            .unwrap(),
+            b"preserve"
+        );
+    }
 }
 
 fn next(service: &Service) -> Event {

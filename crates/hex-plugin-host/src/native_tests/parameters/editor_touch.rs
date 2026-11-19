@@ -107,7 +107,11 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
         loop {
             let batch = instance.poll_parameter_edits_on_worker().unwrap();
             ordered.extend_from_slice(batch.as_slice());
-            if batch.ready >= if instrument { 1 } else { 2 } {
+            if ordered
+                .iter()
+                .any(|edit| edit.kind == ParameterEditKind::Begin)
+                && batch.ready >= if instrument { 1 } else { 2 }
+            {
                 break;
             }
             assert!(
@@ -211,12 +215,14 @@ fn actual_editor_takeover_restores_reading_and_unlaned_values_without_cutting_no
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn sdk_group_performs_wait_together_for_real_physical_capacity() {
+    const QUANTUM: usize = crate::transport::MAX_PARAMETER_POINTS;
+    const { assert!(QUANTUM <= crate::transport::MAX_FRAMES) };
     for pattern in ["held", "split", "repeat", "overflow"] {
         let case = Case::new();
         let setup = case.setup_restore(148);
         let end = case.root.join("group-end");
         let mut opts = options();
-        opts.preparation.quantum = 64;
+        opts.preparation.quantum = u16::try_from(QUANTUM).unwrap();
         let mut instance = Prepared::prepare(
             &build(),
             source(),
@@ -248,7 +254,16 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
                     .iter()
                     .any(|edit| edit.kind == ParameterEditKind::GroupAborted)
             } else {
-                batch.ready >= if pattern == "repeat" { 8 } else { 4 }
+                let begins = ordered
+                    .iter()
+                    .filter(|edit| edit.kind == ParameterEditKind::Begin)
+                    .count();
+                match pattern {
+                    "held" => batch.ready >= 5,
+                    "split" => begins >= 2 && batch.ready >= 4,
+                    "repeat" => begins >= 2 && batch.ready >= 8,
+                    _ => false,
+                }
             };
             if ready {
                 break;
@@ -274,7 +289,7 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             );
             assert_eq!(ordered[0].gesture, ordered[5].gesture);
             let mut block = request(instance.configuration(), 0);
-            block.pcm[..64].fill(input);
+            block.pcm[..QUANTUM].fill(input);
             block
                 .parameters
                 .push(ParameterPoint {
@@ -287,7 +302,7 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
                 .exchange_armed_authored_with_editor_on_worker(block, None)
                 .unwrap();
             assert!(actual.performs.as_slice().is_empty());
-            assert_eq!(actual.block.pcm[..64], [input; 64]);
+            assert_eq!(actual.block.pcm[..QUANTUM], [input; QUANTUM]);
             assert!(
                 instance
                     .stop_and_reap_on_control()
@@ -298,8 +313,8 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             continue;
         }
         let mut dense = request(instance.configuration(), 0);
-        dense.pcm[..64].fill(input);
-        for frame in 1..64 {
+        dense.pcm[..QUANTUM].fill(input);
+        for frame in 1..u16::try_from(QUANTUM).unwrap() {
             dense
                 .parameters
                 .push(ParameterPoint {
@@ -316,9 +331,9 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             deferred.performs.as_slice().is_empty(),
             "no partial group: {pattern}"
         );
-        assert_eq!(deferred.block.pcm[63], input);
+        assert_eq!(deferred.block.pcm[QUANTUM - 1], input);
         let mut free = request(instance.configuration(), 1);
-        free.pcm[..64].fill(input);
+        free.pcm[..QUANTUM].fill(input);
         let actual = instance
             .exchange_armed_authored_with_editor_on_worker(free, None)
             .unwrap();
@@ -327,11 +342,11 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
         };
         assert_eq!((first.id, first.normalized), (0, 0.75));
         assert_eq!((second.id, second.normalized), (11, 0.5));
-        assert_eq!(actual.block.pcm[..64], [[0.75, -1.5]; 64]);
+        assert_eq!(actual.block.pcm[..QUANTUM], [[0.75, -1.5]; QUANTUM]);
 
         if pattern == "repeat" {
             let mut next = request(instance.configuration(), 2);
-            next.pcm[..64].fill(input);
+            next.pcm[..QUANTUM].fill(input);
             let actual = instance
                 .exchange_armed_authored_with_editor_on_worker(next, None)
                 .unwrap();
@@ -340,7 +355,7 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             };
             assert_eq!((first.id, first.normalized), (0, 0.25));
             assert_eq!((second.id, second.normalized), (11, 0.25));
-            assert_eq!(actual.block.pcm[..64], [input; 64]);
+            assert_eq!(actual.block.pcm[..QUANTUM], [input; QUANTUM]);
         }
         fs::write(&end, b"admit the real late mouse-up").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -368,13 +383,24 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
             .collect();
         assert_eq!(performs.len(), if pattern == "repeat" { 4 } else { 2 });
         for (index, edit) in performs.iter().enumerate() {
-            assert_eq!(edit.first_frame, if index < 2 { 64 } else { 128 });
+            assert_eq!(
+                edit.first_frame,
+                if index < 2 {
+                    QUANTUM as u64
+                } else {
+                    2 * QUANTUM as u64
+                }
+            );
         }
         let ends: Vec<_> = ordered
             .iter()
             .filter(|edit| edit.kind == ParameterEditKind::End)
             .collect();
-        let release_frame = if pattern == "repeat" { 192 } else { 128 };
+        let release_frame = if pattern == "repeat" {
+            3 * QUANTUM as u64
+        } else {
+            2 * QUANTUM as u64
+        };
         assert!(ends.iter().all(|edit| edit.first_frame == release_frame));
         assert_eq!(
             (performs[0].gesture, performs[1].gesture),
@@ -413,6 +439,8 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
     use crate::protocol::{EditorRestoration, EditorTouchPlanSet, EditorTouchTarget};
+    const QUANTUM: usize = crate::transport::MAX_PARAMETER_POINTS;
+    const { assert!(QUANTUM <= crate::transport::MAX_FRAMES) };
 
     for (pattern, instrument) in [
         ("held", false),
@@ -427,7 +455,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         let second_end = case.root.join("second-end");
         let grouped_release = case.root.join("grouped-release");
         let mut opts = options();
-        opts.preparation.quantum = 64;
+        opts.preparation.quantum = u16::try_from(QUANTUM).unwrap();
         if instrument {
             opts.preparation.input_channels = 0;
         }
@@ -474,7 +502,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         .unwrap();
         let pcm = |instance: &Prepared, sequence, note, reading, other| {
             let mut block = request(instance.configuration(), sequence);
-            block.pcm[..64].fill(if instrument { [0.0; 2] } else { [0.125, -0.25] });
+            block.pcm[..QUANTUM].fill(if instrument { [0.0; 2] } else { [0.125, -0.25] });
             if let Some(status) = note {
                 block
                     .events
@@ -518,11 +546,15 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
             } else {
                 [factor * 0.125, factor * -0.25]
             };
-            assert_eq!(actual.block.pcm[..64], [sample; 64], "pattern={pattern}");
+            assert_eq!(
+                actual.block.pcm[..QUANTUM],
+                [sample; QUANTUM],
+                "pattern={pattern}"
+            );
         };
         if !instrument {
             let mut dense = pcm(&instance, 0, None, 0.25, 0.25);
-            for frame in 1..64 {
+            for frame in 1..u16::try_from(QUANTUM).unwrap() {
                 dense
                     .parameters
                     .push(ParameterPoint {
@@ -588,7 +620,26 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         } else {
             1
         };
-        poll(&mut instance, &mut ordered, &|_, ready| ready >= 4);
+        // Held cohorts include GroupBegin and both Begin records in the same
+        // indivisible worker batch; four ready records can precede the second
+        // Perform. Split cohorts have already drained their Begin batch.
+        let required_ready = if matches!(pattern, "held" | "abort-held" | "invalidate") {
+            5
+        } else {
+            4
+        };
+        poll(&mut instance, &mut ordered, &|rows, ready| {
+            let begins = rows
+                .iter()
+                .filter(|row| row.kind == ParameterEditKind::Begin)
+                .count();
+            let split_begins = match pattern {
+                "ordinary-first" => 3,
+                "staggered" => 2,
+                _ => 0,
+            };
+            begins >= split_begins && ready >= required_ready
+        });
         let held = exchange(
             &mut instance,
             move_sequence,
@@ -597,7 +648,10 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
             if instrument { 0.5 } else { 0.25 },
         );
         let [primary, axis] = held.performs.as_slice() else {
-            panic!("paired actual editor inputs");
+            panic!(
+                "paired actual editor inputs: {pattern}, {:?}",
+                held.performs.as_slice()
+            );
         };
         assert_eq!(
             (primary.id, primary.normalized, axis.id, axis.normalized),
@@ -660,7 +714,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
         };
         match pattern {
             "held" | "ordinary-first" => {
-                let end_frame = (move_sequence + 1) * 64;
+                let end_frame = (move_sequence + 1) * QUANTUM as u64;
                 assert_eq!(
                     restored.restorations.as_slice(),
                     [
@@ -683,7 +737,7 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
             "staggered" => {
                 assert_eq!(
                     restored.restorations.as_slice(),
-                    [end_fact(&ordered, 0, primary.gesture, 128)]
+                    [end_fact(&ordered, 0, primary.gesture, 2 * QUANTUM as u64)]
                 );
                 // The first target is reading again, while the second still
                 // owns its previously applied value. A third authored lane
@@ -697,11 +751,11 @@ fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
                 let second = exchange(&mut instance, 4, None, 0.5, 0.25);
                 assert_eq!(
                     second.restorations.as_slice(),
-                    [end_fact(&ordered, 11, axis.gesture, 256)]
+                    [end_fact(&ordered, 11, axis.gesture, 4 * QUANTUM as u64)]
                 );
                 expect(&second, 2.0);
                 let off = exchange(&mut instance, 5, Some(0x82), 0.5, 0.25);
-                assert_eq!(off.block.pcm[..64], [[0.0; 2]; 64]);
+                assert_eq!(off.block.pcm[..QUANTUM], [[0.0; 2]; QUANTUM]);
                 assert!(off.restorations.as_slice().is_empty());
             }
             _ => unreachable!(),

@@ -1,6 +1,6 @@
 //! Private VST3 processors for one isolated Arrangement bounce item.
 use super::*;
-use hex_audio::plugin_effects::{NativeEffect, NativeEffectCallbacks, NativeEffectDefinition};
+use hex_audio::plugin_effects::{NativeEffect, NativeEffectCallbacks, OfflineEffectPreparation};
 use hex_audio::plugin_worker::NativeWorker;
 use hex_engine::AudioCandidateEffects;
 use hex_export::{ExportControl, ExportError, ForeignBounceRenderer};
@@ -65,7 +65,7 @@ impl Plugins {
                 role,
             )?;
             let authored = super::edits::requested_selection(&input, device)?;
-            let effect = host.prepare_offline_processor_on_control(
+            let effect = host.prepare_offline_effect_on_control(
                 EffectSelection {
                     module: &source.module,
                     executable: &source.executable_relative_path,
@@ -79,11 +79,12 @@ impl Plugins {
                 profile,
                 state,
                 authored.as_ref(),
+                input
+                    .plugin_device_bypassed(device)
+                    .ok_or("offline vst3 device is missing")?,
             )?;
-            bytes = effect
-                .constructor_storage_on_control()
-                .and_then(|storage| storage.data_bytes())
-                .and_then(|size| bytes.checked_add(size))
+            bytes = bytes
+                .checked_add(effect.retained_data_bytes())
                 .ok_or("offline vst3 worker storage unavailable")?;
             tail = tail
                 .zip(effect.finite_tail_frames())
@@ -99,7 +100,8 @@ impl Plugins {
             .map(|effect| usize::from(effect.prepared().quantum_frames()))
             .ok_or("offline vst3 processor unavailable")?;
         Ok(Some(Box::new(PrivateProcessors {
-            effects: Some(effects),
+            preparing: Some(effects),
+            effects: None,
             running: None,
             bytes,
             quantum,
@@ -109,6 +111,7 @@ impl Plugins {
 }
 
 struct PrivateProcessors {
+    preparing: Option<Vec<OfflineEffectPreparation>>,
     effects: Option<Vec<NativeEffect>>,
     running: Option<(Vec<NativeWorker>, NativeEffectCallbacks)>,
     bytes: usize,
@@ -128,12 +131,39 @@ impl OfflineBounceSource for PrivateProcessors {
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<PreparedRevision, String> {
         let effects = self
-            .effects
+            .preparing
             .as_deref()
-            .ok_or("offline vst3 source already rendering")?;
-        let definition = NativeEffectDefinition::new(effects).map_err(|e| e.to_string())?;
-        AudioCandidateEffects::with_host_definitions(&[&definition], compile)
-            .map_err(|e| e.to_string())
+            .ok_or("offline vst3 source already prepared")?;
+        OfflineEffectPreparation::prepare_revision_on_control(effects, compile)
+    }
+    fn finalize_on_control(
+        &mut self,
+        revision: &PreparedRevision,
+        control: &ExportControl,
+    ) -> Result<(), String> {
+        let observation = hex_engine::PreparedPlaybackObservation::prepare_on_control(revision)
+            .map_err(|e| e.to_string())?;
+        let sources = self
+            .preparing
+            .take()
+            .ok_or("offline vst3 source already finalized")?;
+        let mut effects = Vec::new();
+        effects
+            .try_reserve_exact(sources.len())
+            .map_err(|_| "offline vst3 final storage unavailable")?;
+        let mut bytes = 0_usize;
+        for source in sources {
+            let effect = source.complete_on_control(&observation, || control.is_cancelled())?;
+            bytes = effect
+                .constructor_storage_on_control()
+                .and_then(|s| s.data_bytes())
+                .and_then(|n| bytes.checked_add(n))
+                .ok_or("offline vst3 final storage unavailable")?;
+            effects.push(effect);
+        }
+        self.bytes = self.bytes.max(bytes);
+        self.effects = Some(effects);
+        Ok(())
     }
 }
 

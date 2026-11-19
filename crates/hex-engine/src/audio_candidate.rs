@@ -24,6 +24,8 @@ mod grouped_audio_tests;
 #[cfg(test)]
 mod host_output_modulation_tests;
 #[cfg(test)]
+mod limiter_storage_tests;
+#[cfg(test)]
 mod overdrive_modulation_tests;
 #[cfg(test)]
 mod overdrive_storage_tests;
@@ -43,6 +45,7 @@ use crate::{
     AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, AudioStorageError,
     OwnedAudioInputs, playback::Playback,
 };
+pub(crate) use claimed::CandidateHandoff;
 pub use claimed::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateRuntimeStatus,
     AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime, StreamPlayback,
