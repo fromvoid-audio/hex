@@ -33,11 +33,12 @@ fn track_cut_proof_requires_every_retained_stage_at_the_current_origin() {
     let f = fixture(&[&[0, 0], &[0, 3], &[3, 0], &[]], 32);
     let revision = prepare(&f).unwrap();
     let graph = revision.arrangement().signal_graph.as_ref().unwrap();
-    assert!(graph.track_prefix_has_unbuffered_input(0, 2));
-    assert!(graph.track_prefix_has_unbuffered_input(1, 1));
-    assert!(!graph.track_prefix_has_unbuffered_input(1, 2));
-    assert!(!graph.track_prefix_has_unbuffered_input(2, 1));
-    assert!(!graph.track_prefix_has_unbuffered_input(3, 0));
+    assert!(graph.track_prefix_has_unbuffered_input(0, 2, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(0, 2, true));
+    assert!(graph.track_prefix_has_unbuffered_input(1, 1, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(1, 2, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(2, 1, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(3, 0, false));
 }
 
 #[test]
