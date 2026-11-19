@@ -1124,7 +1124,12 @@ impl SessionPlayback {
             DeviceEditTailPolicy::FadedNative(removal.transition.identity())
         } else if continuous_insert {
             DeviceEditTailPolicy::RequireConfirmation
-        } else if confirmed_insert {
+        } else if confirmed_insert
+            || (self.require_continuous_insert && previous.renders_no_device_chains())
+        {
+            // A fenced device edit on a silent predecessor can cut the
+            // obsolete chain immediately. A frozen chain cannot drain and
+            // must not claim an endpoint needed by a surviving device.
             DeviceEditTailPolicy::Cut
         } else {
             DeviceEditTailPolicy::Preserve
