@@ -312,3 +312,90 @@ fn root_normalization_does_not_admit_previously_unsupported_stream_fades() {
         assert!(!supported(&outer));
     }
 }
+
+#[test]
+fn prepared_frame_placement_applies_one_outer_fade_over_event_pcm() {
+    use hex_project::{AudioDomainClock, AudioViewMode, AudioViewPlacement, AudioViewProjection};
+
+    const CYCLE: u64 = 128;
+    const DURATION: u64 = CYCLE * 4;
+    let (editor, id, media) = frame_fixture();
+    let fade = ClipFade::new(DURATION, 0, 31, 41).unwrap();
+    for mode in [AudioViewMode::Repeat, AudioViewMode::Once] {
+        let mut snapshot = editor.project().snapshot();
+        let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+        row.duration = DURATION;
+        row.fade = ClipFade::neutral(DURATION).unwrap();
+        let edit = row.edit.as_mut().unwrap();
+        edit.placement = Some(AudioViewPlacement {
+            mode,
+            outer_length: AudioDomainClock::Frames(DURATION),
+            cycle_phase: 0,
+        });
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let clip = project.clip(id).unwrap();
+        let asset = project.asset(clip.asset()).unwrap();
+        let edit = clip.audio_edit().unwrap();
+        let input = &media[&clip.asset()];
+        let event = edit.domain.events.as_ref().unwrap().events[0];
+        let context = isolated(64 * 1024, 64 * 1024, 8);
+        let prepare = |envelope| {
+            let mut candidate = edit.clone();
+            let domain = Arc::make_mut(&mut candidate.domain);
+            domain.fade_clock = AudioClipFadeClock::Outer;
+            domain.fade = envelope;
+            let query = clip
+                .projected_outer_fade_preview(project.tempo_map(), envelope)
+                .unwrap();
+            context
+                .compile_view_with_outer_fade(
+                    project.tempo_map(),
+                    clip,
+                    &candidate,
+                    asset,
+                    super::super::PreparedAudioSourceRef::Resident(input),
+                    AudioViewProjection::new(clip, project.tempo_map()).unwrap(),
+                    Some(&query),
+                )
+                .unwrap()
+        };
+        let compiled = prepare(fade);
+        let changed_fade = ClipFade::new(DURATION, 0, 47, 53).unwrap();
+        let changed = prepare(changed_fade);
+        let prepared_audio = compiled.audio.as_ref().unwrap();
+        assert!(prepared_audio.shares_pcm_with(changed.audio.as_ref().unwrap()));
+        let prepared_length = if mode == AudioViewMode::Repeat {
+            CYCLE
+        } else {
+            DURATION
+        };
+        assert_eq!(prepared_audio.frames().len() as u64, prepared_length);
+        assert_eq!(changed.metadata.as_ref().unwrap().fade, Some(changed_fade));
+        let mix = crate::Project::new(
+            project.sample_rate(),
+            vec![crate::Track::new(vec![compiled], 1.0, false).unwrap()],
+        )
+        .unwrap();
+        for block in [1, 37, 256] {
+            let mut renderer = crate::Renderer::new(&mix);
+            renderer.play();
+            let mut pcm = vec![[0.0; 2]; DURATION as usize];
+            for output in pcm.chunks_mut(block) {
+                renderer.render(output).unwrap();
+            }
+            for (elapsed, actual) in pcm.into_iter().enumerate() {
+                let elapsed = elapsed as u64;
+                let root = elapsed % CYCLE;
+                let expected = if mode == AudioViewMode::Repeat || elapsed < CYCLE {
+                    let event_fade = event.fade.unwrap().shape().gain_at(root);
+                    input.frames()[root as usize].map(|sample| {
+                        (sample * event_fade * event.gain.linear()) * fade.gain_at(elapsed)
+                    })
+                } else {
+                    [0.0; 2]
+                };
+                assert_eq!(actual, expected, "{mode:?} frame {elapsed}, block {block}");
+            }
+        }
+    }
+}
