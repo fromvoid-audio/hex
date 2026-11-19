@@ -40,8 +40,7 @@ fn prepare(
 }
 
 #[test]
-fn static_receiver_rejoin_matches_authored_note_off_and_future_onset_without_callback_allocations()
-{
+fn static_receiver_power_fade_and_future_onset_have_no_callback_allocations() {
     for case in 0..3 {
         for block in [1, 7, 64, 512] {
             check(case, block);
@@ -62,7 +61,7 @@ fn unproved_stateful_suffix_refuses_reenable_and_keeps_previous_release() {
 }
 
 #[test]
-fn sampler_release_rejoin_preserves_its_return_send_and_other_feeds() {
+fn sampler_power_fade_preserves_its_return_send_and_other_feeds() {
     for block in [1, 7, 64, 512] {
         check(5, block);
     }
@@ -74,6 +73,9 @@ fn unproved_compensated_bypass_refuses_without_a_dropout() {
 }
 
 fn check(case: usize, block: usize) {
+    let static_receiver = matches!(case, 0..=2 | 5);
+    const CUT: usize = 129;
+    const FADE: usize = 40;
     let mut editor = Editor::new(Project::new(8000).unwrap(), 32).unwrap();
     let Created::Asset(asset) = editor
         .execute(Command::ImportDeviceAsset {
@@ -241,10 +243,20 @@ fn check(case: usize, block: usize) {
         panic!("clip");
     };
     let mut oracle_editor = Editor::new(editor.project().clone(), 32).unwrap();
-    let off = editor.project().tempo_map().frame_to_beat(129).unwrap();
+    let mut fresh_editor =
+        static_receiver.then(|| Editor::new(editor.project().clone(), 32).unwrap());
+    let off = editor
+        .project()
+        .tempo_map()
+        .frame_to_beat(CUT as u64)
+        .unwrap();
     let future = editor.project().tempo_map().frame_to_beat(300).unwrap();
     let duration = editor.project().tempo_map().frame_to_beat(16).unwrap();
-    let oracle_gate = if case == 6 { BeatTime::ONE } else { off };
+    let oracle_gate = if static_receiver || case == 6 {
+        BeatTime::ONE
+    } else {
+        off
+    };
     for (target, gate) in [
         (&mut editor, BeatTime::ONE),
         (&mut oracle_editor, oracle_gate),
@@ -260,6 +272,18 @@ fn check(case: usize, block: usize) {
             })
             .unwrap();
         target
+            .execute(Command::AddMidiNote {
+                clip,
+                start: future,
+                duration,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    if let Some(fresh) = &mut fresh_editor {
+        fresh
             .execute(Command::AddMidiNote {
                 clip,
                 start: future,
@@ -300,6 +324,13 @@ fn check(case: usize, block: usize) {
     let mut oracle =
         SessionPlayback::new_with_device_resources(oracle_revision, &oracle_resources).unwrap();
     oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut fresh = fresh_editor.as_ref().map(|editor| {
+        let (revision, resources) = prepare(editor.project(), &store);
+        let mut oracle = SessionPlayback::new_with_device_resources(revision, &resources).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        oracle.render(&mut [[0.0; 2]; CUT]).unwrap();
+        oracle
+    });
     let (mut control, mut callback) = prepared::channel(8000).unwrap();
     control
         .configure_device_resource_publication_on_control(
@@ -319,15 +350,17 @@ fn check(case: usize, block: usize) {
     let mut actual = [[0.0; 2]; 512];
     let mut expected = actual;
     let mut position = 0;
+    let mut fresh_pcm = actual;
     render(
         &mut callback,
         &mut oracle,
-        &mut actual[..129],
-        &mut expected[..129],
+        &mut actual[..CUT],
+        &mut expected[..CUT],
     );
-    assert_eq!(&actual[..129], &expected[..129]);
-    position += 129;
-    for (bypassed, count) in [(true, 13), (false, 13), (true, 7), (false, 13)] {
+    assert_eq!(&actual[..CUT], &expected[..CUT]);
+    position += CUT;
+    let first_off = if static_receiver { FADE + 24 } else { 13 };
+    for (bypassed, count) in [(true, first_off), (false, 13), (true, 7), (false, 13)] {
         editor
             .execute(Command::SetDeviceBypass { device, bypassed })
             .unwrap();
@@ -350,11 +383,27 @@ fn check(case: usize, block: usize) {
                 &mut actual[..n],
                 &mut expected[..n],
             );
-            assert_eq!(
-                &actual[..n],
-                &expected[..n],
-                "case={case} block={block} bypassed={bypassed}"
-            );
+            if let Some(fresh) = fresh.as_mut() {
+                fresh.render(&mut fresh_pcm[..n]).unwrap();
+                for i in 0..n {
+                    let gain = FADE.saturating_sub(position + i - CUT) as f32 / FADE as f32;
+                    for channel in 0..2 {
+                        let background = fresh_pcm[i][channel];
+                        let target = background + (expected[i][channel] - background) * gain;
+                        assert!(
+                            (actual[i][channel] - target).abs() < 0.000_001,
+                            "case={case} block={block} frame={}",
+                            position + i
+                        );
+                    }
+                }
+            } else {
+                assert_eq!(
+                    &actual[..n],
+                    &expected[..n],
+                    "case={case} block={block} bypassed={bypassed}"
+                );
+            }
             done += n;
             position += n;
             assert_eq!(control.status.recovery_position(), position as u64);
@@ -406,6 +455,7 @@ fn check(case: usize, block: usize) {
         assert!(control.status.rejected_revision().is_none());
         control.reclaim();
     }
+    let mut oracle = fresh.unwrap_or(oracle);
     while position < 5000 {
         let n = (5000 - position).min(block);
         render(

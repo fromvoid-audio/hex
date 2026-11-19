@@ -2643,6 +2643,7 @@ impl SessionPlayback {
             self.tail_mutable_instruments
                 .iter_mut()
                 .flatten()
+                .filter(|tail| !tail.is_powering_off())
                 .map(|tail| &mut tail.runtime),
         ) {
             runtime.request_live_input_release(input);

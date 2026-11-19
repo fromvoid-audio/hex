@@ -134,7 +134,7 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.begin_block();
+            tail.begin_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
@@ -477,7 +477,7 @@ impl SessionPlayback {
             runtime.commit_block();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.commit_block();
+            tail.commit_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();

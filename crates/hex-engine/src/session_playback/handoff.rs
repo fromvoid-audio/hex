@@ -964,6 +964,13 @@ impl SessionPlayback {
                 "retained source path changes require stopped graph replacement",
             ));
         }
+        if shared_sources::power_off_fade_blocks_reenable(&self.revision, previous) {
+            return Err(if live {
+                SessionPlaybackError::DeviceTransitionBusy
+            } else {
+                SessionPlaybackError::MutableInstrumentActive
+            });
+        }
         if shared_sources::compensated_long_source_bypass(self, previous) {
             return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
         }
@@ -2786,9 +2793,7 @@ impl SessionPlayback {
                 .tail_mutable_instruments
                 .iter()
                 .flatten()
-                .any(|tail| {
-                    tail.track_id == new_route.id && !tail.runtime.committed_is_quiescent()
-                });
+                .any(|tail| tail.track_id == new_route.id && !tail.committed_is_quiescent());
             if !active_old_mutable && !active_old_tail {
                 continue;
             }
@@ -4571,10 +4576,7 @@ impl SessionPlayback {
             if reenabled_release_receivers[slot].is_some() {
                 continue;
             }
-            let Some(tail) = tail
-                .as_ref()
-                .filter(|tail| !tail.runtime.committed_is_quiescent())
-            else {
+            let Some(tail) = tail.as_ref().filter(|tail| !tail.committed_is_quiescent()) else {
                 continue;
             };
             if !tail.sends.is_empty()
@@ -4632,6 +4634,7 @@ impl SessionPlayback {
         let mut completed_foreign_suffixes = [None; MAX_TRACKS];
         let mut old_track_mutable_tail_slots = [None; MAX_TRACKS];
         let mut cut_mutable_gateoffs = [false; MAX_TRACKS];
+        let mut power_off_mutable = [false; MAX_TRACKS];
         let mut retain_mutable_sends = [false; MAX_TRACKS];
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
@@ -4729,7 +4732,7 @@ impl SessionPlayback {
                 .tail_mutable_instruments
                 .get(slot)
                 .and_then(Option::as_ref)
-                .filter(|tail| !tail.runtime.committed_is_quiescent())
+                .filter(|tail| !tail.committed_is_quiescent())
             {
                 tail_processor_count = tail_processor_count
                     .checked_add(1)
@@ -5060,15 +5063,27 @@ impl SessionPlayback {
                 .and_then(|new_index| self.revision.arrangement().tracks().get(new_index));
             let candidate_enabled =
                 candidate_track.is_some_and(|track| track.instrument_slot_enabled());
-            if let Some(cutoff) = cut_mutable_gateoffs.get_mut(old_index) {
-                *cutoff = !candidate_enabled;
-            } else {
-                return Err(SessionPlaybackError::ReleaseBankFull);
-            }
             let old_chain = previous
                 .device_chains
                 .get(old_index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            // A stateful receiver requires a separate proof that its existing
+            // suffix can stay in the active path while only the source retires.
+            let power_off = powered_off_receivers[old_index]
+                && self.compensation.is_none()
+                && previous.compensation.is_none()
+                && !previous.source_effects.has_chain(old_index)
+                && !self.source_effects.has_chain(track_map[old_index])
+                && self
+                    .device_chains
+                    .get(track_map[old_index])
+                    .is_some_and(|chain| chain.static_processing_matches(old_chain));
+            power_off_mutable[old_index] = power_off;
+            if let Some(cutoff) = cut_mutable_gateoffs.get_mut(old_index) {
+                *cutoff = !candidate_enabled && !power_off;
+            } else {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
             if !old_track.sends().is_empty()
                 && candidate_track.is_some_and(|track| {
                     track.instrument_bypassed && track.instrument_id == old_track.instrument_id
@@ -5978,7 +5993,7 @@ impl SessionPlayback {
                     .tail_mutable_instruments
                     .get(slot)
                     .and_then(Option::as_ref)
-                    .is_some_and(|tail| !tail.runtime.committed_is_quiescent())
+                    .is_some_and(|tail| !tail.committed_is_quiescent())
                     && let (Some(candidate), Some(previous_tail)) = (
                         self.tail_mutable_instruments.get_mut(slot),
                         previous.tail_mutable_instruments.get_mut(slot),
@@ -6097,11 +6112,12 @@ impl SessionPlayback {
                 } else {
                     Default::default()
                 };
-                *candidate = Some(MutableInstrumentTail {
+                *candidate = Some(MutableInstrumentTail::new(
                     track_id,
-                    runtime: old_runtime,
+                    old_runtime,
                     sends,
-                });
+                    power_off_mutable[old_index].then_some(sample_rate),
+                ));
             }
         }
         for (index, route) in self.route_scratch.iter().enumerate() {
@@ -6200,6 +6216,7 @@ impl SessionPlayback {
             self.tail_mutable_instruments
                 .iter_mut()
                 .flatten()
+                .filter(|tail| !tail.is_powering_off())
                 .map(|tail| &mut tail.runtime),
         ) {
             if let Some(input) = release_live_input {
