@@ -1,7 +1,9 @@
 //! Cached source peaks and their accepted clock for live musical event bends.
 use super::waveform_frame::{coarse_peaks, merge};
 use hex_engine::PreparedAudioRepeat;
-use hex_engine::audio_transform::{MusicalEventFadePreview, PreparedMusicalEventSourceClock};
+use hex_engine::audio_transform::{
+    DirectedMusicalDestinationFade, MusicalEventFadePreview, PreparedMusicalEventSourceClock,
+};
 use hex_project::{
     AudioDomainClock, AudioEvent, AudioEvents, Clip, ClipFade, ClipGain, Project, TempoMap,
 };
@@ -60,7 +62,6 @@ impl Projection {
         let source_clock = prepared.musical_clock.as_ref()?;
         if project.clip(clip.id())? != clip
             || !matches!(edit.domain.clock, AudioDomainClock::Beats(_))
-            || edit.content_view.is_some()
         {
             return None;
         }
@@ -68,7 +69,7 @@ impl Projection {
             .map(Arc::new)
             .or_else(|| edit.domain.events.clone())
             .unwrap_or_else(|| Arc::new(AudioEvents::identity(edit.domain.clock.length())));
-        let placed = edit.placement.is_some();
+        let placed = edit.content_view.is_none() && edit.placement.is_some();
         let clip = match fade {
             Some(fade) if project.arrangement_fade_edit_uses_outer(clip) => clip
                 .with_authored_outer_fade(project.tempo_map(), fade)
@@ -101,25 +102,39 @@ impl Projection {
         if !self.events.sources.is_empty() {
             return None;
         }
-        if let Some(occurrences) = &self.occurrences {
-            return match clock {
-                Clock::Arrangement => Some(Query::Placement {
-                    projection: self,
-                    table: &occurrences.0,
-                    current: None,
-                }),
-                Clock::Event(event) => Some(Query::Shared {
-                    clock: *clock,
-                    preview: MusicalEventFadePreview::for_editor(
-                        &self.clip,
-                        &self.tempo,
-                        &self.source_clock,
-                        event,
-                        self.gain,
-                    )
-                    .ok()??,
-                }),
-            };
+        if matches!(clock, Clock::Arrangement)
+            && let Some(occurrences) = &self.occurrences
+        {
+            let table = &occurrences.0;
+            let directed_fade = table
+                .directed()
+                .map(|_| {
+                    DirectedMusicalDestinationFade::new(&self.clip, &self.tempo, &self.source_clock)
+                        .map(Box::new)
+                })
+                .transpose()
+                .ok()?;
+            return Some(Query::Placement {
+                projection: self,
+                table,
+                current: None,
+                directed_fade,
+            });
+        }
+        if let Clock::Event(event) = clock
+            && (self.occurrences.is_some() || self.clip.audio_edit()?.content_view.is_some())
+        {
+            return Some(Query::Shared {
+                clock: *clock,
+                preview: MusicalEventFadePreview::for_editor(
+                    &self.clip,
+                    &self.tempo,
+                    &self.source_clock,
+                    event,
+                    self.gain,
+                )
+                .ok()??,
+            });
         }
         let events = match clock {
             Clock::Arrangement => &self.events.events,
@@ -153,6 +168,7 @@ pub(super) enum Query<'a> {
         projection: &'a Projection,
         table: &'a AudioEventOccurrenceWaveforms,
         current: Option<(usize, MusicalEventFadePreview<'a>)>,
+        directed_fade: Option<Box<DirectedMusicalDestinationFade<'a>>>,
     },
 }
 
@@ -171,51 +187,91 @@ pub(super) fn peaks(
             projection,
             table,
             current,
+            directed_fade,
         } => {
-            let projection = *projection;
-            let table = *table;
-            let reads = table.reads();
-            let first = reads.partition_point(|read| read.placement.destination_end <= range.start);
+            let Some(maps) = table.directed() else {
+                return placement_peaks(projection, table, current, range, remaining);
+            };
+            let fade = directed_fade.as_mut()?;
             let mut combined = None;
             let mut cursor = range.start;
-            let silence = [CachedPeak { min: 0.0, max: 0.0 }; 2];
-            for (offset, read) in reads[first..]
-                .iter()
-                .enumerate()
-                .take_while(|(_, read)| read.placement.destination_start < range.end)
-            {
-                let index = first + offset;
-                if current.as_ref().is_none_or(|(last, _)| *last != index) {
-                    // Bound visible preparation and sample visits together, even
-                    // when one very wide column intersects many different roots.
-                    let events = &projection.events.events;
-                    *remaining = remaining.checked_sub(events.len() + 1)?;
-                    let preview = MusicalEventFadePreview::for_occurrence(
-                        &projection.clip,
-                        &projection.tempo,
-                        read,
-                        events,
-                        projection.gain,
-                    )
-                    .ok()??;
-                    *current = Some((index, preview));
+            for mapped in maps.source_ranges(range.clone()) {
+                *remaining = remaining.checked_sub(1)?;
+                let (destination, base) = mapped.ok()?;
+                if cursor < destination.start {
+                    merge(&mut combined, SILENCE);
                 }
-                let (_, preview) = current.as_ref()?;
-                let start = range.start.max(read.placement.destination_start);
-                let end = range.end.min(read.placement.destination_end);
-                if cursor < start {
-                    merge(&mut combined, silence);
-                }
-                let peaks = coarse_peaks(table.waveform(index)?, |visit| {
-                    preview.visit_arrangement(start..end, remaining, visit)
-                })?;
+                let midpoint = destination.start + (destination.end - destination.start - 1) / 2;
+                let gain = fade.gain_at(midpoint).ok()?;
+                let peaks = if base.is_empty() || gain == 0.0 {
+                    SILENCE
+                } else {
+                    placement_peaks(projection, table, current, base, remaining)?.map(|peak| {
+                        CachedPeak {
+                            min: peak.min * gain,
+                            max: peak.max * gain,
+                        }
+                    })
+                };
                 merge(&mut combined, peaks);
-                cursor = end;
+                cursor = destination.end;
             }
             if cursor < range.end {
-                merge(&mut combined, silence);
+                merge(&mut combined, SILENCE);
             }
             combined
         }
     }
+}
+
+const SILENCE: [CachedPeak; 2] = [CachedPeak { min: 0.0, max: 0.0 }; 2];
+
+fn placement_peaks<'a>(
+    projection: &'a Projection,
+    table: &'a AudioEventOccurrenceWaveforms,
+    current: &mut Option<(usize, MusicalEventFadePreview<'a>)>,
+    range: Range<u64>,
+    remaining: &mut usize,
+) -> Option<[CachedPeak; 2]> {
+    let reads = table.reads();
+    let first = reads.partition_point(|read| read.placement.destination_end <= range.start);
+    let mut combined = None;
+    let mut cursor = range.start;
+    for (offset, read) in reads[first..]
+        .iter()
+        .enumerate()
+        .take_while(|(_, read)| read.placement.destination_start < range.end)
+    {
+        let index = first + offset;
+        if current.as_ref().is_none_or(|(last, _)| *last != index) {
+            // A wide column can intersect many roots. Charge the visible
+            // query budget for both occurrence setup and event visits.
+            let events = &projection.events.events;
+            *remaining = remaining.checked_sub(events.len() + 1)?;
+            let preview = MusicalEventFadePreview::for_occurrence(
+                &projection.clip,
+                &projection.tempo,
+                read,
+                events,
+                projection.gain,
+            )
+            .ok()??;
+            *current = Some((index, preview));
+        }
+        let (_, preview) = current.as_ref()?;
+        let start = range.start.max(read.placement.destination_start);
+        let end = range.end.min(read.placement.destination_end);
+        if cursor < start {
+            merge(&mut combined, SILENCE);
+        }
+        let peaks = coarse_peaks(table.waveform(index)?, |visit| {
+            preview.visit_arrangement(start..end, remaining, visit)
+        })?;
+        merge(&mut combined, peaks);
+        cursor = end;
+    }
+    if cursor < range.end {
+        merge(&mut combined, SILENCE);
+    }
+    combined
 }

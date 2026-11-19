@@ -8,7 +8,9 @@ use crate::audio_transform::{
 };
 use hex_project::{AudioClipEdit, AudioEventFade, BeatTime};
 use std::borrow::Cow;
+mod destination_fade;
 mod placement;
+pub use destination_fade::DirectedMusicalDestinationFade;
 use placement::{ArrangementRead, repeat_ranges};
 
 /// Control-only projection of a single forward musical processing root.
@@ -44,7 +46,7 @@ impl<'a> MusicalEventFadePreview<'a> {
         gain: ClipGain,
         repeat: Option<PreparedAudioRepeat>,
     ) -> Result<Option<Self>, Invalid> {
-        let Some(edit) = Self::musical_edit(clip) else {
+        let Some(edit) = Self::musical_edit(clip).filter(|edit| edit.content_view.is_none()) else {
             return Ok(None);
         };
         let (_, root_frames, crop_start, crop_end) = edit.projected_domain(tempo)?;
@@ -106,7 +108,9 @@ impl<'a> MusicalEventFadePreview<'a> {
             return Ok(None);
         };
         let placement = occurrence.placement;
-        validate_copy(clip, placement)?;
+        if edit.content_view.is_none() {
+            validate_copy(clip, placement)?;
+        }
         let edit =
             bind_occurrence_clock(edit, placement.root_origin, || Ok(source.shared_tempo()))?;
         if edit.projected_domain(tempo)?.1 != placement.root_frame_length {
@@ -120,9 +124,8 @@ impl<'a> MusicalEventFadePreview<'a> {
     }
 
     fn musical_edit(clip: &Clip) -> Option<&AudioClipEdit> {
-        clip.audio_edit().filter(|edit| {
-            matches!(edit.domain.clock, AudioDomainClock::Beats(_)) && edit.content_view.is_none()
-        })
+        clip.audio_edit()
+            .filter(|edit| matches!(edit.domain.clock, AudioDomainClock::Beats(_)))
     }
 
     fn from_root(
@@ -149,7 +152,16 @@ impl<'a> MusicalEventFadePreview<'a> {
             .start()
             .checked_add(clip.duration())
             .ok_or(Invalid("musical waveform clip end overflow"))?;
-        let outer = clip.projected_outer_fade(tempo)?;
+        // Directed reads query the forward clip envelope separately, after
+        // the event root has been mapped into the audible destination.
+        let outer = if clip
+            .audio_edit()
+            .is_some_and(|edit| edit.content_view.is_some())
+        {
+            None
+        } else {
+            clip.projected_outer_fade(tempo)?
+        };
         let zero = edit
             .domain
             .musical_event_source
@@ -303,7 +315,11 @@ impl<'a> MusicalEventFadePreview<'a> {
         mut outer_gain: impl FnMut(u64) -> Result<f32, Invalid>,
         mut visit: impl FnMut(FrameFadeRange),
     ) -> Result<Option<FrameFadeCoverage>, Invalid> {
-        let legacy = (self.outer.is_none() && !self.edit.domain.fade.is_neutral())
+        let direct = self
+            .clip
+            .audio_edit()
+            .is_some_and(|edit| edit.content_view.is_some());
+        let legacy = (!direct && self.outer.is_none() && !self.edit.domain.fade.is_neutral())
             .then(|| self.edit.projected_fade(self.tempo))
             .transpose()?;
         let mut cursor = root.start;

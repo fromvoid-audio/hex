@@ -11,7 +11,7 @@ use hex_project::{
 use std::ops::Range;
 
 mod musical;
-pub use musical::MusicalEventFadePreview;
+pub use musical::{DirectedMusicalDestinationFade, MusicalEventFadePreview};
 
 /// One source frame and its playback-ordered amplitude laws.
 /// It contains no source owner. Clip activation remains a separate display style.

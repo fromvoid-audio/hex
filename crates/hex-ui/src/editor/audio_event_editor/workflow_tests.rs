@@ -1810,10 +1810,24 @@ fn event_fade_warped_tempo_repeat_keeps_both_waveforms_through_ack(cx: &mut Test
     warped_event_fade_workflow(cx, WarpedFadeFixture::TempoRepeat);
 }
 
+#[gpui::test]
+fn event_fade_warped_reversed_keeps_both_waveforms_through_ack(cx: &mut TestAppContext) {
+    warped_event_fade_workflow(cx, WarpedFadeFixture::Reversed);
+}
+
+#[gpui::test]
+fn event_fade_warped_reversed_tempo_repeat_crop_keeps_both_waveforms_through_ack(
+    cx: &mut TestAppContext,
+) {
+    warped_event_fade_workflow(cx, WarpedFadeFixture::ReversedTempoRepeat);
+}
+
 enum WarpedFadeFixture {
     Single,
     SharedRepeat,
     TempoRepeat,
+    Reversed,
+    ReversedTempoRepeat,
 }
 
 fn warped_event_fade_workflow(cx: &mut TestAppContext, fixture: WarpedFadeFixture) {
@@ -1913,7 +1927,10 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, fixture: WarpedFadeFixtur
                 .unwrap();
             assert_eq!(view.repeat.unwrap().phase, 24_000);
         });
-    } else if matches!(fixture, WarpedFadeFixture::TempoRepeat) {
+    } else if matches!(
+        fixture,
+        WarpedFadeFixture::TempoRepeat | WarpedFadeFixture::ReversedTempoRepeat
+    ) {
         editor.update(&mut visual, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::ResizeAudioClipView {
                 clip,
@@ -1939,9 +1956,65 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, fixture: WarpedFadeFixtur
             );
         });
     }
+    let reversed = matches!(
+        fixture,
+        WarpedFadeFixture::Reversed | WarpedFadeFixture::ReversedTempoRepeat
+    );
+    if reversed {
+        let duration = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .duration()
+        });
+        for command in [
+            Command::SetClipFadeEnvelope {
+                clip,
+                fade: hex_project::ClipFade::new(duration, 0, 4_000, 12_000).unwrap(),
+            },
+            Command::ReverseClips(vec![clip]),
+        ] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        if matches!(fixture, WarpedFadeFixture::ReversedTempoRepeat) {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::TrimClipEdge {
+                    clip,
+                    edge: hex_project::TrimEdge::Left,
+                    frame: 4_000,
+                })));
+            });
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let state = v.state.as_ref().unwrap();
+            let reads = state.audio_clip_waveforms[&clip]
+                .event_source
+                .as_ref()
+                .unwrap()
+                .occurrences
+                .as_ref()
+                .unwrap()
+                .directed()
+                .unwrap();
+            let first = reads.spans().first().unwrap().destination().start;
+            let last = reads.spans().last().unwrap().destination().end - 1;
+            assert!(reads.position_q32(first).unwrap() > reads.position_q32(last).unwrap());
+        });
+    }
     editor.update(&mut visual, |v, cx| {
         v.viewport = Some(Viewport::fit(
-            if matches!(fixture, WarpedFadeFixture::Single) {
+            if matches!(
+                fixture,
+                WarpedFadeFixture::Single | WarpedFadeFixture::Reversed
+            ) {
                 96_000
             } else {
                 384_000
@@ -2044,6 +2117,30 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, fixture: WarpedFadeFixtur
         (thumbnail(&mut visual), event_outline(&mut visual)),
         preview
     );
+    if reversed {
+        fade_key(&mut visual, true);
+        let down = visual
+            .debug_bounds("audio-event-fade-in-top-1")
+            .unwrap()
+            .center();
+        let target = point(down.x - px(24.0), down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_ne!(thumbnail(&mut visual), preview.0);
+        assert_ne!(event_outline(&mut visual), preview.1);
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        fade_key(&mut visual, false);
+        repaint(&mut visual, &editor);
+        assert_eq!(
+            (thumbnail(&mut visual), event_outline(&mut visual)),
+            preview
+        );
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_none());
+        });
+    }
 }
 #[gpui::test]
 fn event_fade_f_respects_computer_keyboard_and_search_focus(cx: &mut TestAppContext) {
