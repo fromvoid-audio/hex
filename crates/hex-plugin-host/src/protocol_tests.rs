@@ -1012,6 +1012,17 @@ fn guarded_flush_conflict_is_empty_bound_and_distinct_from_success() {
             normalized: 0.75,
         })
         .unwrap();
+    let mut oversized = points;
+    for id in 8..8 + MAX_EDITOR_FLUSH_PARAMETERS as u32 {
+        oversized
+            .push(ParameterPoint {
+                frame: 0,
+                id,
+                normalized: 0.5,
+            })
+            .unwrap();
+    }
+    assert!(guarded_flush_request(&config, 3, 2, &oversized, 4).is_err());
     let ordinary = flush_request(&config, 3, 2, &points).unwrap();
     let guarded = guarded_flush_request(&config, 3, 2, &points, 4).unwrap();
     assert_eq!(&guarded[4..6], &3_u16.to_le_bytes());

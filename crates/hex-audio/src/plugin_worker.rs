@@ -20,7 +20,7 @@ mod deadline;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use controller::{
     NativeWorkerAuthoredParameterProgress, NativeWorkerControllerProgress,
-    NativeWorkerControllerQuery,
+    NativeWorkerControllerQuery, NativeWorkerGuardedEditorWriteProgress,
 };
 pub use hex_plugin_host::protocol::{
     ControllerRequest, ParameterConversion, ParameterConversionStatus, ParameterEdit,

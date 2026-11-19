@@ -50,8 +50,10 @@ impl Prepared {
         parameters: &crate::transport::Parameters,
         expected_editor_admission: u64,
     ) -> Result<protocol::FlushedParameters> {
-        if parameters.as_slice().is_empty() {
-            return Err(Error::Protocol("empty guarded editor parameter flush"));
+        if !protocol::valid_editor_flush_extent(parameters)
+            || parameters.as_slice().iter().any(|point| point.frame != 0)
+        {
+            return Err(Error::Protocol("invalid guarded editor parameter flush"));
         }
         self.flush_idle_parameters(parameters, Some(expected_editor_admission))
     }
