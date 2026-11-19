@@ -1796,6 +1796,14 @@ fn repeated_clip_fade_preview(cx: &mut TestAppContext, processed: bool) {
         })
     });
     let original = mesh(&mut visual);
+    let clip_selector: &'static str =
+        Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_bounds = visual.debug_bounds(clip_selector).unwrap();
+    let shade_bounds = visual.debug_bounds(shade_selector).unwrap();
+    assert!(
+        shade_bounds.bottom() >= clip_bounds.bottom() - px(2.0),
+        "the loop fade shade reaches the bottom border"
+    );
     let original_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
     assert!(
         !original.is_empty(),

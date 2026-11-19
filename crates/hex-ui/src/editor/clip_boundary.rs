@@ -4,7 +4,7 @@
 //! A trailing boundary paints on the next interval's physical grid column,
 //! outside the child layout, so adjacent intervals share one stroke without
 //! changing trim or drag coordinates. Degenerate intervals retain lane-anchored
-//! edges; looping callers supply the existing rounded-corner bottom inset.
+//! edges. Section outlines can supply an inset to match their chamfer.
 use gpui::{Div, canvas, div, prelude::*, px, relative, rgb};
 use std::{cell::Cell, rc::Rc};
 
@@ -288,9 +288,7 @@ pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
                 .left(bounds.right())
                 .top(bounds.top())
                 .w(px(style.stroke))
-                .h(px(
-                    (f32::from(bounds.size.height) - style.bottom_radius).max(0.0)
-                ));
+                .h(bounds.size.height);
             return outer.children([EdgeWitness {
                 child: witness.into_any_element(),
                 anchor,
@@ -318,13 +316,7 @@ pub(super) fn pixel_backdrop_shell<T: gpui::IntoElement + gpui::Styled>(
             .left(bounds.right())
             .top(bounds.top())
             .w(px(style.stroke))
-            .h(px((f32::from(bounds.size.height)
-                - if native_leading {
-                    style.bottom_radius
-                } else {
-                    0.0
-                })
-            .max(0.0))),
+            .h(bounds.size.height),
     )
 }
 
@@ -337,7 +329,6 @@ pub(super) struct Backdrop {
     pub outline: u32,
     pub hover_outline: u32,
     pub stroke: f32,
-    pub bottom_radius: f32,
     pub header_height: f32,
     pub header_gradient: Option<super::clip_header_loop::HeaderGradient>,
     pub notch: Notch,
@@ -402,7 +393,7 @@ pub(super) fn backdrop_shell(
         backdrop.hover_outline,
         false,
         true,
-        backdrop.bottom_radius,
+        0.0,
         backdrop.notch,
         String::new,
     );
@@ -414,7 +405,7 @@ pub(super) fn backdrop_shell(
                 .absolute()
                 .left(relative(1.0))
                 .top_0()
-                .bottom(px(backdrop.bottom_radius))
+                .bottom_0()
                 .w(px(backdrop.stroke));
             return framed.children([EdgeWitness {
                 child: witness.into_any_element(),
@@ -434,13 +425,12 @@ fn paint_resolved_trailing(
     color: gpui::Hsla,
     window: &mut gpui::Window,
 ) {
-    let height = (f32::from(bounds.size.height) - style.bottom_radius).max(0.0);
-    if bounds.size.width <= px(0.0) || height == 0.0 || style.notch.extent() >= height {
+    if bounds.size.width <= px(0.0) || px(style.notch.extent()) >= bounds.size.height {
         return;
     }
     let edge = gpui::Bounds::new(
         gpui::point(bounds.right(), bounds.top()),
-        gpui::size(px(style.stroke), px(height)),
+        gpui::size(px(style.stroke), bounds.size.height),
     );
     let mask = style.notch.enabled().then(|| gpui::ContentMask {
         bounds: gpui::Bounds::from_corners(
@@ -461,16 +451,9 @@ fn paint_backdrop(
     if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
         return;
     }
-    let corners = Corners {
-        top_left: px(0.0),
-        top_right: px(0.0),
-        bottom_left: px(style.bottom_radius),
-        bottom_right: px(style.bottom_radius),
-    }
-    .clamp_radii_for_quad_size(bounds.size);
     let cut = style.notch.extent();
     let paint_square = |window: &mut gpui::Window| {
-        window.paint_quad(fill(bounds, rgb(style.body)).corner_radii(corners));
+        window.paint_quad(fill(bounds, rgb(style.body)));
         // clip_name's -1 offsets compensate the containing layout border. Preserve
         // its old quad and ancestor mask exactly, including physical leading edges.
         let header = Bounds::from_corners(
@@ -489,7 +472,7 @@ fn paint_backdrop(
         });
         window.paint_quad(quad(
             bounds,
-            corners,
+            Corners::default(),
             gpui::transparent_black(),
             Edges {
                 top: px(1.0),
