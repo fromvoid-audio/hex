@@ -115,6 +115,7 @@ pub(crate) struct BypassRamp {
     from: f32,
     elapsed: u32,
     total: u32,
+    dry_lead: u32,
 }
 
 impl BypassRamp {
@@ -122,6 +123,7 @@ impl BypassRamp {
         from: 0.0,
         elapsed: 0,
         total: 0,
+        dry_lead: 0,
     };
 
     pub(crate) fn is_active(self) -> bool {
@@ -149,14 +151,25 @@ impl BypassRamp {
             from,
             elapsed: 0,
             total: rate.div_ceil(200).max(1),
+            dry_lead: 0,
         }
     }
 
+    /// Keep the outgoing dry tap audible while a fresh wet history refills.
+    pub(crate) fn with_dry_lead(mut self, frames: u32) -> Self {
+        self.dry_lead = frames;
+        self
+    }
+
     pub(crate) fn remaining(self) -> usize {
-        self.total.saturating_sub(self.elapsed) as usize
+        (self.total.saturating_sub(self.elapsed) + self.dry_lead) as usize
     }
 
     pub(crate) fn next(&mut self, bypassed: bool) -> f32 {
+        if self.dry_lead > 0 {
+            self.dry_lead -= 1;
+            return self.from;
+        }
         self.elapsed = self.elapsed.saturating_add(1).min(self.total);
         self.current(if bypassed { 0.0 } else { 1.0 })
     }
@@ -169,6 +182,23 @@ mod tests {
         ProcessorChainOwner, StereoMatrix,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn dry_lead_continues_across_an_equivalent_publication_and_can_reverse() {
+        use super::BypassRamp;
+
+        let mut first =
+            BypassRamp::inherited(BypassRamp::INACTIVE, true, false, 8_000).with_dry_lead(3);
+        assert_eq!(first.next(false), 0.0);
+        let mut next = BypassRamp::inherited(first, false, false, 8_000);
+        assert_eq!(next.remaining(), 42);
+        assert_eq!(next.next(false), 0.0);
+        assert_eq!(next.next(false), 0.0);
+        let mut cancelled = BypassRamp::inherited(next, false, true, 8_000);
+        assert!(!cancelled.is_active());
+        assert_eq!(cancelled.next(true), 0.0);
+        assert_eq!(next.next(false), 1.0 / 40.0);
+    }
 
     #[test]
     fn reserved_dry_is_bounded_and_copies_only_into_existing_storage() {
