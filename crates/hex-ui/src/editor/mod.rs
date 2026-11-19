@@ -2066,7 +2066,14 @@ impl EditorView {
             self.error = Some("project change pending · playback is paused".into());
             return;
         }
+        let device_playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
         if self.playback_settings.pending.take().is_some() {
+            self.status = "playback start cancelled".into();
+            if self.desired_playing(device_playing) {
+                self.pause_from_play_toggle();
+            }
             return;
         }
         if self.recovery.generation().is_some() {
@@ -2074,17 +2081,8 @@ impl EditorView {
             return;
         }
         if self.section_install_pending() {
-            let playing = self
-                .audio
-                .as_ref()
-                .and_then(|audio| audio.control.status())
-                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
-            if self.desired_playing(playing) {
-                #[cfg(test)]
-                {
-                    self.last_transport_command = Some(PlaybackCommand::Pause);
-                }
-                self.queue_audio_command(PlaybackCommand::Pause);
+            if self.desired_playing(device_playing) {
+                self.pause_from_play_toggle();
             } else if let Some(source) = self.section_copy_play_source() {
                 if let Some(frame) = self.section_copy_play_start() {
                     self.queue_section_copy_play(frame, source);
@@ -2096,18 +2094,11 @@ impl EditorView {
             }
             return;
         }
-        let device_playing = self.audio.as_ref().is_some_and(|audio| {
-            audio
-                .control
-                .status()
-                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
-        });
         let start_frame = self.playback_start_frame();
-        let command = match self.play_toggle_action(device_playing, start_frame) {
-            arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
+        match self.play_toggle_action(device_playing, start_frame) {
+            arrangement_seek::ToggleAction::Pause => self.pause_from_play_toggle(),
             arrangement_seek::ToggleAction::PlayFrom(frame) => {
                 self.queue_normal_play(frame);
-                return;
             }
             arrangement_seek::ToggleAction::Unavailable => {
                 if self.has_degraded_vst3_output() {
@@ -2115,14 +2106,16 @@ impl EditorView {
                 } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());
                 }
-                return;
             }
-        };
+        }
+    }
+
+    fn pause_from_play_toggle(&mut self) {
         #[cfg(test)]
         {
-            self.last_transport_command = Some(command);
+            self.last_transport_command = Some(PlaybackCommand::Pause);
         }
-        self.queue_audio_command(command);
+        self.queue_audio_command(PlaybackCommand::Pause);
     }
 
     /// A Stop reset supplies absolute frame zero until the next selection
