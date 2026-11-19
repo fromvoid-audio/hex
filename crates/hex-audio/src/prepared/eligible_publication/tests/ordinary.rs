@@ -3593,7 +3593,13 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
                     std::time::Instant::now() < deadline,
                     "candidate never installed"
                 );
-                std::thread::yield_now();
+                assert!(
+                    control.status.playing.load(Acquire),
+                    "fixture passed the clip end"
+                );
+                // This headless callback can otherwise exhaust the short
+                // clip before the real worker has a chance to deliver a page.
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             let (failed, next_width, _) = crate::candidate_window_probe::finish().unwrap();
             assert_eq!((failed, next_width), (256, 128));
