@@ -315,19 +315,67 @@ fn prepared_note_chase_resource_and_page_constructors_match_direct_starts() {
 fn prepared_note_chase_off_refuses_private_scope_before_construction_or_replay() {
     on_worker_stack(|| {
         use crate::native_device_resources::{ControlSamplerSources, ResidentDeviceAssets};
-        let project = hex_project::Project::new(48_000).unwrap();
+        use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+        use hex_project::{Command, Created, Editor, Project};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::ImportDeviceAsset {
+                path: "original.wav".into(),
+                sample_rate: 48_000,
+                frames: 4,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "sampler".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let state = hex_devices::sampler::state::SamplerState::for_source_frames(4)
+            .unwrap()
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            }])
+            .unwrap();
+        editor
+            .execute(Command::InsertInstrument { track, state })
+            .unwrap();
+        let project = editor.project();
         let cancelled = AtomicBool::new(false);
-        let sources = ControlSamplerSources::prepare_on_control(
-            &ResidentDeviceAssets::default(),
-            &project,
-            1 << 20,
-            0,
-            &cancelled,
-        )
-        .unwrap();
+        let mut store = ResidentDeviceAssets::default();
+        let source = crate::OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 4])
+            .ok()
+            .unwrap();
+        store
+            .insert_on_control(
+                (asset, source),
+                0,
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 256,
+                    handle_rows: 32,
+                    root_rows: 32,
+                    max_retained_bytes: 1 << 20,
+                    max_construction_peak_bytes: 1 << 20,
+                },
+                4,
+                &cancelled,
+                || Ok::<_, crate::native_device_resources::ResourcePreparationError>(()),
+            )
+            .unwrap();
+        let sources =
+            ControlSamplerSources::prepare_on_control(&store, project, 1 << 20, 4, &cancelled)
+                .unwrap();
         let revision = Arc::new(
             PreparedRevision::prepare_control_sampler_export(
-                &project,
+                project,
                 &std::collections::BTreeMap::new(),
                 Arc::new(crate::SineTable::new()),
                 &crate::audio_transform::AudioTransformPreparation::default(),
