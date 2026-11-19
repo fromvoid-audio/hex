@@ -13,8 +13,10 @@
 #include "macos_state_stream.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <optional>
 #include <thread>
@@ -432,7 +434,7 @@ public:
         processing.store(true);
         return true;
     }
-    bool process(ProcessData& data) {
+    bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
         auto sdk=data;
@@ -441,7 +443,15 @@ public:
         clear_disjoint_outputs(configuration_,sdk);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
-        if (processor->process(sdk)!=kResultOk || !shape.unchanged(sdk) || !inactive_outputs_.unchanged()) {
+        const auto start=sdk_process_ns?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+        const auto result=processor->process(sdk);
+        if(sdk_process_ns) {
+            const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
+            const auto ns=elapsed>0?static_cast<uint64_t>(elapsed):0;
+            *sdk_process_ns=ns>std::numeric_limits<uint64_t>::max()-*sdk_process_ns?
+                std::numeric_limits<uint64_t>::max():*sdk_process_ns+ns;
+        }
+        if (result!=kResultOk || !shape.unchanged(sdk) || !inactive_outputs_.unchanged()) {
             processing_fault.store(true); return false;
         }
         if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
@@ -526,6 +536,16 @@ public:
     uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }
     bool seal_editor_edits_on_control() {
         return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
+    }
+    EditorDetachAdmission begin_editor_detach_on_control() {
+        if(!opened || !host || quarantined.load()) return EditorDetachAdmission::Refused;
+        return host->begin_editor_detach_on_control();
+    }
+    void end_editor_detach_on_control() {
+        if(host) host->end_editor_detach_on_control();
+    }
+    bool editor_edits_sealed_on_control() const {
+        return host && host->editor_edits_sealed_on_control();
     }
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     uint64 editor_frontier_on_worker() const { return host?host->editor_frontier_on_worker():0; }

@@ -31,6 +31,7 @@ fn interactive_sampler_session(files: &sampler_export::tests::Files) -> Session 
 #[derive(Default)]
 struct Observed {
     accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
+    next_submission: Mutex<Option<(u64, u64)>>,
     refuse: AtomicBool,
     refuse_native_source: AtomicBool,
     refuse_source_confirmation: AtomicBool,
@@ -237,7 +238,15 @@ impl WorkerAudioSink for OfflineSink {
                     .lock()
                     .unwrap()
                     .push((metadata.context.editor_revision, thread::current().id()));
-                Ok(ResidentPublicationAcceptance::OfflineRetained)
+                Ok(match self.observed.next_submission.lock().unwrap().take() {
+                    Some((output_identity, audio_revision)) => {
+                        ResidentPublicationAcceptance::Submitted {
+                            output_identity,
+                            audio_revision,
+                        }
+                    }
+                    None => ResidentPublicationAcceptance::OfflineRetained,
+                })
             }
             Err(error) => Err(ResidentPublicationRefusal {
                 kind: if self.observed.refuse_native_source.load(Ordering::Acquire) {
@@ -1481,6 +1490,7 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
             let captured = Snapshot {
                 source_origin: current.source_origin,
                 prepared_context: current.prepared_context,
+                submission: None,
                 file_sources: current.file_sources.clone(),
                 prepared: Arc::clone(&current.prepared),
                 resources: current.resources.capture_on_control(bytes).unwrap(),
@@ -1551,6 +1561,153 @@ fn section_seek_publication_uses_actual_loop_metadata_allowance() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn resident_keyboard_publication_admits_and_replaces_the_paused_route() {
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_engine::playback::PlaybackCommand;
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+    let class = hex_engine::NativeDeviceClass::Instrument;
+    let state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let state = hex_engine::patch_native_device_parameter_for_class(
+        class,
+        &state,
+        ParameterId::from_static(20_001),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+
+    let capacity = 3 * hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+    let mut session = Session::new(48_000, 8, 1024)
+        .unwrap()
+        .with_native_reservation(crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: capacity,
+                max_construction_peak_bytes: capacity,
+            },
+            max_scan_frames: 1024,
+        })
+        .unwrap();
+    let Created::Track(track) = session
+        .command(Command::InsertTrackWithDevice {
+            name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let mut sink = OfflineSink {
+        observed: Arc::new(Observed::default()),
+        pending: None,
+    };
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 0,
+        editor_revision: 2,
+    };
+    let mut current = session
+        .publish_resident_snapshot(
+            context,
+            &mut sink,
+            sampler_export::Admission::default(),
+            None,
+        )
+        .unwrap();
+    let quote = Playback::paused_source_monitor_allowance_on_control(
+        &current.prepared,
+        Some(&current.resources),
+    )
+    .unwrap();
+    assert!(current.prepared.has_arrangement_mutable_instruments());
+    assert!(quote > 0);
+    let original = sink
+        .pending
+        .as_ref()
+        .unwrap()
+        .0
+        .accounted_session_runtime_bytes_on_control()
+        .unwrap();
+    assert!(current.inputs.keyboard.is_none());
+    let ordinary_graph = Playback::try_from_prepared_with_device_resources(
+        Arc::clone(&current.prepared),
+        &current.resources,
+    )
+    .unwrap();
+    let added = original
+        - ordinary_graph
+            .accounted_session_runtime_bytes_on_control()
+            .unwrap();
+    assert!(
+        (1..=quote).contains(&added),
+        "the initial publication charges its private route"
+    );
+    let latency = current.prepared.arrangement().main_latency_frames() as usize;
+    assert!(latency > 0);
+
+    let first = Arc::new(ComputerKeyboardInput::default());
+    let next = Arc::new(ComputerKeyboardInput::default());
+    for (request_id, input) in [(1, &first), (2, &next)] {
+        let metadata = ResidentPublicationMetadata {
+            computer_keyboard_request: Some(request_id),
+            ..canonical_metadata(&current, context)
+        };
+        let mut selected = current.inputs.clone();
+        selected.keyboard = Some((track, Arc::clone(input)));
+        session
+            .publish_resident_runtime_inputs(
+                &mut current,
+                &mut sink,
+                sampler_export::Admission::default(),
+                metadata,
+                ResidentPublicationPolicy::InheritRuntime,
+                selected,
+                Some(RequiredInput::Keyboard),
+            )
+            .unwrap();
+        assert_eq!(current.inputs.version, request_id);
+        let playback = &mut sink.pending.as_mut().unwrap().0;
+        assert!(
+            playback
+                .accounted_session_runtime_bytes_on_control()
+                .unwrap()
+                > original
+        );
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut [[0.0; 2]; 4]).unwrap();
+        playback.apply(PlaybackCommand::Pause);
+        let mut output = vec![[0.0; 2]; latency + 128];
+        playback.render(&mut output).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+        input.set_key(0, Some((60, 100, request_id))).unwrap();
+        playback.render(&mut output).unwrap();
+        assert!(output[..latency].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(output[latency..].iter().any(|frame| *frame != [0.0; 2]));
+        assert_eq!(playback.position(), 4);
+    }
+    assert!(first.is_cancelled());
+    assert!(!next.is_cancelled());
 }
 
 #[test]

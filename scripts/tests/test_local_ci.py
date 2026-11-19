@@ -483,6 +483,411 @@ class ManualFixtureCleanupTests(unittest.TestCase):
         self.assertIs(local_ci.LocalCiRunner._step_sequence_error, original)
 
 
+class ReportStepAdmissionTests(unittest.TestCase):
+    def test_unscoped_full_audit_shards_only_without_native_opt_in(self):
+        ordinary = local_ci.LocalCiRunner(env={})
+        native = local_ci.LocalCiRunner(env={"HEX_VST3_INSTANCE_RECEIPT": "fixture"})
+        release = local_ci.LocalCiRunner(mode="release", env={})
+        for runner, argv in ((ordinary, local_ci.ci_plan.python_tests.SHARDED_DISCOVERY_ARGV),
+                             (native, local_ci.ci_plan.python_tests.COMPREHENSIVE_ARGV),
+                             (release, local_ci.ci_plan.python_tests.COMPREHENSIVE_ARGV)):
+            with self.subTest(mode=runner.mode, native=runner.summary["native_acceptance_opt_in"]):
+                step = next(step for step in runner.steps if step.step_id == "runner-tests")
+                self.assertEqual(step.argv, argv)
+                self.assertTrue(step.uses_cargo_target and step.requires_tests)
+                self.assertIs(runner.summary["sharded_full_python"], runner is ordinary)
+                self.assertIsNone(runner._step_sequence_error())
+                evidence = {**runner.summary, "steps": [
+                    {"step_id": s.step_id, "argv": list(s.argv), "test_results": {"python_executions": [1]}}
+                    for s in runner.steps
+                ]}
+                local_ci.validate_report_steps(evidence)
+        ordinary.env["HEX_TEST_SIGNING_IDENTITY"] = "fixture"
+        self.assertIn("without native opt-in", ordinary._step_sequence_error())
+
+    def evidence(self):
+        plan = {"scope": "full", "python_tests": {"mode": "comprehensive",
+                "test_selectors": ["test_local_ci"], "sharded_discovery": True}}
+        return {"plan": plan, "steps": [{"step_id": step.step_id, "argv": list(step.argv),
+                "status": "passed", "test_results": {"rust_passed_by_binary": [1], "python_executions": [1]}}
+                for step in local_ci.planned_steps(plan)]}
+
+    def test_complete_steps_and_known_narrowed_python_configuration(self):
+        evidence = self.evidence()
+        local_ci.validate_report_steps(evidence, allow_carried=True)
+        row = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+        row["carry"] = {"planned_argv": row["argv"],
+                        "carried_remainder_from": {"report": "original.json", "commit": "a" * 40}}
+        row["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci.SomeTests"]
+        local_ci.validate_report_steps(evidence, allow_carried=True)
+        row["argv"] = ["true"]
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_missing_reordered_and_altered_configurations_refuse(self):
+        for change in (lambda rows: rows.pop(), lambda rows: rows.reverse(),
+                       lambda rows: rows[0].update(argv=["true"])):
+            evidence = self.evidence()
+            change(evidence["steps"])
+            with self.assertRaisesRegex(ValueError, "complete required configurations"):
+                local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_nonpython_narrowing_and_zero_match_refuse(self):
+        evidence = self.evidence()
+        row = evidence["steps"][0]
+        row["carry"] = {"planned_argv": row["argv"]}
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+        evidence = self.evidence()
+        required = next(step for step in local_ci.planned_steps(evidence["plan"]) if step.requires_tests)
+        next(row for row in evidence["steps"] if row["step_id"] == required.step_id)["test_results"] = {}
+        with self.assertRaisesRegex(ValueError, "zero-match"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_malformed_test_count_objects_refuse(self):
+        for counts in ([], {"rust_passed_by_binary": "one"}, {"python_executions": [None]}):
+            evidence = self.evidence()
+            evidence["steps"][0]["test_results"] = counts
+            with self.assertRaisesRegex(ValueError, "malformed test counts"):
+                local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_malformed_nested_selection_refuses_before_inheritance(self):
+        for value in ([], None, 42):
+            evidence = self.evidence()
+            evidence["plan"]["python_tests"] = value
+            for allow_carried in (False, True):
+                with self.subTest(value=value, carry=allow_carried), \
+                        self.assertRaisesRegex(ValueError, "historical report selection"):
+                    local_ci.validate_report_steps(evidence, allow_carried=allow_carried)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "old.json"
+            report.write_text(json.dumps(evidence))
+            runner = local_ci.LocalCiRunner(root, mode="merge", plan={"scope": "full"}, carry_report=report)
+            runner._carry = [{"action": "carry"}]
+            runner._prepare_carry()
+            self.assertIsNone(runner._carry)
+            self.assertIn("historical report selection", runner.summary["carry"]["refused"])
+            self.assertIn("every step runs fresh", runner.summary["carry"]["refused"])
+
+    def test_malformed_narrowed_selector_groups_refuse(self):
+        evidence = self.evidence()
+        evidence["plan"]["python_tests"]["test_selectors"] = None
+        row = next(row for row in evidence["steps"] if row["step_id"] == "runner-tests")
+        row["carry"] = {"planned_argv": row["argv"],
+                        "carried_remainder_from": {"report": "old.json", "commit": "a" * 40}}
+        row["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci"]
+        with self.assertRaisesRegex(ValueError, "unknown narrowed"):
+            local_ci.validate_report_steps(evidence, allow_carried=True)
+
+    def test_module_source_cannot_escape_verified_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "src/lib.rs").write_text('#[path = "/outside.rs"]\nmod outside;\n')
+            with self.assertRaisesRegex(ValueError, "escapes the verified workspace"):
+                local_ci.ci_plan.module_paths(root / "src", workspace_root=root)
+
+
+class SuppliedSelectionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        self.git("init", "-q")
+        (self.root / ".gitignore").write_text("artifacts/\ntarget/\n")
+        (self.root / "Cargo.toml").write_text("[workspace]\nmembers = ['crates/fixture']\n")
+        self.crate = self.root / "crates/fixture"
+        (self.crate / "src").mkdir(parents=True)
+        (self.crate / "Cargo.toml").write_text("[package]\nname = 'fixture'\nversion = '0.1.0'\n")
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 1 }\n")
+        (self.root / "README.md").write_text("first\n")
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD")
+        (self.root / "README.md").write_text("second\n")
+        self.commit()
+        self.target = self.root / "target"
+        self.target.mkdir()
+        (self.target / "preserve").write_text("existing target\n")
+        self.env["CARGO_TARGET_DIR"] = str(self.target)
+        self.metadata = {"workspace_root": str(self.root), "target_directory": str(self.target),
+                         "workspace_members": ["fixture"], "packages": [{
+                             "id": "fixture", "name": "fixture", "version": "0.1.0",
+                             "manifest_path": str(self.crate / "Cargo.toml"), "features": {},
+                             "targets": [{"name": "fixture", "kind": ["lib"]}], "dependencies": []}]}
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.root, env=self.env, text=True).strip()
+
+    def commit(self):
+        self.git("add", ".")
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+
+    def plan(self):
+        return local_ci.ci_plan.resolve(self.root, profile="merge", base=self.base,
+            source=self.git("rev-parse", "HEAD"), metadata=self.metadata, env=self.env)
+
+    def run_plan(self, plan, *, stop_at_target=False, untrusted_carry=False):
+        runner = local_ci.LocalCiRunner(self.root, mode="merge", env=self.env, plan=plan, min_free_bytes=0,
+            carry_report=self.root / "artifacts/untrusted-report.json" if untrusted_carry else None)
+        original_run = subprocess.run
+        metadata_calls = []
+        def metadata_command(argv, *args, **kwargs):
+            if argv[:2] == ["cargo", "metadata"]:
+                metadata_calls.append(argv)
+                self.assertEqual(kwargs["env"]["CARGO_TARGET_DIR"], str(self.target))
+                self.assertEqual(kwargs["env"]["GIT_CONFIG_GLOBAL"], os.devnull)
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.metadata), "")
+            return original_run(argv, *args, **kwargs)
+        def record_step(step, index):
+            result = {"step_id": step.step_id, "argv": list(step.argv), "status": "passed"}
+            runner.summary["steps"].append(result)
+            return result
+        with patch.object(runner, "_execution_policy_error", return_value=None), \
+                patch.object(local_ci.subprocess, "run", side_effect=metadata_command), \
+                patch.object(runner, "_prepare_target_cache", return_value=False) as target, \
+                patch.object(runner, "_prepare_carry", side_effect=AssertionError("carry prepared")) as carry, \
+                patch.object(runner, "_run_step", side_effect=record_step) as execute, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = runner.run()
+        self.assertEqual((self.target / "preserve").read_text(), "existing target\n")
+        self.assertEqual(len(metadata_calls), 1)
+        if stop_at_target:
+            target.assert_called_once()
+        else:
+            target.assert_not_called()
+        carry.assert_not_called()
+        return runner, result, execute
+
+    def test_rehashed_python_selection_refuses_before_execution(self):
+        plan = self.plan()
+        plan["python_tests"]["modules"] = ["test_unrelated"]
+        self.assert_refused(plan)
+
+    def assert_refused(self, plan):
+        plan.pop("plan_sha256")
+        plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+        runner, result, execute = self.run_plan(plan, untrusted_carry=True)
+        self.assertEqual(result, 2)
+        self.assertIn("selection_error", runner.summary)
+        execute.assert_not_called()
+
+    def test_rehashed_inventory_refuses_before_execution(self):
+        plan = self.plan()
+        plan["cargo_inventory"][0]["features"] = {"forged": []}
+        self.assert_refused(plan)
+
+    def test_metadata_change_since_planning_refuses_before_execution(self):
+        plan = self.plan()
+        self.metadata["packages"][0]["features"] = {"new_configuration": []}
+        self.assert_refused(plan)
+
+    def test_rehashed_policy_refuses_before_execution(self):
+        plan = self.plan()
+        plan["policy_version"] -= 1
+        self.assert_refused(plan)
+
+    def test_rehashed_boundary_refuses_before_execution(self):
+        plan = self.plan()
+        plan["boundary"] = {"packages": []}
+        self.assert_refused(plan)
+
+    def test_rust_scope_cannot_masquerade_as_metadata(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        plan = self.plan()
+        self.assertEqual(plan["scope"], "rust")
+        plan["scope"] = "metadata"
+        plan.pop("boundary")
+        plan["affected_packages"] = []
+        self.assert_refused(plan)
+
+    def test_matching_metadata_selection_uses_explicit_runner_environment(self):
+        plan = self.plan()
+        # Ambient Git configuration must not replace the runner's environment.
+        with patch.dict(os.environ, {"GIT_DIR": str(self.root / "missing")}):
+            runner, result, execute = self.run_plan(plan)
+        self.assertEqual(result, 0)
+        self.assertEqual([call.args[0] for call in execute.call_args_list], list(local_ci.planned_steps(plan)))
+        self.assertNotIn("selection_error", runner.summary)
+
+    def test_matching_rust_selection_reaches_target_admission(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        runner, result, execute = self.run_plan(self.plan(), stop_at_target=True)
+        self.assertNotIn("selection_error", runner.summary)
+        self.assertEqual(result, 1)
+        self.assertTrue(all(not runner._uses_cargo_target(call.args[0]) for call in execute.call_args_list))
+
+    def test_rehashed_reuse_overlay_requires_its_actual_report(self):
+        plan = self.plan()
+        plan["reuse"] = {"report": str(self.root / "absent.json"), "source": plan["base"],
+                         "native_acceptance_opt_in": False, "dependency_inputs": {}}
+        self.assert_refused(plan)
+
+    def reuse_plan(self, alter_previous=None):
+        # Report bytes cannot mutate the separately observed Cargo metadata.
+        previous = json.loads(json.dumps(self.plan()))
+        if alter_previous is not None:
+            alter_previous(previous)
+            previous.pop("plan_sha256")
+            previous["plan_sha256"] = hashlib.sha256(json.dumps(previous, sort_keys=True).encode()).hexdigest()
+        report = self.root / "artifacts/runtime.json"
+        report.parent.mkdir()
+        tree = {"commit": previous["source"]}
+        report.write_text(json.dumps({"schema_version": 2, "mode": "merge", "status": "passed",
+            "exit_code": 0, "stale": False, "dirty": False, "start_tree": tree, "end_tree": tree,
+            "native_acceptance_opt_in": False, "runtime_inputs": previous["runtime_inputs"],
+            "commit": previous["source"], "plan": previous,
+            "target_cache": {"dependency_inputs": {"version": 1}},
+            # Fabricated harness counts exercise report admission, not product tests.
+            "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                       "test_results": {"rust_passed_by_binary": [1]}}
+                      for step in local_ci.planned_steps(previous)]}))
+        (self.root / "README.md").unlink()
+        (self.root / "docs").mkdir()
+        (self.root / "docs/new.md").write_text("third\n")
+        self.commit()
+        return local_ci.reusable_plan(self.root, self.plan(), report, env=self.env)
+
+    def test_rehashed_reuse_identity_refuses_before_execution(self):
+        plan = self.reuse_plan()
+        plan["reuse"]["dependency_inputs"] = {"forged": True}
+        self.assert_refused(plan)
+
+    def test_matching_reuse_overlay_is_reconstructed_before_target_admission(self):
+        with patch.dict(os.environ, {"GIT_DIR": str(self.root / "missing")}):
+            runner, result, execute = self.run_plan(self.reuse_plan(), stop_at_target=True)
+        self.assertNotIn("selection_error", runner.summary)
+        self.assertEqual(result, 1)
+        execute.assert_not_called()
+
+    def test_rehashed_historical_python_selection_refuses_reuse(self):
+        with self.assertRaisesRegex(ValueError, "historical"):
+            self.reuse_plan(lambda old: old["python_tests"].update(modules=["test_unrelated"]))
+
+    def test_rehashed_historical_inventory_refuses_reuse(self):
+        with self.assertRaisesRegex(ValueError, "historical"):
+            self.reuse_plan(lambda old: old["cargo_inventory"][0]["features"].update(forged=[]))
+
+    def test_historical_rust_scope_cannot_masquerade_as_metadata(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        def as_metadata(old):
+            self.assertEqual(old["scope"], "rust")
+            old["scope"] = "metadata"
+            old["affected_packages"] = []
+            old.pop("boundary")
+        with self.assertRaisesRegex(ValueError, "historical"):
+            self.reuse_plan(as_metadata)
+
+    def test_matching_historical_rust_selection_remains_reusable(self):
+        (self.crate / "src/lib.rs").write_text("pub fn value() -> u8 { 2 }\n")
+        self.commit()
+        runner, result, execute = self.run_plan(self.reuse_plan(), stop_at_target=True)
+        self.assertNotIn("selection_error", runner.summary)
+        self.assertEqual(result, 1)
+        execute.assert_not_called()
+
+    def test_historical_profile_must_match_report_mode(self):
+        with self.assertRaisesRegex(ValueError, "historical plan mode/source"):
+            self.reuse_plan(lambda old: old.update(profile="full"))
+
+    def test_forged_historical_report_refuses_before_target_or_carry(self):
+        plan = self.reuse_plan()
+        report = Path(plan["reuse"]["report"])
+        evidence = json.loads(report.read_bytes())
+        old = evidence["plan"]
+        old["python_tests"]["modules"] = ["test_unrelated"]
+        old.pop("plan_sha256")
+        old["plan_sha256"] = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()
+        raw = json.dumps(evidence).encode()
+        report.write_bytes(raw)
+        plan["reuse"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        self.assert_refused(plan)
+        self.assertEqual(report.read_bytes(), raw)
+
+    def test_committed_inputs_match_binary_modes_and_links_without_checkout(self):
+        (self.root / "binary.bin").write_bytes(b"\x00\xff\nblob 123\n")
+        executable = self.root / "executable"
+        executable.write_text("fixture\n")
+        executable.chmod(0o755)
+        (self.root / "link").symlink_to("binary.bin")
+        self.commit()
+        source = self.git("rev-parse", "HEAD")
+        expected = local_ci.ci_plan.runtime_inputs(self.root, self.env)
+        original = (self.root / "binary.bin").read_bytes()
+        self.assertEqual(local_ci.ci_plan.committed_runtime_inputs(self.root, source, env=self.env), expected)
+        (self.root / "README.md").unlink()
+        (self.root / "docs").mkdir()
+        (self.root / "docs/new.md").write_text("new prose\n")
+        self.commit()
+        head = self.git("rev-parse", "HEAD")
+        self.assertEqual(local_ci.ci_plan.committed_runtime_inputs(self.root, source, env=self.env), expected)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual((self.root / "binary.bin").read_bytes(), original)
+
+    def test_committed_inputs_refuse_unknown_gitlinks(self):
+        self.git("update-index", "--add", "--cacheinfo", "160000," + self.git("rev-parse", "HEAD") + ",nested")
+        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "gitlink")
+        with self.assertRaisesRegex(ValueError, "unsupported Git tree entry"):
+            local_ci.ci_plan.committed_runtime_inputs(self.root, self.git("rev-parse", "HEAD"), env=self.env)
+
+    def test_historical_plan_must_be_an_object(self):
+        report = self.root / "artifacts/malformed.json"
+        report.parent.mkdir()
+        report.write_text(json.dumps({"plan": [], "native_acceptance_opt_in": False}))
+        for check in (local_ci.reusable_plan, local_ci.ci_plan.reuse_checks):
+            with self.subTest(check=check.__name__), self.assertRaisesRegex(ValueError, "plan must be an object"):
+                check(self.root, self.plan(), report, env=self.env)
+
+    def test_nonqualifying_custom_selection_remains_available(self):
+        runner = local_ci.LocalCiRunner(self.root, mode="edit", env=self.env,
+            plan={"qualifies_merge": False}, steps=())
+        self.assertIsNone(runner._selection_error())
+
+
+class SuppliedGitScopeTests(unittest.TestCase):
+    def test_altered_git_scope_refuses_before_steps_or_target_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, env=env, text=True).strip()
+            git("init", "-q")
+            (root / ".gitignore").write_text("artifacts/\n")
+            (root / "README.md").write_text("first\n")
+            git("add", ".")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            (root / "README.md").write_text("second\n")
+            git("add", ".")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "source")
+            plan = {"profile": "merge", "scope": "metadata", "qualifies_merge": True,
+                    "base": base, "source": git("rev-parse", "HEAD"),
+                    "tree": git("rev-parse", "HEAD^{tree}"), "paths": ["README.md"],
+                    "runtime_inputs": local_ci.ci_plan.runtime_inputs(root, env)}
+            matching = local_ci.LocalCiRunner(root, mode="merge", env=env, plan=plan, min_free_bytes=0)
+            with patch.dict(os.environ, {"GIT_DIR": str(root / "not-the-repository")}):
+                self.assertIsNone(matching._git_scope_error())
+            self.assertIsNone(local_ci.LocalCiRunner(root, mode="edit", env=env,
+                plan={"qualifies_merge": False}, steps=())._git_scope_error())
+            for field, value in (("paths", []), ("tree", "0" * 40), ("base", plan["source"])):
+                altered = {**plan, field: value}
+                altered.pop("plan_sha256", None)
+                altered["plan_sha256"] = hashlib.sha256(json.dumps(altered, sort_keys=True).encode()).hexdigest()
+                runner = local_ci.LocalCiRunner(root, mode="merge", env=env, plan=altered,
+                                                run_id=field, min_free_bytes=0)
+                with patch.object(runner, "_execution_policy_error", return_value=None), \
+                        patch.object(runner, "_run_step", side_effect=AssertionError("unvalidated steps executed")) as execute, \
+                        patch.object(runner, "_resolve_cargo_identity") as target:
+                    self.assertEqual(runner.run(), 2)
+                self.assertIn("git_scope_error", runner.summary)
+                execute.assert_not_called()
+                target.assert_not_called()
+
+
 class RunnerEnvironmentInputTests(unittest.TestCase):
     def test_qualifying_inputs_use_the_runner_git_environment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -524,6 +929,7 @@ class RunnerEnvironmentInputTests(unittest.TestCase):
                         runner.summary["cargo_metadata_error"] = "fixture stopped before target"
                         return False
                     with patch.object(runner, "_execution_policy_error", return_value=None), \
+                            patch.object(runner, "_git_scope_error", return_value=None), \
                             patch.object(runner, "_resolve_cargo_identity", side_effect=stop_before_target) as identity, \
                             patch.object(runner, "_run_step") as execute:
                         self.assertEqual(runner.run(), 2)
@@ -724,6 +1130,15 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.step_sequence_patch = patch.object(local_ci.LocalCiRunner, "_step_sequence_error", return_value=None)
         self.step_sequence_patch.start()
         self.addCleanup(self.step_sequence_patch.stop)
+        # These pipeline fixtures use synthetic Git; scope authentication has
+        # its own real-repository regression above.
+        self.git_scope_patch = patch.object(local_ci.LocalCiRunner, "_git_scope_error", return_value=None)
+        self.git_scope_patch.start()
+        self.addCleanup(self.git_scope_patch.stop)
+        # Canonical selection uses real Git/Cargo metadata in its own tests.
+        selection = patch.object(local_ci.LocalCiRunner, "_selection_error", return_value=None)
+        selection.start()
+        self.addCleanup(selection.stop)
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
         # Tests for unsafe lexical aliases construct those paths explicitly.
@@ -3166,6 +3581,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
             '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
             'fi\n'
+            'if [ "$1" = scripts/python_shards.py ]; then echo "Ran 1 test in 0.001s"; fi\n'
             'if [ "$1" = scripts/test_shards.py ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
             'echo "completed $tool $*"',
         ))
@@ -3175,12 +3591,13 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             'if [ "$1" = test ]; then echo "test result: ok. 1 passed; 0 failed; 0 ignored;"; fi\n'
             'echo "completed $tool $*"',
         ))
-        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
-                             steps=local_ci.FULL_STEPS)
+        steps = local_ci.qualification_steps("full", None, native_acceptance_opt_in=False,
+                                             sharded_full_python=True)
+        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)}, steps=steps)
         self.assertEqual(runner.run(), 0)
         summary = self.summary("python-cargo")
         self.assertEqual([(s["step_id"], s["argv"], s["status"]) for s in summary["steps"]],
-                         [(s.step_id, list(s.argv), "passed") for s in local_ci.FULL_STEPS])
+                         [(s.step_id, list(s.argv), "passed") for s in steps])
         self.assertEqual(summary["target_cache"]["action"], "claim-empty")
         self.assertTrue((target / "debug/fixture.rlib").is_file())
         self.assertNotIn("cargo clean", self.call_log.read_text())

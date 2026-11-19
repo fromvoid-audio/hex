@@ -14,6 +14,10 @@
 //! discard their late output. The audio host uses aligned dry input for effects
 //! and silence for instruments. No stale-buffer replay, waiting, waking,
 //! allocation or DSP rollback occurs; persistent misses still revoke the epoch.
+//! A one-slot atomic observation reports the first accepted concealed quantum
+//! and worker phase; a boolean records additional gaps while the slot is busy.
+//! The callback performs one bounded publication attempt only after host-format
+//! acceptance. Polling or source retirement may lose diagnostic observations.
 
 type Frame = [f32; 2];
 use crate::protocol::{EditorPerforms, EditorRestorations};
@@ -23,7 +27,7 @@ use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
-        AtomicU8, AtomicU64,
+        AtomicBool, AtomicU8, AtomicU64,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
@@ -86,6 +90,15 @@ pub struct DeadlineMiss {
     pub worker_phase: DeadlineWorkerPhase,
 }
 
+/// Best-effort observation of an accepted concealed quantum. An overflow flag
+/// means at least one other accepted gap could not occupy the single slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConcealedOutput {
+    pub binding: Binding,
+    pub miss: DeadlineMiss,
+    pub overflowed: bool,
+}
+
 /// The callback's last accepted state within its copied transport quantum.
 /// This observation grants no graph, worker, quiescence or reclamation authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +106,15 @@ pub enum CommittedQuantumState {
     Closed,
     OpenUnprogrammed,
     OpenProgram(NonZeroU64),
+}
+
+/// A bounded snapshot from the exact callback pair. Untouched means no
+/// callback stage was accepted at observation time; a later callback can change
+/// it immediately. This grants no worker, graph or publication authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantumObservation {
+    Untouched(Binding),
+    Committed(CommittedQuantum),
 }
 
 /// A coherent diagnostic snapshot from the original constructor-paired callback.
@@ -110,6 +132,10 @@ struct Revocation {
     processed_prefix: AtomicU64,
     missed_reply: AtomicU64,
     missed_phase: AtomicU8,
+    concealed_slot: AtomicU8,
+    concealed_reply: AtomicU64,
+    concealed_phase: AtomicU8,
+    concealed_overflow: AtomicBool,
     quantum_serial: AtomicU64,
     quantum_program: AtomicU64,
     quantum_state: AtomicU8,
@@ -132,6 +158,10 @@ impl Revocation {
             processed_prefix: AtomicU64::new(0),
             missed_reply: AtomicU64::new(0),
             missed_phase: AtomicU8::new(0),
+            concealed_slot: AtomicU8::new(0),
+            concealed_reply: AtomicU64::new(0),
+            concealed_phase: AtomicU8::new(0),
+            concealed_overflow: AtomicBool::new(false),
             quantum_serial: AtomicU64::new(0),
             quantum_program: AtomicU64::new(0),
             quantum_state: AtomicU8::new(0),
@@ -154,14 +184,22 @@ impl Revocation {
     fn publish_quantum(&self, quantum: CommittedQuantumState) {
         use std::sync::atomic::Ordering::SeqCst;
         let serial = self.quantum_serial.load(SeqCst);
-        let Some(next) = serial.checked_add(2) else {
-            self.quantum_serial.store(u64::MAX, SeqCst);
-            return;
+        // Serial 1 is reserved for the first accepted-stage transition. It
+        // was marked before callback acceptance, so an observer cannot mistake
+        // the acceptance/publication gap for an untouched callback.
+        let next = if serial == 1 {
+            2
+        } else {
+            if serial & 1 != 0 {
+                return;
+            }
+            let Some(next) = serial.checked_add(2) else {
+                self.quantum_serial.store(u64::MAX, SeqCst);
+                return;
+            };
+            self.quantum_serial.store(serial + 1, SeqCst);
+            next
         };
-        if serial & 1 != 0 {
-            return;
-        }
-        self.quantum_serial.store(serial + 1, SeqCst);
         let (state, key) = match quantum {
             CommittedQuantumState::Closed => (1, 0),
             CommittedQuantumState::OpenUnprogrammed => (2, 0),
@@ -201,16 +239,36 @@ impl Revocation {
         (prefix == self.received_prefix.load(Acquire)).then_some((sequence, NonZeroU64::new(key)))
     }
 
-    fn record_deadline_miss(&self, sequence: u64) {
-        let phase = if self.processed_prefix.load(Acquire) > sequence {
+    fn worker_phase(&self, sequence: u64) -> DeadlineWorkerPhase {
+        if self.processed_prefix.load(Acquire) > sequence {
             DeadlineWorkerPhase::Publishing
         } else if self.received_prefix.load(Acquire) > sequence {
             DeadlineWorkerPhase::Processing
         } else {
             DeadlineWorkerPhase::AwaitingPickup
-        };
+        }
+    }
+
+    fn record_deadline_miss(&self, sequence: u64) {
+        let phase = self.worker_phase(sequence);
         self.missed_reply.store(sequence, Relaxed);
         self.missed_phase.store(phase as u8, Release);
+    }
+
+    // Single callback producer and single control consumer. Neither side
+    // retries or waits when the other owns the slot.
+    fn publish_concealment(&self, miss: DeadlineMiss) {
+        if self
+            .concealed_slot
+            .compare_exchange(0, 1, Acquire, Relaxed)
+            .is_err()
+        {
+            self.concealed_overflow.store(true, Relaxed);
+            return;
+        }
+        self.concealed_reply.store(miss.reply_sequence, Relaxed);
+        self.concealed_phase.store(miss.worker_phase as u8, Relaxed);
+        self.concealed_slot.store(2, Release);
     }
 
     fn decode_fault(code: u8) -> Option<Fault> {
@@ -329,7 +387,7 @@ pub struct ProcessTiming {
     pub cycle_beats_raw: Option<(u64, u64)>,
 }
 
-pub const MAX_TIMING_CHANGES: usize = 7;
+pub use hex_lattice_contract::MAX_FOREIGN_TIMING_CHANGES as MAX_TIMING_CHANGES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TimingChange {
@@ -555,6 +613,22 @@ impl Control {
         })
     }
 
+    /// Distinguish an untouched paired callback from a committed quantum.
+    /// None includes a concurrent first acceptance, contention, revocation,
+    /// and exhausted observation serial. Neither result stays valid by itself.
+    pub fn quantum_observation(&self) -> Option<QuantumObservation> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.revoked.is_revoked() {
+            return None;
+        }
+        let serial = self.revoked.quantum_serial.load(SeqCst);
+        if serial == 0 {
+            return (self.revoked.quantum_serial.load(SeqCst) == 0 && !self.revoked.is_revoked())
+                .then_some(QuantumObservation::Untouched(self.revoked.binding));
+        }
+        self.committed_quantum().map(QuantumObservation::Committed)
+    }
+
     /// Read one bounded snapshot of the exact paired callback's most recently
     /// accepted quantum. None means no observation, contention, exhaustion, or
     /// revocation. A copied binding is not proof of any graph installation.
@@ -621,6 +695,32 @@ impl Control {
             worker_phase,
         })
     }
+    /// Drain at most one accepted concealment from this exact pair. Contention
+    /// defers the read; an absent value is not evidence that no gap occurred.
+    pub fn take_concealed_output(&self) -> Option<ConcealedOutput> {
+        self.revoked
+            .concealed_slot
+            .compare_exchange(2, 1, Acquire, Relaxed)
+            .ok()?;
+        let sequence = self.revoked.concealed_reply.load(Relaxed);
+        let phase = self.revoked.concealed_phase.load(Relaxed);
+        let overflowed = self.revoked.concealed_overflow.swap(false, Relaxed);
+        self.revoked.concealed_slot.store(0, Release);
+        let worker_phase = match phase {
+            1 => DeadlineWorkerPhase::AwaitingPickup,
+            2 => DeadlineWorkerPhase::Processing,
+            3 => DeadlineWorkerPhase::Publishing,
+            _ => return None,
+        };
+        Some(ConcealedOutput {
+            binding: self.revoked.binding,
+            miss: DeadlineMiss {
+                reply_sequence: sequence,
+                worker_phase,
+            },
+            overflowed,
+        })
+    }
     /// The exact callback's first actionable fault, once. A control/worker
     /// revocation alone and a later callback observing it have no new cause.
     pub fn take_callback_fault(&self) -> Option<Fault> {
@@ -676,7 +776,8 @@ pub struct WorkerRequest {
     pub block: Block,
     pub parameter_capacity: usize,
     pub dense_parameter: Option<DenseParameterRequest>,
-    /// Program frozen at the accepted physical quantum opening.
+    /// Opening program, also the conservative frontier for retained history
+    /// when a later clock region changed programs inside the quantum.
     pub authored_program: Option<NonZeroU64>,
     /// The exact accepted quantum starts on a known compensated Arrangement
     /// origin. The copied clock stays with the transport's in-flight request.
@@ -811,6 +912,7 @@ struct Stage {
     request: Option<InputRequest>,
     manual: Option<AcceptedManualParameter>,
     editor: Option<AcceptedEditorQuantum>,
+    concealed: Option<DeadlineMiss>,
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
@@ -1011,11 +1113,11 @@ impl Callback {
             .as_ref()
             .is_some_and(|stage| stage.staged_frames == stage.expected_frames)
     }
-    /// An audible Pause can end inside the physical callback. The caller
-    /// proves the exact end of playback; a contiguous staged prefix ending
-    /// there may omit the unvisited, paused suffix. A fully staged monitoring
-    /// path keeps its original extent. Final host acceptance is still required.
-    pub fn end_staging_at_pause(&mut self, frame: usize) {
+    /// End at a proven transport hold, such as an audible Pause or a stream
+    /// waiting for pages. A contiguous stage ending exactly there may omit the
+    /// unvisited suffix. A fully staged monitoring path keeps its extent.
+    /// Final host acceptance is still required.
+    pub fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
         if let Some(stage) = self.staged.as_mut()
             && frame != 0
             && stage.staged_frames == frame
@@ -1056,6 +1158,7 @@ impl Callback {
             request: None,
             manual: None,
             editor: None,
+            concealed: None,
             expected_frames: frames,
             staged_frames: 0,
             input_events: 0,
@@ -1187,6 +1290,61 @@ impl Callback {
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
     ) -> Result<SegmentReply, Fault> {
+        let mut reply = SegmentReply {
+            events: Events::default(),
+            parameters: Parameters::default(),
+            concealed_output: None,
+        };
+        reply.concealed_output = self.stage_effect_segment_with_reply(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+            Some(&mut reply),
+        )?;
+        Ok(reply)
+    }
+
+    /// Stage native PCM for a consumer that observes reply metadata on control.
+    /// Validate the same output bounds without copying unused events and points.
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows as ordinary effect staging.
+    pub fn stage_effect_pcm_segment(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
+        self.stage_effect_segment_with_reply(
+            frame_offset,
+            input,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Borrowed windows share one staging transaction.
+    fn stage_effect_segment_with_reply(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+        reply: Option<&mut SegmentReply>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
         output.fill([0.0; 2]);
         let result = self.stage_segment_inner(
             frame_offset,
@@ -1196,6 +1354,7 @@ impl Callback {
             output,
             timing,
             origins,
+            reply,
         );
         if let Err(fault) = result {
             output.fill([0.0; 2]);
@@ -1214,7 +1373,8 @@ impl Callback {
         output: &mut [Frame],
         mut timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
-    ) -> Result<SegmentReply, Fault> {
+        mut reply: Option<&mut SegmentReply>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
         if self.revoked.is_revoked() {
             return Err(Fault::Revoked);
         }
@@ -1265,6 +1425,9 @@ impl Callback {
         let program = authored
             .as_ref()
             .map(|segment| segment.program.quantum_program_key());
+        let clock_epoch = authored
+            .as_ref()
+            .and_then(|segment| segment.program.authored_clock_epoch());
         if initial_offset != 0
             && self.authored_origins.program.is_some()
             && self.authored_origins.program != program
@@ -1278,12 +1441,10 @@ impl Callback {
                 return Err(Fault::InvalidParameters);
             }
         }
-        let mut result = SegmentReply {
-            events: Events::default(),
-            parameters: Parameters::default(),
-            concealed_output: (initial_offset != 0 && stage.state.output_gap)
-                .then_some((0, input.len().min(quantum_frames - initial_offset))),
-        };
+        let mut concealed_output = (initial_offset != 0 && stage.state.output_gap)
+            .then_some((0, input.len().min(quantum_frames - initial_offset)));
+        let mut output_events = 0;
+        let mut output_parameters = 0;
         let mut event_index = 0;
         let mut parameter_index = 0;
         let mut input_parameters = parameters.len();
@@ -1306,7 +1467,7 @@ impl Callback {
                     None
                 };
                 stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
-                self.authored_origins.program = program;
+                self.authored_origins.open(program, clock_epoch);
                 stage.state.input.timing = (timing.at)(index);
                 if stage.state.input.timing.is_some_and(|origin| {
                     !origin.is_valid()
@@ -1327,9 +1488,12 @@ impl Callback {
                         sequence - 2,
                     )?;
                     if stage.state.output_gap {
-                        let start = result.concealed_output.map_or(index, |span| span.0);
-                        result.concealed_output =
-                            Some((start, input.len().min(index + quantum_frames)));
+                        stage.concealed = Some(DeadlineMiss {
+                            reply_sequence: sequence - 2,
+                            worker_phase: self.revoked.worker_phase(sequence - 2),
+                        });
+                        let start = concealed_output.map_or(index, |span| span.0);
+                        concealed_output = Some((start, input.len().min(index + quantum_frames)));
                     }
                     if let Some(manual) = stage.state.output.manual {
                         // Extent is at most one quantum, so only one reply
@@ -1357,10 +1521,15 @@ impl Callback {
                         });
                     }
                 }
-            } else if origin.is_some() && self.authored_origins.frames[offset - 1].is_none() {
-                // Starting a new authored run after unavailable history needs
-                // an SDK call of its own. Otherwise the first parameter point
-                // interpolates backward from the previous call's held value.
+            } else if origin.is_some()
+                && (self
+                    .authored_origins
+                    .switch_clock(offset, program, clock_epoch)?
+                    || self.authored_origins.frames[offset - 1].is_none())
+            {
+                // A new clock region or resumed history gets its own SDK call.
+                // Its first parameter point must not interpolate backward into
+                // the preceding region.
                 let change = (timing.at)(index)
                     .filter(|origin| origin.playing)
                     .ok_or(Fault::Protocol)?;
@@ -1409,9 +1578,12 @@ impl Callback {
                     .iter()
                     .filter(|e| usize::from(e.frame) == offset)
                 {
-                    let mut event = *event;
-                    event.frame = index as u16;
-                    result.events.push(event)?;
+                    output_events += 1;
+                    if let Some(reply) = reply.as_deref_mut() {
+                        let mut event = *event;
+                        event.frame = index as u16;
+                        reply.events.push(event)?;
+                    }
                 }
                 for point in stage
                     .state
@@ -1422,10 +1594,13 @@ impl Callback {
                     .iter()
                     .filter(|point| usize::from(point.frame) == offset)
                 {
-                    result.parameters.push(ParameterPoint {
-                        frame: index as u16,
-                        ..*point
-                    })?;
+                    output_parameters += 1;
+                    if let Some(reply) = reply.as_deref_mut() {
+                        reply.parameters.push(ParameterPoint {
+                            frame: index as u16,
+                            ..*point
+                        })?;
+                    }
                 }
             }
             if authored.is_some() {
@@ -1459,23 +1634,29 @@ impl Callback {
                 });
             }
         }
-        if result.events.as_slice().len() > MAX_EVENTS - stage.output_events {
+        if output_events > MAX_EVENTS - stage.output_events {
             return Err(Fault::InvalidEvents);
         }
-        if result.parameters.as_slice().len() > MAX_PARAMETER_POINTS - stage.output_parameters {
+        if output_parameters > MAX_PARAMETER_POINTS - stage.output_parameters {
             return Err(Fault::InvalidParameters);
         }
         stage.input_events = input_event_count;
         stage.legacy_input_events = legacy_input_events;
-        stage.output_events += result.events.as_slice().len();
+        stage.output_events += output_events;
         stage.input_parameters += input_parameters;
-        stage.output_parameters += result.parameters.as_slice().len();
+        stage.output_parameters += output_parameters;
         stage.staged_frames = end;
-        Ok(result)
+        Ok(concealed_output)
     }
     /// Call only after final host-format validation. Refusal terminates this
     /// epoch; consumed replies and foreign DSP are never rolled back/replayed.
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
+        if self.committed_quantum.is_none() {
+            // Mark the first transition before any state can be accepted.
+            self.revoked
+                .quantum_serial
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if !host_accepted {
             return self.fail(Fault::Protocol);
         }
@@ -1514,6 +1695,9 @@ impl Callback {
         if self.committed_quantum != Some(quantum) {
             self.revoked.publish_quantum(quantum);
             self.committed_quantum = Some(quantum);
+        }
+        if let Some(miss) = stage.concealed {
+            self.revoked.publish_concealment(miss);
         }
         Ok(())
     }

@@ -247,6 +247,8 @@ impl EditorView {
             &mut self.recovery,
             &mut self.pending_sample_drop,
             &mut self.pending_time_range_move,
+            &mut self.pending_loop,
+            &mut self.clip_loop,
         );
         self.pending_playback = None;
         self.pending_resident_publication = None;
@@ -460,6 +462,7 @@ impl EditorView {
         self.audio_admission.reset_audio();
         // A new output prepares fresh endpoints; it reports its own set.
         self.degraded_plugins = Default::default();
+        self.plugin_editor_windows.clear();
         if self
             .pending_publication_observation
             .as_ref()
@@ -507,6 +510,12 @@ impl EditorView {
                     });
                 }
                 self.status = "publishing gain preview".into();
+            }
+            crate::EditorPublicationState::VerifiedArrangementGainSubmitted { .. } => {
+                self.status = "publishing gain preview".into();
+            }
+            crate::EditorPublicationState::VerifiedArrangementGainRefused(reason) => {
+                self.status = format!("gain preview unavailable · {}", reason.to_lowercase());
             }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
@@ -669,6 +678,29 @@ impl EditorView {
             };
             crate::diagnostics::record_audio_backend_event(cx, &event);
             match event {
+                crate::EditorAudioEvent::PluginTransportToggle { project_generation } => {
+                    if project_generation == self.project_generation {
+                        let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
+                        self.toggle_play();
+                        changed = true;
+                    }
+                }
+                crate::EditorAudioEvent::PluginEditorWindows {
+                    project_generation,
+                    output_identity,
+                    devices,
+                } => {
+                    if project_generation == self.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.output_identity())
+                            == Some(output_identity)
+                    {
+                        changed |= self.plugin_editor_windows != devices;
+                        self.plugin_editor_windows = devices;
+                    }
+                }
                 crate::EditorAudioEvent::PluginParameterTouched {
                     source,
                     binding,
@@ -1118,6 +1150,7 @@ impl EditorView {
                     query_bytes,
                     self.time_selection_key_held
                 );
+                super::device_panel::trace_vst3_track_panel(self, snapshot);
             });
         }
         crate::diagnostics::record_audio(cx, self.audio.as_mut());
@@ -1175,6 +1208,7 @@ impl EditorView {
         visible_change |= self.tick_native_automation_recording();
         visible_change |= self.tick_automation_take_recovery();
         visible_change |= self.tick_midi_recording();
+        visible_change |= self.tick_audio_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
@@ -1237,6 +1271,20 @@ impl EditorView {
                     }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
+                    if self.abandon_bounce() {
+                        self.error = Some("bounce worker stopped".into());
+                        visible_change = true;
+                    }
+                    if let Some(path) = self.audio_recorder.pending_commit_path.take() {
+                        self.error = Some(
+                            format!(
+                                "audio recording commit outcome unknown · take retained at {}",
+                                hex_session::service::text::verbatim(path.display())
+                            )
+                            .into(),
+                        );
+                        visible_change = true;
+                    }
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -1936,6 +1984,8 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -2436,6 +2486,9 @@ impl EditorView {
         self.recovery_failure = event.recovery_failure.clone();
         self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
+        if let Some(offer) = event.device_insert_confirmation.take() {
+            self.device_insert_confirmation = Some(offer);
+        }
         self.plugin_effect_complete(&event);
         self.native_automation_take_completion(&event);
         self.observe_automation_take_recovery(&event);
@@ -2446,19 +2499,31 @@ impl EditorView {
                 event.state.revision,
             );
         }
+        if let Some(result) = event.plugin_parameter_conversion.take() {
+            super::device_panel::vst3_parameters::install_conversion_result(
+                self,
+                result,
+                event.state.revision,
+            );
+        }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
+        let gain_control_preview = self.audio_clip_controls.has_gain_preview();
         if self
             .audio_clip_controls
             .observe(self.project_generation, &event)
         {
+            if gain_control_preview {
+                self.set_held_gain_audition(None);
+                self.service.retire_arrangement_gain_audition();
+            }
             self.retire_sample_bpm_control();
         }
         let audio_placement_selection = self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.bypass_request_complete(&event);
         self.modulation_depth_complete(&event);
-        let clip_drop_cursor = self.clip_move_request_complete(&event);
+        let clip_drop = self.clip_move_request_complete(&event);
         self.clip_paint_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);
@@ -2524,6 +2589,8 @@ impl EditorView {
                 &mut self.recovery,
                 &mut self.pending_sample_drop,
                 &mut self.pending_time_range_move,
+                &mut self.pending_loop,
+                &mut self.clip_loop,
             );
             self.pending_playback = None;
             self.pending_resident_publication = None;
@@ -2553,6 +2620,7 @@ impl EditorView {
         {
             self.gain_recorder.arm_failed();
         }
+        let mut recorded_audio_failed_path = None;
         if event
             .audio_batch_complete
             .as_ref()
@@ -2562,6 +2630,11 @@ impl EditorView {
                     .is_some_and(|active| Arc::ptr_eq(active, completed))
             })
         {
+            if event.error.is_some() {
+                recorded_audio_failed_path = self.audio_recorder.pending_commit_path.take();
+            } else {
+                self.audio_recorder.pending_commit_path = None;
+            }
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
@@ -2578,10 +2651,8 @@ impl EditorView {
         } else {
             None
         };
-        if event.project_replaced
-            && let Some(control) = self.bounce_control.take()
-        {
-            control.cancel();
+        if event.project_replaced {
+            self.abandon_bounce();
         }
         // A bounce drop's ghost retires with its job's terminal, in the same
         // receive that installs the adopted (or unchanged, refused) state.
@@ -2829,6 +2900,10 @@ impl EditorView {
             self.committed_time_range_copy_view = None;
         }
         self.state = Some(event.state);
+        if let Some(state) = &self.state {
+            self.audio_recorder
+                .reconcile_audio_arm(&state.project, event.project_replaced);
+        }
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
         }
@@ -2956,6 +3031,7 @@ impl EditorView {
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.degraded_plugins = Default::default();
+            self.plugin_editor_windows.clear();
             self.drag_lanes.clear();
             self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();
@@ -3126,7 +3202,17 @@ impl EditorView {
                 });
                 self.select_copied_group(first, last, count);
             }
-        } else if let Some(hex_project::Created::Track(track)) = event.created {
+        } else if let Some(hex_project::Created::Track(track)) = event.created
+            && clip_drop.as_ref().is_none_or(|(cursor, moved)| {
+                moved.is_none()
+                    || cursor.track != track
+                    || self.selection_intent_epoch == Some(cursor.epoch)
+            })
+        {
+            let moved_selection = self.selected_track == Some(track)
+                && clip_drop
+                    .as_ref()
+                    .is_some_and(|(cursor, moved)| cursor.track == track && moved.is_some());
             self.focused_return = None;
             self.device_panel.main_selected = None;
             if let Some(state) = &self.state {
@@ -3136,8 +3222,10 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
-            self.selected_clip = None;
-            self.midi_selection.clear();
+            if !moved_selection {
+                self.selected_clip = None;
+                self.midi_selection.clear();
+            }
             self.reconcile_arrangement_focus();
             self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
@@ -3405,11 +3493,16 @@ impl EditorView {
             self.status = "restarting audio · time will be duplicated when ready".into();
         }
         if let Some(error) = event.error.filter(|_| !recovering_refused_time_copy) {
-            self.error = Some(
-                event
-                    .audio_batch_failure
-                    .map_or_else(|| error.into(), Into::into),
-            );
+            let mut displayed: super::display_error::DisplayError = event
+                .audio_batch_failure
+                .map_or_else(|| error.into(), Into::into);
+            if let Some(path) = recorded_audio_failed_path {
+                displayed = displayed.with_context(&format!(
+                    "take retained at {}",
+                    hex_session::service::text::verbatim(path.display())
+                ));
+            }
+            self.error = Some(displayed);
         } else if let Some(error) = stopped_restore_error {
             self.error = Some(error.into());
         }
@@ -3446,8 +3539,10 @@ impl EditorView {
             self.audition_midi_selection();
         }
         self.apply_completed_midi_step(midi_step_complete);
-        if let Some(cursor) = clip_drop_cursor.or(bounce_drop_cursor) {
-            self.install_drop_cursor(cursor);
+        if let Some((cursor, moved_clip)) =
+            clip_drop.or(bounce_drop_cursor.map(|cursor| (cursor, None)))
+        {
+            self.install_drop_cursor(cursor, moved_clip);
         }
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
@@ -3466,6 +3561,11 @@ impl EditorView {
                 return false;
             }
         };
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Recorded takes retain their own no-warp policy, not the browser-import preference.
+    pub(super) fn enqueue_recorded_audio(&mut self, request: Request) -> bool {
         self.enqueue_with_clip_scope(request, false)
     }
 
@@ -3634,7 +3734,10 @@ impl EditorView {
         duplicate_continuation: bool,
     ) -> bool {
         self.wake_poll();
-        if matches!(&request, Request::QueryPluginParameters(_)) {
+        if matches!(
+            &request,
+            Request::QueryPluginParameters(_) | Request::QueryPluginParameterConversion(_)
+        ) {
             // The panel owns retryable read intent. A full/busy service must
             // not move observations into the edit queue or interrupt a gesture.
             return match self.submit_to_service(request) {
@@ -3715,6 +3818,10 @@ impl EditorView {
             self.error = Some(
                 "finish or explicitly discard the midi take before another project action".into(),
             );
+            return false;
+        }
+        if self.audio_recorder.blocks_edits() {
+            self.error = Some("finish the audio recording before another project action".into());
             return false;
         }
         let own_gain_take = self.pending_gain_take_matches(&request);
@@ -3917,6 +4024,14 @@ impl EditorView {
         // picker path may still be awaiting the next render's Open reconciliation.
         if !request.is_project_open() && !recovery_restore {
             self.pending_open_path = None;
+        }
+        // A released play-start marker can join its in-progress recovery.
+        // It hasn't edited the project yet and must leave the recovered seek alive.
+        if self.recovering_clip_play_start_request(&request) {
+            return self.recover_before_graph_edit(
+                super::recovery_state::DeferredEditKind::ClipPlayStart,
+                request,
+            );
         }
         if matches!(
             &request,
@@ -4528,12 +4643,17 @@ impl EditorView {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
+        if intent_desired_playing(action) == Some(true)
+            && (self.stopped_playback_restore.is_some()
+                || self.stopped_plugin_parameter_terminal_pending())
+        {
             self.deferred_play = Some((action, revision, self.project_generation));
-            replace_status(
-                &mut self.status,
-                "restoring stopped playback · playback starts when ready",
-            );
+            let message = if self.stopped_playback_restore.is_some() {
+                "restoring stopped playback · playback starts when ready"
+            } else {
+                "applying vst3 parameter · playback starts when ready"
+            };
+            replace_status(&mut self.status, message);
             return;
         }
         if let PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) = action
@@ -4724,10 +4844,29 @@ impl EditorView {
         true
     }
 
-    /// Start an explicit Play once the stopped restore or audio recovery
-    /// settles. A failed fresh recovery or replaced project drops the intent.
+    /// Starting the callback with a stopped VST3 terminal in flight can
+    /// invalidate its transport fence before the original source commits.
+    fn stopped_plugin_parameter_terminal_pending(&self) -> bool {
+        self.device_gesture.has_pending_terminal()
+            && self.device_gesture.snapshot().is_some_and(|gesture| {
+                matches!(
+                    gesture.target,
+                    hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                )
+            })
+            && self
+                .audio_status()
+                .is_some_and(|status| !status.playing.load(Acquire))
+    }
+
+    /// Start an explicit Play once the stopped restore, VST3 edit or audio
+    /// recovery settles. A replaced project drops the intent.
     pub(super) fn tick_deferred_play(&mut self) -> bool {
-        if self.stopped_playback_restore.is_some() || self.recovery.generation().is_some() {
+        if self.stopped_playback_restore.is_some()
+            || self.recovery.generation().is_some()
+            || self.pending_loop_region().is_some()
+            || self.stopped_plugin_parameter_terminal_pending()
+        {
             return false;
         }
         let Some((action, revision, generation)) = self.deferred_play.take() else {
@@ -5072,6 +5211,9 @@ impl EditorView {
 
     pub(super) fn stop(&mut self) {
         self.escape_stop_armed = false;
+        if self.finish_audio_recording_before_stop() {
+            return;
+        }
         self.stop_transport(true);
     }
 

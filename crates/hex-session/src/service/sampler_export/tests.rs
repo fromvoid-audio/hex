@@ -448,6 +448,7 @@ pub(crate) fn direct_sampler(files: &Files) -> (Session, ServiceExportSnapshot) 
 
 pub(crate) fn job(snapshot: &ServiceExportSnapshot, path: PathBuf) -> ExportJob {
     ExportJob {
+        foreign: None,
         job_id: 0,
         streamed: None,
         sources: None,

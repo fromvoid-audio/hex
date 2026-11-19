@@ -224,6 +224,9 @@ impl OrdinaryStreams {
         prefix: u64,
         frames: usize,
         fenced_restart: bool,
+        foreign_continuation: bool,
+        confirmed_fade: Option<u32>,
+        tempo_cut: Option<super::TempoStreamWindow<'_>>,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let mut empty = None;
         let mut old = previous.map(|(runtime, context, revision)| StateView {
@@ -246,6 +249,9 @@ impl OrdinaryStreams {
                 command_prefix: prefix,
                 frames,
                 fenced_restart,
+                foreign_continuation,
+                confirmed_fade,
+                tempo_cut,
             },
             hex_stream::ProtectionRole::Candidate,
         )
@@ -304,6 +310,20 @@ impl OrdinaryStreams {
         self.workspace
             .as_ref()
             .is_some_and(|w| w.pending_action.is_some())
+    }
+
+    /// The source-free ordinary workspace has no page loans or action stages
+    /// to service while a separately owned paused monitor renders.
+    pub(crate) fn permits_paused_monitor(&self) -> bool {
+        self.refs.iter().all(Option::is_none)
+            && self.workspace.as_ref().is_some_and(|workspace| {
+                workspace.valid()
+                    && workspace.pending_action.is_none()
+                    && workspace.scheduled.is_none()
+                    && !workspace.source_changed
+                    && !workspace.read_failed
+                    && !workspace.capacity_conflict
+            })
     }
 }
 impl Custody {

@@ -16,6 +16,7 @@ pub struct ResidentFileInput<'a> {
     pub files: &'a [(hex_project::AssetId, &'a crate::VerifiedAudioFile)],
     pub pitches: &'a [ResidentFilePitch],
     pub repitches: &'a [hex_engine::audio_transform::StreamedRepitchRequirement],
+    pub granulars: &'a [hex_engine::audio_transform::StreamedGranularRequirement],
 }
 /// Immutable compiler metadata returned by the native host. Final publication
 /// must independently match its actual retained catalog and exact page loan.
@@ -65,7 +66,7 @@ impl ResidentFileMetadata {
                                     .with_plain_pitch(cents, law)
                                     .is_ok_and(|expected| expected == **metadata)
                         } else {
-                            !metadata.is_repitch_of(raw)
+                            !metadata.is_repitch_of(raw) && !metadata.is_granular_of(raw)
                         }
                     })
             })
@@ -108,6 +109,7 @@ impl ResidentFileMetadata {
                     .pitches
                     .len()
                     .checked_add(input.repitches.len())
+                    .and_then(|count| count.checked_add(input.granulars.len()))
                     .ok_or(SessionError::Invalid(
                         "ordinary derived source count overflow",
                     ))?
@@ -146,10 +148,16 @@ impl ResidentFileMetadata {
                 ));
             }
         }
-        let mut repitch_keys = Vec::new();
-        repitch_keys
-            .try_reserve_exact(input.repitches.len())
-            .map_err(|_| SessionError::Invalid("repitch validation reservation failed"))?;
+        let mut derived_keys = Vec::new();
+        derived_keys
+            .try_reserve_exact(
+                input
+                    .repitches
+                    .len()
+                    .checked_add(input.granulars.len())
+                    .ok_or(SessionError::Invalid("derived validation count overflow"))?,
+            )
+            .map_err(|_| SessionError::Invalid("derived validation reservation failed"))?;
         for requirement in input.repitches {
             let file = input
                 .files
@@ -159,9 +167,9 @@ impl ResidentFileMetadata {
                 .ok_or(SessionError::Invalid("ordinary repitch file missing"))?;
             let raw = file.source_metadata(requirement.asset(), self.catalog_generation)?;
             let expected = requirement.metadata_for(&raw)?;
-            match repitch_keys.binary_search(&expected.key()) {
+            match derived_keys.binary_search(&expected.key()) {
                 Ok(_) => return Err(SessionError::Invalid("duplicate ordinary repitch source")),
-                Err(index) => repitch_keys.insert(index, expected.key()),
+                Err(index) => derived_keys.insert(index, expected.key()),
             }
             if self
                 .derived
@@ -170,6 +178,29 @@ impl ResidentFileMetadata {
             {
                 return Err(SessionError::Invalid(
                     "ordinary repitch source metadata differs",
+                ));
+            }
+        }
+        for requirement in input.granulars {
+            let file = input
+                .files
+                .iter()
+                .find(|(asset, _)| *asset == requirement.asset())
+                .map(|(_, file)| *file)
+                .ok_or(SessionError::Invalid("ordinary granular file missing"))?;
+            let raw = file.source_metadata(requirement.asset(), self.catalog_generation)?;
+            let expected = requirement.metadata_for(&raw)?;
+            match derived_keys.binary_search(&expected.key()) {
+                Ok(_) => return Err(SessionError::Invalid("duplicate ordinary granular source")),
+                Err(index) => derived_keys.insert(index, expected.key()),
+            }
+            if self
+                .derived
+                .get(&expected.key())
+                .is_none_or(|actual| actual.as_ref() != &expected)
+            {
+                return Err(SessionError::Invalid(
+                    "ordinary granular source metadata differs",
                 ));
             }
         }
@@ -193,6 +224,7 @@ struct FileSetFacts {
     files: Vec<(hex_project::AssetId, crate::VerifiedAudioFile)>,
     pitches: Vec<ResidentFilePitch>,
     repitches: hex_engine::audio_transform::StreamedRepitchRequirements,
+    granulars: hex_engine::audio_transform::StreamedGranularRequirements,
     metadata: ResidentFileMetadata,
 }
 impl ResidentFileSet {
@@ -220,6 +252,12 @@ impl ResidentFileSet {
             .map_err(|_| SessionError::Invalid("ordinary repitch reservation failed"))?;
         repitches.extend_from_slice(input.repitches);
         let repitches = hex_engine::audio_transform::StreamedRepitchRequirements::new(repitches)?;
+        let mut granulars = Vec::new();
+        granulars
+            .try_reserve_exact(input.granulars.len())
+            .map_err(|_| SessionError::Invalid("ordinary granular reservation failed"))?;
+        granulars.extend_from_slice(input.granulars);
+        let granulars = hex_engine::audio_transform::StreamedGranularRequirements::new(granulars)?;
         Ok(Self {
             inner: Arc::new(FileSetFacts {
                 context: input.context,
@@ -227,6 +265,7 @@ impl ResidentFileSet {
                 files,
                 pitches,
                 repitches,
+                granulars,
                 metadata,
             }),
         })
@@ -245,6 +284,23 @@ impl ResidentFileSet {
     }
     pub fn repitches(&self) -> &hex_engine::audio_transform::StreamedRepitchRequirements {
         &self.inner.repitches
+    }
+    pub fn granulars(&self) -> &hex_engine::audio_transform::StreamedGranularRequirements {
+        &self.inner.granulars
+    }
+    /// Borrow the actual retained requirement owners into a control admission
+    /// view. This metadata view grants no reader, page or publication authority.
+    pub fn include_requirements<'a>(
+        &'a self,
+        mut view: hex_engine::native_device_resources::DeviceResourceAdmission<'a>,
+    ) -> hex_engine::native_device_resources::DeviceResourceAdmission<'a> {
+        if !self.repitches().requirements().is_empty() {
+            view = view.with_repitch_requirements(self.repitches());
+        }
+        if !self.granulars().requirements().is_empty() {
+            view = view.with_granular_requirements(self.granulars());
+        }
+        view
     }
     pub fn pitches(&self) -> &[ResidentFilePitch] {
         &self.inner.pitches

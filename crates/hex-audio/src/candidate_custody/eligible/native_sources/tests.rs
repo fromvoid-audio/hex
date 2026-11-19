@@ -1073,3 +1073,28 @@ pub(crate) fn original_worker_transport_live(
         _ => None,
     }
 }
+
+#[test]
+fn endpoint_return_reservation_orders_decisions_without_delaying_return_requests() {
+    let signal = EndpointSignal::new();
+    let mut fence = signal.reserve().unwrap();
+    assert!(signal.reserve().is_none());
+    std::thread::scope(|scope| {
+        scope.spawn(|| signal.request_return()).join().unwrap();
+    });
+    assert!(!fence.is_live());
+    assert!(!fence.try_order_before_return());
+    drop(fence);
+    assert!(signal.load(Ordering::Acquire));
+    assert!(signal.reserve().is_none());
+
+    let signal = EndpointSignal::new();
+    let mut fence = signal.reserve().unwrap();
+    assert!(fence.try_order_before_return());
+    assert!(!fence.try_order_before_return());
+    signal.request_return();
+    assert!(!fence.is_live());
+    drop(fence);
+    assert!(signal.load(Ordering::Acquire));
+    assert!(signal.reserve().is_none());
+}

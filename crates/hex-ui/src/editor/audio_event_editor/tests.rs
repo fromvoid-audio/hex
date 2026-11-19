@@ -1905,6 +1905,21 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
     let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let painted_span = |visual: &mut VisualTestContext| {
+        let bounds = visual.debug_bounds("audio-event-waveform-1").unwrap();
+        editor.read_with(visual, |view, _| {
+            let cache = view.clip_waveform_geometry_cache.borrow();
+            let paint = cache
+                .painted_waveforms()
+                .iter()
+                .rev()
+                .find(|paint| paint.bounds == bounds)
+                .expect("completed event waveform paint");
+            let (top, bottom) = paint.ordinates[0];
+            bottom - top
+        })
+    };
+    let original_span = painted_span(&mut visual);
     let handle = visual
         .debug_bounds("audio-event-gain-1")
         .expect("event gain handle");
@@ -1929,6 +1944,8 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
         },
     );
     visual.run_until_parked();
+    let held_span = painted_span(&mut visual);
+    assert!(held_span > 0.0 && held_span < original_span * 0.9);
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.audio_event_editor.gesture.as_ref().and_then(|g| g.operation.as_ref()), Some(AudioEventEdit::SetGain { event: 1, gain }) if gain.millidb() == -2100));
     });
@@ -1942,6 +1959,7 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
     );
     visual.run_until_parked();
     visual.run_until_parked();
+    assert!((painted_span(&mut visual) - held_span).abs() < 0.01);
     editor.read_with(cx, |view, _| {
         let pending = view.audio_event_editor.pending.as_ref().expect("pending event gain");
         assert!(matches!(pending.operation, AudioEventEdit::SetGain { event: 1, gain } if gain.millidb() == -2100));

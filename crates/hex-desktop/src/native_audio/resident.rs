@@ -9,9 +9,53 @@ use hex_engine::{
     playback::Playback,
 };
 use hex_session::service::{
+    DeviceInsertAudioReceipt, DeviceInsertAudioState, ResidentGraphSubmission,
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
+    ResidentTempoEdit, ResidentTempoEditOutcome,
 };
+
+#[derive(Debug)]
+pub(super) struct InsertReceipt {
+    submission: ResidentGraphSubmission,
+    receipt: hex_audio::prepared::CancellablePublicationReceipt,
+}
+impl InsertReceipt {
+    pub(super) fn new(
+        submission: ResidentGraphSubmission,
+        receipt: hex_audio::prepared::CancellablePublicationReceipt,
+    ) -> Self {
+        Self {
+            submission,
+            receipt,
+        }
+    }
+}
+
+impl DeviceInsertAudioReceipt for InsertReceipt {
+    fn submission(&self) -> ResidentGraphSubmission {
+        self.submission
+    }
+
+    fn state(&self) -> DeviceInsertAudioState {
+        use hex_audio::prepared::PublicationReceiptState as Receipt;
+        match self.receipt.state() {
+            Receipt::Pending => DeviceInsertAudioState::Pending,
+            Receipt::Applying => DeviceInsertAudioState::Applying,
+            Receipt::Installed => DeviceInsertAudioState::Installed,
+            Receipt::Cancelled => DeviceInsertAudioState::Cancelled,
+            Receipt::Expired => DeviceInsertAudioState::Expired,
+            Receipt::Refused(reason) => DeviceInsertAudioState::Refused(reason),
+            Receipt::OutputClosed => DeviceInsertAudioState::OutputClosed,
+        }
+    }
+
+    fn cancel(&self) -> bool {
+        self.receipt.cancel() == hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+    }
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::time::Instant;
 
 pub(super) struct Pending {
     playback: Playback,
@@ -21,6 +65,74 @@ pub(super) struct Pending {
     metadata: ResidentPublicationMetadata,
     policy: ResidentPublicationPolicy,
 }
+
+fn prepare_resident_tempo_cut(
+    control: &hex_audio::prepared::PublicationControl,
+    playback: &Playback,
+    edit: ResidentTempoEdit<'_>,
+) -> Option<hex_audio::prepared::FencedTempoCut> {
+    use hex_audio::prepared::{SESSION_ROUTE_CAPACITY, SessionRouteEntry, SessionRouteOwner};
+    if control.output_identity() != Some(edit.source.output_identity)
+        || playback.has_foreign_continuation_states()
+    {
+        return None;
+    }
+    let source = control.status.recording_source()?;
+    if source.audio_revision != edit.source.audio_revision || source.context != edit.source.context
+    {
+        return None;
+    }
+    let (observation, fence) = control.capture_running_transport_fence()?;
+    let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
+    let snapshot = control.status.session_routes(&mut routes)?;
+    if snapshot.audio_revision != edit.source.audio_revision
+        || snapshot.route_state_generation != fence.route_state_generation()
+        || routes[..snapshot.count]
+            .iter()
+            .any(|entry| entry.owner != SessionRouteOwner::Arrangement || entry.pending.is_some())
+    {
+        return None;
+    }
+    // Give the ordinary resource publisher time to enqueue. Hosted workers
+    // use two of their configured quanta on the original performance clock.
+    let lead = control
+        .plugin_callback_quantum_on_control()
+        .map_or(256, |quantum| u64::from(quantum) * 2);
+    // File pages need worker pickup before the exact cut. Leave up to four
+    // ordinary demand quanta of lead, inside the existing edit receipt bound.
+    let lead = if playback.contains_streamed_sources() {
+        lead.max(1024)
+    } else {
+        lead
+    };
+    let candidate = playback.prepared_revision()?;
+    if let Some(missed) = edit.retry_of {
+        if missed.output_identity != edit.source.output_identity {
+            return None;
+        }
+        // Leave additional lead after a proven miss, on the same clock fence.
+        return control
+            .reprepare_missed_tempo_cut(
+                missed.audio_revision,
+                missed.context,
+                edit.previous,
+                candidate,
+                observation.performance_frame.checked_add(lead * 2)?,
+            )
+            .ok()
+            .flatten();
+    }
+    control
+        .prepare_fenced_tempo_anchor(
+            edit.source.audio_revision,
+            edit.source.context.project_generation,
+            Arc::clone(edit.previous),
+            Arc::clone(candidate),
+            observation.performance_frame.checked_add(lead)?,
+        )
+        .ok()
+        .flatten()
+}
 #[derive(Default)]
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
@@ -28,7 +140,18 @@ pub(super) struct Resident {
     pub(super) capture_target: Option<hex_engine::NativeParameterInputTarget>,
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
+    pub(super) paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) pending_paused_notes: Option<PendingPausedNotes>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    last_paused_notes: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) struct PendingPausedNotes {
+    scope: (hex_audio::prepared::AppliedAudioSource, u64),
+    deadline: Instant,
+    pub(super) effects: Option<plugins::PausedEffects>,
 }
 impl Resident {
     pub(super) fn has_pending_document(&self, context: AudioSourceContext) -> bool {
@@ -66,7 +189,14 @@ impl Resident {
             self.pending = None;
         }
     }
-    pub(super) fn reap_observations(&mut self) {
+    pub(super) fn reap_control_owners(&mut self) {
+        if self
+            .paused_monitor
+            .as_ref()
+            .is_some_and(|hold| hold.released_on_control())
+        {
+            self.paused_monitor = None;
+        }
         for row in &mut self.observations {
             if row
                 .as_ref()
@@ -75,6 +205,15 @@ impl Resident {
                 *row = None;
             }
         }
+    }
+    fn retired_admission(&self) -> DeviceResourceAdmission<'_> {
+        let retired = self.retired.as_ref().map_or(
+            DeviceResourceAdmission::default(),
+            DeviceResourcePublication::admission_on_control,
+        );
+        self.paused_monitor
+            .as_ref()
+            .map_or(retired, |monitor| retired.with_paused_monitor(monitor))
     }
     fn observation_bytes(&self) -> Option<usize> {
         self.observations
@@ -120,7 +259,48 @@ pub(super) fn classify_publication(
     }
 }
 
+pub(super) fn resident_insert_consent(
+    control: &hex_audio::prepared::PublicationControl,
+    submission: ResidentGraphSubmission,
+) -> Option<hex_audio::prepared::DeviceInsertConsent> {
+    let receipt = control.fresh_runtime_receipt(submission.audio_revision)?;
+    if receipt.output_identity() != submission.output_identity
+        || receipt.context() != Some(submission.context)
+    {
+        return None;
+    }
+    control.offer_resident_device_insert_consent(&receipt)
+}
+
 impl NativeAudioSink {
+    pub(super) fn offer_resident_device_insert_consent(
+        &mut self,
+        submission: ResidentGraphSubmission,
+    ) -> Option<std::time::Instant> {
+        let control = self.output.as_mut()?.publication.control()?;
+        resident_insert_consent(control, submission).map(|consent| consent.expires_at())
+    }
+
+    pub(super) fn retain_device_insert_receipt(
+        &mut self,
+        submission: ResidentGraphSubmission,
+    ) -> Option<Box<dyn DeviceInsertAudioReceipt>> {
+        let receipt = self
+            .output
+            .as_mut()?
+            .publication
+            .control()?
+            .fresh_runtime_receipt(submission.audio_revision)?;
+        (receipt.output_identity() == submission.output_identity
+            && receipt.context() == Some(submission.context))
+        .then(|| {
+            Box::new(InsertReceipt {
+                submission,
+                receipt,
+            }) as Box<_>
+        })
+    }
+
     /// Match the exact callback terminal before committing a native edit that
     /// requires confirmation. A timed-out graph cannot later install.
     pub(super) fn confirm_resident_edit_publication(
@@ -173,6 +353,76 @@ impl NativeAudioSink {
                 return Err(format!(
                     "{operation} lost audio confirmation · restart audio"
                 ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A pending timeout can cancel future installation. Once the callback
+    /// wins admission, its terminal decides the edit, even after that timeout.
+    pub(super) fn confirm_tempo_cut(
+        &mut self,
+        context: AudioSourceContext,
+        acceptance: ResidentPublicationAcceptance,
+    ) -> Result<ResidentTempoEditOutcome, String> {
+        use hex_audio::prepared::PublicationReceiptState as Receipt;
+        use std::time::{Duration, Instant};
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = acceptance
+        else {
+            return Ok(ResidentTempoEditOutcome::Confirmed);
+        };
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .filter(|control| control.output_identity() == Some(output_identity))
+            .ok_or("tempo edit lost its audio output")?;
+        let Some(receipt) = control.fresh_runtime_receipt(audio_revision) else {
+            // Stopped or out-of-scope scheduling uses ordinary publication.
+            return Ok(ResidentTempoEditOutcome::Confirmed);
+        };
+        if receipt.context() != Some(context) || receipt.output_identity() != output_identity {
+            return Err("tempo edit receipt differs from its submission".into());
+        }
+        self.flush_events();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match receipt.state() {
+                Receipt::Installed => return Ok(ResidentTempoEditOutcome::Confirmed),
+                Receipt::Refused(hex_engine::PlaybackHandoffRejection::TempoCutMissed) => {
+                    let control = self
+                        .output
+                        .as_mut()
+                        .and_then(|output| output.publication.control())
+                        .filter(|control| control.output_identity() == Some(output_identity))
+                        .ok_or("tempo edit lost its audio output")?;
+                    // The receipt can be terminal just before the callback
+                    // returns the graph and releases the publication slot.
+                    if !control.status.publication_in_flight() {
+                        control.reclaim();
+                        return Ok(ResidentTempoEditOutcome::MissedCut);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("missed tempo publication did not release its slot".into());
+                    }
+                }
+                Receipt::Refused(reason) => return Err(reason.message().into()),
+                Receipt::Cancelled | Receipt::Expired => {
+                    return Err("tempo edit cancelled before installation".into());
+                }
+                Receipt::OutputClosed => return Err("tempo edit lost its audio output".into()),
+                Receipt::Pending
+                    if Instant::now() >= deadline
+                        || self.request_cancellation.as_ref().is_some_and(
+                            hex_session::service::RequestCancellation::is_cancelled,
+                        ) =>
+                {
+                    receipt.cancel();
+                }
+                Receipt::Pending | Receipt::Applying => {}
             }
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -352,12 +602,7 @@ impl NativeAudioSink {
                 .as_ref()
                 .and_then(|output| output.publication.device_resource_admission_on_control())
                 .unwrap_or_default(),
-            self.resident
-                .retired
-                .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |book| {
-                    book.admission_on_control()
-                }),
+            self.resident.retired_admission(),
             self.resident
                 .pending
                 .as_ref()
@@ -366,14 +611,251 @@ impl NativeAudioSink {
                         &pending.playback,
                         pending.resources.as_ref(),
                     );
-                    match pending.file_sources.as_ref() {
-                        Some(files) if !files.repitches().requirements().is_empty() => {
-                            view.with_repitch_requirements(files.repitches())
-                        }
-                        _ => view,
-                    }
+                    pending
+                        .file_sources
+                        .as_ref()
+                        .map_or(view, |files| files.include_requirements(view))
                 }),
         ]
+    }
+
+    pub(super) fn prepare_resident_paused_monitor(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+        revision: &Arc<hex_engine::PreparedRevision>,
+        resources: &PreparedDeviceResources,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<hex_engine::PausedTrackMonitor, String> {
+        self.resident.reap_control_owners();
+        if self.resident.paused_monitor.is_some() {
+            return Err("paused input monitor is still retained".into());
+        }
+        self.check_paused_input_source(request)?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.resident.pending_paused_notes = None;
+        }
+        let metadata = self
+            .policy
+            .as_ref()
+            .map_err(Clone::clone)?
+            .ordinary_graph_metadata_bytes;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let preparation =
+            plugins::PausedMonitorPreparation::new(request, self.request_cancellation.as_ref());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let bindings = self.plugins.prepare_paused_monitor_effects(
+            self.output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .ok_or("paused input monitor output is unavailable")?,
+            &preparation,
+            revision,
+        )?;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let bindings = [];
+        let charge = |candidate: DeviceResourceAdmission<'_>| {
+            let [current, retired, pending] = self.resident_inventory();
+            admit(&[current, retired, pending, candidate])
+        };
+        let (monitor, hold) = if bindings.is_empty() {
+            hex_engine::PausedTrackMonitor::prepare_admitted_resident_on_control(
+                Arc::clone(revision),
+                resources,
+                request.track,
+                metadata,
+                charge,
+            )
+        } else {
+            hex_engine::PausedTrackMonitor::prepare_admitted_with_foreign_effects_on_control(
+                Arc::clone(revision),
+                Some(resources),
+                request.track,
+                &bindings,
+                metadata,
+                charge,
+            )
+        }
+        .map_err(|error| match error {
+            hex_engine::PausedMonitorAdmissionError::Admission(reason) => reason,
+            hex_engine::PausedMonitorAdmissionError::Preparation(reason) => reason.to_string(),
+        })?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if !bindings.is_empty() {
+            self.plugins.install_paused_monitor_effects(
+                self.output
+                    .as_mut()
+                    .and_then(|output| output.publication.control())
+                    .ok_or("paused input monitor output is unavailable")?,
+                &preparation,
+            )?;
+            if self
+                .request_cancellation
+                .as_ref()
+                .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
+            {
+                return Err("paused vst3 monitor source changed".into());
+            }
+        }
+        self.check_paused_input_source(request)?;
+        self.resident.paused_monitor = Some(hold);
+        Ok(monitor)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn poll_resident_paused_notes(
+        &mut self,
+        graph: Option<hex_session::service::PausedNoteGraph<'_>>,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> bool {
+        let previous = self.resident.pending_paused_notes.take();
+        let Some(graph) = graph.filter(|graph| !graph.cancellation.is_cancelled()) else {
+            return false;
+        };
+        let Some((source, epoch)) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .and_then(|control| control.status.paused_note_source())
+        else {
+            return false;
+        };
+        if source.context != graph.source.context
+            || source.audio_revision != graph.source.audio_revision
+            || source.output_identity != graph.source.output_identity
+            || self.resident.last_paused_notes == Some((source, epoch))
+            || self.resident.paused_monitor.is_some()
+            || !graph
+                .source
+                .matches_applied(self.resident_publication_readiness())
+            || self
+                .resident
+                .applied_loop
+                .is_some_and(|applied| applied.section_loop.is_some())
+        {
+            return false;
+        }
+        let scope = (source, epoch);
+        let mut pending = match previous.filter(|previous| previous.scope == scope) {
+            Some(pending) => pending,
+            None if hex_engine::PausedSourceMonitor::supports_revision_on_control(
+                graph.revision,
+            ) =>
+            {
+                PendingPausedNotes {
+                    scope,
+                    deadline: Instant::now() + plugins::PREPARATION_TIMEOUT,
+                    effects: None,
+                }
+            }
+            None => {
+                self.resident.last_paused_notes = Some(scope);
+                return false;
+            }
+        };
+        match self.advance_resident_paused_notes(&mut pending, graph, admit) {
+            Ok(Some(hold)) => self.resident.paused_monitor = Some(hold),
+            Ok(None) => {
+                self.resident.pending_paused_notes = Some(pending);
+                return true;
+            }
+            Err(error) if plugins::paused_monitor_busy(&error) => {
+                self.resident.pending_paused_notes = Some(pending);
+                return true;
+            }
+            Err(error) => self.plugins.report_paused_note_refusal(scope, error),
+        }
+        self.resident.last_paused_notes = Some(scope);
+        false
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn advance_resident_paused_notes(
+        &mut self,
+        pending: &mut PendingPausedNotes,
+        graph: hex_session::service::PausedNoteGraph<'_>,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) -> Result<Option<hex_engine::PausedMonitorStorageHold>, String> {
+        if Instant::now() >= pending.deadline {
+            return Err("paused vst3 monitor preparation timed out".into());
+        }
+        let output_unavailable = "paused note monitor output is unavailable";
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or(output_unavailable)?;
+        if pending.effects.is_none() {
+            pending.effects = Some(self.plugins.begin_paused_effects(control, graph.revision)?);
+        }
+        let effects = pending
+            .effects
+            .as_mut()
+            .ok_or("paused note effects unavailable")?;
+        if !effects.poll(&mut self.plugins, control, graph.revision, pending.scope)? {
+            return Ok(None);
+        }
+        let metadata = self
+            .policy
+            .as_ref()
+            .map_err(Clone::clone)?
+            .ordinary_graph_metadata_bytes;
+        let (monitor, hold) = hex_engine::PausedSourceMonitor::prepare_admitted_on_control(
+            Arc::clone(graph.revision),
+            Some(graph.resources),
+            effects.bindings(),
+            metadata,
+            |candidate| {
+                let [current, retired, pending] = self.resident_inventory();
+                admit(&[current, retired, pending, candidate])
+            },
+        )
+        .map_err(|error| match error {
+            hex_engine::PausedMonitorAdmissionError::Admission(reason) => reason,
+            hex_engine::PausedMonitorAdmissionError::Preparation(reason) => reason.to_string(),
+        })?;
+        if graph.cancellation.is_cancelled() {
+            return Err("paused note graph changed".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or(output_unavailable)?;
+        let (source, epoch) = pending.scope;
+        control
+            .publish_paused_note_monitor(monitor, source, epoch)
+            .map_err(|_| "paused vst3 note monitor publication refused".to_owned())?;
+        Ok(Some(hold))
+    }
+
+    fn check_paused_input_source(
+        &mut self,
+        request: hex_session::service::PausedInputMonitorRequest,
+    ) -> Result<(), String> {
+        let readiness = self.resident_publication_readiness();
+        if !request.source.matches_applied(readiness)
+            || self
+                .resident
+                .applied_loop
+                .is_some_and(|active| active.section_loop.is_some())
+        {
+            return Err("paused input monitor source changed".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("paused input monitor output is unavailable")?;
+        let expected = hex_audio::prepared::AppliedAudioSource {
+            context: request.source.context,
+            audio_revision: request.source.audio_revision,
+            output_identity: request.source.output_identity,
+        };
+        if control.status.paused_input_source() != Some((expected, request.transport_epoch)) {
+            return Err("paused input monitor transport changed".into());
+        }
+        Ok(())
     }
     /// Retry native Work contention with the exact returned graph. Once the
     /// caller's admission hook wins, later source intent cannot cancel that
@@ -389,7 +871,89 @@ impl NativeAudioSink {
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
+        tempo_edit: Option<ResidentTempoEdit<'_>>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        let tempo_edit =
+            tempo_edit.filter(|_| matches!(policy, ResidentPublicationPolicy::InheritRuntimeAt(_)));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut playback = playback;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let playback = playback;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut continuation_fence = None;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let control = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control());
+            let request = match self.plugins.sequenced_publication_request(
+                control.as_deref(),
+                self.desired.as_deref(),
+                metadata.context,
+                &playback,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error,
+                    });
+                }
+            };
+            match request {
+                Some(request)
+                    if matches!(
+                        policy,
+                        ResidentPublicationPolicy::InheritRuntime
+                            | ResidentPublicationPolicy::InheritRuntimeAt(_)
+                    ) =>
+                {
+                    continuation_fence =
+                        Some((request.source, request.transport_epoch, request.playing));
+                    let valid = if playback.has_foreign_continuation_states() {
+                        playback.foreign_continuation_states_match_on_control(
+                            request.identity,
+                            request.binding,
+                            request.previous_state,
+                            request.capture.state(),
+                        )
+                    } else {
+                        playback
+                            .retain_foreign_continuation_states_on_control(
+                                request.identity,
+                                request.binding,
+                                request.previous_state.clone(),
+                                request.capture.state().clone(),
+                            )
+                            .is_ok()
+                    };
+                    if !valid {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "vst3 continuation state differs".into(),
+                        });
+                    }
+                }
+                Some(_) => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "vst3 continuation policy differs".into(),
+                    });
+                }
+                None if playback.has_foreign_continuation_states() => {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "vst3 continuation gesture changed".into(),
+                    });
+                }
+                None => {}
+            }
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let parameter_source = self.plugins.override_publication_source(metadata.context);
         let native_publication = self.plugins.preparing_edit(metadata.context)
@@ -398,7 +962,9 @@ impl NativeAudioSink {
             .request_cancellation
             .as_ref()
             .filter(|cancellation| {
-                native_publication || cancellation.requires_publication_admission_check()
+                native_publication
+                    || tempo_edit.is_some()
+                    || cancellation.requires_publication_admission_check()
             })
             .cloned();
         let cancellation_error = if native_publication {
@@ -479,7 +1045,7 @@ impl NativeAudioSink {
         } else {
             None
         };
-        self.resident.reap_observations();
+        self.resident.reap_control_owners();
         let existing = self.resident.observations.iter().position(|row| {
             row.as_ref()
                 .is_some_and(|old| Arc::ptr_eq(old, &observation))
@@ -510,7 +1076,41 @@ impl NativeAudioSink {
             });
         }
         let section_loop = playback.section_loop();
-        if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if section_loop.is_none()
+            && file_sources.is_none()
+            && metadata.device_preview.is_none()
+            && metadata.tuning_preview.is_none()
+            && metadata.clip_preview.is_none()
+        {
+            playback.defer_hosted_paused_source_monitor_on_control();
+        }
+        let inserting_device = matches!(policy, ResidentPublicationPolicy::DeviceInsert { .. });
+        let hosted_insert = if matches!(
+            policy,
+            ResidentPublicationPolicy::DeviceInsert { hosted: true, .. }
+        ) {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            let operation = self.plugins.device_insert_control(metadata.context);
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            let operation = None::<Arc<hex_session::service::PluginEffectControl>>;
+            let Some(operation) = operation else {
+                return Err(ResidentPublicationRefusal {
+                    kind: hex_session::service::ResidentPublicationFailure::Other,
+                    playback,
+                    error: "hosted insertion lost its prepared operation".into(),
+                });
+            };
+            Some(operation)
+        } else {
+            None
+        };
+        if let ResidentPublicationPolicy::InheritRuntimeAt(expected)
+        | ResidentPublicationPolicy::DeviceInsert {
+            predecessor: expected,
+            ..
+        } = policy
+        {
             match self.current_runtime_loop(metadata.context) {
                 Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
                 Ok(_) => {
@@ -575,6 +1175,12 @@ impl NativeAudioSink {
             .as_ref()
             .map(|replacement| replacement.deadline);
         let request_cancellation = self.request_cancellation.as_ref();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let stopped_history = self
+            .stopped_foreign_history
+            .as_ref()
+            .filter(|lease| lease.context == metadata.context)
+            .map(|lease| (lease.source, lease.fence));
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
@@ -603,7 +1209,44 @@ impl NativeAudioSink {
                         rebind.fence,
                     )
                 });
+            let approved_insert = if let ResidentPublicationPolicy::DeviceInsert {
+                confirmation: Some(refused),
+                ..
+            } = policy
+            {
+                let Some(consent) = resident_insert_consent(control, refused)
+                    .filter(|consent| consent.candidate_context() == metadata.context)
+                else {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback,
+                        error: "device insert confirmation is no longer current".into(),
+                    });
+                };
+                Some(consent)
+            } else {
+                None
+            };
             let policy = match policy {
+                ResidentPublicationPolicy::DeviceInsert {
+                    predecessor: expected,
+                    ..
+                } => {
+                    let source = control.status.recording_source().filter(|source| {
+                        source.output_identity == expected.output_identity
+                            && source.audio_revision == expected.audio_revision
+                            && Some(source.context) == expected.source_context
+                    });
+                    let fence = control.capture_fresh_runtime_fence();
+                    let (Some(predecessor), Some(fence)) = (source, fence) else {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "device insert lost its installed source".into(),
+                        });
+                    };
+                    hex_audio::prepared::PublicationPolicy::DeviceInsert { predecessor, fence }
+                }
                 ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
                         return Err(ResidentPublicationRefusal {
@@ -617,7 +1260,12 @@ impl NativeAudioSink {
                 ResidentPublicationPolicy::InheritRuntime
                 | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    if let Some((source, transport_epoch, playing)) = parameter_source {
+                    if let Some((source, fence)) = stopped_history {
+                        hex_audio::prepared::PublicationPolicy::InheritUnderStoppedNative {
+                            source,
+                            fence,
+                        }
+                    } else if let Some((source, transport_epoch, playing)) = parameter_source {
                         hex_audio::prepared::PublicationPolicy::InheritUnderNativeParameter {
                             source,
                             transport_epoch,
@@ -694,13 +1342,7 @@ impl NativeAudioSink {
                     }
                 }
             };
-            let retired = self
-                .resident
-                .retired
-                .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |book| {
-                    book.admission_on_control()
-                });
+            let retired = self.resident.retired_admission();
             let pending = self.resident.pending.as_ref().map_or(
                 DeviceResourceAdmission::default(),
                 |pending| {
@@ -711,20 +1353,22 @@ impl NativeAudioSink {
                 },
             );
             let mut retained_playback = playback;
-            #[cfg(all(test, feature = "allocation-probe"))]
-            if let Some((ready, resume)) = self.native_graph_gate.take()
-                && (ready.send(()).is_err()
-                    || resume
-                        .recv_timeout(std::time::Duration::from_secs(10))
-                        .is_err())
-            {
-                return Err(ResidentPublicationRefusal {
-                    kind: hex_session::service::ResidentPublicationFailure::Other,
-                    playback: retained_playback,
-                    error: "fixture native graph publication gate closed".into(),
-                });
-            }
             let result = loop {
+                let cut = tempo_edit
+                    .and_then(|edit| prepare_resident_tempo_cut(control, &retained_playback, edit));
+                #[cfg(all(test, feature = "allocation-probe"))]
+                if let Some((ready, resume)) = self.native_graph_gate.take()
+                    && (ready.send(()).is_err()
+                        || resume
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .is_err())
+                {
+                    return Err(ResidentPublicationRefusal {
+                        kind: hex_session::service::ResidentPublicationFailure::Other,
+                        playback: retained_playback,
+                        error: "fixture native graph publication gate closed".into(),
+                    });
+                }
                 if let Some(deadline) = replacement_deadline
                     && let Err(error) =
                         super::document_output::check_deadline(deadline, request_cancellation)
@@ -742,12 +1386,94 @@ impl NativeAudioSink {
                         error: cancellation_error.into(),
                     });
                 }
-                let published = control.publish_with_admission_and_source_on_control(
-                    retained_playback,
-                    policy,
-                    metadata.context,
-                    |prospective| admit(&[prospective, retired, pending]),
-                );
+                let bind_insert_receipt =
+                    |receipt: &hex_audio::prepared::CancellablePublicationReceipt| {
+                        if let Some(operation) = hosted_insert.as_ref() {
+                            operation.bind_device_insert_receipt(Box::new(InsertReceipt {
+                                submission: ResidentGraphSubmission {
+                                    output_identity: receipt.output_identity(),
+                                    audio_revision: receipt.revision(),
+                                    context: metadata.context,
+                                },
+                                receipt: receipt.clone(),
+                            }));
+                        }
+                    };
+                let published = match (policy, cut) {
+                    (hex_audio::prepared::PublicationPolicy::DeviceInsert { .. }, _) => {
+                        let admit_resources = |prospective: DeviceResourceAdmission<'_>| {
+                            admit(&[prospective, retired, pending])
+                        };
+                        if let Some(consent) = approved_insert {
+                            control.publish_confirmed_device_insert_with_receipt_on_control(
+                                retained_playback,
+                                consent,
+                                bind_insert_receipt,
+                                admit_resources,
+                            )
+                        } else {
+                            control.publish_device_insert_with_receipt_on_control(
+                                retained_playback,
+                                policy,
+                                metadata.context,
+                                bind_insert_receipt,
+                                admit_resources,
+                            )
+                        }
+                    }
+                    (_, None) if tempo_edit.is_some_and(|edit| edit.retry_of.is_some()) => {
+                        Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                            reason: "tempo retry lost its original running source".into(),
+                            playback: retained_playback,
+                        })
+                    }
+                    (_, Some(cut)) => control.publish_tempo_cut_with_admission_on_control(
+                        retained_playback,
+                        cut,
+                        metadata.context,
+                        |prospective| admit(&[prospective, retired, pending]),
+                    ),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    _ if retained_playback.has_foreign_continuation_states() => {
+                        match self.plugins.sequenced_publication_request(
+                            Some(control),
+                            self.desired.as_deref(),
+                            metadata.context,
+                            &retained_playback,
+                        ) {
+                            Ok(Some(request))
+                                if continuation_fence
+                                    == Some((
+                                        request.source,
+                                        request.transport_epoch,
+                                        request.playing,
+                                    )) =>
+                            {
+                                control.publish_native_parameter_continuation_on_control(
+                                    retained_playback,
+                                    request,
+                                    |prospective| admit(&[prospective, retired, pending]),
+                                )
+                            }
+                            Ok(_) => Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                                reason: "vst3 continuation gesture changed".into(),
+                                playback: retained_playback,
+                            }),
+                            Err(error) => {
+                                Err(hex_audio::prepared::AdmittedPublishError::Admission {
+                                    reason: error,
+                                    playback: retained_playback,
+                                })
+                            }
+                        }
+                    }
+                    _ => control.publish_with_admission_and_source_on_control(
+                        retained_playback,
+                        policy,
+                        metadata.context,
+                        |prospective| admit(&[prospective, retired, pending]),
+                    ),
+                };
                 // Observe the real Root refusal, never synthesize contention,
                 // source readiness, admission or an audio acknowledgement.
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -760,7 +1486,8 @@ impl NativeAudioSink {
                 }
                 match published {
                     Err(hex_audio::prepared::AdmittedPublishError::Publication(error))
-                        if error.reason == "native graph preparation is busy" =>
+                        if !inserting_device
+                            && error.reason == "native graph preparation is busy" =>
                     {
                         // Root has not retained sources or enqueued the graph,
                         // but the caller's admission hook may already have won.
@@ -843,6 +1570,7 @@ impl NativeAudioSink {
         if matches!(
             policy,
             ResidentPublicationPolicy::InheritRuntimeAt(_)
+                | ResidentPublicationPolicy::DeviceInsert { .. }
                 | ResidentPublicationPolicy::FreshIfUnchanged(_)
                 | ResidentPublicationPolicy::QuantizedSeekWhenReady { .. }
         ) {
@@ -916,7 +1644,10 @@ impl NativeAudioSink {
             return;
         };
         if let Some(files) = pending.file_sources.as_ref() {
-            match self.poll_resident_files(files) {
+            let cancellation = self.request_cancellation.clone();
+            match self.poll_resident_files(files, || {
+                cancellation.as_ref().is_some_and(|c| c.is_shutting_down())
+            }) {
                 Ok(true) => {}
                 Ok(false) => {
                     self.resident.pending = Some(pending);
@@ -962,6 +1693,7 @@ impl NativeAudioSink {
             0,
             &mut with_capture,
             file_sources.as_ref(),
+            None,
         ) {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,

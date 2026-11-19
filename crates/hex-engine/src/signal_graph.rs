@@ -1,11 +1,12 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
+mod append_latency;
 mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
 mod printed_branch_probe;
 use hex_project::{GroupOutputMuteRange, ReturnId, RoutingOwner, TrackId};
-pub use latency_observation::OutputLatency;
+pub use latency_observation::{OutputLatency, ProcessorGraphLatency};
 #[cfg(feature = "instrument-test-support")]
 pub use printed_branch_probe::PrintedBranchProbe;
 use std::{collections::BTreeMap, mem::size_of, sync::Arc};
@@ -33,10 +34,15 @@ impl NodeId {
             if id == track.value())
     }
 }
-/// One silent owner whose new compensation edges start empty.
+/// One changed owner excluded from retained compensation history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FreshHistory {
     Track(TrackId),
+    /// An inserted or removed track with no source or devices. Its group
+    /// output and Return sends may be excluded only when their rings are silent.
+    ColdTrack(TrackId),
+    /// A removed isolated source; its pre-Main PCM is cut at handoff.
+    RemovedTrack(TrackId),
     /// A muted, isolated existing track whose old and new local rings are silent.
     ChangedTrack(TrackId, u64),
     Return(ReturnId),
@@ -45,7 +51,9 @@ pub(crate) enum FreshHistory {
 impl FreshHistory {
     fn contains(self, node: NodeId) -> bool {
         match self {
-            Self::Track(id) => node.belongs_to_track(id),
+            Self::Track(id) | Self::ColdTrack(id) | Self::RemovedTrack(id) => {
+                node.belongs_to_track(id)
+            }
             Self::ChangedTrack(id, device) => {
                 node.belongs_to_track(id) || node == NodeId::Device(device)
             }
@@ -936,9 +944,8 @@ impl SignalGraph {
         }
         false
     }
-    /// The closed streamed constructor may enumerate zero-latency group routes
-    /// using the same source frontier as its per-frame render. Authored feeds
-    /// remain outside that constructor's admitted graph class.
+    /// The original zero-latency group class excludes authored feeds; the
+    /// audio-only compensated class below handles them under tighter checks.
     pub(crate) fn supports_closed_group_stream(&self) -> bool {
         self.plan.max_latency_frames() == 0
             && self.has_group_outputs
@@ -947,6 +954,46 @@ impl SignalGraph {
                 .iter()
                 .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
+    }
+    /// Grouped audio and track feeds read local sources at the current
+    /// transport frontier; edge delays retain PCM, not additional pages.
+    pub(crate) fn supports_closed_compensated_audio_groups(&self) -> bool {
+        self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+            })
+    }
+    /// Flat authored track feeds carry rendered PCM through graph edges; they
+    /// do not fetch additional pages beyond the local track source frontier.
+    pub(crate) fn supports_closed_compensated_track_feeds(&self) -> bool {
+        !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self
+                .tracks
+                .iter()
+                .any(|track| !track.audio_feeds.is_empty())
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+                    && matches!(track.output, TrackOutput::Main { .. })
+            })
+    }
+    /// Return sends and feeds carry PCM rendered from the current source
+    /// frontier; their graph edges retain samples rather than stream pages.
+    pub(crate) fn supports_closed_compensated_audio_returns(&self) -> bool {
+        self.key_stages.is_empty()
+            && !self.returns.is_empty()
+            && self.tracks.iter().all(|track| {
+                track.generator.is_none()
+                    && track.printed_merge.is_none()
+                    && track.group_output_mutes.is_empty()
+            })
     }
     /// Serial Main latency needs clock history, but does not require rendering
     /// all upstream sources and effects one sample at a time. Typed audio feeds
@@ -1209,6 +1256,26 @@ impl SignalGraph {
             *self.typed.get(edge.to_index)?,
         ))
     }
+    /// A retained compressor's key and program inputs must keep their typed
+    /// endpoints. Stages are ordered by typed destination, while their local
+    /// node, source-track and edge indices can shift in a cold-track edit.
+    fn same_sidechain_routes(&self, other: &Self) -> bool {
+        let mut previous = other.key_stages.iter().flatten();
+        self.key_stages.iter().flatten().all(|stage| {
+            let Some(old) = previous.next() else {
+                return false;
+            };
+            [
+                (stage.key_edge, old.key_edge),
+                (stage.main_edge, old.main_edge),
+            ]
+            .into_iter()
+            .all(|(edge, old)| {
+                self.pre_main_endpoints(edge)
+                    .is_some_and(|ends| other.pre_main_endpoints(old) == Some(ends))
+            })
+        }) && previous.next().is_none()
+    }
     /// Visit the pre-Main edges of `self` and `other` that join the same typed
     /// endpoints, as `(self plan edge, other plan edge)`. Both lists are sorted
     /// by typed endpoints (stable keys follow `NodeId` order), so this is one
@@ -1270,25 +1337,42 @@ impl SignalGraph {
             .is_some_and(|(from, to)| owner.contains(from) || owner.contains(to))
     }
 
-    /// Only local source/fader edges and this track's direct contribution to
-    /// Main can start with empty history. A group, sidechain or feed would
-    /// also change another owner's input and needs the ordinary proof.
-    fn is_isolated_main_track(&self, id: TrackId) -> bool {
-        if let Some(track) = self.tracks.iter().find(|track| track.id == Some(id))
-            && (!track.devices.is_empty() || !matches!(track.output, TrackOutput::Main { .. }))
+    /// A cold track can leave silent history at its declared group output
+    /// and Return sends. Incoming routes, authored feeds and keys still need
+    /// their own proof.
+    fn is_independent_track(&self, id: TrackId, cold: bool) -> bool {
+        let group_edge = if let Some(track) = self.tracks.iter().find(|track| track.id == Some(id))
         {
-            return false;
-        }
-        self.pre_main_edges.iter().enumerate().all(|(index, _)| {
-            let Some((from, to)) = self.pre_main_endpoints(index) else {
+            if !track.devices.is_empty() {
                 return false;
-            };
-            match (from.belongs_to_track(id), to.belongs_to_track(id)) {
-                (true, false) => from == NodeId::Fader(id.value()) && to == NodeId::Main,
-                (false, true) => false,
-                _ => true,
             }
-        })
+            match track.output {
+                TrackOutput::Main { .. } => None,
+                TrackOutput::Group { edge, .. } if cold => Some(edge),
+                TrackOutput::Group { .. } => return false,
+            }
+        } else {
+            None
+        };
+        self.pre_main_edges
+            .iter()
+            .enumerate()
+            .all(|(index, &edge)| {
+                let Some((from, to)) = self.pre_main_endpoints(index) else {
+                    return false;
+                };
+                match (from.belongs_to_track(id), to.belongs_to_track(id)) {
+                    (true, false) => {
+                        from == NodeId::Fader(id.value())
+                            && (to == NodeId::Main
+                                || (cold && matches!(to, NodeId::ReturnInput(_)))
+                                || (group_edge == Some(edge)
+                                    && matches!(to, NodeId::TrackInput(_))))
+                    }
+                    (false, true) => false,
+                    _ => true,
+                }
+            })
     }
 
     /// A changed track may own local device nodes, but no edge may feed
@@ -1365,9 +1449,9 @@ impl SignalGraph {
     fn pre_main_history_maps_from(&self, other: &Self) -> bool {
         self.retained_pre_main_history_maps_from(other, None)
     }
-    /// A changed muted track is excluded only after the handoff owner proves
-    /// its narrow source contract. Its isolated local edges still require
-    /// silent history in both runtimes before copying any retained edges.
+    /// A changed owner is excluded only after the handoff proves its source
+    /// contract. Removed track history is cut; other excluded edges must be
+    /// silent in both runtimes before retained histories are copied.
     fn retained_pre_main_history_maps_from(
         &self,
         other: &Self,
@@ -1382,19 +1466,30 @@ impl SignalGraph {
             fresh
                 .is_none_or(|owner| {
                     key != Some(match owner {
-                        FreshHistory::Track(id) | FreshHistory::ChangedTrack(id, _) => {
-                            (false, id.value())
-                        }
+                        FreshHistory::Track(id)
+                        | FreshHistory::ColdTrack(id)
+                        | FreshHistory::RemovedTrack(id)
+                        | FreshHistory::ChangedTrack(id, _) => (false, id.value()),
                         FreshHistory::Return(id) => (true, id.value()),
                     })
                 })
                 .then_some(key)
         };
-        if self.key_stages != other.key_stages
+        let track_indices_can_shift = matches!(fresh, Some(FreshHistory::ColdTrack(_)));
+        let same_keys = if track_indices_can_shift {
+            self.same_sidechain_routes(other)
+        } else {
+            self.key_stages == other.key_stages
+        };
+        if !same_keys
             || match fresh {
-                Some(FreshHistory::Track(_) | FreshHistory::ChangedTrack(_, _)) | None => {
-                    self.returns.len() != other.returns.len()
-                }
+                Some(
+                    FreshHistory::Track(_)
+                    | FreshHistory::ColdTrack(_)
+                    | FreshHistory::RemovedTrack(_)
+                    | FreshHistory::ChangedTrack(_, _),
+                )
+                | None => self.returns.len() != other.returns.len(),
                 Some(FreshHistory::Return(id)) => {
                     self.added_isolated_return_from(other) != Some(id)
                         && other.added_isolated_return_from(self) != Some(id)
@@ -1403,14 +1498,23 @@ impl SignalGraph {
             || if let Some(owner) = fresh {
                 self.main_latency() != other.main_latency()
                     || match owner {
-                        FreshHistory::Track(track) => {
-                            !self.is_isolated_main_track(track)
-                                || !other.is_isolated_main_track(track)
+                        FreshHistory::Track(track) | FreshHistory::ColdTrack(track) => {
+                            let cold = matches!(owner, FreshHistory::ColdTrack(_));
+                            !self.is_independent_track(track, cold)
+                                || !other.is_independent_track(track, cold)
+                        }
+                        FreshHistory::RemovedTrack(track) => {
+                            self.tracks.iter().any(|entry| entry.id == Some(track))
+                                || !other.tracks.iter().any(|entry| entry.id == Some(track))
+                                || !self.is_independent_track(track, false)
+                                || !other.is_independent_track(track, false)
                         }
                         FreshHistory::ChangedTrack(track, device) => {
+                            // Only the changed owner needs a private route to
+                            // Main. The retained order, typed arrivals and
+                            // edge delay histories below also prove unchanged
+                            // Groups and Returns with shared inputs.
                             self.tracks.len() != other.tracks.len()
-                                || !self.independent_main_routes()
-                                || !other.independent_main_routes()
                                 || self
                                     .tracks
                                     .iter()
@@ -1442,14 +1546,17 @@ impl SignalGraph {
             self.pre_main_endpoints(a)
                 .is_some_and(|ends| other.pre_main_endpoints(b) == Some(ends))
         };
-        let same_sends = |a: &[Send], b: &[Send]| {
+        let return_indices_can_shift = matches!(fresh, Some(FreshHistory::Return(_)));
+        let same_sends = |a: &[Send], b: &[Send], indices_can_shift| {
             a.len() == b.len()
                 && a.iter().zip(b).all(|(a, b)| {
-                    // Return insertion/removal shifts runtime indices;
-                    // the typed endpoints still identify the same route.
-                    (matches!(fresh, Some(FreshHistory::Return(_))) || a.target == b.target)
-                        && same_edge(a.edge, b.edge)
+                    // The typed edge still has to identify the same route
+                    // when its local destination index shifts.
+                    (indices_can_shift || a.target == b.target) && same_edge(a.edge, b.edge)
                 })
+        };
+        let same_audio_feeds = |a: &[Send], b: &[Send]| {
+            same_sends(a, b, track_indices_can_shift || return_indices_can_shift)
         };
         let same_output = |a: TrackOutput, b: TrackOutput| match (a, b) {
             (TrackOutput::Main { edge: a }, TrackOutput::Main { edge: b }) => same_edge(a, b),
@@ -1462,10 +1569,14 @@ impl SignalGraph {
                     target: tb,
                     edge: b,
                 },
-            ) => ta == tb && same_edge(a, b),
+            ) => {
+                // A cold child can shift the target's runtime index. The
+                // matched edge still has to name the same canonical group.
+                (ta == tb || track_indices_can_shift) && same_edge(a, b)
+            }
             _ => false,
         };
-        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));
+        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack(id) | FreshHistory::ChangedTrack(id, _)) if track.id == Some(id));
         let retained_return =
             |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
         if !self
@@ -1476,8 +1587,8 @@ impl SignalGraph {
             .all(|(a, b)| {
                 a.id == b.id
                     && same_output(a.output, b.output)
-                    && same_sends(&a.sends, &b.sends)
-                    && same_sends(&a.audio_feeds, &b.audio_feeds)
+                    && same_sends(&a.sends, &b.sends, return_indices_can_shift)
+                    && same_audio_feeds(&a.audio_feeds, &b.audio_feeds)
             })
             || !self
                 .returns
@@ -1487,8 +1598,8 @@ impl SignalGraph {
                 .all(|(a, b)| {
                     a.id == b.id
                         && same_edge(a.main, b.main)
-                        && same_sends(&a.feeds, &b.feeds)
-                        && same_sends(&a.audio_feeds, &b.audio_feeds)
+                        && same_sends(&a.feeds, &b.feeds, return_indices_can_shift)
+                        && same_audio_feeds(&a.audio_feeds, &b.audio_feeds)
                 })
         {
             return false;
@@ -1912,7 +2023,7 @@ impl SignalRuntime {
                 && self.delay_graph.history_compatible(&self.graph)
                 && other.delay_graph.history_compatible(&other.graph)
                 && silent_owner(self)
-                && silent_owner(other)
+                && (matches!(owner, FreshHistory::RemovedTrack(_)) || silent_owner(other))
         } else {
             self.can_continue_pre_main(other)
         };
@@ -2312,8 +2423,14 @@ impl SignalRuntime {
             None
         };
         let planned = &self.graph.plan.nodes()[node];
-        let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
-        let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
+        let input_stamp = self.delays.stamp_at_delay_ref(planned.input_arrival_frames);
+        let clock = OriginClock(input_stamp);
+        let output_stamp = if planned.input_arrival_frames == planned.output_arrival_frames {
+            input_stamp
+        } else {
+            self.delays
+                .stamp_at_delay_ref(planned.output_arrival_frames)
+        };
         let output_clock = OriginClock(output_stamp);
         crate::native_parameter_input::process_range_with_key(
             input,
@@ -2337,8 +2454,9 @@ impl SignalRuntime {
     }
 }
 
-pub(crate) struct OriginClock(pub(crate) Option<TransportStamp>);
-impl hex_lattice::NativeInstrumentClock for OriginClock {
+/// A frame-local clock borrowed from the current compensation transaction.
+pub(crate) struct OriginClock<'a>(pub(crate) Option<&'a TransportStamp>);
+impl hex_lattice::NativeInstrumentClock for OriginClock<'_> {
     fn arrangement_meter_at_offset(&self, offset: usize) -> Option<(u8, u8)> {
         if offset != 0 {
             return None;
@@ -2386,6 +2504,12 @@ impl hex_lattice::NativeInstrumentClock for OriginClock {
             return None;
         }
         self.0.map(|stamp| stamp.arrangement_frame)
+    }
+    fn authored_clock_epoch_at_offset(&self, offset: usize) -> Option<std::num::NonZeroU64> {
+        if offset != 0 {
+            return None;
+        }
+        self.0?.authored_clock_epoch
     }
     fn authored_arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.performance_frame_at_offset(offset)?;

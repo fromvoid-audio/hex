@@ -111,6 +111,29 @@ pub(super) fn project_for_save_with_capture(
     project_with_captures(project, captures)
 }
 
+/// Snapshot current hosted state into an isolated export projection without
+/// editing the canonical project or transferring live processor custody.
+pub(super) fn project_for_export_with_capture(
+    project: &Project,
+    context: hex_engine::AudioSourceContext,
+    cancellation: &RequestCancellation,
+    audio: &mut dyn WorkerAudioSink,
+) -> Result<Project, String> {
+    if cancellation.is_cancelled() {
+        return Err("export cancelled".into());
+    }
+    let captures = audio.capture_plugin_states(PluginStateCaptureInput {
+        project,
+        context,
+        cancellation,
+        device_filter: None,
+    })?;
+    if cancellation.is_cancelled() {
+        return Err("export cancelled".into());
+    }
+    project_with_captures(project.clone(), captures)
+}
+
 /// Freeze the selected tracks from a temporary projection of their live
 /// plug-in state. The original canonical track and its runtime stay owned by
 /// the existing edit transaction, including when capture or paste is refused.

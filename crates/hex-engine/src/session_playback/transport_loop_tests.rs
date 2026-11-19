@@ -231,12 +231,38 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
             relocated.try_inherit_state_with_tempo_anchor(&mut wrong_donor, &anchor),
             Err(SessionPlaybackError::InvalidCommand)
         );
-        running.performance_frame += 1;
+        let mut late = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        for playback in [&mut late, &mut uninterrupted] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut [[0.0; 2]; 601]).unwrap();
+        }
         assert_eq!(
-            relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
+            relocated.try_inherit_state_with_tempo_anchor(&mut late, &anchor),
             Err(SessionPlaybackError::InvalidCommand)
         );
-        running.performance_frame -= 1;
+        assert_eq!(late.performance_frame(), 601);
+        let mut late_pcm = [[0.0; 2]; 257];
+        let mut uninterrupted_pcm = late_pcm;
+        late.render(&mut late_pcm).unwrap();
+        uninterrupted.render(&mut uninterrupted_pcm).unwrap();
+        assert_eq!(late_pcm, uninterrupted_pcm);
+        let changed_layout = prepare(&no_pdc_new);
+        let incompatible = PreparedTempoAnchor::prepare(
+            Arc::clone(&old_revision),
+            Arc::clone(&changed_layout),
+            600,
+            600,
+        )
+        .unwrap();
+        let mut fresh_layout = SessionPlayback::new(changed_layout).unwrap();
+        assert!(
+            fresh_layout
+                .try_inherit_state_with_tempo_anchor(&mut running, &incompatible)
+                .is_err()
+        );
+        assert!(running.playing());
+        assert_eq!(running.performance_frame(), 600);
         running.transient_loop = Some(LoopRegion::new(0, 1000, true).unwrap());
         assert_eq!(
             relocated.try_inherit_state_with_tempo_anchor(&mut running, &anchor),
@@ -255,10 +281,12 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
             Err(SessionPlaybackError::InvalidCommand)
         );
         running.playing = true;
-        relocated
+        let planned = relocated
             .try_inherit_state_with_tempo_anchor(&mut running, &anchor)
             .unwrap();
         assert!(relocated.playing());
+        assert!(!planned.running_audio_restart());
+        assert_eq!(relocated.performance_frame(), 600);
         // 120 -> 90 bpm: frame 600 (1/40 beat) lands at frame 800 under 90 bpm.
         assert_eq!(relocated.arrangement_frame(), 800);
         let mut relocated_oracle = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
@@ -269,6 +297,18 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
             relocated.render(chunk).unwrap();
         }
         relocated_oracle.render(&mut relocated_expected).unwrap();
+        let latency = old_revision.arrangement().main_latency_frames() as usize;
+        let mut uninterrupted = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        uninterrupted.apply(SessionPlaybackCommand::Play).unwrap();
+        uninterrupted.render(&mut [[0.0; 2]; 600]).unwrap();
+        uninterrupted
+            .render(&mut relocated_expected[..latency])
+            .unwrap();
+        assert!(
+            relocated_expected[..latency]
+                .iter()
+                .any(|frame| *frame != [0.0; 2])
+        );
         assert_eq!(relocated_actual, relocated_expected, "block={block}");
         assert!(
             relocated_actual
@@ -277,21 +317,27 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
                 .any(|sample| *sample != 0.0)
         );
         assert_eq!(relocated.arrangement_frame(), 2848);
+        // The ordinary live publication observes the same cut as the plan.
         let mut ordinary_old = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
         ordinary_old.apply(SessionPlaybackCommand::Play).unwrap();
         ordinary_old.render(&mut [[0.0; 2]; 600]).unwrap();
         let mut ordinary = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
-        ordinary
+        let live = ordinary
             .try_inherit_state_live_from(&mut ordinary_old)
             .unwrap();
-        let mut ordinary_output = vec![[0.0; 2]; 2048];
+        assert!(!live.running_audio_restart());
+        assert_eq!(ordinary.performance_frame(), 600);
+        assert_eq!(ordinary.arrangement_frame(), 800);
+        let mut ordinary_output = vec![[0.0; 2]; latency];
         for chunk in ordinary_output.chunks_mut(block) {
             ordinary.render(chunk).unwrap();
         }
         assert_eq!(
-            ordinary_output, relocated_expected,
-            "unplanned block={block}"
+            ordinary_output,
+            relocated_expected[..latency],
+            "live block={block}"
         );
+        assert_eq!(ordinary.arrangement_frame(), 800 + latency as u64);
         let mut playback_old =
             crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&old_revision))
                 .unwrap();
@@ -372,6 +418,88 @@ fn compensated_tempo_anchor_preserves_samples_and_clock_inner() {
     assert_eq!(candidate.performance_frame(), oracle.performance_frame());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
+fn live_loop_tempo_edit_keeps_pending_pcm_and_wraps_the_retimed_loop() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let (_, looped, media) = limiter_loop_fixture();
+            let prepare = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare(
+                        project,
+                        &media,
+                        Arc::new(hex_devices::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let original = prepare(&looped);
+            for (tempo, bounds, new_cut, after_wrap) in [
+                (90_000_000, (533, 3200), 3093, 938),
+                (180_000_000, (267, 1600), 1547, 726),
+            ] {
+                let mut editor = Editor::new(looped.clone(), 1).unwrap();
+                editor
+                    .execute(Command::SetProjectTempo {
+                        tempo: Tempo::new(tempo).unwrap(),
+                    })
+                    .unwrap();
+                let edited = prepare(editor.project());
+                let new_region = editor.project().loop_region().unwrap();
+                assert_eq!((new_region.start(), new_region.end()), bounds);
+                let latency = original.arrangement().main_latency_frames() as usize;
+                assert!(latency > 0);
+                for block in [1, 257] {
+                    let from_running = || {
+                        let mut playback = SessionPlayback::new(Arc::clone(&original)).unwrap();
+                        playback.apply(SessionPlaybackCommand::Play).unwrap();
+                        for chunk in [[0.0; 2]; 6320].chunks_mut(block) {
+                            playback.render(chunk).unwrap();
+                        }
+                        assert_eq!(playback.arrangement_frame(), 2320);
+                        assert_eq!(playback.arrangement_loop_state().pass, 2);
+                        playback
+                    };
+                    let mut donor = from_running();
+                    let old_beat =
+                        crate::MidiTiming::frame_to_beat(&donor.timing_view(), 6320).unwrap();
+                    let mut uninterrupted = from_running();
+                    let mut candidate = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+                    let report = candidate.try_inherit_state_live_from(&mut donor).unwrap();
+                    assert!(!report.running_audio_restart(), "partition {block}");
+                    assert_eq!(candidate.performance_frame(), 6320);
+                    assert_eq!(candidate.arrangement_frame(), new_cut);
+                    assert_eq!(
+                        crate::MidiTiming::frame_to_beat(&candidate.timing_view(), 6320).unwrap(),
+                        old_beat
+                    );
+                    assert_eq!(candidate.arrangement_loop_state().pass, 2);
+
+                    let mut expected = [[0.0; 2]; 512];
+                    let mut fresh = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+                    fresh.play_from(new_cut).unwrap();
+                    fresh.render(&mut expected).unwrap();
+                    uninterrupted.render(&mut expected[..latency]).unwrap();
+                    assert!(expected[..latency].iter().any(|frame| *frame != [0.0; 2]));
+                    let mut output = [[0.0; 2]; 512];
+                    for chunk in output.chunks_mut(block) {
+                        candidate.render(chunk).unwrap();
+                    }
+                    for (offset, (sample, expected)) in output.iter().zip(expected).enumerate() {
+                        assert_eq!(*sample, expected, "partition {block}, sample {offset}");
+                    }
+                    assert_eq!(candidate.arrangement_frame(), after_wrap);
+                    assert_eq!(candidate.arrangement_loop_state().pass, 3);
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -462,12 +590,13 @@ fn run_projected_tempo_cut(post_loop: bool, blocks: &'static [usize]) {
                 )
             };
             let source = prepare(&looped);
-            let mut snapshot = looped.snapshot();
-            snapshot.tempo_points = vec![TempoPoint::new(
-                BeatTime::ZERO,
-                Tempo::new(90_000_000).unwrap(),
-            )];
-            let candidate = prepare(&legacy_project_from_snapshot(snapshot).unwrap());
+            let mut editor = Editor::new(looped, 1).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(90_000_000).unwrap(),
+                })
+                .unwrap();
+            let candidate = prepare(editor.project());
             for &block in blocks {
                 let distances: &[u64] = if post_loop {
                     &[0, 2300]
@@ -507,9 +636,14 @@ fn run_projected_tempo_cut(post_loop: bool, blocks: &'static [usize]) {
                         }
                     }
                     let mut projected = SessionPlayback::new(Arc::clone(&candidate)).unwrap();
-                    projected
+                    let handoff = projected
                         .try_inherit_state_with_tempo_anchor(&mut old, &anchor)
                         .unwrap();
+                    assert!(!handoff.running_audio_restart());
+                    assert_eq!(
+                        projected.performance_frame(),
+                        observed_performance + distance
+                    );
                     let mut ordinary = SessionPlayback::new(Arc::clone(&candidate)).unwrap();
                     ordinary
                         .try_inherit_state_live_from(&mut reference)
@@ -625,8 +759,14 @@ fn run_prepared_loop_anchor(post_loop: bool) {
                 BeatTime::ZERO,
                 Tempo::new(90_000_000).unwrap(),
             )];
-            let loop_tempo = legacy_project_from_snapshot(loop_tempo_snapshot).unwrap();
-            let loop_tempo_revision = prepare(&loop_tempo);
+            let incompatible = prepare(&legacy_project_from_snapshot(loop_tempo_snapshot).unwrap());
+            let mut editor = Editor::new(looped, 1).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(90_000_000).unwrap(),
+                })
+                .unwrap();
+            let loop_tempo_revision = prepare(editor.project());
             for block in [1, 257] {
                 let mut old = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
                 let mut reference_old = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
@@ -641,6 +781,7 @@ fn run_prepared_loop_anchor(post_loop: bool) {
                     }
                 }
                 let loop_state = old.arrangement_loop_state();
+                let performance_cut = old.performance_frame();
                 if post_loop {
                     assert_eq!(
                         (old.arrangement_frame(), loop_state.active_region),
@@ -664,6 +805,22 @@ fn run_prepared_loop_anchor(post_loop: bool) {
                     loop_state,
                 )
                 .unwrap();
+                // Changing the map while holding the old frame bounds changes
+                // the loop's musical range, so its queued history cannot carry.
+                let wrong_loop = PreparedTempoAnchor::prepare_with_loop_state(
+                    Arc::clone(&loop_revision),
+                    Arc::clone(&incompatible),
+                    old.arrangement_frame(),
+                    performance_cut,
+                    loop_state,
+                )
+                .unwrap();
+                let mut changed_loop = SessionPlayback::new(Arc::clone(&incompatible)).unwrap();
+                assert_eq!(
+                    changed_loop.try_inherit_state_with_tempo_anchor(&mut old, &wrong_loop),
+                    Err(SessionPlaybackError::InvalidCommand)
+                );
+                assert_eq!(old.performance_frame(), performance_cut);
                 assert!(
                     PreparedTempoAnchor::prepare_with_loop_state(
                         Arc::clone(&loop_revision),
@@ -705,8 +862,11 @@ fn run_prepared_loop_anchor(post_loop: bool) {
                     Err(SessionPlaybackError::InvalidCommand)
                 );
                 next.transient_loop = None;
-                next.try_inherit_state_with_tempo_anchor(&mut old, &anchor)
+                let handoff = next
+                    .try_inherit_state_with_tempo_anchor(&mut old, &anchor)
                     .unwrap();
+                assert!(!handoff.running_audio_restart());
+                assert_eq!(next.performance_frame(), performance_cut);
                 let mut unplanned = SessionPlayback::new(Arc::clone(&loop_tempo_revision)).unwrap();
                 unplanned
                     .try_inherit_state_live_from(&mut reference_old)
@@ -725,7 +885,12 @@ fn run_prepared_loop_anchor(post_loop: bool) {
                 }
                 fresh.render(&mut expected).unwrap();
                 assert_eq!(actual, ordinary, "unplanned loop={post_loop} block={block}");
-                assert_eq!(actual, expected, "fresh loop={post_loop} block={block}");
+                let latency = loop_revision.arrangement().main_latency_frames() as usize;
+                assert_eq!(
+                    actual[latency..],
+                    expected[latency..],
+                    "fresh loop={post_loop} block={block}"
+                );
             }
         })
         .unwrap()
@@ -1391,6 +1556,14 @@ fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops(
     assert!(SessionPlayback::new(prepare_mutable(&transport_loop)).is_ok());
     assert_eq!(
         SessionPlayback::new_linear_arrangement_export(prepare_mutable(&transport_loop)).err(),
+        Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
+    );
+    assert_eq!(
+        SessionPlayback::new_linear_arrangement_export_with_foreign(
+            prepare_mutable(&transport_loop),
+            None
+        )
+        .err(),
         Some(SessionPlaybackError::MutableInstrumentLoopUnsupported)
     );
 }

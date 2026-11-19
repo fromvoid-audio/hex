@@ -53,6 +53,7 @@ impl PrintedBranchProbe {
             self.runtime
                 .delays
                 .push_transport_stamp(TransportStamp {
+                    authored_clock_epoch: None,
                     tempo_micro_bpm: None,
                     performance_frame: self.frame,
                     transport_is_running: true,

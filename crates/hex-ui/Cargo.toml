@@ -45,6 +45,11 @@ name = "midi_pressure_boundary"
 path = "tests/midi_pressure_boundary.rs"
 required-features = ["ui-test-support"]
 
+[[test]]
+name = "sample_recorder_layout"
+path = "tests/sample_recorder_layout.rs"
+required-features = ["ui-test-support"]
+
 [dependencies]
 # UI-only random result selection; already pinned in the workspace lock graph.
 fastrand = "=2.5.0"

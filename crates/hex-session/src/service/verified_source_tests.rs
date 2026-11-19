@@ -1529,20 +1529,48 @@ fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_
             cents: 137,
         }))
         .unwrap();
+    let pitched = next(&service);
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    assert_eq!(
+        pitched
+            .state
+            .project
+            .clip(plain)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .pitch_cents,
+        137
+    );
+    let asset = opened.state.project.clip(plain).unwrap().asset();
+    let pitched_source = pitched.state.canonical_audio_source.as_ref().unwrap();
+    let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) = (
+        &source.sources()[&asset],
+        pitched_source.sources().get(&asset),
+    ) else {
+        panic!("verified facts")
+    };
+    assert_eq!(before, after);
+    service
+        .submit(Request::Edit(Command::SetAudioClipPitch {
+            clip: plain,
+            cents: 4_801,
+        }))
+        .unwrap();
     let refused = next(&service);
     assert!(
         refused
             .error
             .as_ref()
             .unwrap()
-            .contains("require resident audio")
+            .contains("audio pitch must be within -4800..4800 cents")
     );
-    assert_eq!(refused.state.project, opened.state.project);
-    assert_eq!(refused.state.revision, opened.state.revision);
-    assert_eq!(refused.state.can_undo, opened.state.can_undo);
+    assert_eq!(refused.state.project, pitched.state.project);
+    assert_eq!(refused.state.revision, pitched.state.revision);
+    assert_eq!(refused.state.can_undo, pitched.state.can_undo);
     let after = refused.state.canonical_audio_source.as_ref().unwrap();
-    assert_eq!(after.context(), source.context());
-    let asset = opened.state.project.clip(plain).unwrap().asset();
+    assert_eq!(after.context(), pitched_source.context());
     let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) =
         (&source.sources()[&asset], after.sources().get(&asset))
     else {
@@ -1747,4 +1775,136 @@ fn verified_repitch_edit_commits_and_survives_undo_redo_without_resident_pcm() {
         .unwrap();
     assert_eq!(quote.source_capacity, 2);
     assert_eq!(quote.prepared_pcm_frames, 0);
+}
+
+#[test]
+fn verified_stream_and_builtin_effect_share_candidate_reservation() {
+    verified_stream_and_effect_share_candidate_reservation(false);
+}
+
+#[test]
+fn verified_stream_and_limiter_share_candidate_reservation() {
+    verified_stream_and_effect_share_candidate_reservation(true);
+}
+
+fn verified_stream_and_effect_share_candidate_reservation(limiter: bool) {
+    let files = Files::new();
+    let source = files.wav("saturator.wav", 16_000, 8_000, 1024);
+    let service = Service::new(16_000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let imported = run(&service, Request::Import(source));
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let asset = imported.state.project.clip(clip).unwrap().asset();
+    let neutral = run(
+        &service,
+        Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }),
+    );
+    let warp = hex_project::default_audio_warp(
+        neutral.state.project.clip(clip).unwrap(),
+        neutral.state.project.tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }),
+    );
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static(if limiter {
+            "hex.limiter"
+        } else {
+            "hex.saturator"
+        }),
+    )
+    .unwrap();
+    let command = if limiter {
+        Command::InsertDevice {
+            track: neutral.state.project.tracks()[0].id(),
+            before: None,
+            state: effect,
+        }
+    } else {
+        Command::InsertMainDevice {
+            before: None,
+            state: effect,
+        }
+    };
+    let edited = run(&service, Request::Edit(command));
+    let snapshot = edited.state.canonical_audio_source.as_ref().unwrap();
+    let AudioSourceBinding::VerifiedFile(file) = snapshot.sources().get(&asset).unwrap() else {
+        panic!("verified source")
+    };
+    let raw = file.source_metadata(asset, 19).unwrap();
+    let edit = edited
+        .state
+        .project
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap();
+    let (map, law) = hex_engine::audio_transform::streamed_repitch_map(
+        edit,
+        edited.state.project.tempo_map(),
+        raw.playback_frames(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let derived = raw.with_repitch(&map, law).unwrap();
+    hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+        let quote = snapshot.reservation_quote_with_effects(effects).unwrap();
+        assert_eq!(quote.source_capacity, 2);
+        assert_eq!(quote.prepared_pcm_frames, 0);
+        assert!(matches!(
+            effects.quote_with_pitched_streams(
+                &edited.state.project,
+                1,
+                &[raw.clone(), derived.clone()]
+            ),
+            Err(hex_engine::AudioStorageError::Capacity)
+        ));
+        let reservation = quote.storage_reservation(0).unwrap();
+        let mut missing = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            reservation,
+        )
+        .unwrap();
+        missing.add_streamed_source_on_control(raw.clone()).unwrap();
+        assert!(
+            snapshot
+                .prepare_candidate_with_effects_on_control(19, &mut missing, effects)
+                .is_err()
+        );
+        missing.cleanup_on_control().unwrap();
+        let mut candidate = hex_engine::AudioCandidatePreparation::try_new_on_control(
+            quote.source_capacity,
+            reservation,
+        )
+        .unwrap();
+        candidate.add_streamed_source_on_control(raw).unwrap();
+        candidate
+            .add_repitch_streamed_source_on_control(derived)
+            .unwrap();
+        snapshot
+            .prepare_candidate_with_effects_on_control(19, &mut candidate, effects)
+            .unwrap();
+        assert_eq!(candidate.resident_pcm_capacity_frames().unwrap(), 0);
+        candidate.cleanup_on_control().unwrap();
+        Ok(())
+    })
+    .unwrap();
 }

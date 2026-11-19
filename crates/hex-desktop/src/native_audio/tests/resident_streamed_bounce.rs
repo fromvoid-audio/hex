@@ -7,6 +7,8 @@ use super::*;
 use hex_project::{AssetId, BounceAdoption, BounceTarget, TimeRange};
 use std::path::Path;
 
+mod long_reverse;
+
 const FRAMES: u32 = 24_000;
 /// 16-bit mono ramp: every frame differs, so any offset or crop error shows.
 fn ramp(path: &Path, step: i32) {
@@ -175,6 +177,119 @@ fn streamed_clip_bounces_match_source_while_playing_and_changed_media_refuses() 
 
 #[test]
 fn long_streamed_repitch_bounce_matches_resident_prefix() {
+    long_warp_bounce(hex_project::WarpMode::RePitch);
+}
+#[test]
+fn long_streamed_tones_bounce_matches_resident_prefix() {
+    long_warp_bounce(hex_project::WarpMode::Tones { grain_ms: 32 });
+}
+#[test]
+fn long_streamed_texture_bounce_matches_resident_prefix() {
+    long_warp_bounce(hex_project::WarpMode::Texture {
+        grain_ms: 32,
+        fluctuation: 35,
+        seed: 42,
+    });
+}
+fn long_warp_bounce(mode: hex_project::WarpMode) {
+    use std::io::Write;
+    let _native = native_fixture();
+    let files = Files::new();
+    fn source(path: &Path, frames: u32) {
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + frames).to_le_bytes()).unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&48_000u32.to_le_bytes()).unwrap();
+        file.write_all(&1u16.to_le_bytes()).unwrap();
+        file.write_all(&8u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&frames.to_le_bytes()).unwrap();
+        let prefix: Vec<u8> = (0..8192).map(|i| 96 + ((i / 8) % 64) as u8).collect();
+        file.write_all(&prefix).unwrap();
+        file.set_len(44 + u64::from(frames)).unwrap();
+    }
+    fn render(path: &Path, streamed: bool, mode: hex_project::WarpMode) -> Vec<hex_engine::Frame> {
+        let mut h = ResidentHarness::with_frame_limit(65_536);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::ImportToNewTrack {
+            path: path.to_path_buf(),
+            before_track: None,
+            start: 0,
+        });
+        (applied, _) = h.applied(applied);
+        let has_stream = imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)));
+        assert_eq!(has_stream, streamed);
+        let track = imported.state.project.tracks()[0].id();
+        let clip = imported.state.project.tracks()[0].clips()[0].id();
+        let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        }));
+        (applied, _) = h.applied(applied);
+        let warp = hex_project::default_audio_warp(
+            neutral.state.project.clip(clip).unwrap(),
+            neutral.state.project.tempo_map(),
+            mode,
+        )
+        .unwrap();
+        h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        }));
+        (applied, _) = h.applied(applied);
+        let current = h.run(Request::Edit(hex_project::Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+        }));
+        (applied, _) = h.applied(applied);
+        let result = bounce(
+            &mut h,
+            &current,
+            BounceTarget::Range(TimeRange::new(vec![track], 128, 640).unwrap()),
+            false,
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let asset = added_asset(&current.state.project, &result.state.project);
+        let rendered = decoded(result.state.project.asset(asset).unwrap().path());
+        if streamed {
+            h.applied(applied);
+            fs::write(path, b"changed source").unwrap();
+            let refused = bounce(
+                &mut h,
+                &result,
+                BounceTarget::Range(TimeRange::new(vec![track], 128, 640).unwrap()),
+                false,
+            );
+            assert!(refused.error.is_some(), "changed source must refuse");
+            assert_eq!(refused.state.project, result.state.project);
+            assert_eq!(refused.state.revision, result.state.revision);
+        }
+        rendered
+    }
+    let short = files.0.join("short.wav");
+    let long = files.0.join("long.wav");
+    source(&short, 8192);
+    source(&long, 20_000_000);
+    let expected = render(&short, false, mode);
+    let actual = render(&long, true, mode);
+    assert_matches(&actual, &expected, "warp bounce");
+}
+
+#[test]
+fn long_streamed_pitch_fade_bounce_matches_resident_prefix() {
     use std::io::Write;
     let _native = native_fixture();
     let files = Files::new();
@@ -217,25 +332,15 @@ fn long_streamed_repitch_bounce_matches_resident_prefix() {
         assert_eq!(has_stream, streamed);
         let track = imported.state.project.tracks()[0].id();
         let clip = imported.state.project.tracks()[0].clips()[0].id();
-        let neutral = h.run(Request::Edit(hex_project::Command::SetClipFades {
+        h.run(Request::Edit(hex_project::Command::SetClipFades {
             clip,
-            fade_in: 0,
+            fade_in: 2048,
             fade_out: 0,
         }));
         (applied, _) = h.applied(applied);
-        let warp = hex_project::default_audio_warp(
-            neutral.state.project.clip(clip).unwrap(),
-            neutral.state.project.tempo_map(),
-            hex_project::WarpMode::RePitch,
-        )
-        .unwrap();
-        h.run(Request::Edit(hex_project::Command::SetAudioClipWarp {
+        let current = h.run(Request::Edit(hex_project::Command::SetAudioClipPitch {
             clip,
-            settings: Some(warp),
-        }));
-        (applied, _) = h.applied(applied);
-        let current = h.run(Request::Edit(hex_project::Command::SetProjectTempo {
-            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+            cents: 700,
         }));
         (applied, _) = h.applied(applied);
         let result = bounce(
@@ -268,5 +373,5 @@ fn long_streamed_repitch_bounce_matches_resident_prefix() {
     source(&long, 20_000_000);
     let expected = render(&short, false);
     let actual = render(&long, true);
-    assert_matches(&actual, &expected, "repitch bounce");
+    assert_matches(&actual, &expected, "pitch and fade bounce");
 }

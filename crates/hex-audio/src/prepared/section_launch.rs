@@ -1,24 +1,25 @@
-//! One scheduled seek in the existing fresh-publication slot. No new queue,
-//! graph owner or callback destructor is introduced. Preparation readiness
-//! selects the next boundary on the old graph; the callback renders its prefix,
-//! installs the exact fresh candidate, then renders its suffix. Stop/cancel and
-//! the source/route/command fence remain effective while the candidate waits.
+//! A scheduled seek or tempo edit uses the existing publication slot. The
+//! callback renders the old prefix, rechecks the exact cut, then renders the
+//! suffix. Stop and cancellation stay effective while either candidate waits.
 use super::*;
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod midi_tests;
 
-pub(super) enum QuantizedSeekRender {
+pub(super) enum ScheduledCutRender {
     NotHandled,
     Unchanged,
     Switched,
 }
 
 impl Callback {
-    pub(super) fn quantized_seek_publication_due(&mut self) -> bool {
+    pub(super) fn scheduled_publication_due(&mut self) -> bool {
         let Some(next) = self.deferred.as_mut() else {
             return true;
         };
+        if let PublicationPolicy::InheritAtTempoCut(fence) = next.policy {
+            return self.tempo_publication_due(fence);
+        }
         let PublicationPolicy::InstallQuantizedSeekWhenReady {
             fence,
             quantization,
@@ -30,7 +31,7 @@ impl Callback {
         let cancelled = next
             .fresh_runtime_cancellation
             .as_ref()
-            .is_some_and(|cell| cell.decision.load(Acquire) == FRESH_PUBLICATION_CANCELLED);
+            .is_some_and(PublicationReceiptOwner::fenced_before_admission);
         let stale = old.is_none_or(|old| {
             old.revision != fence.expected_active_revision
                 || old.playback.session_route_state_generation() != fence.route_state_generation
@@ -47,33 +48,33 @@ impl Callback {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         } else if let Some(old) = old {
             let current = old.playback.performance_frame();
-            if next.quantized_seek_frame.is_none_or(|due| due < current) {
+            if next.scheduled_cut_frame.is_none_or(|due| due < current) {
                 match old.playback.quantized_seek_frame(quantization) {
-                    Ok(due) => next.quantized_seek_frame = Some(due),
+                    Ok(due) => next.scheduled_cut_frame = Some(due),
                     Err(_) => {
-                        return self.reject_quantized_seek_publication(
+                        return self.reject_scheduled_publication(
                             PlaybackHandoffRejection::SessionRuntime,
                         );
                     }
                 }
             }
-            Ok(next.quantized_seek_frame == Some(current))
+            Ok(next.scheduled_cut_frame == Some(current))
         } else {
             Err(PlaybackHandoffRejection::RuntimeFenceChanged)
         };
         match result {
             Ok(due) => due,
-            Err(reason) => self.reject_quantized_seek_publication(reason),
+            Err(reason) => self.reject_scheduled_publication(reason),
         }
     }
 
-    fn reject_quantized_seek_publication(&mut self, reason: PlaybackHandoffRejection) -> bool {
+    pub(super) fn reject_scheduled_publication(
+        &mut self,
+        reason: PlaybackHandoffRejection,
+    ) -> bool {
         if let Some(mut next) = self.deferred.take() {
             if let Some(streams) = next.streams.as_mut() {
                 streams.cancel_install(&mut self.domain_pages);
-            }
-            if let Some(cell) = next.fresh_runtime_cancellation.as_ref() {
-                cell.finish();
             }
             self.status.publish_rejected_revision(next.revision, reason);
             self.return_graph(next);
@@ -82,53 +83,73 @@ impl Callback {
         false
     }
 
-    pub(super) fn render_quantized_seek(
+    pub(super) fn render_scheduled_cut(
         &mut self,
         output: &mut [Frame],
-    ) -> Result<QuantizedSeekRender, Invalid> {
-        let Some(due) = self
-            .deferred
+    ) -> Result<ScheduledCutRender, Invalid> {
+        let eligible_due = self
+            .deferred_eligible
             .as_ref()
-            .filter(|next| {
-                matches!(
-                    next.policy,
-                    PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
-                )
+            .and_then(|next| next.tempo_cut())
+            .map(|cut| cut.performance_frame);
+        let Some((due, tempo)) = eligible_due.map(|frame| (frame, true)).or_else(|| {
+            self.deferred.as_ref().and_then(|next| match next.policy {
+                PublicationPolicy::InheritAtTempoCut(_) => {
+                    next.tempo_cut().map(|cut| (cut.performance_frame, true))
+                }
+                PublicationPolicy::InstallQuantizedSeekWhenReady { .. } => {
+                    next.scheduled_cut_frame.map(|frame| (frame, false))
+                }
+                _ => None,
             })
-            .and_then(|next| next.quantized_seek_frame)
-        else {
-            return Ok(QuantizedSeekRender::NotHandled);
+        }) else {
+            return Ok(ScheduledCutRender::NotHandled);
         };
-        let Some(old) = self.active.as_ref().and_then(ActivePublication::legacy) else {
-            return Ok(QuantizedSeekRender::NotHandled);
+        let Some(old) = self.active.as_ref().and_then(ActivePublication::current) else {
+            return Ok(ScheduledCutRender::NotHandled);
         };
         if !old.playback.playing() {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         }
         let Some(distance) = due.checked_sub(old.playback.performance_frame()) else {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         };
         let Ok(prefix) = usize::try_from(distance) else {
-            return Ok(QuantizedSeekRender::NotHandled);
+            return Ok(ScheduledCutRender::NotHandled);
         };
-        if prefix > output.len() {
-            return Ok(QuantizedSeekRender::NotHandled);
+        // At a tempo cut on a block boundary the following block owns
+        // installation. The outgoing block renders only its own revision.
+        if prefix > output.len() || (tempo && prefix == output.len()) {
+            return Ok(ScheduledCutRender::NotHandled);
         }
         let old_revision = old.revision;
+        let (old_position, old_performance, old_loop) = (
+            old.playback.position(),
+            old.playback.performance_frame(),
+            old.playback.audible_timing().1,
+        );
         let (before, after) = output.split_at_mut(prefix);
         self.render_project(before, 0)?;
         // Revalidate immediately before the swap, including a cancellation or
         // priority Stop racing the old prefix. Retired owners keep ordinary
         // fixed return-ring custody, including under backpressure.
-        self.advance_legacy_publication(Some(after.len()));
+        if eligible_due.is_some() {
+            self.advance_eligible_publication(Some(after.len()));
+        } else {
+            self.advance_legacy_publication(Some(after.len()));
+        }
         let switched = self
             .active
             .as_ref()
-            .and_then(ActivePublication::legacy)
+            .and_then(ActivePublication::current)
             .is_some_and(|active| active.revision != old_revision);
         let suffix_start = self.scheduled_transport();
         self.render_project(after, prefix)?;
         if switched {
+            if tempo {
+                self.audible_clock
+                    .push(old_position, old_performance, prefix, old_loop);
+            }
             let played = match (suffix_start, self.scheduled_transport()) {
                 (Some((_, start, true)), Some((_, end, _))) => {
                     usize::try_from(end.saturating_sub(start))
@@ -137,9 +158,9 @@ impl Callback {
                 _ => 0,
             };
             self.record_audible_run(suffix_start, played);
-            Ok(QuantizedSeekRender::Switched)
+            Ok(ScheduledCutRender::Switched)
         } else {
-            Ok(QuantizedSeekRender::Unchanged)
+            Ok(ScheduledCutRender::Unchanged)
         }
     }
 }
@@ -377,63 +398,48 @@ mod tests {
     }
 
     #[test]
-    fn quantized_section_once_ends_at_its_boundary_in_the_callback() {
+    fn quantized_plain_section_launch_keeps_rendering_past_the_section_end() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
                 let source = source();
-                for section_end in [None, Some(12_006)] {
-                    let (mut control, mut callback) = active(&source, 3_997, true);
-                    let fence = control.capture_fresh_runtime_fence().unwrap();
-                    let mut candidate = Playback::from_interactive_arrangement_preroll(
-                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
-                            Arc::clone(&source),
-                            12_000,
-                            0,
-                            true,
-                            &AtomicBool::new(false),
-                        )
-                        .unwrap(),
+                let (mut control, mut callback) = active(&source, 3_997, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let candidate = Playback::from_interactive_arrangement_preroll(
+                    SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                        Arc::clone(&source),
+                        12_000,
+                        0,
+                        true,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        candidate,
+                        PublicationPolicy::InstallQuantizedSeekWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
                     )
                     .unwrap();
-                    if let Some(end) = section_end {
-                        candidate
-                            .arm_section_once(LoopRegion::new(12_000, end, false).unwrap())
-                            .unwrap();
-                    }
-                    let revision = control
-                        .publish_with_policy(
-                            candidate,
-                            PublicationPolicy::InstallQuantizedSeekWhenReady {
-                                fence,
-                                quantization: LaunchQuantization::Quarter,
-                            },
-                        )
-                        .unwrap();
 
-                    let mut output = [[0.0; 2]; 16];
-                    render_checked(&mut callback, &mut output);
-                    assert_eq!(&output[..3], &[[0.125; 2]; 3]);
-                    if section_end.is_some() {
-                        assert_eq!(&output[3..9], &[[0.5; 2]; 6]);
-                        assert_eq!(&output[9..], &[[0.0; 2]; 7]);
-                    } else {
-                        assert_eq!(&output[3..], &[[0.5; 2]; 13]);
-                    }
-                    assert_eq!(control.status.applied_revision.load(Acquire), revision);
-                    assert_eq!(
-                        control.status.position.load(Acquire),
-                        section_end.unwrap_or(12_013)
-                    );
-                    assert_eq!(control.status.playing.load(Acquire), section_end.is_none());
-                    let active = callback
-                        .active
-                        .as_ref()
-                        .and_then(ActivePublication::legacy)
-                        .unwrap();
-                    assert_eq!(active.playback.section_loop(), None);
-                    assert_eq!(control.reclaim(), 1);
-                }
+                let mut output = [[0.0; 2]; 16];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(&output[..3], &[[0.125; 2]; 3]);
+                assert_eq!(&output[3..], &[[0.5; 2]; 13]);
+                assert_eq!(control.status.applied_revision.load(Acquire), revision);
+                assert_eq!(control.status.position.load(Acquire), 12_013);
+                assert!(control.status.playing.load(Acquire));
+                let active = callback
+                    .active
+                    .as_ref()
+                    .and_then(ActivePublication::legacy)
+                    .unwrap();
+                assert_eq!(active.playback.section_loop(), None);
+                assert_eq!(control.reclaim(), 1);
             })
             .unwrap()
             .join()

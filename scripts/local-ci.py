@@ -229,9 +229,10 @@ UI_UNIT_STEPS = tuple(
 UI_UNIT_STEP_IDS = frozenset(step.step_id for step in UI_UNIT_STEPS)
 
 UI_FEATURE_TARGET_STEPS = (
-    Step("ui-midi-pressure-boundary-tests",
-         ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support",
-          "--test", "midi_pressure_boundary", "--locked"), requires_tests=True),
+    *(Step(f"ui-{target.replace('_', '-')}-tests",
+           ("cargo", "test", "-p", "hex-ui", "--features", feature,
+            "--test", target, "--locked"), requires_tests=True)
+      for target, feature in ci_plan.UI_EXTRA_TEST_FEATURES.items()),
     Step("ui-feature-doctests",
          ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--doc", "--locked")),
 )
@@ -654,6 +655,21 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       or s.step_id == "runner-tests") for s in steps)
 
 
+def qualification_steps(mode: str | None, plan: dict | None, *,
+                        native_acceptance_opt_in: bool | None,
+                        sharded_full_python: bool = False) -> tuple[Step, ...]:
+    """Bind the complete audit schedule to the recorded discovery mode."""
+    if type(sharded_full_python) is not bool:
+        raise ValueError("full Python discovery marker must be boolean")
+    if sharded_full_python:
+        if mode != "full" or plan is not None or native_acceptance_opt_in is not False:
+            raise ValueError("sharded full Python discovery requires an unscoped full audit without native opt-in")
+        return planned_steps({"scope": "full", "python_tests": {
+            "mode": "comprehensive", "sharded_discovery": True,
+        }})
+    return planned_steps({"scope": "full"} if plan is None else plan)
+
+
 def module_scoped(argv: tuple[str, ...]) -> bool:
     """A test command restricted to changed modules by a libtest filter.
 
@@ -668,24 +684,66 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
-    report = report.resolve()
-    raw = report.read_bytes()
-    evidence = json.loads(raw)
+def validate_report_steps(evidence: dict, *, allow_carried: bool = False) -> None:
+    """Require every ordered configuration; only known Python narrowing may differ."""
     if not isinstance(evidence, dict):
         raise ValueError("runtime report must be an object")
     old_plan = evidence.get("plan")
-    if old_plan and old_plan.get("reuse"):
-        raise ValueError("reference the original runtime report, not a chain of metadata reports")
-    expected = planned_steps(old_plan or {"scope": "full"})
-    if [(s.get("step_id"), s.get("argv")) for s in evidence.get("steps", [])] != [
+    if old_plan is not None and not isinstance(old_plan, dict):
+        raise ValueError("historical report plan must be an object")
+    try:
+        expected = qualification_steps(
+            evidence.get("mode"), old_plan,
+            native_acceptance_opt_in=evidence.get("native_acceptance_opt_in"),
+            sharded_full_python=evidence.get("sharded_full_python", False),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"historical report selection is malformed: {error}") from error
+    rows = evidence.get("steps", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("runtime report steps must be objects")
+    configurations = []
+    for row in rows:
+        argv = row.get("argv")
+        carry = row.get("carry", {})
+        if not isinstance(carry, dict):
+            raise ValueError("runtime report has malformed carried configuration")
+        if allow_carried and "planned_argv" in carry:
+            selection = (old_plan or {}).get("python_tests")
+            groups = selection.get("test_selectors") if isinstance(selection, dict) else None
+            origin = carry.get("carried_remainder_from")
+            if (row.get("step_id") != "runner-tests" or row.get("status") != "passed" or not isinstance(argv, list)
+                    or argv[:3] != ["python3", "scripts/python_shards.py", "--"] or not argv[3:]
+                    or not isinstance(origin, dict) or not origin.get("report") or not origin.get("commit")
+                    or not isinstance(groups, list) or any(not isinstance(group, str) for group in groups)
+                    or any(not isinstance(selector, str) or not any(
+                        selector == group or selector.startswith(group + ".") for group in groups)
+                           for selector in argv[3:])):
+                raise ValueError("runtime report has unknown narrowed configuration")
+            argv = carry["planned_argv"]
+        configurations.append((row.get("step_id"), argv))
+    if configurations != [
             (s.step_id, list(s.argv)) for s in expected]:
         raise ValueError("runtime report does not contain its complete required configurations")
     for required, actual in zip(expected, evidence["steps"]):
         results = actual.get("test_results", {})
+        if (not isinstance(results, dict) or any(not isinstance(results.get(key, []), list)
+                or any(type(count) is not int or count < 0 for count in results.get(key, []))
+                for key in ("rust_passed_by_binary", "python_executions", "python_skipped"))):
+            raise ValueError("runtime report has malformed test counts")
         if required.requires_tests and sum(results.get("rust_passed_by_binary", [])) + sum(
                 results.get("python_executions", [])) - sum(results.get("python_skipped", [])) <= 0:
             raise ValueError("runtime report has a zero-match test configuration")
+
+
+def reusable_plan(root: Path, plan: dict, report: Path, *, env=None) -> dict:
+    report = report.resolve()
+    raw = report.read_bytes()
+    evidence = json.loads(raw)
+    validate_report_steps(evidence)
+    old_plan = evidence.get("plan")
+    if old_plan and old_plan.get("reuse"):
+        raise ValueError("reference the original runtime report, not a chain of metadata reports")
     return ci_plan.reuse_checks_from_snapshot(root, plan, report, raw, env=env)
 
 
@@ -1166,6 +1224,54 @@ class FreshTargetReservation:
 
 
 class LocalCiRunner:
+    def _selection_error(self) -> str | None:
+        """Authenticate supplied qualifying selection before target custody.
+
+        Use the source-bound resolver and this runner's Cargo metadata, even
+        for a declared metadata-only plan. Reconstruct reuse overlays through
+        their existing report validation rather than trusting supplied fields.
+        """
+        if self.plan is None or self.plan.get("qualifies_merge") is not True:
+            return None
+        try:
+            if self._plan_metadata is None:
+                return "qualifying selection requires current Cargo metadata"
+            expected = ci_plan.resolve(self.root, profile=self.mode, base=self.plan["base"],
+                                       source=self.plan["source"], metadata=self._plan_metadata, env=self.env)
+            if self.plan.get("reuse"):
+                expected = reusable_plan(self.root, expected, Path(self.plan["reuse"]["report"]), env=self.env)
+            if self.plan != expected:
+                return "qualifying selection differs from source-bound resolution with current Cargo metadata"
+        except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as error:
+            return f"cannot authenticate qualifying selection: {error}"
+        return None
+
+    def _git_scope_error(self) -> str | None:
+        """Check supplied qualifying Git scope independently of its own hash.
+
+        Planner selection and Cargo metadata authentication are separate checks.
+        """
+        if self.plan is None or self.plan.get("qualifies_merge") is not True:
+            return None
+        try:
+            base, source = self.plan.get("base"), self.plan.get("source")
+            if any(not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+                   for sha in (base, source)):
+                return "qualifying Git scope requires canonical base and source commits"
+            for sha in (base, source):
+                if ci_plan.git(self.root, "rev-parse", "--verify", sha + "^{commit}", env=self.env).decode().strip() != sha:
+                    return "qualifying Git scope commit differs"
+            if subprocess.run(["git", "merge-base", "--is-ancestor", base, source],
+                              cwd=self.root, env=self.env, capture_output=True).returncode != 0:
+                return "qualifying Git scope base is not an ancestor of source"
+            tree = ci_plan.git(self.root, "rev-parse", source + "^{tree}", env=self.env).decode().strip()
+            paths = ci_plan.changed_paths(self.root, base, source, env=self.env)
+            if not paths or self.plan.get("tree") != tree or self.plan.get("paths") != paths:
+                return "qualifying Git scope tree or changed paths differ from source"
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return f"cannot authenticate qualifying Git scope: {error}"
+        return None
+
     def delivery_source_error(self) -> str | None:
         """Check this runner module, even when another import shares its name."""
         return delivery_source_error(self.root)
@@ -1188,7 +1294,11 @@ class LocalCiRunner:
         if self.plan is not None and any(key in self.plan for key in ("edit", "health")):
             return "qualifying plan cannot contain partial edit or health selections"
         try:
-            expected = planned_steps(self.plan if self.plan is not None else {"scope": "full"})
+            expected = qualification_steps(
+                self.mode, self.plan,
+                native_acceptance_opt_in=bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
+                sharded_full_python=self.summary["sharded_full_python"],
+            )
         except (KeyError, TypeError, ValueError) as error:
             return f"cannot select qualifying steps: {error}"
         if self.steps != expected:
@@ -1236,8 +1346,13 @@ class LocalCiRunner:
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
-        self.steps = steps if steps is not None else (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
-                                                      else planned_steps({"scope": "full"}))
+        native_acceptance_opt_in = bool(ci_plan.python_tests.native_acceptance_inputs(self.env))
+        sharded_full_python = mode == "full" and plan is None and not native_acceptance_opt_in
+        self.steps = steps if steps is not None else (
+            QUICK_STEPS if mode == "quick" and plan is None else
+            qualification_steps(mode, plan, native_acceptance_opt_in=native_acceptance_opt_in,
+                                sharded_full_python=sharded_full_python)
+        )
         self.output_dir = self.root / "artifacts" / "local-ci" / self.run_id
         self.summary_path = self.output_dir / "summary.json"
         self.started_monotonic = time.monotonic()
@@ -1248,7 +1363,8 @@ class LocalCiRunner:
             "platform": sys.platform,
             # Paths alone cannot bind mutable external native fixtures/receipts
             # or Keychain state. Historical absence is unknown for reuse.
-            "native_acceptance_opt_in": bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
+            "native_acceptance_opt_in": native_acceptance_opt_in,
+            "sharded_full_python": sharded_full_python,
             "python_version": sys.version,
             "status": "incomplete",
             "repo_root": str(self.root),
@@ -1272,6 +1388,7 @@ class LocalCiRunner:
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
         self._release_metadata = None
+        self._plan_metadata = None
         self._dependency_inputs = None
         self._compiler_inputs = None
         self._workspace_inputs = None
@@ -1420,6 +1537,7 @@ class LocalCiRunner:
         self.summary.pop("cargo_identity", None)
         self.summary.pop("cargo_metadata_error", None)
         self._cargo_reservation = None
+        self._plan_metadata = None
         resolved = False
         try:
             resolved = self._resolve_cargo_identity_inner(reservation)
@@ -1562,6 +1680,7 @@ class LocalCiRunner:
             "owner_path": str(owner_path),
         }
         self.summary["cargo_identity"] = self.cargo_identity
+        self._plan_metadata = metadata
         return True
 
     @staticmethod
@@ -2622,6 +2741,8 @@ class LocalCiRunner:
 
     def _prepare_carry(self) -> None:
         """Decide per step from an earlier passed report; any refusal runs everything."""
+        self._carry = None
+        self._carry_dependency_inputs = None
         record: dict[str, object] = {"report": str(self.carry_report)}
         self.summary["carry"] = record
         try:
@@ -2630,12 +2751,16 @@ class LocalCiRunner:
             record["sha256"] = hashlib.sha256(raw).hexdigest()
             if not self.plan:
                 raise ValueError("base-advance carry requires a resolved merge plan")
+            validate_report_steps(evidence, allow_carried=True)
             basis = ci_plan.carry_basis(self.root, self.plan, evidence, env=self.env)
             decisions = carry_decisions(self.steps, evidence, basis, self.plan["cargo_inventory"])
-            dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+            cache = evidence.get("target_cache")
+            if not isinstance(cache, dict):
+                raise ValueError("carried report lacks guarded target identity")
+            dependency = cache.get("dependency_inputs")
             if not isinstance(dependency, dict):
                 raise ValueError("carried report lacks guarded toolchain/dependency identity")
-        except (ValueError, OSError, KeyError, TypeError) as error:
+        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
             record["refused"] = f"{error}; every step runs fresh"
             print(f"carry refused: {record['refused']}", flush=True)
             return
@@ -2921,6 +3046,9 @@ class LocalCiRunner:
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif (error := self._git_scope_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    git_scope_error=error)
             elif self.plan and self.plan.get("reuse") and (
                     self.summary["native_acceptance_opt_in"]
                     or self.plan["reuse"].get("native_acceptance_opt_in") is not False):
@@ -2934,13 +3062,17 @@ class LocalCiRunner:
                     or self.summary["runtime_inputs"] != self.plan["runtime_inputs"]):
                 self.summary.update(status="failed", exit_code=2,
                                     metadata_error="resolved plan source/inputs changed or are dirty")
-            elif any(self._uses_cargo_target(step) for step in self.steps) and not (
+            elif (any(self._uses_cargo_target(step) for step in self.steps)
+                  or self.plan is not None and self.plan.get("qualifies_merge") is True) and not (
                     self._resolve_cargo_identity() if reservation is None
                     else self._resolve_cargo_identity(reservation)):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not resolve exact Cargo workspace and target identity"
                 print(self.summary["cargo_metadata_error"], file=sys.stderr, flush=True)
+            elif (error := self._selection_error()) is not None:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    selection_error=error)
             elif not self._check_disk_headroom():
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2

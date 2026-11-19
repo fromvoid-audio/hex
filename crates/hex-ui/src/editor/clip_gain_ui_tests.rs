@@ -257,6 +257,17 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     let (files, window, editor) = clip_drag_ui_test::upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(window, cx);
     visual.run_until_parked();
+    let painted_height = |visual: &VisualTestContext| {
+        editor.read_with(visual, |view, _| {
+            let cache = view.waveform_geometry_cache.borrow();
+            let paint = cache.painted_waveforms().back().unwrap();
+            let center = f32::from(paint.bounds.top() + paint.bounds.size.height * 0.25);
+            let (top, bottom) = paint.ordinates[0];
+            (center - top).abs().max((center - bottom).abs())
+        })
+    };
+    let original_height = painted_height(&visual);
+    assert!(original_height > 0.0);
     let (clip, before, original, pcm) = editor.read_with(&visual, |v, _| {
         let state = v.state.as_ref().unwrap();
         let clip = state.project.tracks()[0].clips()[0].clone();
@@ -284,6 +295,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!((painted_height(&visual) - original_height).abs() < 0.01);
     editor.read_with(&visual, |v, _| {
         assert!(!v.clip_gain.held());
         assert!(v.displayed_clip_gain(clip).is_none());
@@ -296,6 +308,8 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     let held = visual
         .debug_bounds(value)
         .expect("held numeric gain preview");
+    let held_height = painted_height(&visual);
+    assert!(held_height > 0.0 && held_height < original_height * 0.65);
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     let event = terminal(&editor, &mut visual);
     assert!(event.error.is_none(), "{:?}", event.error);
@@ -310,6 +324,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
         });
         visual.run_until_parked();
         assert_eq!(visual.debug_bounds(value), Some(held));
+        assert!((painted_height(&visual) - held_height).abs() < 0.01);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert_eq!(v.displayed_clip_gain(clip).unwrap().millidb(), -6_000);
@@ -321,6 +336,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds(value).is_none());
+    assert!((painted_height(&visual) - held_height).abs() < 0.01);
     let after = editor.read_with(&visual, |v, _| {
         assert!(v.displayed_clip_gain(clip).is_none());
         let state = v.state.as_ref().unwrap();

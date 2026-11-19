@@ -1,6 +1,70 @@
 use crate::{Command, Created, Editor, Project};
 
 #[test]
+fn long_pitch_and_fades_can_be_edited_in_either_order() {
+    for pitch_first in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: 20_000_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let pitch = Command::SetAudioClipPitch { clip, cents: 700 };
+        let fades = Command::SetClipFades {
+            clip,
+            fade_in: 1000,
+            fade_out: 2000,
+        };
+        let (first, second) = if pitch_first {
+            (pitch, fades)
+        } else {
+            (fades, pitch)
+        };
+        editor.execute(first).unwrap();
+        let before = editor.project().snapshot();
+        editor.execute(second).unwrap();
+        let after = editor.project().snapshot();
+        let mut malformed = after.clone();
+        let clips = match &mut malformed.tracks[0].content {
+            crate::TrackContentSnapshot::Audio(clips) => clips,
+            crate::TrackContentSnapshot::Hybrid { audio_clips, .. } => audio_clips,
+            crate::TrackContentSnapshot::Instrument(_) => panic!("audio track"),
+        };
+        clips[0].fade = crate::ClipFade::new(20_000_000, 0, 1, 0).unwrap();
+        assert!(Project::from_snapshot(malformed).is_err());
+        let clip = editor.project().clip(clip).unwrap();
+        assert_eq!(clip.retained_fade().fade_in(), 1000);
+        assert_eq!(clip.retained_fade().fade_out(), 2000);
+        assert_eq!(clip.audio_edit().unwrap().domain.pitch_cents, 700);
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        let clip = editor.project().tracks()[0].clips()[0].id();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 0 })
+            .unwrap();
+        let reset = editor.project().clip(clip).unwrap();
+        assert!(reset.audio_edit().is_none());
+        assert_eq!(reset.fade().fade_in(), 1000);
+        assert_eq!(reset.fade().fade_out(), 2000);
+    }
+}
+
+#[test]
 fn full_long_pitch_round_trips_history_and_reset_without_admitting_processed_shapes() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Imported { clip, .. } = editor
@@ -52,20 +116,15 @@ fn full_long_pitch_round_trips_history_and_reset_without_admitting_processed_sha
             )
             .is_err()
     );
-    for command in [
-        Command::SetClipFades {
-            clip,
-            fade_in: 100,
-            fade_out: 0,
-        },
-        Command::SetClipLooping {
-            clip,
-            looping: true,
-        },
-    ] {
-        assert!(editor.execute(command).is_err());
-        assert_eq!(editor.project().snapshot(), pitched);
-    }
+    assert!(
+        editor
+            .execute(Command::SetClipLooping {
+                clip,
+                looping: true
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), pitched);
     editor
         .execute(Command::SetAudioClipPitch { clip, cents: 700 })
         .unwrap();

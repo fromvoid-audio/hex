@@ -20,7 +20,7 @@ use hex_widgets::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering::Acquire},
 };
 
 mod auto_pan_panel;
@@ -2314,22 +2314,102 @@ fn device_selection_listener(
     })
 }
 
-fn audible_vst3_processor(view: &EditorView, device_id: DeviceId) -> Option<bool> {
-    let device = view.state.as_ref()?.project.device(device_id)?;
-    view.audible_playback
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Vst3PanelPending {
+    CurrentDeviceMissing,
+    AppliedGraphMissing,
+    AppliedGenerationChanged,
+    AppliedDeviceMissing,
+    ProcessingStateChanged,
+    ObservationMissing,
+    ProcessorMissing,
+}
+
+fn audible_vst3_processor(
+    view: &EditorView,
+    device_id: DeviceId,
+) -> Result<bool, Vst3PanelPending> {
+    use Vst3PanelPending::*;
+    let device = view
+        .state
         .as_ref()
-        .filter(|audible| audible.project_generation == view.project_generation)
-        .filter(|audible| {
-            audible
-                .state
-                .project
-                .device(device_id)
-                .is_some_and(|current| current.state().processing_eq(device.state()))
+        .and_then(|state| state.project.device(device_id))
+        .ok_or(CurrentDeviceMissing)?;
+    let audible = view.audible_playback.as_ref().ok_or(AppliedGraphMissing)?;
+    if audible.project_generation != view.project_generation {
+        return Err(AppliedGenerationChanged);
+    }
+    let applied_device = audible
+        .state
+        .project
+        .device(device_id)
+        .ok_or(AppliedDeviceMissing)?;
+    if !applied_device.state().processing_eq(device.state()) {
+        return Err(ProcessingStateChanged);
+    }
+    audible
+        .observation
+        .as_ref()
+        .ok_or(ObservationMissing)?
+        .foreign_processor(device_id.value(), device.state().type_id())
+        .ok_or(ProcessorMissing)
+}
+
+/// Report the same observation that gates the displayed track's VST3 card.
+/// The existing view trace retains only changed snapshots and records no
+/// preset data or private module paths.
+pub(super) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mut String) {
+    use std::fmt::Write as _;
+    if !view.clip_view_open || !view.device_panel_active {
+        return;
+    }
+    let Some(DevicePanelOwner::Track(id)) = displayed_owner(view) else {
+        return;
+    };
+    let Some(track) = view.state.as_ref().and_then(|s| s.project.track(id)) else {
+        return;
+    };
+    let devices = || {
+        track.ordered_device_chain().filter_map(|node| {
+            let device = match node {
+                hex_project::TrackDeviceRef::Instrument(device)
+                | hex_project::TrackDeviceRef::Effect(device) => device,
+            };
+            (device.state().type_id().as_str() == Ok("hex.vst3")).then_some(device.id())
         })
-        .and_then(|audible| audible.observation.as_ref())
-        .and_then(|observation| {
-            observation.foreign_processor(device_id.value(), device.state().type_id())
-        })
+    };
+    let Some(device) = view
+        .device_panel
+        .selected_device
+        .and_then(|selected| devices().find(|id| *id == selected))
+        .or_else(|| devices().next())
+    else {
+        return;
+    };
+    let applied_audio = view
+        .audio
+        .as_ref()
+        .and_then(|audio| audio.control.status())
+        .map(|status| status.applied_revision.load(Acquire));
+    let _ = write!(
+        snapshot,
+        " vst3_device={} vst3_applied_audio={applied_audio:?} vst3_observed_audio={:?}",
+        device.value(),
+        view.audible_playback
+            .as_ref()
+            .map(|view| view.audio_revision)
+    );
+    if view.degraded_plugins.contains(device.value()) {
+        snapshot.push_str(" vst3_panel=degraded");
+    } else {
+        match audible_vst3_processor(view, device) {
+            Ok(true) => snapshot.push_str(" vst3_panel=active"),
+            Ok(false) => snapshot.push_str(" vst3_panel=unavailable"),
+            Err(reason) => {
+                let _ = write!(snapshot, " vst3_panel=pending vst3_wait={reason:?}");
+            }
+        }
+    }
 }
 
 fn vst3_status_body(
@@ -2341,22 +2421,32 @@ fn vst3_status_body(
     if view.degraded_plugins.contains(device_id.value()) {
         return vst3_degraded_body(device_id);
     }
-    let (message, status) = match audible_vst3_processor(view, device_id) {
-        Some(true) => {
-            let body = vst3_parameters::body(view, device_id, cx);
-            let body = div()
-                .debug_selector(move || format!("device-vst3-active-{}", device_id.value()))
-                .child(body);
-            return div()
-                .id(("device-body", device_id.value()))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .child(body);
-        }
-        Some(false) => (
+    let availability = audible_vst3_processor(view, device_id);
+    let parameters = match availability {
+        Ok(true) => Some(vst3_parameters::body(view, device_id, cx)),
+        Ok(false) => None,
+        Err(_) => vst3_parameters::pending_body(view, device_id, cx),
+    };
+    if let Some(body) = parameters {
+        let status = if availability.is_ok() {
+            "active"
+        } else {
+            "pending"
+        };
+        let body = div()
+            .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()))
+            .child(body);
+        return div()
+            .id(("device-body", device_id.value()))
+            .debug_selector(move || format!("device-body-{}", device_id.value()))
+            .child(body);
+    }
+    let (message, status) = match availability {
+        Ok(_) => (
             theme::text("vst3 unavailable · saved state preserved"),
             "unavailable",
         ),
-        None => (theme::text("vst3 · awaiting audio status"), "pending"),
+        Err(_) => (theme::text("vst3 · awaiting audio status"), "pending"),
     };
     let content = crate::device_composition::unsupported_body(message)
         .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()));
@@ -3442,7 +3532,7 @@ fn instrument_actions(
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions.child(vst3_editor_button(id, selected, cx))
+        actions.child(vst3_editor_button(view, id, selected, cx))
     } else {
         actions
     };
@@ -3541,7 +3631,7 @@ fn device_actions(
     if device.state().type_id().as_str() == Ok("hex.vst3")
         && !view.degraded_plugins.contains(id.value())
     {
-        actions = actions.child(vst3_editor_button(id, selected, cx));
+        actions = actions.child(vst3_editor_button(view, id, selected, cx));
     }
     if presets_available {
         actions = actions.child(super::device_comparison::actions(
@@ -3571,12 +3661,26 @@ fn device_actions(
     )
 }
 
-fn vst3_editor_button(id: DeviceId, selected: bool, cx: &mut Context<EditorView>) -> Stateful<Div> {
+fn vst3_editor_button(
+    view: &EditorView,
+    id: DeviceId,
+    selected: bool,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let open = view.plugin_editor_windows.contains(&id.value());
     action_button(
         format!("device-vst3-editor-{}", id.value()),
         "↗",
-        "show or hide plugin editor",
-        theme::DeviceActionRole::Normal,
+        if open {
+            "hide plugin editor"
+        } else {
+            "show plugin editor"
+        },
+        if open {
+            theme::DeviceActionRole::Enabled
+        } else {
+            theme::DeviceActionRole::Normal
+        },
         selected,
     )
     .on_click(cx.listener(move |view, _, _, cx| {
