@@ -324,6 +324,7 @@ pub(super) enum DeviceEditTailPolicy {
     Preserve,
     RequireConfirmation,
     Cut,
+    FadedNative(hex_lattice::ProcessorInstanceIdentity),
 }
 
 impl DeviceEditTailPolicy {
@@ -334,13 +335,25 @@ impl DeviceEditTailPolicy {
         old: &[PreparedRuntimeInstance],
         new: &[PreparedRuntimeInstance],
     ) -> Self {
-        if self != Self::Preserve
+        let policy = if let Self::FadedNative(identity) = self {
+            let matches = |entry: &PreparedRuntimeInstance| {
+                entry.owner == identity.owner() && entry.device_id == identity.device_id()
+            };
+            if old.iter().any(matches) && !new.iter().any(matches) {
+                Self::Cut
+            } else {
+                Self::RequireConfirmation
+            }
+        } else {
+            self
+        };
+        if policy != Self::Preserve
             && old
                 .iter()
                 .map(|device| device.device_id)
                 .ne(new.iter().map(|device| device.device_id))
         {
-            self
+            policy
         } else {
             Self::Preserve
         }
@@ -349,7 +362,9 @@ impl DeviceEditTailPolicy {
     pub(super) fn cut_obsolete_tail(self) -> Result<bool, SessionPlaybackError> {
         match self {
             Self::Preserve => Ok(false),
-            Self::RequireConfirmation => Err(SessionPlaybackError::DeviceInsertNeedsConfirmation),
+            Self::RequireConfirmation | Self::FadedNative(_) => {
+                Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+            }
             Self::Cut => Ok(true),
         }
     }

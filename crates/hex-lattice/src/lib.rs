@@ -1242,6 +1242,19 @@ pub struct NativeInsertTransition {
     position: usize,
 }
 
+/// The exact stage on a retiring predecessor that may ramp from wet to dry.
+#[derive(Clone, Copy)]
+pub struct NativeRemovalTransition {
+    position: usize,
+    identity: ProcessorInstanceIdentity,
+}
+
+impl NativeRemovalTransition {
+    pub fn identity(self) -> ProcessorInstanceIdentity {
+        self.identity
+    }
+}
+
 impl NativeRuntimeChain {
     /// Bounded scalar observation of the actual retained foreign entries.
     /// May be used by their audio owner without allocation or ownership moves;
@@ -2548,35 +2561,109 @@ impl NativeRuntimeChain {
         previous: &Self,
         continuation: Option<&ForeignConfigurationContinuation<'_>>,
     ) -> Option<NativeInsertTransition> {
-        if previous.len().checked_add(1) != Some(self.len()) {
+        let position = self.extra_native_stage_from(previous, |old, current| {
+            Self::entry_configuration_matches(old, current, continuation)
+        })?;
+        self.can_inherit_from(previous)
+            .then_some(NativeInsertTransition { position })
+    }
+
+    /// Prove one native removal with all surviving stages in their original
+    /// order and history-compatible. This does not change either runtime.
+    pub fn native_removal_transition_from(
+        &self,
+        previous: &Self,
+    ) -> Option<NativeRemovalTransition> {
+        let position = previous.extra_native_stage_from(self, |current, old| {
+            Self::entry_configuration_matches(old, current, None)
+        })?;
+        let removed = previous.entries.get(position)?;
+        let identity = ProcessorInstanceIdentity::new(removed.owner, removed.device_id).ok()?;
+        self.can_inherit_from(previous)
+            .then_some(NativeRemovalTransition { position, identity })
+    }
+
+    fn extra_native_stage_from(
+        &self,
+        shorter: &Self,
+        compatible: impl Fn(&RuntimeEntry, &RuntimeEntry) -> bool,
+    ) -> Option<usize> {
+        if shorter.len().checked_add(1) != Some(self.len()) {
             return None;
         }
-        let position = previous
+        let position = shorter
             .entries
             .iter()
             .zip(&self.entries)
-            .position(|(old, current)| !Self::same_runtime_identity(old, current))
-            .unwrap_or(previous.len());
-        let inserted = self.entries.get(position)?;
+            .position(|(short, long)| !Self::same_runtime_identity(short, long))
+            .unwrap_or(shorter.len());
+        let extra = self.entries.get(position)?;
         let retained = self
             .entries
             .iter()
             .take(position)
             .chain(self.entries.iter().skip(position + 1));
-        (!inserted.bypassed
-            && inserted.algorithmic_latency_frames == Some(0)
-            && inserted.supports_smoothed_bypass
+        (!extra.bypassed
+            && extra.algorithmic_latency_frames == Some(0)
+            && extra.supports_smoothed_bypass
             && matches!(
-                inserted.runtime,
+                extra.runtime,
                 RuntimeOwnership::Legacy { .. } | RuntimeOwnership::Owned(_)
             )
-            && previous.entries.iter().zip(retained).all(|(old, current)| {
-                old.device_id != inserted.device_id
-                    && old.algorithmic_latency_frames == current.algorithmic_latency_frames
-                    && Self::entry_configuration_matches(old, current, continuation)
-            })
-            && self.can_inherit_from(previous))
-        .then_some(NativeInsertTransition { position })
+            && shorter.entries.iter().zip(retained).all(|(short, long)| {
+                short.device_id != extra.device_id
+                    && short.algorithmic_latency_frames == long.algorithmic_latency_frames
+                    && compatible(short, long)
+            }))
+        .then_some(position)
+    }
+
+    /// Start a proved removal on its predecessor. Only the affected stage's
+    /// wet/dry mix changes. Its DSP stays owned by the predecessor.
+    pub fn begin_native_removal(&mut self, transition: NativeRemovalTransition) -> bool {
+        self.set_native_removal_bypass(transition, true)
+    }
+
+    /// Restore the same stage if the pending edit is cancelled or refused.
+    pub fn cancel_native_removal(&mut self, transition: NativeRemovalTransition) {
+        self.set_native_removal_bypass(transition, false);
+    }
+
+    /// Commit of the rendered bypass ramp is the terminal, independent of the
+    /// number or size of callback blocks used to render it.
+    pub fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
+        self.entries.get(transition.position).is_some_and(|entry| {
+            entry.owner == transition.identity.owner()
+                && entry.device_id == transition.identity.device_id()
+                && entry.bypassed
+                && !entry.committed_bypass_ramp.is_active()
+        })
+    }
+
+    fn set_native_removal_bypass(
+        &mut self,
+        transition: NativeRemovalTransition,
+        bypassed: bool,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(transition.position) else {
+            return false;
+        };
+        if entry.owner != transition.identity.owner()
+            || entry.device_id != transition.identity.device_id()
+            || entry.bypassed == bypassed
+        {
+            return false;
+        }
+        let ramp = bypass_ramp::BypassRamp::inherited(
+            entry.committed_bypass_ramp,
+            entry.bypassed,
+            bypassed,
+            entry.sample_rate,
+        );
+        entry.bypassed = bypassed;
+        entry.committed_bypass_ramp = ramp;
+        entry.scratch_bypass_ramp = ramp;
+        true
     }
 
     /// Commit the preflighted transition against the same two chains. The new
