@@ -1083,3 +1083,111 @@ fn plain_reverse_crop_of_long_stream_reads_only_bounded_pages() {
         }
     }
 }
+
+#[test]
+fn directed_frame_crop_reflects_events_with_one_forward_outer_fade() {
+    use hex_project::{AudioEventEdit, AudioEventFade, TrimEdge};
+
+    const START: u64 = 1_000;
+    const PERIOD: u64 = 2_000;
+    const PHASE: u64 = 500;
+    const LENGTH: u64 = 5_200;
+    const CROP: u64 = 650;
+
+    let (mut editor, id, media) = fixture(false);
+    let event = AudioEventFade::new(0, ClipFade::new(8_000, 0, 2_900, 1_600).unwrap()).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: id,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(event),
+            },
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let row = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    row.duration = LENGTH;
+    row.fade = ClipFade::neutral(LENGTH).unwrap();
+    let edit = row.edit.as_mut().unwrap();
+    edit.view_start = START;
+    edit.view_end = START + PERIOD;
+    edit.placement = Some(AudioViewPlacement {
+        mode: AudioViewMode::Repeat,
+        outer_length: AudioDomainClock::Frames(LENGTH),
+        cycle_phase: PHASE,
+    });
+    let fade = ClipFade::new(LENGTH, 0, 1_600, 1_200).unwrap();
+    Arc::make_mut(&mut edit.domain).fade = ClipFade::new(8_000, 0, 1_600, 1_200)
+        .unwrap()
+        .with_shape(0, 8_000 - LENGTH, 0, 0)
+        .unwrap();
+
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    editor.execute(Command::ReverseClips(vec![id])).unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: id,
+            edge: TrimEdge::Left,
+            frame: CROP,
+        })
+        .unwrap();
+    let project = editor.project();
+    let clip = project.clip(id).unwrap();
+    assert_eq!((clip.start(), clip.duration()), (CROP, LENGTH - CROP));
+    let audio = &media[&clip.asset()];
+    let context = AudioTransformPreparation::default();
+    let prepare = |authored: ClipFade| {
+        // Model a retained crop of the prospective Outer shape before project
+        // admission is available. The Frame slot is in the cropped clip clock.
+        let slot = authored.with_offset(CROP, clip.duration()).unwrap();
+        let mut edit = clip.audio_edit().unwrap().clone();
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.fade_clock = hex_project::AudioClipFadeClock::Outer;
+        domain.fade = slot;
+        context
+            .compile_content_with_outer_fade(
+                project.tempo_map(),
+                clip,
+                &edit,
+                project.asset(clip.asset()).unwrap(),
+                PreparedAudioSourceRef::Resident(audio),
+                Some(slot),
+            )
+            .unwrap()
+    };
+    let prepared = prepare(fade);
+    let changed = prepare(ClipFade::new(LENGTH, 0, 1_300, 2_000).unwrap());
+    assert!(
+        prepared
+            .audio
+            .as_ref()
+            .unwrap()
+            .shares_pcm_with(changed.audio.as_ref().unwrap())
+    );
+    assert_ne!(
+        prepared.metadata.as_ref().unwrap().fade,
+        changed.metadata.as_ref().unwrap().fade
+    );
+    let output = crate::Project::new(
+        project.sample_rate(),
+        vec![crate::Track::new(vec![prepared], 1.0, false).unwrap()],
+    )
+    .unwrap();
+    for block in [1, 127, 256] {
+        let mut renderer = crate::Renderer::new(&output);
+        renderer.seek(CROP);
+        renderer.play();
+        let mut pcm = vec![[0.0; 2]; (LENGTH - CROP) as usize];
+        for part in pcm.chunks_mut(block) {
+            renderer.render(part).unwrap();
+        }
+        for (local, actual) in pcm.into_iter().enumerate() {
+            let elapsed = CROP + local as u64;
+            let source = START + (PHASE + LENGTH - 1 - elapsed) % PERIOD;
+            let expected = audio.frames()[source as usize]
+                .map(|sample| (sample * event.shape().gain_at(source)) * fade.gain_at(elapsed));
+            assert_eq!(actual, expected, "frame {elapsed}, block {block}");
+        }
+    }
+}
