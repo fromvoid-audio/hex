@@ -2371,7 +2371,7 @@ fn held_vst3_preparation_accepts_eq_change(through_gesture: bool) {
             manual_edit: true,
             value,
         }));
-        assert!(terminal.gesture_ack.unwrap().accepted);
+        assert!(terminal.gesture_ack.as_ref().unwrap().accepted);
         assert!(terminal.active_device_gesture.is_none());
         terminal
     } else {
