@@ -239,8 +239,25 @@ pub(super) fn prepare_candidate(
     domain: crate::AudioCandidateDomainToken,
     context: hex_engine::AudioSourceContext,
 ) -> crate::AudioCandidatePreparationToken {
+    prepare_candidate_with_sources(
+        control,
+        project,
+        std::slice::from_ref(metadata),
+        domain,
+        context,
+    )
+}
+
+pub(super) fn prepare_candidate_with_sources(
+    control: &mut crate::prepared::Control,
+    project: &hex_project::Project,
+    sources: &[hex_engine::StreamedSourceMetadata],
+    domain: crate::AudioCandidateDomainToken,
+    context: hex_engine::AudioSourceContext,
+) -> crate::AudioCandidatePreparationToken {
+    let generation = sources.first().unwrap().key().generation();
     hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
-        let quote = effects.quote(project, 1).unwrap();
+        let quote = effects.quote(project, sources.len()).unwrap();
         let token = control
             .reserve_audio_candidate_preparation(
                 crate::AudioCandidatePreparationReservation {
@@ -256,8 +273,10 @@ pub(super) fn prepare_candidate(
         assert_eq!(
             control
                 .prepare_audio_candidate_on_control(token, |cell| {
-                    cell.add_streamed_source_on_control(metadata.clone())?;
-                    effects.prepare(cell, project, metadata.key().generation(), context, None)
+                    for metadata in sources {
+                        cell.add_streamed_source_on_control(metadata.clone())?;
+                    }
+                    effects.prepare(cell, project, generation, context, None)
                 })
                 .unwrap(),
             crate::AudioCandidatePreparationProgress::Ready
