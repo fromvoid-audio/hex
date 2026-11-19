@@ -658,6 +658,22 @@ checkout, exact source and build inputs. Explicit recovery can resume a matching
 pending owner. Set separate Cargo target paths for local CI and release packaging.
 See [native macOS builds](test-builds.md).
 
+### Selector changes
+
+Keep `scripts/ci_plan.py` in the guarded Cargo input fingerprint. A build
+script can read it without a Cargo watch and leave old generated output in the
+cache after a selector-only edit. Procedural macros also run with the compiler's
+filesystem access. Cargo watch declarations and a source scan do not restrict
+which files these programs can read. The current runner executes Cargo directly
+in the checkout. A narrower fingerprint requires a build boundary that can
+enforce or account for those reads. See [Cargo build-script change detection](https://doc.rust-lang.org/cargo/reference/build-scripts.html#change-detection)
+and [Rust procedural macros](https://doc.rust-lang.org/reference/procedural-macros.html).
+
+Use the existing target when its guard admits it. If the guard refuses the
+changed selector, follow the [fresh-target workflow](#macos-target-storage)
+and keep the previous target intact. This preserves the old cache at the cost
+of compiling dependencies in the new target.
+
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across
 sources and versions. Provenance retains full package IDs. Ambiguous names or
