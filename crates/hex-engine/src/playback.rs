@@ -1125,6 +1125,15 @@ impl Playback {
             .is_some_and(|r| r.current_sampler_console_available())
     }
     #[cfg(test)]
+    pub(crate) fn test_pending_current_sampler_counts(
+        &self,
+        index: usize,
+    ) -> Option<(usize, usize)> {
+        self.session_runtime
+            .as_ref()?
+            .test_pending_current_sampler_counts(index)
+    }
+    #[cfg(test)]
     pub(crate) fn test_current_sampler_route_proofs(
         &self,
         index: usize,
@@ -2294,7 +2303,9 @@ impl Playback {
                 if !matches!(
                     command,
                     crate::SessionPlaybackCommand::LaunchClip { .. }
+                        | crate::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                         | crate::SessionPlaybackCommand::LaunchScene { .. }
+                        | crate::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                 ) {
                     return Err(PlaybackActionError::Session(
                         crate::SessionPlaybackError::InvalidCommand,

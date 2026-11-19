@@ -39,6 +39,14 @@ fn rebase(frame: u64, source: u64, performance: u64) -> Result<u64, SessionPlayb
 }
 impl SessionPlayback {
     #[cfg(test)]
+    pub(crate) fn test_pending_current_sampler_counts(
+        &self,
+        index: usize,
+    ) -> Option<(usize, usize)> {
+        let reservation = self.routes.get(index)?.pending?.current_reservation?;
+        Some((reservation.incoming_voices, reservation.incoming_onsets))
+    }
+    #[cfg(test)]
     pub(crate) fn test_current_sampler_route_proofs(
         &self,
         index: usize,
