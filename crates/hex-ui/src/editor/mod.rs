@@ -980,6 +980,7 @@ pub(super) struct EditorView {
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_track_clipboard: Option<track_clipboard::Pending>,
+    pending_empty_track: Option<track_defaults::PendingEmptyTrack>,
     // Input context only: a committed cut can remove its focused header.
     // The next real selection intent or document generation invalidates it.
     track_clipboard_context: Option<(u64, u64)>,
@@ -1798,6 +1799,7 @@ impl EditorView {
             requested_audio_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_track_clipboard: None,
+            pending_empty_track: None,
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,

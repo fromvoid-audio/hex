@@ -460,12 +460,8 @@ impl EditorView {
             && !event.project_replaced
             && self.mode == EditorMode::Session
             && self.proposed_plugin_track_anchor().is_some()
-            && let Some(state) = &self.state
         {
-            let page = self.session_track_page(&state.project, self.session_visible_columns);
-            if page.proposal_index().is_some() {
-                self.session_track_start = page.range.start;
-            }
+            self.retain_session_track_proposal_page();
         }
         self.retire_plugin_effect(&terminal.control, terminal.accepted, event.error.as_deref());
     }

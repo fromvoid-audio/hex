@@ -1,7 +1,7 @@
 //! Immutable visible Console track page and its following insertion anchor.
 //!
 //! The canonical indices and IDs are captured together from one project and
-//! folded projection. A proposed device track occupies a display column without
+//! folded projection. A proposed track occupies a display column without
 //! a canonical ID. Callers fence the page with their source revision and
 //! layout frame; this projection does not own or mutate project state.
 use hex_project::{Project, TrackId};
@@ -37,21 +37,29 @@ impl TrackPage {
         Self::from_range(project, visible, range, None)
     }
 
-    pub(super) fn with_device_proposal(
+    pub(super) fn proposal_ordinal(
+        project: &Project,
+        visible: &[usize],
+        before: Option<TrackId>,
+    ) -> Option<usize> {
+        match before {
+            Some(id) => {
+                let index = project.tracks().iter().position(|track| track.id() == id)?;
+                Some(visible.partition_point(|&track_index| track_index < index))
+            }
+            None => Some(visible.len()),
+        }
+    }
+
+    pub(super) fn with_track_proposal(
         self,
         project: &Project,
         visible: &[usize],
         count: usize,
         before: Option<TrackId>,
     ) -> Self {
-        let index = match before {
-            Some(id) => {
-                let Some(index) = project.tracks().iter().position(|track| track.id() == id) else {
-                    return self;
-                };
-                visible.partition_point(|&track_index| track_index < index)
-            }
-            None => visible.len(),
+        let Some(index) = Self::proposal_ordinal(project, visible, before) else {
+            return self;
         };
         if index < self.range.start || index > self.range.end {
             return self;
@@ -200,7 +208,7 @@ mod tests {
         let visible = [0, 2, 3];
         let show = |start, count, before| {
             TrackPage::capture(project, &visible, start, count)
-                .with_device_proposal(project, &visible, count, before)
+                .with_track_proposal(project, &visible, count, before)
         };
         let id = |index: usize| project.tracks()[index].id();
         let folded = show(0, 2, Some(id(1)));

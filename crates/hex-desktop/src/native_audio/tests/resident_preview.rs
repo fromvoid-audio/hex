@@ -4379,6 +4379,56 @@ fn sealed_native_take_recovery_uses_canonical_publication_and_one_undo() {
 }
 
 #[test]
+fn empty_track_creation_preserves_playing_resident_pcm() {
+    use hex_project::{Command, Created};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    h.next();
+    let (initial, _) = h.applied(0);
+    let before = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (playing_source, _) = h.applied(initial);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    let added = h.run(Request::Edit(Command::InsertDefaultTrackWithGain {
+        before_track: None,
+        gain: 0.25,
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("created empty track");
+    };
+    let track = added.state.project.track(track).unwrap();
+    assert_eq!(track.gain(), 0.25);
+    assert!(track.devices().is_empty() && track.instrument().is_none());
+    assert!(track.clips().is_empty() && track.midi_clips().is_empty());
+    assert_eq!(
+        added.state.project.session(),
+        before.state.project.session()
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        h.pump();
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        if status.applied_revision.load(Acquire) > playing_source {
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+            break;
+        }
+        assert!(Instant::now() < deadline, "empty track never installed");
+        std::thread::yield_now();
+    }
+}
+
+#[test]
 fn resident_picker_replacement_cancels_the_exact_queued_graph() {
     use hex_engine::{DeviceTypeId, NativeDeviceClass};
     use hex_project::Command;

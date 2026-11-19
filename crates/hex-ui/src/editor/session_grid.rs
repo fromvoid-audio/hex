@@ -28,7 +28,7 @@ pub(super) const TRACK_HEADER_HEIGHT: f32 = 28.0;
 const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 110.0;
 
-/// The loading column has no cell, mixer, or drop actions until installation.
+/// The proposed column has no cell, mixer, or drop actions until preparation ends.
 pub(super) fn pending_device_column(width: f32) -> Div {
     div()
         .w(px(width))
@@ -289,14 +289,44 @@ impl EditorView {
             let visible = &self.arrangement_focus.projection.console_indices;
             let page =
                 TrackPage::capture(project, visible, self.session_track_start, visible_columns);
-            let page = match self.proposed_plugin_track_anchor() {
-                Some(before) => {
-                    page.with_device_proposal(project, visible, visible_columns, before)
-                }
+            let page = match self.displayed_track_proposal_anchor() {
+                Some(before) => page.with_track_proposal(project, visible, visible_columns, before),
                 None => page,
             };
             Arc::new(page)
         })
+    }
+
+    pub(super) fn reveal_session_track_proposal(&mut self, before: Option<TrackId>) {
+        if self.mode != EditorMode::Session {
+            return;
+        }
+        let Some(state) = &self.state else {
+            return;
+        };
+        let visible = &self.arrangement_focus.projection.console_indices;
+        let Some(index) = TrackPage::proposal_ordinal(&state.project, visible, before) else {
+            return;
+        };
+        let columns = self.session_visible_columns.max(1);
+        let range = super::console_track_page::visible_track_range(
+            visible.len(),
+            self.session_track_start,
+            columns,
+        );
+        if index < range.start || index > range.end {
+            self.session_track_start = index.min(visible.len().saturating_sub(columns));
+        }
+    }
+
+    pub(super) fn retain_session_track_proposal_page(&mut self) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let page = self.session_track_page(&state.project, self.session_visible_columns);
+        if page.proposal_index().is_some() {
+            self.session_track_start = page.range.start;
+        }
     }
 
     pub(super) fn session_grid(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -401,7 +431,11 @@ impl EditorView {
                     })
                     .map(|track| {
                         let Some(track) = track else {
-                            return self.proposed_session_track(TRACK_COLUMN_WIDTH, cx);
+                            return if self.proposed_plugin_track_anchor().is_some() {
+                                self.proposed_session_track(TRACK_COLUMN_WIDTH, cx)
+                            } else {
+                                self.proposed_session_empty_track(TRACK_COLUMN_WIDTH)
+                            };
                         };
                         let track_id = track.id();
                         let selected = self.track_selection.contains(track_id);

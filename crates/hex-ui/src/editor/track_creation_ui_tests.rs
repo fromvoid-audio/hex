@@ -1,6 +1,6 @@
 //! New-track keyboard intent uses canonical insertion, history and saved order.
 use super::{
-    EditorView,
+    EditorMode, EditorView,
     midi_canvas::creation_tests::{fixture, pump},
 };
 use gpui::{Entity, TestAppContext, VisualTestContext};
@@ -304,4 +304,90 @@ fn no_ordinary_selection_and_return_or_main_focus_append_before_pinned_buses(
         pump(&editor, &mut visual);
         history_matches(snapshot(&editor, &visual), &before);
     }
+}
+
+#[gpui::test]
+fn empty_track_appears_at_its_insertion_point_before_the_worker_reply(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, ids) = setup(cx);
+    for (mode, preview, track_selector) in [
+        (
+            EditorMode::Arrangement,
+            "arrangement-pending-empty-track",
+            "arrangement-track-header",
+        ),
+        (
+            EditorMode::Session,
+            "session-pending-empty-track",
+            "session-track",
+        ),
+    ] {
+        editor.update(&mut visual, |v, cx| {
+            v.set_mode(mode);
+            cx.notify();
+        });
+        focus(&editor, &mut visual, Some(ids[0]));
+        let before = snapshot(&editor, &visual);
+        visual.simulate_keystrokes("t");
+        visual.run_until_parked();
+        let pending = visual
+            .debug_bounds(preview)
+            .expect("empty track before worker reply");
+        let next = Box::leak(format!("{track_selector}-{}", ids[1].value()).into_boxed_str());
+        let after_pending = visual.debug_bounds(next).unwrap();
+        if mode == EditorMode::Arrangement {
+            assert!(pending.bottom() <= after_pending.top());
+        } else {
+            assert_eq!(pending.right(), after_pending.left());
+        }
+        assert_eq!(snapshot(&editor, &visual), before);
+        let old_project =
+            editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+        pump(&editor, &mut visual);
+        assert!(visual.debug_bounds(preview).is_none());
+        editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            let track = &project.tracks()[1];
+            assert_eq!(v.selected_track, Some(track.id()));
+            assert!(track.instrument().is_none() && track.devices().is_empty());
+            assert!(track.clips().is_empty() && track.midi_clips().is_empty());
+            assert_eq!(project.session(), old_project.session());
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        history_matches(snapshot(&editor, &visual), &before);
+    }
+}
+
+#[gpui::test]
+fn empty_track_preview_waits_for_its_own_reply_even_if_another_edit_finishes_first(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, ids) = setup(cx);
+    focus(&editor, &mut visual, Some(ids[0]));
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::RenameTrack {
+            track: ids[0],
+            name: "renamed".into(),
+        })));
+    });
+    visual.simulate_keystrokes("t");
+    visual.run_until_parked();
+    let preview = "arrangement-pending-empty-track";
+    assert!(visual.debug_bounds(preview).is_some());
+    editor.update(&mut visual, |v, cx| {
+        let event = super::track_reorder_ui_test::next(&v.service);
+        assert!(
+            event
+                .created
+                .is_none_or(|created| created == hex_project::Created::None)
+        );
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(preview).is_some());
+    assert_eq!(snapshot(&editor, &visual).tracks.len(), ids.len());
+    pump(&editor, &mut visual);
+    assert!(visual.debug_bounds(preview).is_none());
+    assert_eq!(snapshot(&editor, &visual).tracks.len(), ids.len() + 1);
 }

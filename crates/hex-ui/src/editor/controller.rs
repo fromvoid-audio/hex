@@ -1378,6 +1378,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_modulation_depth();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
+        visible_change |= self.retire_abandoned_empty_track();
         visible_change |= self.retire_abandoned_device_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
         visible_change |= self.retire_abandoned_locator_adds();
@@ -2560,6 +2561,7 @@ impl EditorView {
         let created_note_selection = self.take_created_note_selection(&event);
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
+        self.observe_empty_track(&event);
         if event.project_replaced {
             self.time_selection_key_held = false;
             self.section_loop_key = Default::default();

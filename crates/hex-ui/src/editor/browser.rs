@@ -2034,15 +2034,8 @@ impl EditorView {
                 type_id,
                 new_track_gain: Some(gain),
                 control: None,
-            }) && self.mode == EditorMode::Session
-            {
-                // Enter appends independently of the currently painted page.
-                self.session_track_start = self
-                    .arrangement_focus
-                    .projection
-                    .console_indices
-                    .len()
-                    .saturating_sub(self.session_visible_columns);
+            }) {
+                self.reveal_session_track_proposal(None);
             }
             cx.notify();
             return;

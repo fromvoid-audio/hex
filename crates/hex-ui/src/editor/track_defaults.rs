@@ -1,12 +1,16 @@
 //! New-track gain preference and admission-time capture. Persistence runs
 //! on a background executor; a pending or failed save never changes the value
-//! used by a creation request.
-use super::EditorView;
+//! used by a creation request. Empty track display follows its own ordered
+//! Service reply while project and audio preparation retain canonical custody.
+use super::{
+    EditorMode, EditorView,
+    pending_edit::{Disposition, Receipt},
+};
 use crate::theme;
-use gpui::{AppContext, Context, Div, Entity, Subscription, div, prelude::*, px};
+use gpui::{AppContext, Context, Div, Entity, Stateful, Subscription, div, prelude::*, px, rgb};
 use hex_preferences::TrackDefaults;
 use hex_project::{Command, TrackId};
-use hex_session::service::Request;
+use hex_session::service::{Event, Request};
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
@@ -17,6 +21,13 @@ struct Binding {
     control: Entity<NumericControl>,
     _subscription: Subscription,
 }
+
+pub(super) struct PendingEmptyTrack {
+    before_track: Option<TrackId>,
+    gain: f32,
+    receipt: Receipt,
+}
+
 pub(super) struct State {
     path: PathBuf,
     committed: TrackDefaults,
@@ -160,10 +171,135 @@ impl EditorView {
                 return;
             }
         };
-        self.enqueue(Request::Edit(Command::InsertDefaultTrackWithGain {
+        let show_preview = self.pending_empty_track.is_none()
+            && self.state.as_ref().is_some_and(|state| {
+                state.project.tracks().len() < hex_project::MAX_TRACKS
+                    && before_track.is_none_or(|id| state.project.track(id).is_some())
+            });
+        if show_preview {
+            self.pending_empty_track = Some(PendingEmptyTrack {
+                before_track,
+                gain,
+                receipt: Receipt::new(self.project_generation),
+            });
+        }
+        let accepted = self.enqueue(Request::Edit(Command::InsertDefaultTrackWithGain {
             before_track,
             gain,
         }));
+        if show_preview {
+            if accepted && self.proposed_plugin_track_anchor().is_none() {
+                self.reveal_session_track_proposal(before_track);
+            } else if !accepted {
+                self.pending_empty_track = None;
+            }
+        }
+    }
+
+    pub(super) fn pending_empty_track_matches(&self, request: &Request) -> bool {
+        self.pending_empty_track.as_ref().is_some_and(|pending| {
+            pending.receipt.is_queued()
+                && matches!(request,
+                Request::Edit(Command::InsertDefaultTrackWithGain { before_track, gain })
+                    if *before_track == pending.before_track && *gain == pending.gain)
+        })
+    }
+
+    pub(super) fn empty_track_submitted(&mut self) {
+        if let Some(pending) = &mut self.pending_empty_track {
+            pending.receipt.submitted(self.worker_requests_pending);
+        }
+    }
+
+    pub(super) fn retire_abandoned_empty_track(&mut self) -> bool {
+        if self
+            .pending_empty_track
+            .as_ref()
+            .is_some_and(|p| p.receipt.is_queued())
+            && !self
+                .pending_requests
+                .iter()
+                .any(|r| self.pending_empty_track_matches(r))
+        {
+            return self.pending_empty_track.take().is_some();
+        }
+        false
+    }
+
+    pub(super) fn observe_empty_track(&mut self, event: &Event) {
+        let Some(pending) = &mut self.pending_empty_track else {
+            return;
+        };
+        let disposition = pending.receipt.observe(
+            self.project_generation,
+            event.project_replaced,
+            event.request_complete,
+        );
+        if disposition == Disposition::Waiting {
+            return;
+        }
+        if disposition == Disposition::Terminal
+            && event.error.is_none()
+            && matches!(event.created, Some(hex_project::Created::Track(_)))
+            && self.mode == EditorMode::Session
+            && self.proposed_plugin_track_anchor().is_none()
+        {
+            self.retain_session_track_proposal_page();
+        }
+        self.pending_empty_track = None;
+    }
+
+    pub(super) fn displayed_track_proposal_anchor(&self) -> Option<Option<TrackId>> {
+        self.proposed_plugin_track_anchor().or_else(|| {
+            let pending = self.pending_empty_track.as_ref()?;
+            let project = &self.state.as_ref()?.project;
+            pending
+                .before_track
+                .is_none_or(|id| project.track(id).is_some())
+                .then_some(pending.before_track)
+        })
+    }
+
+    fn empty_track_header(&self) -> Div {
+        let name = self
+            .state
+            .as_ref()
+            .map(|state| state.project.next_default_track_name());
+        div()
+            .flex()
+            .h_full()
+            .min_w_0()
+            .items_center()
+            .px_2()
+            .border_l_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .text_xs()
+            .child(
+                div()
+                    .truncate()
+                    .child(theme::text(name.unwrap_or_default())),
+            )
+    }
+
+    pub(super) fn proposed_arrangement_empty_track(&self) -> Div {
+        div()
+            .debug_selector(|| "arrangement-pending-empty-track".into())
+            .w_full()
+            .h(px(super::tracks::TRACK_ROW_HEIGHT))
+            .flex()
+            .justify_end()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .children([self.empty_track_header().w(px(self.track_header_width()))])
+    }
+
+    pub(super) fn proposed_session_empty_track(&self, width: f32) -> Stateful<Div> {
+        self.empty_track_header()
+            .id("session-pending-empty-track")
+            .debug_selector(|| "session-pending-empty-track".into())
+            .w(px(width))
+            .flex_shrink_0()
     }
 
     pub(super) fn track_defaults_row(&mut self, cx: &mut Context<Self>) -> Div {

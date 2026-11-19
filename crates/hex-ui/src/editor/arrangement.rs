@@ -262,7 +262,11 @@ impl EditorView {
             rows_entity
                 .update(cx, |this, cx| {
                     if this.arrangement_proposal_row() == Some(index) {
-                        return this.proposed_plugin_track_row(cx);
+                        return if this.proposed_plugin_track_anchor().is_some() {
+                            this.proposed_plugin_track_row(cx)
+                        } else {
+                            this.proposed_arrangement_empty_track()
+                        };
                     }
                     let Some(state) = this.arrangement_rows_state() else {
                         return div();

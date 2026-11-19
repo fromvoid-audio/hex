@@ -695,7 +695,7 @@ impl EditorView {
         }
         let revision = self.state.as_ref().map(|state| state.revision);
         let focus_ranges = self.arrangement_focus_ranges();
-        let proposal_anchor = self.proposed_plugin_track_anchor();
+        let proposal_anchor = self.displayed_track_proposal_anchor();
         if self.track_layout.revision == revision
             && self.track_layout.focus_ranges == focus_ranges
             && self.track_layout.proposal_anchor == proposal_anchor

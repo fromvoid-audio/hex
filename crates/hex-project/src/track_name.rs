@@ -19,16 +19,18 @@
 
 use crate::{Command, Created, DeviceId, Invalid, Project, TrackDeviceSlot, TrackId};
 
-/// Model-owned default name for the next created track.
-pub(crate) fn default_name(project: &Project) -> String {
-    format!("track {}", project.tracks.len().saturating_add(1))
+impl Project {
+    /// The automatic label for an empty track added to this snapshot.
+    pub fn next_default_track_name(&self) -> String {
+        format!("track {}", self.tracks.len().saturating_add(1))
+    }
 }
 
 pub(crate) fn insert_default_track(
     project: &mut Project,
     before_track: Option<TrackId>,
 ) -> Result<TrackId, Invalid> {
-    let name = default_name(project);
+    let name = project.next_default_track_name();
     let track = crate::edit::insert_track_before(project, name, before_track)?;
     project.track_mut(track)?.automatic_name = true;
     Ok(track)
@@ -44,7 +46,7 @@ pub(crate) fn insert_default_track_with_device(
     crate::edit::name_valid(&device_name)?;
     let name = match slot {
         TrackDeviceSlot::Instrument => device_name,
-        TrackDeviceSlot::Effect => default_name(project),
+        TrackDeviceSlot::Effect => project.next_default_track_name(),
     };
     let created = project.apply(Command::InsertTrackWithDevice {
         name,
