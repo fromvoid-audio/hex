@@ -885,12 +885,16 @@ struct RuntimeEntry {
     device_type: DeviceTypeId,
     matrix: StereoMatrix,
     bypassed: bool,
+    // A pending removal may still be cancelled after the dry ramp commits.
+    // Keep its runtime reversible until publication decides its custody.
+    removal_bypassing: bool,
     runtime_version: u32,
     sample_rate: u32,
     configuration: Option<std::sync::Arc<NativeDeviceState>>,
     output_tail: OutputTail,
     algorithmic_latency_frames: Option<u32>,
     supports_smoothed_bypass: bool,
+    supports_power_off: bool,
     committed_bypass_ramp: bypass_ramp::BypassRamp,
     scratch_bypass_ramp: bypass_ramp::BypassRamp,
     committed_aligned_dry: Option<bypass_ramp::AlignedDry>,
@@ -899,6 +903,10 @@ struct RuntimeEntry {
 }
 
 impl RuntimeEntry {
+    fn powered_off(&self, ramp: bypass_ramp::BypassRamp) -> bool {
+        self.supports_power_off && self.bypassed && !self.removal_bypassing && !ramp.is_active()
+    }
+
     fn modulates_host_input(&self) -> bool {
         !self.bypassed
             && !self.automation_frozen
@@ -1099,12 +1107,14 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             device_type: _,
             matrix: _,
             bypassed: _,
+            removal_bypassing: _,
             runtime_version: _,
             sample_rate: _,
             configuration: _,
             output_tail: _,
             algorithmic_latency_frames: _,
             supports_smoothed_bypass: _,
+            supports_power_off: _,
             committed_bypass_ramp: _,
             scratch_bypass_ramp: _,
             committed_aligned_dry: _,
@@ -1444,6 +1454,11 @@ impl NativeRuntimeChain {
                         PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
                         PreparedProcessorFactory::Foreign(_) => false,
                     });
+            let supports_power_off = supports_smoothed_bypass
+                && latency == Some(0)
+                && !matches!(instance.owner, ProcessorChainOwner::Source(_))
+                && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
+                    if value.supports_power_off());
             let reserved_frames = instance
                 .definition
                 .as_ref()
@@ -1609,12 +1624,14 @@ impl NativeRuntimeChain {
                 device_type: instance.device_type,
                 matrix: instance.matrix,
                 bypassed: instance.bypassed,
+                removal_bypassing: false,
                 runtime_version,
                 sample_rate: instance.sample_rate,
                 configuration: instance.configuration,
                 output_tail,
                 algorithmic_latency_frames: latency,
                 supports_smoothed_bypass,
+                supports_power_off,
                 committed_bypass_ramp: bypass_ramp::BypassRamp::INACTIVE,
                 scratch_bypass_ramp: bypass_ramp::BypassRamp::INACTIVE,
                 committed_aligned_dry,
@@ -2316,7 +2333,8 @@ impl NativeRuntimeChain {
     pub fn committed_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
         self.entries.get(range).is_some_and(|entries| {
             entries.iter().all(|entry| {
-                entry.runtime.committed_is_quiescent()
+                (entry.powered_off(entry.committed_bypass_ramp)
+                    || entry.runtime.committed_is_quiescent())
                     && entry
                         .committed_aligned_dry
                         .as_ref()
@@ -2330,7 +2348,8 @@ impl NativeRuntimeChain {
     pub fn speculative_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
         self.entries.get(range).is_some_and(|entries| {
             entries.iter().all(|entry| {
-                entry.runtime.speculative_is_quiescent()
+                (entry.powered_off(entry.scratch_bypass_ramp)
+                    || entry.runtime.speculative_is_quiescent())
                     && entry
                         .scratch_aligned_dry
                         .as_ref()
@@ -2535,9 +2554,13 @@ impl NativeRuntimeChain {
         self.inherit_bypass_ramps(previous, &excluded_old_range);
         self.inherit_modulation(previous, &excluded_old_range);
         for entry in &mut self.entries {
-            if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
-                Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
-            }) && !excluded_old_range.contains(&index)
+            if entry.powered_off(entry.committed_bypass_ramp) {
+                entry.runtime.reset();
+            } else if let Some((index, old)) =
+                previous.entries.iter().enumerate().find(|(_, old)| {
+                    Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+                })
+                && !excluded_old_range.contains(&index)
             {
                 entry.runtime.inherit_from(&old.runtime);
             }
@@ -2635,6 +2658,7 @@ impl NativeRuntimeChain {
         self.entries.get(transition.position).is_some_and(|entry| {
             entry.owner == transition.identity.owner()
                 && entry.device_id == transition.identity.device_id()
+                && entry.removal_bypassing
                 && entry.bypassed
                 && !entry.committed_bypass_ramp.is_active()
         })
@@ -2651,6 +2675,7 @@ impl NativeRuntimeChain {
         if entry.owner != transition.identity.owner()
             || entry.device_id != transition.identity.device_id()
             || entry.bypassed == bypassed
+            || entry.removal_bypassing == bypassed
         {
             return false;
         }
@@ -2661,6 +2686,7 @@ impl NativeRuntimeChain {
             entry.sample_rate,
         );
         entry.bypassed = bypassed;
+        entry.removal_bypassing = bypassed;
         entry.committed_bypass_ramp = ramp;
         entry.scratch_bypass_ramp = ramp;
         true
@@ -2707,9 +2733,13 @@ impl NativeRuntimeChain {
         self.inherit_bypass_ramps(previous, &excluded);
         self.inherit_modulation(previous, &excluded);
         for entry in &mut self.entries {
-            if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
-                Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
-            }) && !excluded.contains(&index)
+            if entry.powered_off(entry.committed_bypass_ramp) {
+                entry.runtime.reset();
+            } else if let Some((index, old)) =
+                previous.entries.iter_mut().enumerate().find(|(_, old)| {
+                    Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+                })
+                && !excluded.contains(&index)
             {
                 entry.runtime.transfer_history_from(&mut old.runtime);
             }
@@ -2854,7 +2884,9 @@ impl NativeRuntimeChain {
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
             bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &entry.committed_aligned_dry);
-            entry.runtime.begin();
+            if !entry.powered_off(entry.committed_bypass_ramp) {
+                entry.runtime.begin();
+            }
         }
     }
 
@@ -3088,8 +3120,8 @@ impl NativeRuntimeChain {
 
     /// Validate an inline request against the exact prepared current target.
     /// A missing or frozen instance returns false without mutating the chain.
-    /// Host trims cannot be applied while bypassed; provider controls retain
-    /// their existing internal-history advancement under bypass.
+    /// Host trims cannot be applied while bypassed. Provider controls may
+    /// advance under warm bypass; a powered-off entry cannot apply input.
     pub fn validate_transient_input(
         &self,
         input: NativeTransientInput,
@@ -3107,7 +3139,9 @@ impl NativeRuntimeChain {
         {
             return Err(DeviceContractError::InvalidDescriptor);
         }
-        if entry.bypassed && input.operation.target().is_host() {
+        if entry.powered_off(entry.committed_bypass_ramp)
+            || (entry.bypassed && input.operation.target().is_host())
+        {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         if input.operation.target() == hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
@@ -3143,7 +3177,7 @@ impl NativeRuntimeChain {
     /// Same transaction and taps with one prepared transient input. Only the
     /// exact current, non-frozen instance can consume it. A successful range
     /// stages its first nonempty application; final host delivery is not owned
-    /// here. Provider values advance under bypass; skipped host trims do not.
+    /// here. A settled powered-off entry stages no application.
     #[allow(clippy::too_many_arguments)] // Existing borrowed endpoints plus one inline transient context.
     pub fn process_range_tapped_with_foreign_and_input(
         &mut self,
@@ -3438,6 +3472,8 @@ impl NativeRuntimeChain {
                 if window.is_some_and(|window| window.identity != identity) {
                     return Err(DeviceContractError::InvalidDescriptor);
                 }
+                let started_powered_off =
+                    input.is_some() && entry.powered_off(entry.scratch_bypass_ramp);
                 Self::process_entry_with_foreign(
                     entry,
                     frames,
@@ -3452,6 +3488,7 @@ impl NativeRuntimeChain {
                     window,
                 )?;
                 if !frames.is_empty()
+                    && !started_powered_off
                     && let Some(operation) = input
                     && (!entry.bypassed
                         || matches!(
@@ -3746,6 +3783,13 @@ impl NativeRuntimeChain {
             && (is_foreign || !entry.runtime.is_stateful() || !entry.matrix.is_identity())
         {
             return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        if entry.powered_off(entry.scratch_bypass_ramp) {
+            if entry.metering {
+                entry.meter.observe_input(frames);
+                entry.meter.observe_output(frames);
+            }
+            return Ok(());
         }
         let modulates_input = entry.modulates_host_input();
         if !entry.bypassed && !is_foreign && !modulates_input {
@@ -4173,12 +4217,18 @@ impl NativeRuntimeChain {
             entry.committed_output_gain_ramp = entry.scratch_output_gain_ramp;
             entry.committed_transient_output_gain = entry.scratch_transient_output_gain;
             entry.committed_matrix_ramp = entry.scratch_matrix_ramp;
+            let was_powered_off = entry.powered_off(entry.committed_bypass_ramp);
             entry.committed_bypass_ramp = entry.scratch_bypass_ramp;
             bypass_ramp::copy_dry(&mut entry.committed_aligned_dry, &entry.scratch_aligned_dry);
-            entry.runtime.commit();
-            let reading = entry.runtime.take_dynamics_meter();
-            if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
-                entry.meter.observe_dynamics(reading);
+            if !was_powered_off {
+                entry.runtime.commit();
+                if entry.powered_off(entry.committed_bypass_ramp) {
+                    entry.runtime.reset();
+                }
+                let reading = entry.runtime.take_dynamics_meter();
+                if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
+                    entry.meter.observe_dynamics(reading);
+                }
             }
         }
     }
@@ -4194,7 +4244,9 @@ impl NativeRuntimeChain {
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
             bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &entry.committed_aligned_dry);
-            entry.runtime.rollback();
+            if !entry.powered_off(entry.committed_bypass_ramp) {
+                entry.runtime.rollback();
+            }
         }
     }
 
