@@ -460,61 +460,75 @@ fn subframe_origins_survive_crop_and_common_rewind_with_observable_hard_gate() {
     let elapsed = destination.frame_to_beat(1).unwrap().raw();
     assert_eq!(elapsed, 17_896);
     assert!(0 < i128::from(elapsed) && i128::from(elapsed) < origins[1]);
-    let mut old_representations = Vec::new();
-    let mut gains = Vec::new();
-    for origin in origins {
-        assert_eq!(audio_projection_frame(&author, origin).unwrap(), 0);
-        let consumed = common_crop - origin;
-        old_representations.push((
-            audio_projection_frame(&author, common_crop).unwrap()
-                - audio_projection_frame(&author, origin).unwrap(),
-            origin + consumed,
-        ));
-        let (mut clip, _) = repeated();
-        clip.audio_edit_mut()
-            .unwrap()
-            .anchor_at_reference(0, 0, &author)
-            .unwrap();
-        let edit = clip.audio_edit_mut().unwrap();
-        edit.timing = AudioClipTiming::Musical(BeatTime::from_raw(u64::try_from(origin).unwrap()));
-        let domain = Arc::make_mut(&mut edit.domain);
-        domain.fade = ClipFade::new(76_696, 0, 0, 3_600).unwrap();
-        domain.fade_projection.as_mut().unwrap().origin_beat_raw = origin;
-        crate::audio_edit::project_clip(&mut clip, &author).unwrap();
-        let cropped =
-            crate::audio_edit::trim_view(&clip, crate::TrimEdge::Left, common_crop_frame, &author)
+    // Translate the immutable authoring origins by one beat to exercise
+    // an equivalent collision for signed pre-zero authoring clocks.
+    for origin_shift in [0, i128::from(BeatTime::ONE.raw())] {
+        let mut old_representations = Vec::new();
+        let mut gains = Vec::new();
+        for placement_origin in origins {
+            let author_origin = placement_origin - origin_shift;
+            assert_eq!(
+                audio_projection_frame(&author, author_origin).unwrap(),
+                audio_projection_frame(&author, -origin_shift).unwrap()
+            );
+            let consumed = common_crop - placement_origin;
+            old_representations.push((
+                audio_projection_frame(&author, common_crop - origin_shift).unwrap()
+                    - audio_projection_frame(&author, author_origin).unwrap(),
+                author_origin + consumed,
+            ));
+            let (mut clip, _) = repeated();
+            clip.audio_edit_mut()
+                .unwrap()
+                .anchor_at_reference(0, 0, &author)
                 .unwrap();
+            let edit = clip.audio_edit_mut().unwrap();
+            edit.timing = AudioClipTiming::Musical(BeatTime::from_raw(
+                u64::try_from(placement_origin).unwrap(),
+            ));
+            let domain = Arc::make_mut(&mut edit.domain);
+            domain.fade = ClipFade::new(76_696, 0, 0, 3_600).unwrap();
+            domain.fade_projection.as_mut().unwrap().origin_beat_raw = author_origin;
+            crate::audio_edit::project_clip(&mut clip, &author).unwrap();
+            let cropped = crate::audio_edit::trim_view(
+                &clip,
+                crate::TrimEdge::Left,
+                common_crop_frame,
+                &author,
+            )
+            .unwrap();
 
-        let mut rewound =
-            crate::audio_edit::trim_view(&cropped, crate::TrimEdge::Left, 0, &author).unwrap();
-        let domain = &rewound.audio_edit().unwrap().domain;
-        // Actual guarded trim previews retain context. Admission, command
-        // history and native behavior remain unactivated.
-        assert_eq!(domain.outer_fade_displacement().unwrap(), -origin);
-        assert_eq!(domain.fade.offset(), 0);
+            let mut rewound =
+                crate::audio_edit::trim_view(&cropped, crate::TrimEdge::Left, 0, &author).unwrap();
+            let domain = &rewound.audio_edit().unwrap().domain;
+            // Actual guarded trim previews retain context. Admission, command
+            // history and native behavior remain unactivated.
+            assert_eq!(domain.outer_fade_displacement().unwrap(), -placement_origin);
+            assert_eq!(domain.fade.offset(), 0);
+            assert_eq!(
+                domain.fade_projection.as_ref().unwrap().origin_beat_raw,
+                author_origin
+            );
+            crate::audio_edit::project_clip(&mut rewound, &destination).unwrap();
+            gains.push(
+                rewound
+                    .projected_outer_fade(&destination)
+                    .unwrap()
+                    .unwrap()
+                    .gain_at(1)
+                    .unwrap(),
+            );
+        }
         assert_eq!(
-            domain.fade_projection.as_ref().unwrap().origin_beat_raw,
-            origin
+            old_representations[0], old_representations[1],
+            "mutable origin plus integer frame offset loses the distinction"
         );
-        crate::audio_edit::project_clip(&mut rewound, &destination).unwrap();
-        gains.push(
-            rewound
-                .projected_outer_fade(&destination)
-                .unwrap()
-                .unwrap()
-                .gain_at(1)
-                .unwrap(),
+        assert_eq!(
+            gains,
+            [1.0, 0.0],
+            "subframe prefix is an audible gate, not technical metadata"
         );
     }
-    assert_eq!(
-        old_representations[0], old_representations[1],
-        "mutable origin plus integer frame offset loses the distinction"
-    );
-    assert_eq!(
-        gains,
-        [1.0, 0.0],
-        "subframe prefix is an audible gate, not technical metadata"
-    );
 }
 
 #[test]
