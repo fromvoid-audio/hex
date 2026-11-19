@@ -2855,3 +2855,121 @@ fn playback_wrapper_delivers_live_audio_to_borrowed_foreign_effect() {
     assert_eq!(effect.processed, 64);
     assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
 }
+
+#[test]
+fn delayed_hosted_output_keeps_native_eq_history_across_arrangement_wraps() {
+    use hex_devices::eq::{EQ_DEFINITION, EqState, Node, NodeId, NodeKind};
+
+    const CYCLE: usize = 601;
+    const DELAY: usize = 19;
+    const DC: Frame = [0.25, -0.125];
+    // Model retained output from a hosted saturator after its declared bridge
+    // latency. The authored source can reach zero without ending this signal.
+    struct Endpoint {
+        processed: usize,
+    }
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            for frame in frames {
+                *frame = if self.processed < DELAY { [0.0; 2] } else { DC };
+                self.processed += 1;
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut f = fixture(&[&[]], 64);
+    let track = f.tracks[0];
+    let Created::Device(hosted) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted effect");
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Track(track.value()),
+                hosted.value(),
+            )
+            .unwrap(),
+            3,
+        )],
+        unbounded_tail: true,
+    };
+    let mut eq = EqState::default();
+    let mut node = Node::new(NodeId::new(1).unwrap(), 750.0, 9.0, 0).unwrap();
+    node.kind = NodeKind::LowShelf;
+    eq.add(node).unwrap();
+    let eq = eq.encode().unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: eq.clone(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: CYCLE as u64,
+            enabled: true,
+        })
+        .unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_effect_registry(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    let tuning = hex_lattice::TuningTable::default();
+    let factory = EQ_DEFINITION
+        .prepare_runtime_factory(
+            &eq,
+            &DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &tuning,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let mut oracle = factory.legacy().unwrap().create_runtime();
+    let mut expected = vec![DC; CYCLE * 2 + DELAY + 128];
+    expected[..DELAY].fill([0.0; 2]);
+    oracle.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    for block in [1, 127, 257, 512] {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut endpoint = Endpoint { processed: 0 };
+        let mut output = vec![[0.0; 2]; expected.len()];
+        for chunk in output.chunks_mut(block) {
+            runtime
+                .render_with_foreign_processors(chunk, None, None, None, &mut endpoint)
+                .unwrap();
+        }
+        let mismatch = output.iter().zip(&expected).position(|(a, b)| a != b);
+        assert!(
+            mismatch.is_none(),
+            "callback partition {block}, mismatch={mismatch:?}"
+        );
+    }
+}
