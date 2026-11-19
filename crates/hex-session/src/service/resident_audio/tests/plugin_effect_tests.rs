@@ -313,7 +313,7 @@ fn accepted_eq_write_survives_pending_vst3_failure_or_cancel() {
             .submit(Request::SetDeviceParameter {
                 device,
                 parameter: gain,
-                value: hex_lattice_contract::ParameterValue::Float(-6.0),
+                value: hex_lattice_contract::ParameterValue::Float(0.5),
             })
             .unwrap();
         let changed = receive(&service);
