@@ -834,8 +834,9 @@ notes already held before recording are not added to the take.
 click **●** again to finish while playback continues, or press **escape** to stop.
 held notes end at the last delivered recording boundary. recording also finishes
 at the clip end. the completed take becomes one undoable edit; undo and redo
-restore the whole take. timing follows the next audio block, without arrival-time
-or device-latency compensation.
+restore the whole take. hex records the position delivered by the audio
+callback and accounts for the prepared graph's playback latency. live inputs
+are processed at audio-block boundaries.
 
 keep the selected clip, input and instrument unchanged during the take. a refused
 commit retains the take: click **●** to retry. **×** explicitly discards a retained
@@ -843,9 +844,31 @@ take. an interrupted take is marked incomplete and is never committed silently.
 finish or explicitly discard it before opening, creating or closing a project.
 
 this recorder supports finite nonlooping arrangement midi clips on resident
-native output. disable the project loop before recording. console, streamed
-projects, audio recording, loop overdub and per-note expression recording are not
-available through this control.
+direct output. disable the project loop before recording. use this control for
+note takes. loop overdub and per-note expression recording remain outside this
+workflow.
+
+## record an audio input
+
+on macos with apple silicon, open a resident project in arrange. click **in** in
+the transport and choose your audio interface or **system default**. use an input
+that supports the project's sample rate. if macos asks for microphone access,
+allow it for hex before starting the take.
+
+click **○** on the destination track to arm it. only one track can be armed at a
+time. use direct monitoring on your interface, or click **mon** to listen through
+hex. use one monitoring path to avoid hearing the input twice.
+
+start playback at the intended recording position, then click **●a**. wait for
+the recording status before performing. click **●a** again to finish the take.
+wait for the new audio clip to appear on the armed track, then play it back.
+use undo or redo to remove or restore the take as one edit. save the project and
+keep the recorded media in place so the clip can play when you reopen the project.
+
+if the named input disappears, reconnect it or choose an available input with
+**in** before trying again. when input access is denied, allow hex under
+**microphone** in macos privacy settings. if a failure message includes a retained
+take path, keep that file. hex adds a clip only after the take succeeds.
 
 # instruments and effects
 
