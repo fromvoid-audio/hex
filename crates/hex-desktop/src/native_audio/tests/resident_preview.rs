@@ -2415,9 +2415,10 @@ impl ResidentHarness {
         Self::with_plugins_at_rate_and_catalog(host, presentation, 48_000, catalog, 8192)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(super) fn with_plugins_catalog_and_diagnostics(
+    pub(super) fn with_plugins_at_rate_catalog_and_diagnostics(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        rate: u32,
         catalog: PathBuf,
         diagnostics: hex_diagnostics::DiagnosticsHandle,
     ) -> Self {
@@ -2425,7 +2426,7 @@ impl ResidentHarness {
             8192,
             Arc::new(AtomicBool::new(true)),
             4,
-            48_000,
+            rate,
             Some((host, presentation, Some(diagnostics))),
             None,
             Some(catalog),
