@@ -10,6 +10,7 @@ fn native_intent_refuses_mislabeled_or_stale_worker_results() {
     let worker = ArrangementSeekWorker::new().unwrap();
     worker
         .submit(ArrangementSeekSpec {
+            note_chase: hex_engine::NoteChase::On,
             mode: ArrangementSeekMode::HistoryPreservingInteractive,
             generation: 7,
             revision: 17,
@@ -28,6 +29,7 @@ fn native_intent_refuses_mislabeled_or_stale_worker_results() {
         std::thread::yield_now();
     };
     let intent = ResidentArrangementSeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         request_id: 99, // Native and internal worker request IDs are different namespaces.
         project_generation: 7,
         project_revision: 17,
@@ -49,6 +51,11 @@ fn native_intent_refuses_mislabeled_or_stale_worker_results() {
         cancelled: Arc::new(AtomicBool::new(false)),
     };
     assert!(result_matches_intent(&result, &intent, &graph));
+    result.note_chase = hex_engine::NoteChase::Off;
+    assert!(!result_matches_intent(&result, &intent, &graph));
+    result.note_chase = hex_engine::NoteChase::On;
+    let completion = completion(&intent, Err("fixture refusal".into()));
+    assert_eq!(completion.note_chase, intent.note_chase);
     result.mode = ArrangementSeekMode::Interactive;
     assert!(!result_matches_intent(&result, &intent, &graph));
     result.mode = ArrangementSeekMode::HistoryPreservingInteractive;

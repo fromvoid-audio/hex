@@ -3505,6 +3505,7 @@ impl ResidentHarness {
         let control = &self.audio.as_ref().unwrap().control;
         let fence = control.capture_fresh_runtime_fence().unwrap();
         hex_session::service::ResidentArrangementSeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             history: hex_session::service::ResidentSeekHistory::Fresh,
             request_id,
             project_generation: 0,

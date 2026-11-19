@@ -12025,6 +12025,7 @@ mod service_tests {
         );
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::On,
                 mode: ArrangementSeekMode::LinearArrangement,
                 generation: 9,
                 revision: 4,
@@ -12073,6 +12074,7 @@ mod service_tests {
         );
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::On,
                 mode: ArrangementSeekMode::Interactive,
                 generation: 2,
                 revision: 1,
@@ -12193,6 +12195,7 @@ mod service_tests {
         let destination = 8_192;
         let request_id = service
             .request_arrangement_seek(ArrangementSeekSpec {
+                note_chase: hex_engine::NoteChase::On,
                 mode: ArrangementSeekMode::Interactive,
                 generation: 3,
                 revision: installed.state.revision,
