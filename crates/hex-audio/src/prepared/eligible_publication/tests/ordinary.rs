@@ -4069,13 +4069,12 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
                     .unwrap()
                     .test_loan_for(&mut callback.domain_pages, source_key.into())
                     .unwrap();
-                destination_ready =
-                    loan.test_has_resource_extent(hex_engine::StreamResourceExtent {
-                        source: source_key.into(),
-                        page_index: 2,
-                        start: 0,
-                        end: hex_engine::STREAM_PAGE_FRAMES,
-                    });
+                destination_ready = loan.has_resource_extent(hex_engine::StreamResourceExtent {
+                    source: source_key.into(),
+                    page_index: 2,
+                    start: 0,
+                    end: hex_engine::STREAM_PAGE_FRAMES,
+                });
             });
             if destination_ready {
                 break;
@@ -4271,16 +4270,15 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
                         .unwrap()
                         .test_loan_for(&mut callback.domain_pages, source_key.into())
                         .unwrap();
-                    available =
-                        loan.test_ready_page(hex_stream::ResourcePageKey {
-                            source: source_key.into(),
-                            page_index: 2,
-                        }) || loan.test_has_resource_extent(hex_engine::StreamResourceExtent {
-                            source: source_key.into(),
-                            page_index: 2,
-                            start: 0,
-                            end: hex_engine::STREAM_PAGE_FRAMES,
-                        });
+                    available = loan.test_ready_page(hex_stream::ResourcePageKey {
+                        source: source_key.into(),
+                        page_index: 2,
+                    }) || loan.has_resource_extent(hex_engine::StreamResourceExtent {
+                        source: source_key.into(),
+                        page_index: 2,
+                        start: 0,
+                        end: hex_engine::STREAM_PAGE_FRAMES,
+                    });
                 });
                 if available {
                     break;

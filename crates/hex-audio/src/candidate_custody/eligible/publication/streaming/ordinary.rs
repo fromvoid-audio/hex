@@ -73,7 +73,7 @@ impl OrdinaryStreams {
             super::demand::envelope(domains, *token)
                 .ok()
                 .and_then(|pages| pages.inner.loan.as_ref())
-                .is_some_and(|loan| loan.test_has_resource_extent(extent))
+                .is_some_and(|loan| loan.has_resource_extent(extent))
         })
     }
     #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
@@ -139,7 +139,7 @@ impl OrdinaryStreams {
                 .and_then(|pages| pages.inner.loan.as_ref())
                 .is_some_and(|loan| {
                     rows.iter()
-                        .any(|row| row.source == source && loan.test_has_resource_extent(*row))
+                        .any(|row| row.source == source && loan.has_resource_extent(*row))
                 })
         })
     }
