@@ -23,7 +23,7 @@ use crate::{
     },
 };
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroU64, sync::Arc};
 
 mod browser_audition;
 mod candidate_storage;
@@ -528,6 +528,8 @@ pub struct SessionPlayback {
         Vec<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
     capture_runtime: u64,
     capture_epoch: u64,
+    /// Frame-coordinate identity for this retained Arrangement render history.
+    authored_clock_epoch: NonZeroU64,
     gain_recording_override: Option<f32>,
     live_gain: gain_recording::LiveGain,
     live_gain_scratch: gain_recording::LiveGain,
@@ -976,6 +978,7 @@ impl SessionPlayback {
             current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
+            authored_clock_epoch: _,
             gain_recording_override: _,
             live_gain: _,
             live_gain_scratch: _,
@@ -2262,6 +2265,7 @@ impl SessionPlayback {
             current_sampler_keyboard_revoked: 0,
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
+            authored_clock_epoch: NonZeroU64::MIN,
             gain_recording_override: None,
             live_gain: gain_recording::LiveGain::default(),
             live_gain_scratch: gain_recording::LiveGain::default(),

@@ -444,6 +444,7 @@ impl SessionPlayback {
     pub(crate) fn cut_retained_foreign_gates_from(&mut self, previous: &mut Self) {
         // Exact source identity also proves the prepared generator index order.
         if Arc::ptr_eq(&self.revision, &previous.revision) {
+            self.authored_clock_epoch = previous.authored_clock_epoch;
             self.foreign_arrangement
                 .cut_retained_gates_from(&mut previous.foreign_arrangement);
         }

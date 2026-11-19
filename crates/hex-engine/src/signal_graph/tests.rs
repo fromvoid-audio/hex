@@ -1013,6 +1013,7 @@ fn printed_audio_bypasses_source_chain_and_aligns_before_fader() {
                 runtime
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        authored_clock_epoch: None,
                         tempo_micro_bpm: None,
                         performance_frame: frame as u64,
                         transport_is_running: true,
@@ -1553,7 +1554,7 @@ fn zero_latency_device_edits_preserve_track_compensation_history() {
 }
 
 #[test]
-fn zero_latency_routed_tempo_edit_keeps_beat_while_positive_history_refuses_atomically() {
+fn routed_tempo_edit_keeps_the_current_beat_and_queued_pcm() {
     for latency in [0, 7] {
         let mut f = fixture(&[&[latency], &[]], 17);
         f.editor
@@ -1579,27 +1580,20 @@ fn zero_latency_routed_tempo_edit_keeps_beat_while_positive_history_refuses_atom
             .unwrap();
         let new_revision = prepare(&f).unwrap();
         let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
-        if latency == 0 {
-            candidate.try_inherit_state_from(&mut old).unwrap();
-            let mapped = f.editor.project().tempo_map().beat_to_frame(beat).unwrap();
-            assert_eq!(candidate.arrangement_frame(), mapped);
-            reference = SessionPlayback::new(new_revision).unwrap();
-            reference.apply(SessionPlaybackCommand::Play).unwrap();
-            reference
-                .render(&mut vec![[0.0; 2]; mapped as usize])
-                .unwrap();
-        } else {
-            assert!(candidate.try_inherit_state_from(&mut old).is_err());
-            assert_eq!(old.performance_frame(), 4);
-        }
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let mapped = f.editor.project().tempo_map().beat_to_frame(beat).unwrap();
+        assert_eq!(candidate.arrangement_frame(), mapped);
+        assert_eq!(candidate.performance_frame(), 4);
+
+        let mut expected = [[0.0; 2]; 24];
+        let mut fresh = SessionPlayback::new(new_revision).unwrap();
+        fresh.play_from(mapped).unwrap();
+        fresh.render(&mut expected).unwrap();
+        // Previously queued audio still sounds through the original routing.
+        let kept = usize::try_from(latency).unwrap();
+        reference.render(&mut expected[..kept]).unwrap();
         let mut actual = [[0.0; 2]; 24];
-        let mut expected = actual;
-        if latency == 0 {
-            candidate.render(&mut actual).unwrap();
-        } else {
-            old.render(&mut actual).unwrap();
-        }
-        reference.render(&mut expected).unwrap();
+        candidate.render(&mut actual).unwrap();
         assert_eq!(actual, expected);
     }
 }
@@ -1611,6 +1605,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(unknown.performance_frame_at_offset(0), None);
     assert_eq!(unknown.transport_is_running(), None);
     let source = TransportStamp {
+        authored_clock_epoch: None,
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: 900,
         transport_is_running: true,

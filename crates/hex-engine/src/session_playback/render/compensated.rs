@@ -691,6 +691,7 @@ impl SessionPlayback {
         let session = self.revision.session();
         let arrangement_beat = session.timing().frame_to_beat(arrangement_frame).ok();
         Ok(TransportStamp {
+            authored_clock_epoch: Some(self.authored_clock_epoch),
             tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
             performance_frame,
             transport_is_running: self.playing,

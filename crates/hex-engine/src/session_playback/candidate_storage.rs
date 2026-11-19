@@ -21,6 +21,7 @@ impl SessionPlayback {
             current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
+            authored_clock_epoch: _,
             gain_recording_override: _,
             live_gain: _,
             live_gain_scratch: _,
