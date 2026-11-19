@@ -1379,6 +1379,7 @@ impl PublicationControl {
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
     ) -> Result<Binding, &'static str> {
         if !self.native_custody
             || self.status.closing.load(Acquire)
@@ -1399,6 +1400,7 @@ impl PublicationControl {
             preparation,
             restore,
             trust,
+            timings,
         )
     }
     /// Supply the presentation plan. The exact Pending becomes a Root-held Prepared or retained

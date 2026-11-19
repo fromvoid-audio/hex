@@ -723,15 +723,19 @@ fn actual_inherited_autoreap_refuses_before_foreign_entry_without_changing_calle
             "expected custody refusal, got {:?}",
             result.err()
         );
+        let mut timings = StartupTimings::default();
         let mut retained = Pending::prepare_retained_on_control(
             &build(),
             source(),
             options().preparation,
             PreparationCancellation::new_on_control().unwrap(),
             TrustUserCode::Acknowledged,
+            Some(&mut timings),
         )
         .err()
         .unwrap();
+        assert!(timings.waitable_probe.is_none());
+        assert!(timings.instance_to_facts.is_none());
         let Error::Custody(crate::CustodyError::Lost(original)) = retained.cause() else {
             panic!("actual waitability probe must retain its original OS error");
         };

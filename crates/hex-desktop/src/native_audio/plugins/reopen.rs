@@ -270,6 +270,7 @@ impl Plugins {
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 )
                 .map(|binding| (binding, authored))
         });

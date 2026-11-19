@@ -81,6 +81,7 @@ fn fresh_selected_lookup_finds_raw_zero_beyond_the_first_page_without_inventory(
             48_000,
             hex_audio::plugin_effects::PluginProfile::Effect,
             None,
+            None,
         )
         .unwrap();
     let until = Instant::now() + Duration::from_secs(3);

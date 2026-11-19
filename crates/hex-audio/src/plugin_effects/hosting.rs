@@ -9,7 +9,10 @@ use hex_plugin_host::{
 };
 use hex_plugin_scan::macos::{build_identity::InstanceBuild, package::InstancePackage};
 use hex_plugin_state::{BinaryIdentity, ClassId};
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// Borrowed explicit catalog choice. Hashes identify the selected bytes rather
 /// than permission or authenticity. Compare both hashes before native spawn;
@@ -282,6 +285,7 @@ impl Hosting {
     /// A catalog match remains copied metadata; this revalidates the files.
     /// Quantum comes from that output, never the UI. Root allocates the actual
     /// binding/cancellation for the captured owner/planned canonical device.
+    /// Timing optionally fills a fresh control-side observation for new sources.
     #[allow(clippy::too_many_arguments)] // Complete selected source and destination.
     pub fn begin_on_control(
         &self,
@@ -293,6 +297,7 @@ impl Hosting {
         sample_rate: u32,
         profile: PluginProfile,
         restore: Option<NativeDeviceState>,
+        mut timings: Option<&mut EffectStartupTimings>,
     ) -> Result<Binding, String> {
         let quantum = output
             .plugin_callback_quantum_on_control()
@@ -302,7 +307,12 @@ impl Hosting {
             .ok_or("native output is unavailable")?;
         let identity =
             ProcessorInstanceIdentity::new(owner, device_id).map_err(|error| error.to_string())?;
-        let source = selection.inspect_on_control()?;
+        let inspected_at = timings.as_ref().map(|_| Instant::now());
+        let source = selection.inspect_on_control();
+        if let Some((started, timings)) = inspected_at.zip(timings.as_deref_mut()) {
+            timings.selection_inspection = started.elapsed();
+        }
+        let source = source?;
         let source = if self.grouped_editor_callbacks {
             source.with_grouped_editor_callbacks()
         } else {
@@ -338,6 +348,7 @@ impl Hosting {
                 },
                 restore,
                 native::TrustUserCode::Acknowledged,
+                timings,
             )
             .map_err(str::to_owned)
     }

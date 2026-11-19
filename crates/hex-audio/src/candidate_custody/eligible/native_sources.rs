@@ -416,6 +416,7 @@ impl Custody {
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
     ) -> Result<Binding, &'static str> {
         self.begin_native_source_between(
             identity,
@@ -425,6 +426,7 @@ impl Custody {
             preparation,
             restore,
             trust,
+            timings,
             native::PreparationCancellation::new_on_control,
             || {},
         )
@@ -440,6 +442,7 @@ impl Custody {
         mut preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
         make_cancellation: impl FnOnce() -> Result<
             native::PreparationCancellation,
             hex_plugin_host::Error,
@@ -564,6 +567,7 @@ impl Custody {
                 preparation,
                 cancellation,
                 trust,
+                timings,
             ),
         }));
         let cell = &mut work.sources.cells[index];
@@ -924,6 +928,7 @@ impl CandidateRoot {
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
     ) -> Result<Binding, &'static str> {
         self.require_native_source_control_open()?;
         let result = self.0.eligible.begin_native_source(
@@ -934,6 +939,7 @@ impl CandidateRoot {
             preparation,
             restore,
             trust,
+            timings,
         );
         // A failed or late-closing construction already belongs to Root. Its
         // disposal must progress even when the preparing caller stops polling.
