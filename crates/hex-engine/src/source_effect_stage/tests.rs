@@ -2548,6 +2548,97 @@ fn ordinary_preview_preserves_owned_source_delay_history() {
 }
 
 #[test]
+fn source_delay_power_preserves_held_notes_and_undo_starts_fresh() {
+    use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_devices::delay::{DEFINITION, DRY_WET, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    const FADE: usize = 240;
+    const ECHO: usize = 480;
+    const WINDOW: usize = 720;
+    let (mut editor, asset) = authored_fixture(0, false);
+    let instrument = editor.project().tracks()[0].instrument().unwrap().id();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);
+    let table = Arc::new(crate::SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        )
+    };
+    let dry = prepare(&editor);
+    let mut state = DEFINITION.default_state().unwrap();
+    for parameter in [LEFT_SYNC, FILTER, HIGH_QUALITY] {
+        state = DEFINITION
+            .patch_parameter(&state, parameter, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    for (parameter, value) in [(TIME, 10.0), (DRY_WET, 1.0)] {
+        state = DEFINITION
+            .patch_parameter(&state, parameter, ParameterValue::Float(value))
+            .unwrap();
+    }
+    let Created::Device(device) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("source Delay");
+    };
+    let enabled = prepare(&editor);
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let disabled = prepare(&editor);
+    assert!(editor.undo());
+    let undone = prepare(&editor);
+
+    for partition in [1, 257] {
+        let mut dry_oracle = SessionPlayback::new(Arc::clone(&dry)).unwrap();
+        let mut wet_oracle = SessionPlayback::new(Arc::clone(&enabled)).unwrap();
+        let mut before = SessionPlayback::new(Arc::clone(&enabled)).unwrap();
+        let mut off = SessionPlayback::new(Arc::clone(&disabled)).unwrap();
+        let mut on = SessionPlayback::new(Arc::clone(&undone)).unwrap();
+        for runtime in [&mut before, &mut dry_oracle, &mut wet_oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 700]).unwrap();
+        }
+        let render = |runtime: &mut SessionPlayback| {
+            let mut output = [[0.0; 2]; WINDOW];
+            for callback in output.chunks_mut(partition) {
+                runtime.render(callback).unwrap();
+            }
+            output
+        };
+        off.try_inherit_state_live_from(&mut before).unwrap();
+        let raw = render(&mut dry_oracle);
+        let wet = render(&mut wet_oracle);
+        let actual = render(&mut off);
+        assert_ne!(wet, raw);
+        assert_eq!(actual[FADE - 1..], raw[FADE - 1..]);
+        for (index, actual) in actual[..FADE].iter().enumerate() {
+            let mix = 1.0 - (index + 1) as f32 / FADE as f32;
+            let expected = std::array::from_fn::<_, 2, _>(|channel| {
+                raw[index][channel] + (wet[index][channel] - raw[index][channel]) * mix
+            });
+            assert!((actual[0] - expected[0]).abs() < 1e-6, "fade frame {index}");
+            assert!((actual[1] - expected[1]).abs() < 1e-6, "fade frame {index}");
+        }
+
+        on.try_inherit_state_live_from(&mut off).unwrap();
+        let raw = render(&mut dry_oracle);
+        let actual = render(&mut on);
+        assert_eq!(actual[FADE - 1..ECHO], [[0.0; 2]; ECHO - FADE + 1]);
+        assert!(raw[..WINDOW - ECHO].iter().any(|frame| *frame != [0.0; 2]));
+        assert_eq!(actual[ECHO..], raw[..WINDOW - ECHO]);
+    }
+}
+
+#[test]
 fn live_source_utility_balance_preserves_stereo_filter_history_and_local_audio() {
     use crate::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
