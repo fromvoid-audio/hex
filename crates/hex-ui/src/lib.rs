@@ -134,6 +134,12 @@ pub fn exercise_sample_recorder_layout(cx: &mut gpui::TestAppContext, root: std:
     editor::sample_recorder_layout_fixture(cx, root);
 }
 
+/// Exercise real rendered Operator focus and verify that traversal leaves the project intact.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_operator_focus(cx: &mut gpui::TestAppContext) {
+    editor::operator_focus_fixture(cx);
+}
+
 /// Read-only browser insertion evidence. Neither the view nor this query owns
 /// a native endpoint, and a pending request alone grants no applied source.
 #[cfg(feature = "ui-test-support")]
