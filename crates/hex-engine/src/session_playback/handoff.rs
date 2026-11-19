@@ -1236,6 +1236,7 @@ impl SessionPlayback {
                 loop_pass: previous.arrangement_loop_pass,
                 playing: previous.playing,
                 chase: false,
+                interactive_onset_floor: previous.interactive_note_onset_floor(),
             },
             fresh,
             [old_loop_region, new_loop_region],
@@ -2128,10 +2129,14 @@ impl SessionPlayback {
             .periodic_tempo_at(carried_cut.map_or(previous.arrangement_frame, |(frame, _)| frame));
         let same_periodic = previous.periodic_tempo() == candidate_periodic;
         let old_clock = previous.timing_view();
+        let old_frame = previous.arrangement_frame;
+        let old_floor = previous.interactive_note_onset_floor();
         let old_beat = old_clock
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
+        // Keep the original canonical beat bucket. Candidate frame rounding
+        // must not turn a previously rejected onset into an admitted boundary.
         let new_beat = new_base_view
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -2801,7 +2806,7 @@ impl SessionPlayback {
                 RouteOwner::Arrangement => {
                     let mut active = false;
                     new_track
-                        .for_each_active_midi_span(arrangement_cut, |span, _| {
+                        .for_each_active_midi_span(arrangement_cut, None, |span, _| {
                             active |= span.start < arrangement_cut && span.end > arrangement_cut;
                         })
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -3293,7 +3298,7 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
                     let mut failure = None;
                     old_track
-                        .for_each_active_midi_span(previous.arrangement_frame, |span, sampler| {
+                        .for_each_active_midi_span(old_frame, old_floor, |span, sampler| {
                             let key = ContinuationKey {
                                 clip: span.clip,
                                 note: span.note,
@@ -3683,7 +3688,7 @@ impl SessionPlayback {
             if shared_sources::track_has_analytic_source(&self.revision, new_index) {
                 let mut overflow = false;
                 new_track
-                    .for_each_active_midi_span(new_cut_frame, |candidate, _| {
+                    .for_each_active_midi_span(new_cut_frame, None, |candidate, _| {
                         if let Some(slot) =
                             candidate_occurrences.get_mut(candidate_occurrence_count)
                         {
@@ -3758,7 +3763,7 @@ impl SessionPlayback {
             if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
                 let mut failure = None;
                 old_track
-                    .for_each_active_midi_span(cut_frame, |span, sampler| {
+                    .for_each_active_midi_span(cut_frame, old_floor, |span, sampler| {
                         if span.start >= cut_frame {
                             return;
                         }
@@ -3945,7 +3950,7 @@ impl SessionPlayback {
                     .map(hex_project::LoopRegion::end);
                 let mut failure = None;
                 new_track
-                    .for_each_active_midi_span(new_cut_frame, |span, _| {
+                    .for_each_active_midi_span(new_cut_frame, None, |span, _| {
                         if span.start >= new_cut_frame {
                             return;
                         }
@@ -6056,6 +6061,7 @@ impl SessionPlayback {
         self.arrangement_frame = arrangement_cut;
         self.arrangement_loop_pass = arrangement_cut_pass;
         self.interactive_start_frame = previous.interactive_start_frame;
+        self.interactive_onset_floor = old_floor;
         self.pending_shared_chase = pending_shared_chase;
         self.pending_shared_live = pending_shared_live;
         self.playing = previous.playing;
@@ -6763,6 +6769,7 @@ fn cut_arrangement_voices_for_remap(
         loop_end,
     } = candidate;
     let old_cut = previous.arrangement_frame;
+    let old_floor = previous.interactive_note_onset_floor();
     let performance = previous.performance_frame;
     // The candidate's next pass starts at this performance frame.
     let wrap_frame = loop_end
@@ -6795,7 +6802,7 @@ fn cut_arrangement_voices_for_remap(
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             old_track
-                .for_each_active_midi_span(old_cut, |span, sampler| {
+                .for_each_active_midi_span(old_cut, old_floor, |span, sampler| {
                     if failure.is_some() || span.start >= old_cut {
                         return;
                     }
@@ -6870,7 +6877,7 @@ fn cut_arrangement_voices_for_remap(
                 .get(new_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             new_track
-                .for_each_active_midi_span(candidate_cut, |span, _| {
+                .for_each_active_midi_span(candidate_cut, None, |span, _| {
                     if failure.is_some() || span.start >= candidate_cut {
                         return;
                     }
@@ -7269,7 +7276,7 @@ fn retune_inline_release(
         RouteOwner::Arrangement => {
             let mut sampler = None;
             target
-                .for_each_active_midi_span(candidate_cut, |span, prepared| {
+                .for_each_active_midi_span(candidate_cut, None, |span, prepared| {
                     if span.clip == owned.key.clip
                         && span.note == owned.key.note
                         && span.iteration == owned.key.iteration

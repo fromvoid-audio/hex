@@ -31,6 +31,7 @@ pub(super) struct ResidentSourceWindow {
     pub(super) arrangement_frame: u64,
     pub(super) frames: usize,
     pub(super) mutable_loop_pass: Option<u64>,
+    pub(super) interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     pub(super) chase_at_start: bool,
 }
 
@@ -355,6 +356,7 @@ impl SessionPlayback {
             arrangement_frame,
             frames,
             mutable_loop_pass,
+            interactive_onset_floor,
             chase_at_start,
         } = window;
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
@@ -436,6 +438,7 @@ impl SessionPlayback {
                                 index,
                             )?,
                             historical_floor: floor,
+                            interactive_onset_floor,
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
@@ -506,6 +509,7 @@ impl SessionPlayback {
                                 arrangement_loop_pass,
                                 transient: None,
                                 chase_at_start,
+                                interactive_onset_floor,
                                 pending_shared_chase: None,
                                 loop_region: active_loop,
                                 timing: &timing,
@@ -530,12 +534,12 @@ impl SessionPlayback {
                     {
                         track
                             .render_raw_instrument(
-                                arrangement_frame,
-                                performance_frame,
+                                (arrangement_frame, performance_frame),
                                 output,
                                 &self.suppression_scratch,
                                 &self.analytic_continuations,
                                 Some(self.revision.session().timing()),
+                                interactive_onset_floor,
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         *instruments
@@ -599,6 +603,7 @@ impl SessionPlayback {
                             midi,
                             route: *route,
                             historical_floor: floor,
+                            interactive_onset_floor,
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
@@ -1103,6 +1108,9 @@ impl SessionPlayback {
                                         ),
                                         route,
                                         historical_floor: self.historical_floor_for(index),
+                                        interactive_onset_floor: (loop_pass == 0)
+                                            .then_some(self.interactive_onset_floor)
+                                            .flatten(),
                                         suppressions: &self.suppression_scratch,
                                         continuations: &self.analytic_continuations,
                                         index,
@@ -1152,6 +1160,9 @@ impl SessionPlayback {
                                             index,
                                         )?,
                                         historical_floor: self.historical_floor_for(index),
+                                        interactive_onset_floor: (loop_pass == 0)
+                                            .then_some(self.interactive_onset_floor)
+                                            .flatten(),
                                         suppressions: &self.suppression_scratch,
                                         continuations: &self.analytic_continuations,
                                         index,
@@ -1223,6 +1234,9 @@ impl SessionPlayback {
                                         transient: None,
                                         chase_at_start: self.interactive_start_frame
                                             == Some(performance_frame),
+                                        interactive_onset_floor: (loop_pass == 0)
+                                            .then_some(self.interactive_onset_floor)
+                                            .flatten(),
                                         pending_shared_chase: self.pending_shared_chase,
                                         loop_region: if self.linear_arrangement_export {
                                             None
@@ -1374,6 +1388,9 @@ impl SessionPlayback {
                                     loop_pass,
                                     playing: self.playing,
                                     chase: self.interactive_start_frame == Some(performance_frame),
+                                    interactive_onset_floor: (loop_pass == 0)
+                                        .then_some(self.interactive_onset_floor)
+                                        .flatten(),
                                 },
                                 foreign_arrangement::SessionRoute {
                                     route: effective_midi_route(

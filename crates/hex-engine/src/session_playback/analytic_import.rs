@@ -223,9 +223,10 @@ impl SessionPlayback {
         match old_route.owner {
             RouteOwner::Arrangement => {
                 let cut = previous.arrangement_frame;
+                let old_floor = previous.interactive_note_onset_floor();
                 let mut failure = None;
                 old_track
-                    .for_each_active_midi_span(cut, |span, sampler| {
+                    .for_each_active_midi_span(cut, old_floor, |span, sampler| {
                         if failure.is_some() {
                             return;
                         }

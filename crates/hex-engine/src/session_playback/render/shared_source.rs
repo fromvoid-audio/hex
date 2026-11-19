@@ -146,6 +146,7 @@ pub(super) fn render_source_instrument_chunk<T: crate::prepared_tempo::MidiTempo
                     .into_iter()
                     .chain(route_floors.get(index).copied().flatten())
                     .max(),
+                interactive_onset_floor: context.interactive_onset_floor,
                 suppressions: context.suppressions,
                 continuations: context.continuations,
                 index,
@@ -185,6 +186,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         arrangement_loop_pass,
         transient,
         chase_at_start,
+        interactive_onset_floor,
         pending_shared_chase,
         loop_region,
         timing,
@@ -222,6 +224,9 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                 let mut failed = false;
                 track
                     .for_each_mutable_midi_span(arrangement_frame, arrangement_end, |span| {
+                        if !span.admitted_at_interactive_start(interactive_onset_floor) {
+                            return;
+                        }
                         let chase = arrangement_loop_pass > 0
                             && loop_region.is_some_and(|region| {
                                 arrangement_frame == region.start()
