@@ -15,7 +15,19 @@ fn double_click(visual: &mut VisualTestContext, device: DeviceId) {
     let point = title(visual, device);
     visual.simulate_click(point, Modifiers::default());
     visual.run_until_parked();
-    eq_ui_tests::eq_double_click(visual, point);
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: point,
+        modifiers: Modifiers::default(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_event(gpui::MouseUpEvent {
+        position: point,
+        modifiers: Modifiers::default(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
     visual.run_until_parked();
 }
 
