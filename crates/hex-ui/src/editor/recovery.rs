@@ -389,6 +389,7 @@ impl EditorView {
                 return;
             }
         };
+        self.playback_settings.pending = None;
         self.offline_cursor = position;
         if !self.retire_audio_preserving_gain_take() {
             clear_recovery(
@@ -454,9 +455,9 @@ impl EditorView {
     }
 
     pub(super) fn finish_audio_recovery_tick(&mut self) -> bool {
-        if self.recovery.generation().is_none() {
+        let Some(recovery_generation) = self.recovery.generation() else {
             return false;
-        }
+        };
         let reliable = self
             .audio
             .as_ref()
@@ -569,12 +570,14 @@ impl EditorView {
             self.status = "audio ready · stopped".into();
             self.error = None;
             self.submit_recovered_graph_edit();
+            self.normal_start_recovery_completed(recovery_generation);
             return true;
         }
         false
     }
 
     pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
+        self.playback_settings.pending = None;
         let error = error.into();
         self.offline_cursor = self.cursor_position();
         clear_recovery(
