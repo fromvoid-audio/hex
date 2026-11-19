@@ -1167,7 +1167,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     );
     assert_eq!(
         root.waveform
-            .peaks_for_frames(16_200, 16_328)
+            .peaks_for_frames(16_216, 16_328)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.25, 0.25), (-0.5, -0.5)]
