@@ -21,10 +21,7 @@ pub(crate) struct ActiveView<'a> {
 }
 pub(crate) struct QuantumPins {
     complete: bool,
-    entries: [Option<(
-        AudioCandidateDomainToken,
-        hex_stream::CurrentQuantumReservation,
-    )>; 2],
+    entries: [Option<(AudioCandidateDomainToken, hex_stream::RenderPageReservation)>; 2],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QuantumFailure {
@@ -46,7 +43,7 @@ impl QuantumPins {
             if let Ok(pages) = super::demand::envelope(domains, token)
                 && let Some(loan) = pages.inner.loan.as_mut()
             {
-                let _ = loan.release_current_quantum(&reservation);
+                let _ = loan.release_render_pages(&reservation);
             }
         }
     }
@@ -156,22 +153,22 @@ impl ActiveView<'_> {
                 .map_err(|_| QuantumFailure::Invalid)
                 .and_then(|pages| pages.inner.loan.as_mut().ok_or(QuantumFailure::Invalid))
                 .and_then(|loan| {
-                    use hex_stream::CurrentQuantumRefusal;
+                    use hex_stream::RenderPageRefusal;
                     let extents = &workspace.quantum_extents[token.slot];
                     let reservation = match coverage {
                         QuantumCoverage::ResidentSubset { .. } => loan
                             .reserve_resident_current_quantum(extents)
                             .map(|(reservation, complete)| (Some(reservation), complete)),
                         QuantumCoverage::CompleteFade => {
-                            match loan.reserve_current_quantum(extents) {
+                            match loan.reserve_outgoing_fade(extents) {
                                 Ok(reservation) => Ok((Some(reservation), true)),
-                                Err(CurrentQuantumRefusal::NotResident) => Ok((None, false)),
+                                Err(RenderPageRefusal::NotResident) => Ok((None, false)),
                                 Err(error) => Err(error),
                             }
                         }
                     };
                     reservation.map_err(|error| match error {
-                        CurrentQuantumRefusal::Capacity => QuantumFailure::Capacity,
+                        RenderPageRefusal::Capacity => QuantumFailure::Capacity,
                         _ => QuantumFailure::Invalid,
                     })
                 });

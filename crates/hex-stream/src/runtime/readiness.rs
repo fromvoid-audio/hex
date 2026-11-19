@@ -140,21 +140,37 @@ pub enum ReadinessProgress {
     Pending,
     InstalledProtected,
 }
-/// Move-only correlation for a current-quantum reservation on one exact loan.
+/// Move-only correlation for a render or outgoing fade on one exact loan.
 /// It does not own pages; callers must release it before returning the loan.
 #[must_use]
-pub struct CurrentQuantumReservation {
+pub struct RenderPageReservation {
     readiness_id: u64,
     epoch: u64,
+    kind: RenderPageKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CurrentQuantumRefusal {
+pub enum RenderPageRefusal {
     Busy,
     InvalidExtents,
     NotResident,
     Capacity,
     EpochExhausted,
+}
+
+#[derive(Clone, Copy)]
+enum RenderPageKind {
+    Current,
+    OutgoingFade,
+}
+
+impl RenderPageKind {
+    fn index(self) -> usize {
+        match self {
+            Self::Current => 0,
+            Self::OutgoingFade => 1,
+        }
+    }
 }
 
 /// Finite caller reservation, bounded further by the actual endpoint cache.
@@ -170,13 +186,17 @@ struct Role {
     installed: Option<ReadinessStamp>,
     unread: bool,
 }
+#[derive(Default)]
+struct RenderHold {
+    extents: Vec<StreamResourceExtent>,
+    epoch: Option<u64>,
+}
 pub(super) struct PreparedReadiness {
     catalog: CatalogLease,
     roles: [Role; 3],
-    current_quantum: Vec<StreamResourceExtent>,
-    current_quantum_epoch: Option<u64>,
+    render_holds: [RenderHold; 2],
     readiness_id: u64,
-    quantum_epoch: u64,
+    render_epoch: u64,
     limit: usize,
     epoch: u64,
 }
@@ -203,29 +223,32 @@ impl PreparedReadiness {
                 .try_reserve_exact(reservation.extents_per_role)
                 .map_err(|_| AudioStreamStorageError::Capacity)?;
         }
-        let mut current_quantum = Vec::new();
-        current_quantum
-            .try_reserve_exact(reservation.extents_per_role)
-            .map_err(|_| AudioStreamStorageError::Capacity)?;
+        let mut render_holds: [RenderHold; 2] = std::array::from_fn(|_| RenderHold::default());
+        for hold in &mut render_holds {
+            hold.extents
+                .try_reserve_exact(reservation.extents_per_role)
+                .map_err(|_| AudioStreamStorageError::Capacity)?;
+        }
         let readiness_id = NEXT_READINESS_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| AudioStreamStorageError::Overflow)?;
         Ok(Self {
             catalog: catalog.clone(),
             roles,
-            current_quantum,
-            current_quantum_epoch: None,
+            render_holds,
             readiness_id,
-            quantum_epoch: 0,
+            render_epoch: 0,
             limit: reservation.extents_per_role,
             epoch: 0,
         })
     }
     pub(super) fn backing_bytes(&self) -> Option<usize> {
-        let bytes = self
-            .current_quantum
-            .capacity()
-            .checked_mul(std::mem::size_of::<StreamResourceExtent>())?;
+        let bytes = self.render_holds.iter().try_fold(0_usize, |bytes, hold| {
+            hold.extents
+                .capacity()
+                .checked_mul(std::mem::size_of::<StreamResourceExtent>())?
+                .checked_add(bytes)
+        })?;
         self.roles.iter().try_fold(bytes, |bytes, role| {
             role.wanted
                 .capacity()
@@ -234,8 +257,8 @@ impl PreparedReadiness {
                 .checked_add(bytes)
         })
     }
-    pub(super) fn has_current_quantum(&self) -> bool {
-        self.current_quantum_epoch.is_some()
+    pub(super) fn has_render_page_holds(&self) -> bool {
+        self.render_holds.iter().any(|hold| hold.epoch.is_some())
     }
     fn valid(&self, stamp: ReadinessStamp, extents: ExtentSlice<'_>) -> bool {
         if !stamp.artifact.valid()
@@ -306,49 +329,33 @@ impl PreparedReadiness {
     }
     /// Count distinct pages among retained protections and outstanding intents,
     /// including the new request. No allocation or synthetic pool enlargement.
-    fn fits_pool(&self, replacement: usize, extents: ExtentSlice<'_>, capacity: usize) -> bool {
-        let roles = [
-            ExtentSlice::Resources(self.roles[0].protected.as_slice()),
-            ExtentSlice::Resources(self.roles[1].protected.as_slice()),
-            ExtentSlice::Resources(self.roles[2].protected.as_slice()),
-            if replacement == 0 {
-                ExtentSlice::Resources(&[])
+    fn fits_pool(
+        &self,
+        replacement: Option<ProtectionRole>,
+        extents: ExtentSlice<'_>,
+        capacity: usize,
+    ) -> bool {
+        let wanted = |role: ProtectionRole| {
+            ExtentSlice::Resources(if replacement == Some(role) {
+                &[]
             } else {
-                ExtentSlice::Resources(self.roles[0].wanted.as_slice())
-            },
-            if replacement == 1 {
-                ExtentSlice::Resources(&[])
-            } else {
-                ExtentSlice::Resources(self.roles[1].wanted.as_slice())
-            },
-            if replacement == 2 {
-                ExtentSlice::Resources(&[])
-            } else {
-                ExtentSlice::Resources(self.roles[2].wanted.as_slice())
-            },
-        ];
-        if replacement == 3 || self.current_quantum.is_empty() {
-            slices_fit_pool(
-                [
-                    roles[0], roles[1], roles[2], roles[3], roles[4], roles[5], extents,
-                ],
-                capacity,
-            )
-        } else {
-            slices_fit_pool(
-                [
-                    roles[0],
-                    roles[1],
-                    roles[2],
-                    roles[3],
-                    roles[4],
-                    roles[5],
-                    ExtentSlice::Resources(&self.current_quantum),
-                    extents,
-                ],
-                capacity,
-            )
-        }
+                &self.roles[role.index()].wanted
+            })
+        };
+        slices_fit_pool(
+            [
+                ExtentSlice::Resources(self.roles[0].protected.as_slice()),
+                ExtentSlice::Resources(self.roles[1].protected.as_slice()),
+                ExtentSlice::Resources(self.roles[2].protected.as_slice()),
+                wanted(ProtectionRole::Active),
+                wanted(ProtectionRole::Candidate),
+                wanted(ProtectionRole::Transition),
+                ExtentSlice::Resources(&self.render_holds[0].extents),
+                ExtentSlice::Resources(&self.render_holds[1].extents),
+                extents,
+            ],
+            capacity,
+        )
     }
     fn submit(
         &mut self,
@@ -378,7 +385,7 @@ impl PreparedReadiness {
         if stamp.request_epoch <= self.epoch {
             return Err(ReadinessRefusal::StaleEpoch);
         }
-        if !self.fits_pool(index, extents, pages.endpoint.cache_capacity()) {
+        if !self.fits_pool(Some(role), extents, pages.endpoint.cache_capacity()) {
             return Err(ReadinessRefusal::Capacity);
         }
         let slot = &mut self.roles[index];
@@ -607,8 +614,8 @@ impl ConstructorPageLoan {
     pub fn reserve_current_quantum(
         &mut self,
         extents: &[StreamResourceExtent],
-    ) -> Result<CurrentQuantumReservation, CurrentQuantumRefusal> {
-        self.reserve_quantum_resident_subset(extents, false)
+    ) -> Result<RenderPageReservation, RenderPageRefusal> {
+        self.reserve_render_pages(RenderPageKind::Current, extents, false)
             .map(|(reservation, _)| reservation)
     }
 
@@ -619,23 +626,36 @@ impl ConstructorPageLoan {
     pub fn reserve_resident_current_quantum(
         &mut self,
         extents: &[StreamResourceExtent],
-    ) -> Result<(CurrentQuantumReservation, bool), CurrentQuantumRefusal> {
-        self.reserve_quantum_resident_subset(extents, true)
+    ) -> Result<(RenderPageReservation, bool), RenderPageRefusal> {
+        self.reserve_render_pages(RenderPageKind::Current, extents, true)
     }
 
-    fn reserve_quantum_resident_subset(
+    /// Retain the complete already-resident outgoing span through its fade.
+    /// Its lifetime is independent of current windows and role promotions.
+    pub fn reserve_outgoing_fade(
         &mut self,
         extents: &[StreamResourceExtent],
+    ) -> Result<RenderPageReservation, RenderPageRefusal> {
+        self.reserve_render_pages(RenderPageKind::OutgoingFade, extents, false)
+            .map(|(reservation, _)| reservation)
+    }
+
+    fn reserve_render_pages(
+        &mut self,
+        kind: RenderPageKind,
+        extents: &[StreamResourceExtent],
         allow_incomplete: bool,
-    ) -> Result<(CurrentQuantumReservation, bool), CurrentQuantumRefusal> {
-        if self.readiness.current_quantum_epoch.is_some() {
-            return Err(CurrentQuantumRefusal::Busy);
+    ) -> Result<(RenderPageReservation, bool), RenderPageRefusal> {
+        let index = kind.index();
+        let hold = &mut self.readiness.render_holds[index];
+        if hold.epoch.is_some() {
+            return Err(RenderPageRefusal::Busy);
         }
         if extents.len() > self.readiness.limit {
             return Err(if allow_incomplete {
-                CurrentQuantumRefusal::InvalidExtents
+                RenderPageRefusal::InvalidExtents
             } else {
-                CurrentQuantumRefusal::Capacity
+                RenderPageRefusal::Capacity
             });
         }
         if extents.windows(2).any(|pair| {
@@ -644,75 +664,81 @@ impl ConstructorPageLoan {
             .iter()
             .any(|extent| extent.start >= extent.end || extent.end > hex_engine::STREAM_PAGE_FRAMES)
         {
-            return Err(CurrentQuantumRefusal::InvalidExtents);
+            return Err(RenderPageRefusal::InvalidExtents);
         }
-        let mut complete = true;
-        self.readiness.current_quantum.clear();
-        for extent in extents {
-            if self.pages.endpoint.has_extent(*extent) {
-                self.readiness.current_quantum.push(*extent);
-            } else {
-                complete = false;
-            }
-        }
-        let demand = if allow_incomplete {
-            &self.readiness.current_quantum
+        hold.extents.clear();
+        hold.extents.extend(
+            extents
+                .iter()
+                .copied()
+                .filter(|&extent| self.pages.endpoint.has_extent(extent)),
+        );
+        let complete = hold.extents.len() == extents.len();
+        // Both held resident sets already participate in fits_pool. A full
+        // fade also charges missing demand before returning NotResident.
+        let additional_demand = if allow_incomplete || complete {
+            &[]
         } else {
             extents
         };
-        if !self.readiness.fits_pool(
-            3,
-            ExtentSlice::Resources(demand),
+        let result = if !self.readiness.fits_pool(
+            None,
+            ExtentSlice::Resources(additional_demand),
             self.pages.endpoint.cache_capacity(),
         ) {
-            self.readiness.current_quantum.clear();
-            return Err(CurrentQuantumRefusal::Capacity);
-        }
-        if !complete && !allow_incomplete {
-            self.readiness.current_quantum.clear();
-            return Err(CurrentQuantumRefusal::NotResident);
-        }
-        let Some(epoch) = self.readiness.quantum_epoch.checked_add(1) else {
-            self.readiness.current_quantum.clear();
-            return Err(CurrentQuantumRefusal::EpochExhausted);
+            Err(RenderPageRefusal::Capacity)
+        } else if !complete && !allow_incomplete {
+            Err(RenderPageRefusal::NotResident)
+        } else {
+            self.readiness
+                .render_epoch
+                .checked_add(1)
+                .ok_or(RenderPageRefusal::EpochExhausted)
         };
-        self.pages.endpoint.replace_protection(
-            crate::endpoint::CURRENT_QUANTUM_PIN,
-            &self.readiness.current_quantum,
-        );
-        self.readiness.quantum_epoch = epoch;
-        self.readiness.current_quantum_epoch = Some(epoch);
+        let hold = &mut self.readiness.render_holds[index];
+        let epoch = result.inspect_err(|_| hold.extents.clear())?;
+        self.pages
+            .endpoint
+            .protect_present(crate::endpoint::RENDER_HOLD_PIN, &hold.extents);
+        self.readiness.render_epoch = epoch;
+        hold.epoch = Some(epoch);
         Ok((
-            CurrentQuantumReservation {
+            RenderPageReservation {
                 readiness_id: self.readiness.readiness_id,
                 epoch,
+                kind,
             },
             complete,
         ))
     }
 
-    /// Release only the exact reservation returned by this loan. A wrong or
-    /// stale token leaves the current reservation and every role unchanged.
-    pub fn release_current_quantum(&mut self, reservation: &CurrentQuantumReservation) -> bool {
+    /// Wrong or stale tokens leave both reservations and every role unchanged.
+    pub fn release_render_pages(&mut self, reservation: &RenderPageReservation) -> bool {
         if reservation.readiness_id != self.readiness.readiness_id
-            || self.readiness.current_quantum_epoch != Some(reservation.epoch)
+            || self.readiness.render_holds[reservation.kind.index()].epoch
+                != Some(reservation.epoch)
         {
             return false;
         }
-        self.cancel_current_quantum()
+        self.clear_render_hold(reservation.kind)
     }
 
-    /// Cancel this loan's current reservation, for example on priority Stop.
-    /// Any previously issued token becomes stale. No role or page is moved.
+    /// Cancel the current window without disturbing an outgoing fade hold.
     pub fn cancel_current_quantum(&mut self) -> bool {
-        if self.readiness.current_quantum_epoch.is_none() {
+        self.clear_render_hold(RenderPageKind::Current)
+    }
+
+    fn clear_render_hold(&mut self, kind: RenderPageKind) -> bool {
+        let holds = &mut self.readiness.render_holds;
+        let hold = &mut holds[kind.index()];
+        if hold.epoch.take().is_none() {
             return false;
         }
-        self.pages
-            .endpoint
-            .replace_protection(crate::endpoint::CURRENT_QUANTUM_PIN, &[]);
-        self.readiness.current_quantum.clear();
-        self.readiness.current_quantum_epoch = None;
+        hold.extents.clear();
+        self.pages.endpoint.replace_protection_union(
+            crate::endpoint::RENDER_HOLD_PIN,
+            [&holds[0].extents, &holds[1].extents],
+        );
         true
     }
 

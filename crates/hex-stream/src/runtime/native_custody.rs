@@ -367,7 +367,7 @@ impl ConstructorStreamDomain {
         }
         if loan
             .as_ref()
-            .is_some_and(|loan| loan.readiness.has_current_quantum())
+            .is_some_and(|loan| loan.readiness.has_render_page_holds())
         {
             return Err(AudioStreamStorageError::UnresolvedObligations);
         }
