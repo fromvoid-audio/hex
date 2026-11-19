@@ -3,7 +3,8 @@
 use super::*;
 use crate::plugin_worker::{
     NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
-    NativeWorkerControllerProgress, NativeWorkerControllerQuery, NativeWorkerParameterChange,
+    NativeWorkerControllerProgress, NativeWorkerControllerQuery,
+    NativeWorkerGuardedEditorWriteProgress, NativeWorkerParameterChange,
 };
 #[cfg(test)]
 mod tests;
@@ -338,6 +339,38 @@ impl Custody {
             Owner::Effect(owner) => owner.drain_stopped_parameter_change(request),
             Owner::Loaned(owner) => owner.drain_stopped_parameter_change(request),
             _ => Err("native parameter input owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn begin_guarded_editor_write(
+        &self,
+        binding: Binding,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => {
+                    owner.begin_guarded_editor_write(expected_editor_admission, points)
+                }
+                Owner::Loaned(owner) => {
+                    owner.begin_guarded_editor_write(expected_editor_admission, points)
+                }
+                _ => Err("native guarded editor write owner differs"),
+            },
+            || {},
+            "native guarded editor write was not admitted",
+        )
+    }
+    pub(in crate::candidate_custody) fn poll_guarded_editor_write(
+        &self,
+        binding: Binding,
+        token: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerGuardedEditorWriteProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_guarded_editor_write(token),
+            Owner::Loaned(owner) => owner.poll_guarded_editor_write(token),
+            _ => Err("native guarded editor write owner differs"),
         })
     }
     pub(in crate::candidate_custody) fn begin_native_controller_query(
@@ -759,6 +792,27 @@ impl CandidateRoot {
             .0
             .eligible
             .poll_native_parameter_change(binding, request)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn begin_guarded_editor_write(
+        &self,
+        binding: Binding,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0
+            .eligible
+            .begin_guarded_editor_write(binding, expected_editor_admission, points)
+    }
+    pub(crate) fn poll_guarded_editor_write(
+        &self,
+        binding: Binding,
+        token: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerGuardedEditorWriteProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.poll_guarded_editor_write(binding, token)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }

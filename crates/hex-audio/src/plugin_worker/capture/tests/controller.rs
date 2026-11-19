@@ -220,6 +220,63 @@ fn retirement_cancels_held_controller_getter_without_normal_stop() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn revoked_worker_never_starts_a_queued_guarded_editor_write_during_stopped_reads() {
+    use crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress as Progress;
+    const NAME: &str = "plugin_worker::capture::tests::controller::revoked_worker_never_starts_a_queued_guarded_editor_write_during_stopped_reads";
+    if fixture_child(140, NAME) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    endpoint
+        .stage(&[[0.5, -0.25]; 8], &[], &mut output)
+        .unwrap();
+    endpoint.finish(true).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|bytes| bytes.get(..4) != Some(&27_i32.to_le_bytes()))
+    {
+        assert!(
+            Instant::now() < until,
+            "the SDK must hold the original process call"
+        );
+        thread::yield_now();
+    }
+    let token = owner
+        .begin_guarded_editor_write_on_control(0, &[(7, 0.75)])
+        .unwrap();
+    owner.revoke_on_control();
+    assert_eq!(
+        owner.poll_guarded_editor_write_on_control(&token),
+        Ok(Progress::Failed)
+    );
+    assert!(
+        owner
+            .begin_guarded_editor_write_on_control(0, &[(7, 0.75)])
+            .is_err()
+    );
+    fs::write(
+        PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()),
+        b"release original SDK process",
+    )
+    .unwrap();
+
+    // An exact stopped metadata read is allowed after join. Running the
+    // stale write here would hit this fixture's deliberate flush refusal.
+    let read = query(&mut owner);
+    let rows = page(&mut owner, &read);
+    assert_eq!(
+        (rows.as_slice()[0].id, rows.as_slice()[0].normalized),
+        (7, 0.25)
+    );
+    assert!(owner.poll_guarded_editor_write_on_control(&token).is_err());
+    let result = owner.retire_on_control().unwrap();
+    assert!(result.failure.is_none() && result.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn editor_seal_requires_stopped_original_worker_and_exact_completion() {
     use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
     const NAME: &str = "plugin_worker::capture::tests::controller::editor_seal_requires_stopped_original_worker_and_exact_completion";

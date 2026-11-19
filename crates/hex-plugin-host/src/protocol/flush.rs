@@ -3,6 +3,8 @@ use super::*;
 use crate::transport::{MAX_PARAMETER_POINTS, Parameters};
 
 pub const MAX_FLUSHED_PARAMETERS: usize = 128;
+/// Native zero-frame processing accepts at most this many distinct queues.
+pub const MAX_EDITOR_FLUSH_PARAMETERS: usize = 64;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FlushedParameter {
     pub id: u32,
@@ -62,7 +64,7 @@ fn encode_flush(
     expected_editor_admission: Option<u64>,
 ) -> Result<Vec<u8>> {
     if operation == 0
-        || (expected_editor_admission.is_some() && points.as_slice().is_empty())
+        || (expected_editor_admission.is_some() && !valid_editor_flush_extent(points))
         || points.as_slice().len() > MAX_PARAMETER_POINTS
         || points.as_slice().iter().any(|point| point.frame != 0)
     {
@@ -104,6 +106,10 @@ pub fn flushed_parameters(
     decode_flushed_parameters(body, config, sequence, operation, requested, false)
 }
 
+pub(crate) fn valid_editor_flush_extent(parameters: &Parameters) -> bool {
+    (1..=MAX_EDITOR_FLUSH_PARAMETERS).contains(&parameters.as_slice().len())
+}
+
 pub fn guarded_flushed_parameters(
     body: &[u8],
     config: &Configuration,
@@ -111,8 +117,10 @@ pub fn guarded_flushed_parameters(
     operation: u64,
     requested: &Parameters,
 ) -> Result<FlushedParameters> {
-    if requested.as_slice().is_empty() {
-        return Err(Error::Protocol("empty guarded editor parameter flush"));
+    if !valid_editor_flush_extent(requested) {
+        return Err(Error::Protocol(
+            "invalid guarded editor parameter flush extent",
+        ));
     }
     decode_flushed_parameters(body, config, sequence, operation, requested, true)
 }
