@@ -65,6 +65,13 @@ fn processed_frame_event_source_peaks_survive_fades_and_cache_hits() {
             fade_out: 0,
         },
         Command::SetAudioClipPitch { clip, cents: 137 },
+        Command::SetAudioClipSourceGain {
+            clip,
+            points: vec![hex_project::SourceGainPoint {
+                frame: 0,
+                gain_q16: hex_project::SOURCE_GAIN_UNITY / 2,
+            }],
+        },
     ] {
         editor.execute(command).unwrap();
     }
@@ -141,6 +148,21 @@ fn processed_frame_event_source_peaks_survive_fades_and_cache_hits() {
     assert!(fallback.event_source_peaks.is_none());
     assert_eq!(fallback.audio.frames(), faded_view.audio.frames());
     assert_eq!(uncached.retained_pcm_bytes(), bytes);
+
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 24_000,
+            },
+        })
+        .unwrap();
+    let source = &media[&editor.project().clip(clip).unwrap().asset()];
+    let repeated = context
+        .preview_root(editor.project(), clip, source)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated.event_source_peaks.as_ref().unwrap().bins(), bins);
 }
 
 #[test]
