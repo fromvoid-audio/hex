@@ -19,6 +19,14 @@ enum VerifiedPreviewKey {
     Device(DevicePreviewIdentity),
     ArrangementGain(u64),
 }
+impl VerifiedKey {
+    pub(super) fn canonical(context: AudioSourceContext) -> Self {
+        Self {
+            context,
+            preview: None,
+        }
+    }
+}
 #[derive(Clone)]
 pub(super) enum VerifiedSource {
     Canonical(Arc<CanonicalAudioSourceSnapshot>),
