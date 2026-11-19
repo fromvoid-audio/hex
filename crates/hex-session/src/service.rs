@@ -3680,6 +3680,7 @@ fn run_worker(
         let mut save_confirmation_required = false;
         let mut project_replaced = false;
         let mut replacement_revision = None;
+        let mut installed_verified_source = None;
         let mut replacement_sources: Option<
             Option<hex_engine::native_device_resources::ControlSamplerSources>,
         > = None;
@@ -6255,6 +6256,9 @@ fn run_worker(
                                         }
                                         unsaved = true;
                                         replacement_revision = Some(prepared);
+                                        installed_verified_source = verified
+                                            .as_ref()
+                                            .map(|attempt| Arc::clone(attempt.source()));
                                         if let Some(snapshot) = snapshot {
                                             resident_snapshot = Some(snapshot);
                                         }
@@ -10308,14 +10312,17 @@ fn run_worker(
             }
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
+            // The verified receipt and committed edit refer to the same staged
+            // snapshot. Keep that identity for the next native admission.
             state = events.measure_section_view(|| {
-                view_state(
+                view_state_bound(
                     &session,
                     Arc::clone(&midi_preview),
                     revision,
                     project_generation,
                     unsaved,
                     document.as_ref().map(|handle| handle.path.as_path()),
+                    installed_verified_source.map(|source| (source, None)),
                 )
             });
             compiled = Some((revision, Arc::clone(&prepared)));
