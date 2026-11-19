@@ -75,6 +75,19 @@ impl ActiveView<'_> {
             Ok(Some(pins))
         } else {
             pins.release(domains);
+            let workspace = self
+                .state
+                .streaming
+                .as_ref()
+                .ok_or(QuantumFailure::Invalid)?;
+            // Every domain fit before any speculative work. A later attempt
+            // must project the current clock again before acquiring a hold.
+            for token in self.state.domain_refs.into_iter().flatten() {
+                let pages =
+                    super::demand::envelope(domains, token).map_err(|_| QuantumFailure::Invalid)?;
+                let loan = pages.inner.loan.as_mut().ok_or(QuantumFailure::Invalid)?;
+                loan.prewarm_fitting_outgoing_fade(&workspace.quantum_extents[token.slot]);
+            }
             Ok(None)
         }
     }

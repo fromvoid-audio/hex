@@ -635,32 +635,25 @@ impl ConstructorPageLoan {
     }
 
     /// Retain the complete already-resident outgoing span through its fade.
-    /// A fitting cold span can prewarm one missing page in spare cache space.
-    /// Only a complete revalidated span acquires a hold.
+    /// Its lifetime is independent of current windows and role promotions.
     pub fn reserve_outgoing_fade(
         &mut self,
         extents: &[StreamResourceExtent],
     ) -> Result<RenderPageReservation, RenderPageRefusal> {
-        let reserve = |loan: &mut Self| {
-            loan.reserve_render_pages(RenderPageKind::OutgoingFade, extents, false)
-                .map(|(reservation, _)| reservation)
-        };
-        let result = reserve(self);
-        if matches!(result, Err(RenderPageRefusal::NotResident))
-            && let Some(&missing) = extents
-                .iter()
-                .find(|&&extent| !self.pages.endpoint.has_extent(extent))
+        self.reserve_render_pages(RenderPageKind::OutgoingFade, extents, false)
+            .map(|(reservation, _)| reservation)
+    }
+
+    /// After all contributing loans have checked the exact span's capacity,
+    /// use spare cache space for one missing page. This never grants a hold.
+    pub fn prewarm_fitting_outgoing_fade(&mut self, extents: &[StreamResourceExtent]) {
+        if let Some(&missing) = extents
+            .iter()
+            .find(|&&extent| !self.pages.endpoint.has_extent(extent))
+            && self.readiness.catalog_covers_extent(missing, None)
         {
-            if !self.readiness.catalog_covers_extent(missing, None) {
-                return Err(RenderPageRefusal::InvalidExtents);
-            }
-            // Looking ahead does not pin an incomplete span. If its exact
-            // reply is ready, recheck the entire projection before admitting.
-            if self.pages.endpoint.prewarm_fade_extent(missing) {
-                return reserve(self);
-            }
+            self.pages.endpoint.prewarm_fade_extent(missing);
         }
-        result
     }
 
     fn reserve_render_pages(
