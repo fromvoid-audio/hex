@@ -430,6 +430,7 @@ impl SpanQueryView<'_> {
             return Err(MidiTemplateError::TooManySpans);
         }
         context.buffer.slots[context.buffer.len] = Some(MidiRenderSpan {
+            starts_inside_gate: span.starts_inside_gate,
             start_frame: onset,
             gate_end_frame: gate_end,
             end_frame: end,

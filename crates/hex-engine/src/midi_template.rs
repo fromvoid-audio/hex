@@ -107,6 +107,7 @@ impl std::error::Error for MidiTemplateError {}
 
 #[derive(Clone, Copy, Debug)]
 struct SourceEdge {
+    starts_inside_gate: bool,
     phase: u64,
     kind: MidiEventKind,
     note: NoteId,
@@ -117,6 +118,7 @@ struct SourceEdge {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SourceSpan {
+    pub(super) starts_inside_gate: bool,
     pub(super) start: u64,
     pub(super) gate_end: u64,
     pub(super) note: NoteId,
@@ -171,8 +173,14 @@ struct QueryContext<'a, T: MidiTiming + ?Sized> {
 }
 
 impl SourceEdge {
-    fn from_note(phase: u64, kind: MidiEventKind, note: &MidiNote) -> Self {
+    fn from_note(
+        phase: u64,
+        kind: MidiEventKind,
+        note: &MidiNote,
+        starts_inside_gate: bool,
+    ) -> Self {
         Self {
+            starts_inside_gate,
             phase,
             kind,
             note: note.id(),
@@ -402,9 +410,24 @@ impl PreparedMidiSourceTemplate {
                         .ok_or(MidiTemplateError::ArithmeticOverflow)?;
                     require_positive_frame_advance(offset - onset, sample_rate, max_micro_bpm)
                         .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
-                    intro_spans.push(SourceSpan::from_note(onset, offset, note));
-                    intro.push(SourceEdge::from_note(onset, MidiEventKind::NoteOn, note));
-                    intro.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
+                    intro_spans.push(SourceSpan::from_note(
+                        onset,
+                        offset,
+                        note,
+                        occurrence.starts_inside_gate(),
+                    ));
+                    intro.push(SourceEdge::from_note(
+                        onset,
+                        MidiEventKind::NoteOn,
+                        note,
+                        occurrence.starts_inside_gate(),
+                    ));
+                    intro.push(SourceEdge::from_note(
+                        offset,
+                        MidiEventKind::NoteOff,
+                        note,
+                        occurrence.starts_inside_gate(),
+                    ));
                 }
             }
             if source_note_has_repeat_occurrence(source_data, note)
@@ -415,9 +438,19 @@ impl PreparedMidiSourceTemplate {
                     .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
                 let onset = note_start - loop_start.raw();
                 let offset = gate_end - loop_start.raw();
-                repeat_spans.push(SourceSpan::from_note(onset, offset, note));
-                repeats.push(SourceEdge::from_note(onset, MidiEventKind::NoteOn, note));
-                repeats.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
+                repeat_spans.push(SourceSpan::from_note(onset, offset, note, false));
+                repeats.push(SourceEdge::from_note(
+                    onset,
+                    MidiEventKind::NoteOn,
+                    note,
+                    false,
+                ));
+                repeats.push(SourceEdge::from_note(
+                    offset,
+                    MidiEventKind::NoteOff,
+                    note,
+                    false,
+                ));
             }
         }
         sort_edges(&mut intro);
@@ -765,6 +798,7 @@ impl PreparedMidiSourceTemplate {
         context.buffer.slots[context.buffer.len] = Some(crate::midi_compile::CompiledMidiEvent {
             frame,
             kind: edge.kind,
+            starts_inside_gate: edge.starts_inside_gate,
             track: self.track,
             clip: self.clip,
             note: edge.note,
@@ -782,8 +816,9 @@ impl PreparedMidiSourceTemplate {
 }
 
 impl SourceSpan {
-    fn from_note(start: u64, gate_end: u64, note: &MidiNote) -> Self {
+    fn from_note(start: u64, gate_end: u64, note: &MidiNote, starts_inside_gate: bool) -> Self {
         Self {
+            starts_inside_gate,
             start,
             gate_end,
             note: note.id(),

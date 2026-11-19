@@ -244,6 +244,7 @@ impl MidiSourcePlayback {
         let mut first_repeat = 0_u64;
         let mut period = 0_u64;
         let mut repeat_source_gate = 0_u64;
+        let mut repeat_gate_clipped = false;
 
         if let Some((loop_start, loop_end)) = self.loop_range {
             let loop_start_raw = loop_start.raw();
@@ -263,6 +264,8 @@ impl MidiSourcePlayback {
                             iteration: 0,
                             timeline_start: BeatTime::from_raw(timeline_start),
                             gate_duration: BeatTime::from_raw(gate),
+                            start_clipped: false,
+                            end_clipped: gate < note_duration.raw(),
                         });
                     }
                 }
@@ -271,6 +274,7 @@ impl MidiSourcePlayback {
             if note_start.raw() >= loop_start_raw && note_start.raw() < loop_end_raw {
                 let source_delta = note_start.raw() - loop_start_raw;
                 repeat_source_gate = note_duration.raw().min(loop_end_raw - note_start.raw());
+                repeat_gate_clipped = repeat_source_gate < note_duration.raw();
                 // Compare against the available timeline before adding. This
                 // avoids overflowing a mathematically out-of-range onset.
                 let available_after_first = timeline_limit.saturating_sub(first_pass);
@@ -293,6 +297,8 @@ impl MidiSourcePlayback {
                         iteration: 0,
                         timeline_start: BeatTime::from_raw(timeline_start),
                         gate_duration: BeatTime::from_raw(gate),
+                        start_clipped: false,
+                        end_clipped: gate < note_duration.raw(),
                     });
                 }
             }
@@ -305,6 +311,8 @@ impl MidiSourcePlayback {
                 iteration: 0,
                 timeline_start: BeatTime::from_raw(start.saturating_sub(window_start)),
                 gate_duration: BeatTime::from_raw(end - start.max(window_start)),
+                start_clipped: occurrence.start_clipped || start < window_start,
+                end_clipped: occurrence.end_clipped,
             })
         });
         let mut repeat_iteration_offset = 0;
@@ -337,6 +345,7 @@ impl MidiSourcePlayback {
             period,
             repeats,
             repeat_source_gate,
+            repeat_gate_clipped,
             timeline_limit,
         })
     }
@@ -349,9 +358,18 @@ pub struct MidiNoteOccurrence {
     iteration: u64,
     timeline_start: BeatTime,
     gate_duration: BeatTime,
+    start_clipped: bool,
+    end_clipped: bool,
 }
 
 impl MidiNoteOccurrence {
+    /// Whether the leading edge in playback direction cuts an existing gate
+    /// rather than being that gate's authored edge. This transient projection
+    /// metadata does not change its identity, timing or default playback.
+    pub fn starts_inside_gate(self) -> bool {
+        self.start_clipped
+    }
+
     pub fn iteration(self) -> u64 {
         self.iteration
     }
@@ -377,6 +395,7 @@ pub struct MidiNoteOccurrencePlan {
     period: u64,
     repeats: u64,
     repeat_source_gate: u64,
+    repeat_gate_clipped: bool,
     timeline_limit: u64,
 }
 
@@ -444,9 +463,13 @@ impl Iterator for MidiNoteOccurrenceIter {
                 gate_duration: BeatTime::from_raw(
                     end.checked_sub(start.max(self.plan.window_start))?,
                 ),
+                start_clipped: start < self.plan.window_start,
+                end_clipped: self.plan.repeat_gate_clipped
+                    || end - start < self.plan.repeat_source_gate,
             }
         };
         if self.plan.reversed {
+            std::mem::swap(&mut occurrence.start_clipped, &mut occurrence.end_clipped);
             occurrence.timeline_start = BeatTime::from_raw(
                 self.plan.duration.checked_sub(
                     occurrence
@@ -535,6 +558,101 @@ mod tests {
                 .with_content_window(crate::ContentWindow::new(0, 1, true).unwrap())
                 .is_err()
         );
+    }
+
+    mod onset_provenance {
+        use super::*;
+
+        #[test]
+        fn directed_window_distinguishes_clipped_gates_from_exact_boundaries() {
+            let forward = MidiSourcePlayback::new(beat(10), beat(0), None, beat(4))
+                .unwrap()
+                .with_playback_offset(beat(2))
+                .unwrap();
+            let reverse = forward
+                .with_content_window(crate::ContentWindow::new(2, 6, true).unwrap())
+                .unwrap();
+            for (start, duration, clipped_forward, clipped_reverse) in [
+                (1, 3, true, false),
+                (2, 2, false, false),
+                (4, 4, false, true),
+                (4, 2, false, false),
+                (1, 8, true, true),
+            ] {
+                let a = forward
+                    .note_occurrences(beat(start), beat(duration))
+                    .unwrap()
+                    .iter()
+                    .next()
+                    .unwrap();
+                let b = reverse
+                    .note_occurrences(beat(start), beat(duration))
+                    .unwrap()
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert_eq!(
+                    a.starts_inside_gate(),
+                    clipped_forward,
+                    "forward {start}/{duration}"
+                );
+                assert_eq!(
+                    b.starts_inside_gate(),
+                    clipped_reverse,
+                    "reverse {start}/{duration}"
+                );
+                assert_eq!(
+                    b.timeline_start().raw(),
+                    4 - a.timeline_start().raw() - a.gate_duration().raw()
+                );
+                assert_eq!(
+                    (a.iteration(), a.gate_duration()),
+                    (b.iteration(), b.gate_duration())
+                );
+            }
+        }
+
+        #[test]
+        fn repeated_window_marks_only_crossed_leading_gate_without_changing_ordinals() {
+            let source =
+                MidiSourcePlayback::new(beat(6), beat(0), Some((beat(0), beat(6))), beat(12))
+                    .unwrap()
+                    .with_playback_offset(beat(3))
+                    .unwrap();
+            let occurrences = source
+                .note_occurrences(beat(2), beat(2))
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                occurrences
+                    .iter()
+                    .map(|v| (
+                        v.iteration(),
+                        v.timeline_start().raw(),
+                        v.gate_duration().raw(),
+                        v.starts_inside_gate()
+                    ))
+                    .collect::<Vec<_>>(),
+                [(0, 0, 1, true), (1, 5, 2, false), (2, 11, 1, false)]
+            );
+            let reverse = source
+                .with_content_window(crate::ContentWindow::new(3, 15, true).unwrap())
+                .unwrap();
+            let reversed = reverse
+                .note_occurrences(beat(2), beat(2))
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>();
+            assert!(
+                reversed[0].starts_inside_gate(),
+                "right-clipped gate leads reversed window"
+            );
+            assert!(
+                !reversed[1].starts_inside_gate(),
+                "complete later occurrence stays genuine"
+            );
+        }
     }
 
     struct Segment {
