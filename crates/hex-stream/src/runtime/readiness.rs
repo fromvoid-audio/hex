@@ -601,7 +601,8 @@ impl PreparedRolePromotion<'_> {
 impl ConstructorPageLoan {
     /// Reserve exactly these already-complete resident extents for a current
     /// quantum. Refusal preserves all existing roles and the cache. Admission
-    /// counts the distinct union of installed, pending and current pages.
+    /// counts the distinct union of installed, pending and requested pages.
+    /// Report capacity refusal even if some requested extents are absent.
     /// This does not establish readiness or grant page/callback custody.
     pub fn reserve_current_quantum(
         &mut self,
@@ -630,15 +631,18 @@ impl ConstructorPageLoan {
         if self.readiness.current_quantum_epoch.is_some() {
             return Err(CurrentQuantumRefusal::Busy);
         }
-        if extents.len() > self.readiness.limit
-            || extents.windows(2).any(|pair| {
-                (pair[0].source, pair[0].page_index) >= (pair[1].source, pair[1].page_index)
-            })
-            || extents.iter().any(|extent| extent.start >= extent.end)
-            || (allow_incomplete
-                && extents
-                    .iter()
-                    .any(|extent| extent.end > hex_engine::STREAM_PAGE_FRAMES))
+        if extents.len() > self.readiness.limit {
+            return Err(if allow_incomplete {
+                CurrentQuantumRefusal::InvalidExtents
+            } else {
+                CurrentQuantumRefusal::Capacity
+            });
+        }
+        if extents.windows(2).any(|pair| {
+            (pair[0].source, pair[0].page_index) >= (pair[1].source, pair[1].page_index)
+        }) || extents
+            .iter()
+            .any(|extent| extent.start >= extent.end || extent.end > hex_engine::STREAM_PAGE_FRAMES)
         {
             return Err(CurrentQuantumRefusal::InvalidExtents);
         }
@@ -651,17 +655,22 @@ impl ConstructorPageLoan {
                 complete = false;
             }
         }
-        if !complete && !allow_incomplete {
-            self.readiness.current_quantum.clear();
-            return Err(CurrentQuantumRefusal::NotResident);
-        }
+        let demand = if allow_incomplete {
+            &self.readiness.current_quantum
+        } else {
+            extents
+        };
         if !self.readiness.fits_pool(
             3,
-            ExtentSlice::Resources(&self.readiness.current_quantum),
+            ExtentSlice::Resources(demand),
             self.pages.endpoint.cache_capacity(),
         ) {
             self.readiness.current_quantum.clear();
             return Err(CurrentQuantumRefusal::Capacity);
+        }
+        if !complete && !allow_incomplete {
+            self.readiness.current_quantum.clear();
+            return Err(CurrentQuantumRefusal::NotResident);
         }
         let Some(epoch) = self.readiness.quantum_epoch.checked_add(1) else {
             self.readiness.current_quantum.clear();

@@ -393,25 +393,20 @@ impl Callback {
                 .as_mut()
                 .and_then(ActivePublication::stream_view)
                 .ok_or(PlaybackHandoffRejection::StreamedPagesNotReady)?
-                .reserve_current_quantum(&mut self.domain_pages, fade as usize, false)
+                .reserve_outgoing_fade(&mut self.domain_pages, fade as usize)
                 .map_err(|error| match error {
                     crate::candidate_custody::QuantumFailure::Capacity => {
                         PlaybackHandoffRejection::StreamedPageCapacity
                     }
                     _ => PlaybackHandoffRejection::StreamedPagesNotReady,
                 })?;
-            self.device_insert_fade_pins = Some(pins);
-            if !self
-                .device_insert_fade_pins
-                .as_ref()
-                .is_some_and(|pins| pins.complete())
-            {
-                self.release_device_insert_fade_pins();
+            let Some(pins) = pins else {
                 if let Some(streams) = next.streams.as_mut() {
                     streams.cancel_install(&mut self.domain_pages);
                 }
                 return Ok(false);
-            }
+            };
+            self.device_insert_fade_pins = Some(pins);
             if !self.protect_device_insert_resume_window(next, fade)? {
                 self.release_device_insert_fade_pins();
                 return Ok(false);

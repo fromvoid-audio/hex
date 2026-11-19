@@ -19,10 +19,16 @@ fn verified_device_insert_yields_to_priority_stop_during_the_fade() {
     check_insert(Insert::StopAtFade);
 }
 
+#[test]
+fn verified_device_insert_refuses_an_outgoing_fade_larger_than_the_cache() {
+    check_insert(Insert::PageCapacity);
+}
+
 enum Insert {
     Seamless,
     Confirmed,
     StopAtFade,
+    PageCapacity,
 }
 
 fn prepare(
@@ -64,6 +70,7 @@ fn check_insert(insert: Insert) {
     let _serial = serial();
     let needs_confirmation = !matches!(insert, Insert::Seamless);
     let stop = matches!(insert, Insert::StopAtFade);
+    let small_cache = matches!(insert, Insert::PageCapacity);
     let device = if needs_confirmation {
         "hex.limiter"
     } else {
@@ -112,9 +119,9 @@ fn check_insert(insert: Insert) {
     control.configure_audio_candidate_streaming(2).unwrap();
     let domain = control
         .register_audio_candidate_domain_with_readiness(
-            stream_fixture::pair(definition),
+            stream_fixture::pair_with_pool(vec![definition], if small_cache { 2 } else { 4 }),
             hex_stream::StreamReadinessReservation {
-                extents_per_role: 2,
+                extents_per_role: if small_cache { 1 } else { 2 },
             },
         )
         .unwrap_or_else(|error| panic!("{}", error.reason));
@@ -194,46 +201,66 @@ fn check_insert(insert: Insert) {
             domain,
             active_context,
         );
+        if small_cache {
+            // The next 64-frame render fits on page zero. The complete
+            // 128-frame fade also needs page one, which cannot coexist.
+            let cut = u64::try_from(hex_engine::STREAM_PAGE_FRAMES).unwrap() - 64;
+            while control.status.position.load(Acquire) < cut {
+                assert_eq!(block(), [[0.25; 2]; 64]);
+            }
+            assert_eq!(control.status.position.load(Acquire), cut);
+        }
         let approved = control
             .stage_verified_device_insert(token, active_context, predecessor, Some(offer))
             .unwrap();
         ticket = approved.0;
         let receipt = approved.1;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let fade_start = loop {
+        if small_cache {
             let position = control.status.position.load(Acquire);
-            let pcm = block();
-            if pcm[0] == [0.25 * 127.0 / 128.0; 2] {
-                break position;
-            }
-            assert_eq!(pcm, [[0.25; 2]; 64]);
-            assert!(
-                Instant::now() < deadline,
-                "fade did not start: {:?}",
-                receipt.state()
-            );
-            std::thread::yield_now();
-        };
-        assert_eq!(receipt.state(), PublicationReceiptState::Applying);
-        if stop {
-            control.command(PlaybackCommand::Stop).unwrap();
-            block();
-            assert_eq!(control.status.applied_audio_source(), Some(predecessor));
-            assert_eq!(block()[63], [0.0; 2]);
-            assert_eq!(control.status.position.load(Acquire), 0);
-            assert_eq!(block(), [[0.0; 2]; 64]);
+            assert_eq!(block(), [[0.25; 2]; 64]);
+            assert_eq!(control.status.position.load(Acquire), position + 64);
         } else {
-            assert_eq!(block()[63], [0.0; 2]);
-            assert_eq!(control.status.position.load(Acquire), fade_start + 128);
-            assert_eq!(control.status.applied_audio_source(), Some(predecessor));
-            block();
-            assert_eq!(control.status.position.load(Acquire), fade_start + 192);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let fade_start = loop {
+                let position = control.status.position.load(Acquire);
+                let pcm = block();
+                if pcm[0] == [0.25 * 127.0 / 128.0; 2] {
+                    break position;
+                }
+                assert_eq!(pcm, [[0.25; 2]; 64]);
+                assert!(
+                    Instant::now() < deadline,
+                    "fade did not start: {:?}",
+                    receipt.state()
+                );
+                std::thread::yield_now();
+            };
+            assert_eq!(receipt.state(), PublicationReceiptState::Applying);
+            if stop {
+                control.command(PlaybackCommand::Stop).unwrap();
+                block();
+                assert_eq!(control.status.applied_audio_source(), Some(predecessor));
+                assert_eq!(block()[63], [0.0; 2]);
+                assert_eq!(control.status.position.load(Acquire), 0);
+                assert_eq!(block(), [[0.0; 2]; 64]);
+            } else {
+                assert_eq!(block()[63], [0.0; 2]);
+                assert_eq!(control.status.position.load(Acquire), fade_start + 128);
+                assert_eq!(control.status.applied_audio_source(), Some(predecessor));
+                block();
+                assert_eq!(control.status.position.load(Acquire), fade_start + 192);
+            }
         }
         receipt
     } else {
         receipt
     };
-    let (expected_state, expected_source) = if stop {
+    let (expected_state, expected_source) = if small_cache {
+        (
+            PublicationReceiptState::Refused(PlaybackHandoffRejection::StreamedPageCapacity),
+            predecessor,
+        )
+    } else if stop {
         (
             PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged),
             predecessor,

@@ -394,6 +394,13 @@ fn current_quantum_reservation_preserves_resident_pages_and_accounts_for_capacit
         loan.reserve_resident_current_quantum(&[extent(0), extent(1), extent(2)]),
         Err(CurrentQuantumRefusal::Capacity)
     ));
+    // Even if page 4 arrives, the full span cannot coexist with the pending
+    // Transition page in this three-page cache.
+    let oversized = [extent(0), extent(1), extent(4)];
+    assert!(matches!(
+        loan.reserve_current_quantum(&oversized),
+        Err(CurrentQuantumRefusal::Capacity)
+    ));
     assert!(loan.cancel(ProtectionRole::Transition, pending.request_epoch));
     let current = [extent(0), extent(1), extent(4)];
     let original = [

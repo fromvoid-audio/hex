@@ -89,20 +89,18 @@ impl Callback {
         let fade = runtime.device_insert_fade_frames().ok_or(stale)?;
         let pins = old
             .stream_view()
-            .reserve_current_quantum(&mut self.domain_pages, fade as usize, false)
+            .reserve_outgoing_fade(&mut self.domain_pages, fade as usize)
             .map_err(|error| match error {
                 crate::candidate_custody::QuantumFailure::Capacity => {
                     PlaybackHandoffRejection::StreamedPageCapacity
                 }
                 _ => unavailable,
             })?;
-        let complete = pins.complete();
-        self.device_insert_fade_pins = Some(pins);
-        if !complete {
-            self.release_device_insert_fade_pins();
+        let Some(pins) = pins else {
             next.cancel_stream_readiness(&mut self.domain_pages);
             return Ok(false);
-        }
+        };
+        self.device_insert_fade_pins = Some(pins);
         let ready = next.protect_device_insert_window(
             old,
             &mut StreamInstall {
