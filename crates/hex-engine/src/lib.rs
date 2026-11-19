@@ -2718,6 +2718,8 @@ pub struct PreparedAudioClipView {
     pub event_source_repeat: Option<PreparedAudioRepeat>,
     /// Per-occurrence source reads for a materialized forward musical view.
     pub event_source_occurrences: Option<Arc<audio_transform::PreparedEventOccurrences>>,
+    /// Peak summaries for retained child sources before their parent events.
+    pub group_event_sources: Option<Arc<audio_transform::PreparedGroupEventSources>>,
 }
 
 /// Exact extrema of one consecutive stereo destination range before outer

@@ -882,6 +882,8 @@ fn compile_project_inner<'a>(
                         event_source_peaks,
                         event_source_repeat,
                         event_source_occurrences,
+                        group_event_sources: clip.has_retained_audio_roots()
+                            .then(|| transforms.group_event_sources(audio)).flatten(),
                         repeat,
                     });
                 }

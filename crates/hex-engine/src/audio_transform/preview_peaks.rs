@@ -14,6 +14,47 @@ pub(super) fn event_source_budget() -> &'static Arc<Budget> {
     BUDGET.get_or_init(|| Arc::new(Budget::new(EVENT_SOURCE_PEAK_BYTES)))
 }
 
+/// Complete peak summaries in retained child coordinates. Each child keeps
+/// its compiled crop, direction, gain and fade, before the parent event law.
+#[derive(Debug)]
+pub struct PreparedGroupEventSources {
+    sources: Vec<(u64, Arc<PreparedEventSourcePeaks>)>,
+    _reservation: Reservation,
+}
+
+impl PreparedGroupEventSources {
+    pub(super) fn admit(count: usize, budget: &Arc<Budget>) -> Option<Self> {
+        let storage = count
+            .checked_mul(std::mem::size_of::<(u64, Arc<PreparedEventSourcePeaks>)>())?
+            .checked_add(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())?;
+        let reservation = budget.reserve(storage).ok()?;
+        let mut sources = Vec::new();
+        sources.try_reserve_exact(count).ok()?;
+        Some(Self {
+            sources,
+            _reservation: reservation,
+        })
+    }
+
+    pub(super) fn push(&mut self, id: u64, peaks: Arc<PreparedEventSourcePeaks>) {
+        self.sources.push((id, peaks));
+    }
+
+    pub(super) fn finish(mut self) -> Arc<Self> {
+        self.sources.sort_unstable_by_key(|(id, _)| *id);
+        Arc::new(self)
+    }
+
+    /// Entries are ordered by the group's retained source ID.
+    pub fn sources(&self) -> &[(u64, Arc<PreparedEventSourcePeaks>)] {
+        &self.sources
+    }
+
+    pub fn index_of(&self, id: u64) -> Option<usize> {
+        self.sources.binary_search_by_key(&id, |(id, _)| *id).ok()
+    }
+}
+
 /// The neutral source of one materialized forward musical occurrence.
 #[derive(Debug)]
 pub struct PreparedEventOccurrence {
@@ -155,25 +196,39 @@ impl PreparedEventSourcePeaks {
         frames: &[Frame],
         musical_clock: Option<PreparedMusicalEventSourceClock>,
         budget: &Arc<Budget>,
+        cancelled: impl FnMut() -> bool,
+    ) -> Option<Arc<Self>> {
+        Self::capture_with(
+            frames.len(),
+            musical_clock,
+            budget,
+            |index| frames.get(index).copied(),
+            cancelled,
+        )
+    }
+
+    /// Summarize the existing read law directly, without retaining another PCM buffer.
+    pub(super) fn capture_with(
+        frames: usize,
+        musical_clock: Option<PreparedMusicalEventSourceClock>,
+        budget: &Arc<Budget>,
+        mut sample: impl FnMut(usize) -> Option<Frame>,
         mut cancelled: impl FnMut() -> bool,
     ) -> Option<Arc<Self>> {
-        if frames.is_empty()
-            || frames.len() as u64 > hex_project::MAX_AUDIO_DOMAIN_FRAMES
-            || cancelled()
-        {
+        if frames == 0 || frames as u64 > hex_project::MAX_AUDIO_DOMAIN_FRAMES || cancelled() {
             return None;
         }
-        let count = EVENT_SOURCE_BINS.min(frames.len());
+        let count = EVENT_SOURCE_BINS.min(frames);
         let reservation = budget.reserve(Self::storage_bytes(count)).ok()?;
-        let mut bins = PeakBins::new(frames.len(), count)?;
-        for (index, frame) in frames.iter().copied().enumerate() {
+        let mut bins = PeakBins::new(frames, count)?;
+        for index in 0..frames {
             if index % 4_096 == 0 && cancelled() {
                 return None;
             }
-            bins.observe(index, frame);
+            bins.observe(index, sample(index)?);
         }
         Some(Arc::new(Self {
-            frames: frames.len(),
+            frames,
             bins: bins.into_peaks(),
             musical_clock,
             _reservation: reservation,

@@ -39,6 +39,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
     );
     let prepared = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         waveform: Arc::clone(&peaks),
         offset: 0,
@@ -71,6 +72,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
     );
     let stale = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         offset: 1,
         ..prepared.clone()
@@ -84,6 +86,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
     );
     let short_root = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         waveform: Arc::new(
             CachedWaveform::from_peaks(
@@ -263,6 +266,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         clip,
                         AudioClipWaveform {
                             event_source: None,
+                            group_event_sources: None,
                             neutral_musical: None,
                             waveform: Arc::clone(&prepared_peaks),
                             offset,
@@ -618,6 +622,7 @@ fn prefix_waveform_accepts_only_the_canonical_source_and_matching_prepared_exten
     );
     let accepted = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         waveform: Arc::clone(&peaks),
         offset: 0,
@@ -644,6 +649,7 @@ fn prefix_waveform_accepts_only_the_canonical_source_and_matching_prepared_exten
     );
     let stale = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         offset: 1,
         ..accepted.clone()
@@ -657,6 +663,7 @@ fn prefix_waveform_accepts_only_the_canonical_source_and_matching_prepared_exten
     );
     let stale = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         length: 95_999,
         ..accepted.clone()
@@ -670,6 +677,7 @@ fn prefix_waveform_accepts_only_the_canonical_source_and_matching_prepared_exten
     );
     let foreign = AudioClipWaveform {
         event_source: None,
+        group_event_sources: None,
         neutral_musical: None,
         preview_root: Some(hex_session::service::AudioPreviewWaveform {
             waveform: Arc::clone(&peaks),
