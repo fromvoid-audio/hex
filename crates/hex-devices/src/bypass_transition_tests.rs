@@ -123,8 +123,87 @@ fn gate_bypass_transition_preserves_real_detector_history() {
     check(&crate::gate::GATE_DEFINITION);
 }
 #[test]
-fn compressor_bypass_transition_preserves_real_detector_history() {
-    check(&crate::compressor::COMPRESSOR_DEFINITION);
+fn compressor_power_transition_uses_its_detector_until_off_and_restarts_fresh() {
+    check_rate(
+        &crate::compressor::COMPRESSOR_DEFINITION,
+        48_000,
+        RestartHistory::Fresh,
+    );
+}
+
+#[test]
+fn compressor_power_reversals_and_settled_off_follow_the_external_key() {
+    use hex_lattice::StereoAuxiliaryBlock;
+    use hex_lattice_contract::NativeDeviceMetadata;
+
+    const DRY: [f32; 2] = [0.0625, -0.03125];
+    const KEY: [f32; 2] = [0.0, 0.75];
+    const QUIET_KEY: [f32; 2] = [0.0; 2];
+    const BLOCK: usize = 256;
+    const WARMUP: usize = 16 * BLOCK;
+    const FADE: usize = 240;
+
+    let definition = &crate::compressor::COMPRESSOR_DEFINITION;
+    let make_chain = |bypassed| {
+        chain_state(
+            definition,
+            definition.default_state().unwrap(),
+            bypassed,
+            48_000,
+        )
+    };
+    let render_keyed = |chain: &mut NativeRuntimeChain, key: [f32; 2], frames| {
+        let key = [key; BLOCK];
+        let mut output = vec![DRY; frames];
+        for chunk in output.chunks_mut(BLOCK) {
+            let length = chunk.len();
+            let block =
+                StereoAuxiliaryBlock::new(chunk, Some(&key[..length]), &mut [], BLOCK).unwrap();
+            chain.begin_block();
+            chain
+                .process_auxiliary_stage(
+                    0,
+                    block,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut |_, _, _, _, _, _| {},
+                )
+                .unwrap();
+            chain.commit_block();
+        }
+        output
+    };
+
+    for off_frames in [64, 2 * BLOCK] {
+        let mut on = make_chain(false);
+        let warmed = render_keyed(&mut on, KEY, WARMUP);
+        assert!(warmed[WARMUP - 1][0] < DRY[0] * 0.75);
+
+        let mut off = make_chain(true);
+        off.transfer_history_from(&mut on);
+        let off_output = render_keyed(&mut off, KEY, off_frames);
+        assert!(off_output[0][0] < DRY[0]);
+        if off_frames > FADE {
+            assert!(off_output[FADE..].iter().all(|frame| *frame == DRY));
+        }
+
+        let mut reference = make_chain(false);
+        if off_frames < FADE {
+            render_keyed(&mut reference, KEY, WARMUP + off_frames);
+        }
+        let expected = render_keyed(&mut reference, QUIET_KEY, BLOCK);
+        let mut resumed = make_chain(false);
+        resumed.transfer_history_from(&mut off);
+        let actual = render_keyed(&mut resumed, QUIET_KEY, BLOCK);
+        assert_eq!(
+            actual[FADE..],
+            expected[FADE..],
+            "incorrect external-key detector after {off_frames} off frames",
+        );
+    }
 }
 
 #[test]
