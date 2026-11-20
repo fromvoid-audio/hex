@@ -42,6 +42,7 @@ pub use prepared_modulation::{MAX_PREPARED_MODULATION_BYTES, PreparedModulationS
 #[cfg(test)]
 mod static_processing_tests;
 mod tail_split;
+pub use bypass_ramp::InlineDryDelay;
 pub use foreign_processor::{
     ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
     ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors,
@@ -2738,6 +2739,58 @@ impl NativeRuntimeChain {
                 identity,
                 authored_bypass: removed.bypassed,
             })
+    }
+
+    /// One outgoing Main stage whose delayed dry history can be copied by
+    /// value. The host separately proves the unchanged upstream signal clock.
+    pub fn inline_main_removal_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
+        let [entry] = previous.entries.as_slice() else {
+            return None;
+        };
+        let delay = entry.committed_aligned_dry.as_ref()?.inline_delay()?;
+        if !self.is_empty()
+            || entry.owner != ProcessorChainOwner::Main
+            || entry.algorithmic_latency_frames != Some(delay.latency_frames())
+            || entry.bypassed
+            || entry.removal_bypassing
+            || !entry.automation.is_empty()
+            || entry.modulation.is_some()
+            || entry.input_gain != 1.0
+            || entry.output_gain != 1.0
+            || entry.matrix != StereoMatrix::identity()
+            || entry.committed_bypass_ramp.is_active()
+            || entry.committed_matrix_ramp.is_active()
+            || entry.committed_output_gain_ramp.active()
+            || entry.committed_transient_output_gain != host_output_gain_ramp::TransientGain::Follow
+            || matches!(
+                entry.runtime,
+                RuntimeOwnership::Memoryless | RuntimeOwnership::Foreign(_)
+            )
+        {
+            return None;
+        }
+        Some(NativeRemovalTransition {
+            position: 0,
+            identity: ProcessorInstanceIdentity::new(entry.owner, entry.device_id).ok()?,
+            authored_bypass: false,
+        })
+    }
+
+    /// Copy the exact settled Main delay without transferring its processor.
+    pub fn settled_inline_main_delay(
+        &self,
+        transition: NativeRemovalTransition,
+    ) -> Option<InlineDryDelay> {
+        if transition.identity().owner() != ProcessorChainOwner::Main
+            || !self.native_removal_ready(transition)
+        {
+            return None;
+        }
+        self.entries
+            .get(transition.position)?
+            .committed_aligned_dry
+            .as_ref()?
+            .inline_delay()
     }
 
     fn extra_native_stage_from(

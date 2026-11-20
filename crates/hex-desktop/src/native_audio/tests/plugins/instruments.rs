@@ -10,6 +10,233 @@ mod track_duplicate;
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
+fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparation() {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    const CHILD: &str = "HEX_TEST_HOSTED_REPLACEMENT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let (reached, facts) = mpsc::sync_channel(1);
+    let (_resume, resumed) = mpsc::sync_channel(1);
+    let mut h = ResidentHarness::with_plugins_paused_at_facts(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        crate::native_audio::plugins::FactsGate::new(reached, resumed),
+        None,
+    );
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let track = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "replacement".into(),
+    }));
+    let Some(Created::Track(track)) = track.created else {
+        panic!("replacement track");
+    };
+    (applied, _) = h.applied(applied);
+    let length = BeatTime::from_quarters(8).unwrap();
+    let clip = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length,
+    }));
+    let Some(Created::Clip(clip)) = clip.created else {
+        panic!("held note clip");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: length,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    (applied, _) = h.applied(applied);
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_engine::DeviceTypeId::from_static("hex.instrument.sine"),
+    )
+    .unwrap();
+    let before = h.run(Request::Edit(Command::InsertInstrument { track, state }));
+    let instrument = before
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    h.applied(applied);
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let audible = |h: &ResidentHarness| {
+        assert!(
+            h.render_plugin_block()
+                .iter()
+                .flatten()
+                .any(|value| value.abs() > 0.001)
+        );
+    };
+    for _ in 0..4 {
+        h.render_plugin_block();
+    }
+    audible(&h);
+    let source = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let predecessor = source(&h);
+    let replacement = || {
+        request(
+            &before.state,
+            PluginEffectDestination::ReplaceInstrument { track, instrument },
+        )
+    };
+    let first = replacement();
+    let operation = Arc::clone(&first.control);
+    let pending = h.run(Request::InsertPluginEffect(first));
+    assert_eq!(pending.state.project, before.state.project);
+    facts.recv_timeout(Duration::from_secs(2)).unwrap();
+    wait(|| h.plugin_progress.lock().unwrap().binding.is_some());
+    let cancelled_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    audible(&h);
+    assert_eq!(source(&h), predecessor);
+    assert!(operation.cancel());
+    let cancelled = terminal(&mut h);
+    assert!(!cancelled.plugin_effect_complete[0].accepted);
+    assert_eq!(cancelled.state.project, before.state.project);
+    assert_eq!(cancelled.state.revision, before.state.revision);
+    assert_eq!(cancelled.state.can_undo, before.state.can_undo);
+    assert_eq!(cancelled.state.can_redo, before.state.can_redo);
+    assert_eq!(source(&h), predecessor);
+    audible(&h);
+
+    h.run(Request::InsertPluginEffect(replacement()));
+    let mut installed = None;
+    let mut confirmed = None;
+    let mut faded = false;
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
+    wait(|| {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            if let Some(error) = event.error.as_deref() {
+                assert_eq!(event.state.project, before.state.project);
+                assert_eq!(event.state.revision, before.state.revision);
+                assert_eq!(source(&h), predecessor);
+                audible(&h);
+                panic!(
+                    "hosted replacement refused: {error}; confirmed={confirmed:?}; receipt={:?}",
+                    event.device_insert_complete,
+                );
+            }
+            if let Some(offer) = event.device_insert_confirmation.as_ref() {
+                assert!(confirmed.is_none());
+                assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+                assert_eq!(event.state.project, before.state.project);
+                assert_eq!(event.state.revision, before.state.revision);
+                assert_eq!(source(&h), predecessor);
+                audible(&h);
+                let (submitted, resume) = h.probe_next_submitted_device_insert();
+                assert!(offer.proceed());
+                let queued = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+                assert_eq!(queued.context, offer.submission().context);
+                assert_eq!(queued.output_identity, offer.submission().output_identity);
+                assert_ne!(queued.audio_revision, offer.submission().audio_revision);
+                assert_eq!(source(&h), predecessor);
+                resume.send(()).unwrap();
+                confirmed = Some(queued);
+            }
+            if !event.plugin_effect_complete.is_empty() {
+                installed = Some(event);
+                return true;
+            }
+        }
+        let start = position(&h);
+        let pcm = h.render_plugin_block();
+        if confirmed.is_some() && !faded && position(&h) == start + 128 {
+            assert_eq!(source(&h), predecessor);
+            assert!(
+                pcm[..127]
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 0.001)
+            );
+            assert!(pcm[127..].iter().all(|&frame| frame == [0.0; 2]));
+            faded = true;
+        }
+        state::edits::workers_idle(&h);
+        false
+    });
+    let installed = installed.unwrap();
+    assert!(faded, "a rolling replacement must fade the original source");
+    assert!(installed.plugin_effect_complete[0].accepted);
+    assert_eq!(installed.status.as_deref(), Some("device replaced"));
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(Some(receipt.submission), confirmed);
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(source(&h).audio_revision, receipt.submission.audio_revision);
+    assert_eq!(source(&h).context, receipt.submission.context);
+    assert_eq!(source(&h).output_identity, predecessor.output_identity);
+    assert_eq!(installed.state.revision, before.state.revision + 1);
+    let active = installed
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert_ne!(active.id(), instrument);
+    assert_eq!(
+        active.state().type_id(),
+        hex_engine::DeviceTypeId::from_static("hex.vst3")
+    );
+    wait(|| {
+        h.plugin_progress.lock().unwrap().newest_source.is_some_and(
+            |(device, binding, accepted)| {
+                device == active.id().value() && accepted && binding != cancelled_binding
+            },
+        )
+    });
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
 fn slow_native_instrument_exchange_reaches_the_session_log() {
     const CHILD: &str = "HEX_SLOW_EXCHANGE_LOG_CHILD";
     if std::env::var_os(CHILD).is_none() {

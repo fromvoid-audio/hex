@@ -206,6 +206,137 @@ fn prepare_instruments_with_media(
     .map(Arc::new)
 }
 
+fn native_to_hosted_replacement(
+    shared_predecessor: bool,
+) -> (Arc<PreparedRevision>, Arc<PreparedRevision>) {
+    let (mut editor, initial) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let original = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let sine = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        hex_project::DEFAULT_INSTRUMENT_TYPE_ID,
+    )
+    .unwrap();
+    let Created::Device(native) = editor
+        .execute(Command::ReplaceTrackInstrument {
+            track,
+            replacing: original,
+            state: sine,
+        })
+        .unwrap()
+    else {
+        panic!("native instrument");
+    };
+    let contributor = if shared_predecessor {
+        let source = editor.project().track(track).unwrap().source_id().unwrap();
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor");
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        Some(contributor)
+    } else {
+        None
+    };
+    let previous = prepare(&editor, initial, true).unwrap();
+    if let Some(contributor) = contributor {
+        editor.execute(Command::RemoveTrack(contributor)).unwrap();
+    }
+    let Created::Device(foreign) = editor
+        .execute(Command::ReplaceTrackInstrument {
+            track,
+            replacing: native,
+            state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("foreign instrument");
+    };
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(track.value()), foreign.value())
+            .unwrap();
+    (previous, prepare(&editor, identity, true).unwrap())
+}
+
+#[test]
+fn staged_native_to_hosted_replacement_requests_a_cut_without_touching_the_sine() {
+    let (previous, prepared) = native_to_hosted_replacement(false);
+    let mut playing = SessionPlayback::new(Arc::clone(&previous)).unwrap();
+    let mut reference = SessionPlayback::new(previous).unwrap();
+    let mut actual = [[0.0; 2]; 64];
+    let mut expected = actual;
+    for playback in [&mut playing, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut actual).unwrap();
+    }
+    assert!(actual.iter().any(|&sample| sample != [0.0; 2]));
+
+    let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    assert!(matches!(
+        ordinary.try_inherit_state_live_from(&mut playing),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+    let mut staged = SessionPlayback::new(prepared).unwrap();
+    staged.require_continuous_insert = true;
+    assert!(matches!(
+        staged.try_inherit_state_live_from(&mut playing),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    ));
+    assert_eq!(playing.performance_frame(), 64);
+    playing.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn staged_native_to_hosted_replacement_refuses_a_shared_predecessor() {
+    use super::super::foreign_arrangement::{FrameContext, INCOMPATIBLE_HANDOFF};
+
+    let (previous, prepared) = native_to_hosted_replacement(true);
+    assert!(previous.source_routing().is_shared(0));
+    assert!(!prepared.source_routing().is_shared(0));
+    let before = SessionPlayback::new(previous).unwrap();
+    let mut candidate = SessionPlayback::new(prepared).unwrap();
+    assert!(matches!(
+        candidate.foreign_arrangement.plan_handoff(
+            &before.foreign_arrangement,
+            [
+                candidate.revision.arrangement().tracks(),
+                before.revision.arrangement().tracks(),
+            ],
+            FrameContext {
+                performance: 64,
+                arrangement: 64,
+                loop_pass: 0,
+                playing: true,
+                chase: false,
+                interactive_onset_floor: None,
+            },
+            None,
+            true,
+            [None, None],
+            None,
+            None,
+        ),
+        Err(INCOMPATIBLE_HANDOFF)
+    ));
+}
+
 #[test]
 fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
     let (mut editor, first) = fixture();

@@ -133,6 +133,7 @@ pub(super) struct PendingNativeRemoval {
 #[derive(Clone, Copy)]
 enum RemovalTransition {
     Device(NativeRemovalTransition),
+    MainPass(NativeRemovalTransition),
     Track(usize),
     Reorder(usize),
     Route(usize),
@@ -148,13 +149,22 @@ impl PendingNativeRemoval {
 
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
-            RemovalTransition::Device(transition) => Some(transition),
+            RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
+                Some(transition)
+            }
             RemovalTransition::Track(_)
             | RemovalTransition::Reorder(_)
             | RemovalTransition::Route(_)
             | RemovalTransition::Analytic(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
+        }
+    }
+
+    pub(super) fn main_pass_transition(self) -> Option<NativeRemovalTransition> {
+        match self.transition {
+            RemovalTransition::MainPass(transition) => Some(transition),
+            _ => None,
         }
     }
 
@@ -222,6 +232,7 @@ impl PendingNativeRemoval {
         match self.transition {
             RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
             RemovalTransition::Device(_)
+            | RemovalTransition::MainPass(_)
             | RemovalTransition::Reorder(_)
             | RemovalTransition::Route(_)
             | RemovalTransition::Analytic(_)
@@ -240,7 +251,9 @@ impl PendingNativeRemoval {
                         .get(index)
                         .is_some_and(|fader| fader.removal_ready())
                 }),
-            RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
+            RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
+                previous.native_removal_ready(transition)
+            }
             RemovalTransition::Return(id) => previous
                 .return_fade
                 .is_some_and(|fade| fade.id == id && fade.fader.removal_ready()),
@@ -318,42 +331,43 @@ impl SessionPlayback {
                 Err(SessionPlaybackError::InvalidCommand)
             };
         }
-        if !self.require_continuous_insert
-            || !previous.playing
-            || self.live_restart
-            || self.revision.arrangement().main_latency_frames()
-                != previous.revision.arrangement().main_latency_frames()
-        {
+        if !self.require_continuous_insert || !previous.playing || self.live_restart {
             return Ok(false);
         }
-        let Some(transition) = self
-            .native_removal_transition_from(previous)
-            .map(RemovalTransition::Device)
-            .or_else(|| {
-                self.direct_audio_track_removal_from(previous)
-                    .map(RemovalTransition::Track)
-            })
-            .or_else(|| {
-                self.direct_audio_track_reorder_from(previous)
-                    .map(RemovalTransition::Reorder)
-            })
-            .or_else(|| {
-                self.resident_group_reroute_from(previous)
-                    .map(RemovalTransition::Route)
-            })
-            .or_else(|| {
-                self.direct_audio_track_move_from(previous)
-                    .map(RemovalTransition::Move)
-            })
-            .or_else(|| {
-                self.direct_analytic_instrument_removal_from(previous)
-                    .map(RemovalTransition::Analytic)
-            })
-            .or_else(|| {
-                self.flat_return_removal_from(previous)
-                    .map(RemovalTransition::Return)
-            })
-        else {
+        let same_latency = self.revision.arrangement().main_latency_frames()
+            == previous.revision.arrangement().main_latency_frames();
+        let transition = if same_latency {
+            self.native_removal_transition_from(previous)
+                .map(RemovalTransition::Device)
+                .or_else(|| {
+                    self.direct_audio_track_removal_from(previous)
+                        .map(RemovalTransition::Track)
+                })
+                .or_else(|| {
+                    self.direct_audio_track_reorder_from(previous)
+                        .map(RemovalTransition::Reorder)
+                })
+                .or_else(|| {
+                    self.resident_group_reroute_from(previous)
+                        .map(RemovalTransition::Route)
+                })
+                .or_else(|| {
+                    self.direct_audio_track_move_from(previous)
+                        .map(RemovalTransition::Move)
+                })
+                .or_else(|| {
+                    self.direct_analytic_instrument_removal_from(previous)
+                        .map(RemovalTransition::Analytic)
+                })
+                .or_else(|| {
+                    self.flat_return_removal_from(previous)
+                        .map(RemovalTransition::Return)
+                })
+        } else {
+            self.short_main_pass_removal_from(previous)
+                .map(RemovalTransition::MainPass)
+        };
+        let Some(transition) = transition else {
             return Ok(false);
         };
         self.native_removal = Some(PendingNativeRemoval {
@@ -392,9 +406,11 @@ impl SessionPlayback {
                     }
                     valid
                 }
-                RemovalTransition::Device(transition) => previous
-                    .native_removal_chain_mut(transition.identity().owner())
-                    .is_some_and(|chain| chain.begin_native_removal(transition)),
+                RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
+                    previous
+                        .native_removal_chain_mut(transition.identity().owner())
+                        .is_some_and(|chain| chain.begin_native_removal(transition))
+                }
                 RemovalTransition::Return(id) => {
                     let rate = previous.revision.arrangement().sample_rate();
                     let fade = previous.return_fade.get_or_insert_with(|| ReturnFade {
@@ -461,7 +477,7 @@ impl SessionPlayback {
                         }
                     }
                 }
-                RemovalTransition::Device(transition) => {
+                RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
                     if let Some(chain) =
                         previous.native_removal_chain_mut(transition.identity().owner())
                     {
