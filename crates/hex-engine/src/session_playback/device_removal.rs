@@ -497,6 +497,29 @@ impl SessionPlayback {
         self.native_removal.is_some()
     }
 
+    pub(crate) fn pending_foreign_main_pass_binding(
+        &self,
+    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        self.native_removal
+            .filter(|pending| pending.started)?
+            .main_pass_transition()?
+            .foreign_main_pass_binding()
+    }
+
+    pub(crate) fn stage_foreign_main_pass_delay(
+        &mut self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        delay: hex_lattice::MainPassDelay,
+    ) -> bool {
+        if self.pending_foreign_main_pass_binding() != Some(binding)
+            || delay.latency_frames() != 512
+        {
+            return false;
+        }
+        self.main_pass_delay = Some(delay);
+        true
+    }
+
     /// Return a pending removal and restore the original stage from its
     /// current wet/dry mix, including after a transport command invalidates it.
     pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {

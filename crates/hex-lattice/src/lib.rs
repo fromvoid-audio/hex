@@ -1353,6 +1353,7 @@ pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
     authored_bypass: bool,
+    foreign_main_pass: Option<hex_lattice_contract::ForeignProcessorBinding>,
 }
 
 impl NativeRemovalTransition {
@@ -1360,8 +1361,19 @@ impl NativeRemovalTransition {
         self.identity
     }
 
+    /// The exact endpoint that owns this Main stage's aligned fade and history.
+    pub fn foreign_main_pass_binding(
+        self,
+    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        self.foreign_main_pass
+    }
+
     fn matches(self, entry: &RuntimeEntry) -> bool {
         entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
+            && self.foreign_main_pass.is_none_or(|binding| {
+                matches!(&entry.runtime,
+                    RuntimeOwnership::Foreign(runtime) if runtime.prepared.binding() == Some(binding))
+            })
     }
 }
 
@@ -2793,6 +2805,7 @@ impl NativeRuntimeChain {
                 position,
                 identity,
                 authored_bypass: removed.bypassed,
+                foreign_main_pass: None,
             })
     }
 
@@ -2802,10 +2815,28 @@ impl NativeRuntimeChain {
         let [entry] = previous.entries.as_slice() else {
             return None;
         };
-        let latency_frames = entry
-            .committed_aligned_dry
-            .as_ref()?
-            .main_pass_latency_frames()?;
+        let (latency_frames, foreign_main_pass) = match &entry.runtime {
+            RuntimeOwnership::Memoryless => return None,
+            RuntimeOwnership::Foreign(runtime) => {
+                let prepared = runtime.prepared;
+                if entry.device_type != DeviceTypeId::from_static("hex.vst3")
+                    || prepared.is_instrument_profile()
+                    || prepared.quantum_frames() != 256
+                    || prepared.bridge_latency_frames() != 512
+                    || prepared.processor_latency_frames() != 0
+                {
+                    return None;
+                }
+                (512, Some(prepared.binding()?))
+            }
+            _ => (
+                entry
+                    .committed_aligned_dry
+                    .as_ref()?
+                    .main_pass_latency_frames()?,
+                None,
+            ),
+        };
         if !self.is_empty()
             || entry.owner != ProcessorChainOwner::Main
             || entry.algorithmic_latency_frames != Some(latency_frames)
@@ -2820,10 +2851,6 @@ impl NativeRuntimeChain {
             || entry.committed_matrix_ramp.is_active()
             || entry.committed_output_gain_ramp.active()
             || entry.committed_transient_output_gain != host_output_gain_ramp::TransientGain::Follow
-            || matches!(
-                entry.runtime,
-                RuntimeOwnership::Memoryless | RuntimeOwnership::Foreign(_)
-            )
         {
             return None;
         }
@@ -2831,6 +2858,7 @@ impl NativeRuntimeChain {
             position: 0,
             identity: ProcessorInstanceIdentity::new(entry.owner, entry.device_id).ok()?,
             authored_bypass: false,
+            foreign_main_pass,
         })
     }
 
@@ -2927,12 +2955,17 @@ impl NativeRuntimeChain {
         {
             return false;
         }
-        let ramp = bypass_ramp::BypassRamp::inherited(
-            entry.committed_bypass_ramp,
-            entry.bypassed,
-            bypassed,
-            entry.sample_rate,
-        );
+        // The foreign endpoint already mixes against its aligned dry ring.
+        let ramp = if transition.foreign_main_pass.is_some() {
+            bypass_ramp::BypassRamp::INACTIVE
+        } else {
+            bypass_ramp::BypassRamp::inherited(
+                entry.committed_bypass_ramp,
+                entry.bypassed,
+                bypassed,
+                entry.sample_rate,
+            )
+        };
         entry.bypassed = bypassed;
         entry.removal_bypassing = bypassed;
         entry.committed_bypass_ramp = ramp;

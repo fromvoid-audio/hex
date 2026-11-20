@@ -74,10 +74,27 @@ impl Callback {
             }
             return Ok(true);
         }
-        next.playback
+        let progress = next
+            .playback
             .advance_native_removal_from(&mut active.playback)
-            .map(|progress| progress != NativeRemovalProgress::Fading)
-            .map_err(PlaybackHandoffRejection::from_error)
+            .map_err(PlaybackHandoffRejection::from_error)?;
+        if progress == NativeRemovalProgress::Fading {
+            return Ok(false);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if let Some(binding) = next.playback.pending_foreign_main_pass_binding() {
+            let Some(delay) = self
+                .native_sources
+                .settled_main_pass_delay(binding)
+                .map_err(|_| PlaybackHandoffRejection::RuntimeFenceChanged)?
+            else {
+                return Ok(false);
+            };
+            if !next.playback.stage_foreign_main_pass_delay(binding, delay) {
+                return Err(PlaybackHandoffRejection::RuntimeFenceChanged);
+            }
+        }
+        Ok(true)
     }
 
     /// The stream planner proved the candidate window and the current render
