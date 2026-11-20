@@ -762,28 +762,18 @@ impl SessionPlayback {
         {
             return None;
         }
-        let devices = removed.device_chain.as_ref();
-        let delay = hex_devices::delay::DEFINITION.type_id();
-        let reverb = hex_devices::reverb::REVERB_TYPE_ID;
-        let supported_chain = match devices {
-            [] => true,
-            [device] => {
-                device.device_type == delay || (!device.bypassed && device.device_type == reverb)
-            }
-            [first, second] => {
-                !first.bypassed
-                    && !second.bypassed
-                    && ((first.device_type == delay && second.device_type == reverb)
-                        || (first.device_type == reverb && second.device_type == delay))
-            }
-            _ => false,
-        };
-        (supported_chain
-            && devices.iter().all(|device| {
-                device.foreign_processor().is_none()
+        // The compiled Return has at most MAX_DEVICES_PER_TRACK stages and
+        // keeps the same prepared instances through the fade. A hosted device
+        // stays outside this path even when its prepared state has no endpoint.
+        removed
+            .device_chain
+            .iter()
+            .all(|device| {
+                device.device_type != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                    && device.foreign_processor().is_none()
                     && device.algorithmic_latency_frames() == Some(0)
-            }))
-        .then_some(removed.id)
+            })
+            .then_some(removed.id)
     }
 
     fn native_removal_transition_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
