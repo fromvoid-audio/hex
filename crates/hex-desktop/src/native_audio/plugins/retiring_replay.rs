@@ -26,7 +26,9 @@ pub(in crate::native_audio) struct ReplayCapture {
     source: AppliedAudioSource,
     transport_epoch: u64,
     playing: bool,
-    fact: NativeWorkerStateAfterGuardedWrite,
+    // An isolated capture cannot use the active worker's guarded-write fact.
+    // Its exact producer hold remains owned through callback confirmation.
+    fact: Option<NativeWorkerStateAfterGuardedWrite>,
     before: NativeDeviceState,
     after: NativeDeviceState,
 }
@@ -88,6 +90,17 @@ impl ReplayCapture {
             == Some((self.source, self.transport_epoch))
     }
 
+    pub(super) fn isolated_source(
+        &self,
+        successor: AudioSourceContext,
+    ) -> Option<(AppliedAudioSource, u64, bool)> {
+        (self.fact.is_none() && self.publication == successor).then_some((
+            self.source,
+            self.transport_epoch,
+            self.playing,
+        ))
+    }
+
     pub(super) fn publication_request<'a>(
         &'a self,
         control: Option<&PublicationControl>,
@@ -109,6 +122,23 @@ impl ReplayCapture {
         {
             return Err("vst3 replay publication source changed".into());
         }
+        let Some(fact) = &self.fact else {
+            let matching = playback.foreign_nodes_on_control().any(|node| {
+                node.owner == self.identity.owner()
+                    && node.device_id == self.identity.device_id()
+                    && node
+                        .foreign_processor()
+                        .is_some_and(|processor| processor.binding() == Some(self.binding))
+                    && node.configuration.as_deref().is_some_and(|state| {
+                        state.shares_payload_storage_with(&self.after) && *state == self.after
+                    })
+            });
+            return if matching {
+                Ok(None)
+            } else {
+                Err("vst3 isolated replay candidate state differs".into())
+            };
+        };
         Ok(Some(NativeParameterContinuationRequest {
             source: self.source,
             transport_epoch: self.transport_epoch,
@@ -118,7 +148,7 @@ impl ReplayCapture {
             binding: self.binding,
             previous_state: &self.before,
             capture: NativeParameterContinuationCapture::Guarded {
-                fact: &self.fact,
+                fact,
                 state: &self.after,
             },
         }))
@@ -151,7 +181,7 @@ impl Plugins {
 
     pub(in crate::native_audio) fn finish_retiring_editor_replay(
         &mut self,
-        control: Option<&mut PublicationControl>,
+        mut control: Option<&mut PublicationControl>,
         batch: &RetiringEditorBatch,
         disposition: RetiringEditorReplayDisposition,
     ) -> Result<(), String> {
@@ -160,12 +190,13 @@ impl Plugins {
         let (accepted, recovery) = match disposition {
             RetiringEditorReplayDisposition::Refused => (
                 false,
-                restore.map_or(Ok(()), |restore| restore.restore(control)),
+                restore.map_or(Ok(()), |restore| restore.restore(control.as_deref_mut())),
             ),
             RetiringEditorReplayDisposition::Confirmed { receipt_accepted } => {
                 (receipt_accepted, Ok(()))
             }
         };
+        self.release_replay_editor_hold(control);
         if !accepted
             && let Some(source) = self.sources.iter_mut().find(|source| {
                 source.binding == batch.source
@@ -249,9 +280,14 @@ impl Plugins {
             .iter()
             .find(|native| native.binding == binding)
             .ok_or("vst3 replay successor is unavailable")?;
-        if native.owner != owner || native.authored.is_some() {
-            return Err("vst3 replay requires an ordinary source without authored input".into());
+        if native.owner != owner {
+            return Err("vst3 replay successor owner differs".into());
         }
+        let authored = native.authored.is_some();
+        let modulated = native
+            .authored
+            .as_ref()
+            .and_then(AuthoredSelection::dense_parameter);
         let identity = NativeProcessorIdentity::new(owner, batch.device)
             .map_err(|_| "vst3 replay target identity differs")?;
         let playing = control
@@ -265,14 +301,91 @@ impl Plugins {
                 source.context == successor.context && source.output_identity == binding.root
             })
             .ok_or("vst3 replay applied source changed")?;
-        let (expected, apply) = match mode {
-            RetiringEditorReplayMode::VerifyExisting { points } => (points, None),
+        let (expected, apply, isolate) = match mode {
+            RetiringEditorReplayMode::VerifyExisting { points } => (points, None, authored),
             RetiringEditorReplayMode::Apply {
                 verify_existing,
                 cohorts,
                 publication,
-            } => (verify_existing, Some((publication, cohorts))),
+                manual_base,
+            } => (verify_existing, Some((publication, cohorts)), manual_base),
         };
+        if isolate {
+            if modulated.is_some() {
+                return Err("vst3 replay requires a source without modulation".into());
+            }
+            self.hold_editor_for_replay(control, binding, cancellation)?;
+            let host = self
+                .host
+                .as_ref()
+                .ok_or("qualified vst3 helper unavailable")?;
+            if !expected.is_empty() {
+                let selection = edits::armed_selection(control, binding, cancellation)?
+                    .ok_or("vst3 canonical replay targets are unavailable")?;
+                let bases = edits::canonical_bases(
+                    host,
+                    control,
+                    binding,
+                    canonical,
+                    &selection,
+                    cancellation,
+                    None,
+                )?;
+                if expected
+                    .iter()
+                    .any(|point| !bases.values().any(|base| base == *point))
+                {
+                    return Err(
+                        "vst3 replacement canonical base does not contain the retiring edit".into(),
+                    );
+                }
+            }
+            let current = |control: &PublicationControl| {
+                control.status.native_parameter_source(playing) == Some((source, transport_epoch))
+            };
+            if !current(control) {
+                return Err("vst3 replay applied source changed".into());
+            }
+            let Some((publication, cohorts)) = apply else {
+                return Ok(PluginParameterCapture {
+                    before: canonical.clone(),
+                    after: canonical.clone(),
+                });
+            };
+            let after = capture_isolated_replay(
+                host,
+                control,
+                canonical,
+                cohorts,
+                source,
+                binding,
+                playing,
+                cancellation,
+            )?
+            .with_host_metadata_from(canonical)
+            .map_err(|error| error.to_string())?;
+            if !current(control) {
+                return Err("vst3 replay applied source changed".into());
+            }
+            self.retiring_replay_capture = Some(ReplayCapture {
+                binding,
+                publication,
+                identity,
+                source,
+                transport_epoch,
+                playing,
+                fact: None,
+                before: canonical.clone(),
+                after: after.clone(),
+            });
+            return Ok(PluginParameterCapture {
+                before: canonical.clone(),
+                after,
+            });
+        }
+        if authored {
+            return Err("vst3 replay requires an isolated canonical base".into());
+        }
         if !expected.is_empty()
             && recovery_values(control, binding, expected, cancellation)?.as_slice() != expected
         {
@@ -401,11 +514,51 @@ impl Plugins {
             source,
             transport_epoch,
             playing,
-            fact,
+            fact: Some(fact),
             before: canonical.clone(),
             after: after.clone(),
         });
         Ok(PluginParameterCapture { before, after })
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Keep the exact native source and its canonical input explicit.
+fn capture_isolated_replay(
+    host: &Hosting,
+    control: &mut PublicationControl,
+    canonical: &NativeDeviceState,
+    cohorts: &[Vec<(u32, f64)>],
+    source: AppliedAudioSource,
+    binding: Binding,
+    playing: bool,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<NativeDeviceState, String> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut scratch = loop {
+        edits::check_cancel(cancellation)?;
+        match host.begin_ordered_manual_base_capture_on_control(
+            control, source, binding, canonical, cohorts, playing,
+        ) {
+            Err(error)
+                if matches!(
+                    error.as_str(),
+                    "native preparation is busy" | "native source is busy"
+                ) && Instant::now() < deadline =>
+            {
+                edits::poll_control(control)
+            }
+            result => break result?,
+        }
+    };
+    loop {
+        let mut cancelled = || {
+            cancellation.is_some_and(RequestCancellation::is_cancelled)
+                || Instant::now() >= deadline
+        };
+        if let Some(terminal) = scratch.poll_on_control(control, &mut cancelled) {
+            return terminal;
+        }
+        edits::poll_control(control);
     }
 }
 

@@ -85,6 +85,7 @@ impl Plugins {
             .request_ordinary_native_epoch_fence(source)
             .map_err(str::to_owned)?;
         self.invalidate_editor_close();
+        self.release_replay_editor_hold(Some(control));
         self.restore = Some(Restore {
             context,
             source,
@@ -188,7 +189,7 @@ impl Plugins {
                 // before returning the endpoint and reusing the SDK child.
                 Stage::Return {
                     hold_release_deadline,
-                } if self.editor_close.is_some() => {
+                } if self.editor_close.is_some() || self.replay_editor_hold.is_some() => {
                     if std::time::Instant::now() >= hold_release_deadline {
                         return Err(
                             "could not confirm release of the original vst3 editor hold".into()

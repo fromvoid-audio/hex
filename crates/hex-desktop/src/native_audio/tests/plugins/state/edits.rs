@@ -306,6 +306,24 @@ fn retiring_instrument_replays_late_receipt_without_restarting_held_session_note
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_late_authored_receipt_as_manual_base() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthored);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_keeps_authored_lane_and_releases_editor_hold_on_refusal() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthoredRefused);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_authored_replay_keeps_the_newer_successor_edit() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthoredConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn retiring_instrument_restores_held_note_gain_when_late_publication_refuses() {
     retiring_instrument_receipt(InstrumentReceipt::LateRefused);
 }
@@ -316,11 +334,18 @@ enum InstrumentReceipt {
     Conflict,
     Late,
     LateSession,
+    LateAuthored,
+    LateAuthoredRefused,
+    LateAuthoredConflict,
     LateRefused,
 }
 
 fn retiring_instrument_receipt(case: InstrumentReceipt) {
     const CHILD: &str = "HEX_RETIRING_INSTRUMENT_CONFIRMATION";
+    let refused = matches!(
+        case,
+        InstrumentReceipt::LateRefused | InstrumentReceipt::LateAuthoredRefused
+    );
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
         let release = files.0.join("release");
@@ -340,9 +365,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
             .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
             .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
             .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
-            .envs(
-                (case == InstrumentReceipt::LateRefused).then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
-            )
+            .envs(refused.then_some(("HEX_REPLAY_TEST_REFUSE", "1")))
             .output()
             .unwrap();
         assert!(
@@ -427,9 +450,50 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
             PluginEffectDestination::Instrument(track),
         )))
         .unwrap();
-    let inserted = terminal(&mut h);
+    let mut inserted = terminal(&mut h);
     assert!(inserted.error.is_none(), "{:?}", inserted.error);
     applied = h.applied(applied).0;
+    let original_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let traces = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let trace_files = || {
+        fs::read_dir(&traces)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "bin"))
+    };
+    let original_trace = trace_files().next().expect("original instrument trace");
+    let authored = matches!(
+        case,
+        InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredRefused
+            | InstrumentReceipt::LateAuthoredConflict
+    );
+    let target = hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 };
+    let lane_points = [hex_project::AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: hex_project::AutomationValue::new(0.1875).unwrap(),
+        outgoing: hex_project::AutomationInterpolation::Step,
+    }];
+    if authored {
+        let device = inserted
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: lane_points.to_vec(),
+            }))
+            .unwrap();
+        inserted = ordinary_terminal(&mut h);
+        assert!(inserted.error.is_none(), "{:?}", inserted.error);
+        applied = h.applied(applied).0;
+    }
     let original = inserted
         .state
         .project
@@ -438,16 +502,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
         .instrument()
         .unwrap();
     let device = original.id();
-    let original_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
-    let traces = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
-    let original_trace = traces.join(
-        fs::read_dir(&traces)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .file_name(),
-    );
+    let previous_traces: Vec<_> = trace_files().collect();
     let expected = with_gain(original.state(), 3.0);
     let replacement = if case == InstrumentReceipt::Matching {
         expected.clone()
@@ -456,7 +511,12 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     };
     let late = matches!(
         case,
-        InstrumentReceipt::Late | InstrumentReceipt::LateRefused | InstrumentReceipt::LateSession
+        InstrumentReceipt::Late
+            | InstrumentReceipt::LateRefused
+            | InstrumentReceipt::LateSession
+            | InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredRefused
+            | InstrumentReceipt::LateAuthoredConflict
     );
     let publication = if late {
         Some(h.probe_next_native_publication())
@@ -523,7 +583,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     for _ in 0..8 {
         let block = super::super::instruments::render_completed_block(&h);
         baseline = block[255][0];
-        if baseline.abs() > 0.01 {
+        if !authored && baseline.abs() > 0.01 {
             break;
         }
     }
@@ -532,11 +592,21 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
         "replacement note did not reach the output"
     );
     let successor_trace = if late {
-        let mut paths = fs::read_dir(&traces)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
+        if authored {
+            // Authoring may prepare private metadata helpers. A fresh read
+            // on the installed controller identifies the one sounding child.
+            assert!(
+                super::super::installed_edits::query(&mut h, device, None, &mut 0)
+                    .rows
+                    .is_ok()
+            );
+        }
+        let mut paths = trace_files()
+            .filter(|path| !previous_traces.contains(path))
             .filter(|path| {
-                path != &original_trace && path.extension().is_some_and(|ext| ext == "bin")
+                !authored
+                    || fs::read(path)
+                        .is_ok_and(|contents| contents.get(4..8) == Some(&1_i32.to_ne_bytes()))
             });
         let path = paths.next().expect("installed successor trace");
         assert!(paths.next().is_none(), "more than one prepared successor");
@@ -544,6 +614,10 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     } else {
         None
     };
+    let newer = case == InstrumentReceipt::LateAuthoredConflict;
+    if newer {
+        emit_replay_fixture_edit(successor_trace.as_deref().unwrap());
+    }
     fs::write(
         std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
         b"end",
@@ -570,7 +644,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     };
     let replayed = matches!(
         case,
-        InstrumentReceipt::Late | InstrumentReceipt::LateSession
+        InstrumentReceipt::Late | InstrumentReceipt::LateSession | InstrumentReceipt::LateAuthored
     );
     if replayed {
         assert_eq!(settled.0, Progress::CloseSafe);
@@ -587,18 +661,33 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
         installed_revision + u64::from(replayed)
     );
     assert!(status.playing.load(Acquire));
-    if case == InstrumentReceipt::LateRefused {
-        // The test sink refuses only after the successor has actually
-        // accepted the guarded write and returned its new opaque state.
+    if refused {
+        // The test sink refuses only after obtaining the new opaque state.
         assert!(h.refuse.load(Acquire));
         h.refuse.store(false, Release);
     }
     let retained = super::super::editor_recording::probe(&h, |reply| {
         EditorRecordingProbe::RetiringBatch(original_binding, reply)
     });
-    let block = super::super::instruments::render_completed_block(&h);
-    let expected_output = if replayed { baseline * 2.0 } else { baseline };
-    assert!((block[255][0] - expected_output).abs() < 1.0e-6);
+    let expected_output = if authored && replayed {
+        baseline * 4.0
+    } else if replayed {
+        baseline * 2.0
+    } else {
+        baseline
+    };
+    let mut observed = 0.0;
+    for _ in 0..8 {
+        let block = super::super::instruments::render_completed_block(&h);
+        observed = block[255][0];
+        if (observed - expected_output).abs() < 1.0e-6 {
+            break;
+        }
+    }
+    assert!(
+        (observed - expected_output).abs() < 1.0e-6,
+        "held-note output {observed}, expected {expected_output}, baseline {baseline}",
+    );
     if replayed || case == InstrumentReceipt::Matching {
         assert_eq!(settled.0, Progress::CloseSafe);
         assert!(retained.is_none());
@@ -632,17 +721,26 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
         let project = hex_storage::load(path).unwrap();
         assert_eq!(
             project.device(device).unwrap().state(),
-            if case == InstrumentReceipt::LateRefused {
+            if refused || newer {
                 &replacement
             } else {
                 &expected
             },
         );
+        if authored {
+            let lane = project
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .unwrap();
+            assert_eq!(lane.is_reading(), !replayed);
+            assert_eq!(lane.points.as_slice(), &lane_points);
+        }
     }
     if let Some(successor_trace) = successor_trace {
         // Save calls getState on the successor, refreshing its control-side
         // note trace. A restart or chase would send an extra event.
-        let bytes = fs::read(successor_trace).unwrap();
+        let bytes = fs::read(&successor_trace).unwrap();
         assert_eq!(bytes.len(), 20);
         let word = |index| i32::from_ne_bytes(bytes[index..index + 4].try_into().unwrap());
         assert_eq!(
@@ -651,6 +749,24 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
             "successor retriggered its held note"
         );
         assert!(word(12) > 0, "successor did not retain a named gate");
+        if authored {
+            // The physical editor can admit a new gesture after either
+            // disposition. A leaked producer hold would reject its Begin.
+            if !newer {
+                emit_replay_fixture_edit(&successor_trace);
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let frontier = super::super::editor_recording::probe(&h, |reply| {
+                    EditorRecordingProbe::EditorFrontier(successor, reply)
+                });
+                if frontier.is_some_and(|sequence| sequence >= 2) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "successor editor stayed held");
+                std::thread::yield_now();
+            }
+        }
     }
 }
 
