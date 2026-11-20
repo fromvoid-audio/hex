@@ -89,10 +89,17 @@ impl NativeWorker {
         if state.native_error.is_some() || !matches!(state.processor, Some(Processor::Native(_))) {
             return Err("native stopped capture source failed");
         }
-        // At most the same one bounded native control exchange as the former
-        // transport loop. Its existing poll cadence and SDK deadline still own
-        // completion. No mailbox guard or bank spans that exchange.
-        if let Err(error) = state.advance_capture(&self.reaper.completed) {
+        // The stopped capture now drives the original transport's control
+        // lane. Finish an already admitted edit read before capturing, while
+        // keeping its result in the same mailbox for the original reader.
+        // A turn still performs at most one bounded SDK exchange.
+        let signal = &self.reaper.completed;
+        let progress = if signal.edits_requested.load(Acquire) {
+            state.advance_parameter_edits(signal)
+        } else {
+            state.advance_capture(signal)
+        };
+        if let Err(error) = progress {
             state.native_error = Some(error);
             return Err("native stopped capture failed");
         }
