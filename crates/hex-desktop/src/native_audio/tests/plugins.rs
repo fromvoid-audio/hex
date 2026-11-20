@@ -1083,9 +1083,16 @@ fn running_return_vst3_replacement_keeps_original_wet_send_until_exact_install()
     assert_running_vst3_effect_replacement(ReplacementBus::Return);
 }
 
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_track_vst3_replacement_keeps_original_until_exact_install() {
+    assert_running_vst3_effect_replacement(ReplacementBus::Track);
+}
+
 enum ReplacementBus {
     Main,
     Return,
+    Track,
 }
 
 fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
@@ -1108,8 +1115,10 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
     let (mut applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 8192)));
     (applied, _) = h.applied(applied);
-    let return_track = match bus {
-        ReplacementBus::Main => None,
+    let audio_track = imported.state.project.tracks()[0].id();
+    let destination = match bus {
+        ReplacementBus::Main => PluginEffectDestination::Main,
+        ReplacementBus::Track => PluginEffectDestination::Track(audio_track),
         ReplacementBus::Return => {
             let added = h.run(Request::Edit(Command::AddReturnTrack {
                 name: "replacement send".into(),
@@ -1119,17 +1128,21 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
             };
             (applied, _) = h.applied(applied);
             h.run(Request::Edit(Command::SetReturnSend {
-                track: imported.state.project.tracks()[0].id(),
+                track: audio_track,
                 return_track,
                 gain: 0.5,
             }));
             (applied, _) = h.applied(applied);
-            Some(return_track)
+            PluginEffectDestination::Return(return_track)
         }
     };
     // The constant dry bed is 0.25. On Return, the observed audio has to
     // include the hosted send above that dry level.
-    let minimum = if return_track.is_some() { 0.251 } else { 0.001 };
+    let minimum = if matches!(destination, PluginEffectDestination::Return(_)) {
+        0.251
+    } else {
+        0.001
+    };
     let project = h.run(Request::Edit(Command::SetLoopRegion {
         start: 0,
         end: 8192,
@@ -1138,10 +1151,7 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
     (applied, _) = h.applied(applied);
     h.run(Request::InsertPluginEffect(request(
         &project.state,
-        return_track.map_or(
-            PluginEffectDestination::Main,
-            PluginEffectDestination::Return,
-        ),
+        destination,
     )));
     let original = terminal(&mut h);
     assert!(
@@ -1150,11 +1160,23 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
         original.error
     );
     h.applied(applied);
-    let old = if return_track.is_some() {
-        original.state.project.return_tracks()[0].devices()[0].id()
-    } else {
-        original.state.project.main_devices()[0].id()
+    let effect_ids = |project: &hex_project::Project| {
+        match destination {
+            PluginEffectDestination::Track(track) => project.track(track).unwrap().devices(),
+            PluginEffectDestination::Return(return_track) => project
+                .return_tracks()
+                .iter()
+                .find(|bus| bus.id() == return_track)
+                .unwrap()
+                .devices(),
+            PluginEffectDestination::Main => project.main_devices(),
+            _ => panic!("serial effect replacement fixture"),
+        }
+        .iter()
+        .map(hex_project::Device::id)
+        .collect::<Vec<_>>()
     };
+    let old = effect_ids(&original.state.project)[0];
     let binding = |h: &ResidentHarness| {
         h.plugin_progress.lock().unwrap().source_bindings[0]
             .unwrap()
@@ -1172,16 +1194,23 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
     };
     let old_source = source(&h);
     let replacement = || {
-        request(
-            &original.state,
-            match return_track {
-                Some(return_track) => PluginEffectDestination::ReplaceReturnEffect {
+        let target = match destination {
+            PluginEffectDestination::Track(track) => PluginEffectDestination::ReplaceTrackEffect {
+                track,
+                replacing: old,
+            },
+            PluginEffectDestination::Return(return_track) => {
+                PluginEffectDestination::ReplaceReturnEffect {
                     return_track,
                     replacing: old,
-                },
-                None => PluginEffectDestination::ReplaceMainEffect { replacing: old },
-            },
-        )
+                }
+            }
+            PluginEffectDestination::Main => {
+                PluginEffectDestination::ReplaceMainEffect { replacing: old }
+            }
+            _ => panic!("serial effect replacement fixture"),
+        };
+        request(&original.state, target)
     };
     h.enable_confirmed_device_inserts();
     h.audio
@@ -1272,32 +1301,36 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
     assert_eq!(source(&h).audio_revision, receipt.submission.audio_revision);
     assert_eq!(source(&h).output_identity, old_source.output_identity);
     assert_eq!(installed.state.revision, original.state.revision + 1);
-    let installed_devices = if return_track.is_some() {
-        let bus = &installed.state.project.return_tracks()[0];
-        assert_eq!(Some(bus.id()), return_track);
+    if !matches!(destination, PluginEffectDestination::Main) {
         assert_eq!(
             installed.state.project.main_devices(),
             original.state.project.main_devices()
         );
-        bus.devices()
-    } else {
-        installed.state.project.main_devices()
-    };
-    assert_eq!(
-        installed.state.project.tracks(),
-        original.state.project.tracks()
-    );
-    let [new] = installed_devices else {
+    }
+    if !matches!(destination, PluginEffectDestination::Return(_)) {
+        assert_eq!(
+            installed.state.project.return_tracks(),
+            original.state.project.return_tracks()
+        );
+    }
+    if !matches!(destination, PluginEffectDestination::Track(_)) {
+        assert_eq!(
+            installed.state.project.tracks(),
+            original.state.project.tracks()
+        );
+    }
+    let installed_devices = effect_ids(&installed.state.project);
+    let [new] = installed_devices.as_slice() else {
         panic!("occupied slot must be replaced atomically");
     };
-    assert_eq!(new.id().value(), original.state.project.next_identity());
+    assert_eq!(new.value(), original.state.project.next_identity());
     assert!(installed.state.project.device(old).is_none());
     wait(|| {
         h.pump();
         instruments::render_completed_block(&h);
         h.plugin_records.load(Acquire) == 1
             && h.plugin_progress.lock().unwrap().source_bindings[0]
-                .is_some_and(|(id, fresh, _)| id == new.id().value() && fresh != old_binding)
+                .is_some_and(|(id, fresh, _)| id == new.value() && fresh != old_binding)
     });
     assert!(
         instruments::render_completed_block(&h)
