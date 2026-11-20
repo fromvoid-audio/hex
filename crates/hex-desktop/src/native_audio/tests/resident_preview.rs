@@ -4865,6 +4865,66 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn running_native_replacement_keeps_the_installed_device_until_exact_receipt() {
+    use hex_engine::{DeviceTypeId, NativeDeviceClass, default_native_device_state_for_class};
+    use hex_project::Command;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    h.next();
+    let (applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 8192)));
+    let (applied, _) = h.applied(applied);
+    let before = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: default_native_device_state_for_class(
+            NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap(),
+    }));
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let source = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+    };
+    let predecessor = source(&h).unwrap();
+    h.enable_confirmed_device_inserts();
+    h.service
+        .submit(Request::ReplaceNativeDevice {
+            device: before.state.project.main_devices()[0].id(),
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(DeviceTypeId::from_static("hex.limiter")),
+        })
+        .unwrap();
+    let pending = h.next();
+    assert!(
+        pending.error.is_none(),
+        "replacement refused: {:?}",
+        pending.error
+    );
+    assert_eq!(source(&h), Some(predecessor));
+    assert!(
+        !pending.request_complete,
+        "replacement completed before audio confirmed its graph"
+    );
+    assert_eq!(pending.state.project, before.state.project);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
     confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::Insert);
 }
