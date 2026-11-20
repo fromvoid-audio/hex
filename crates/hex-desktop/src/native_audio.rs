@@ -1469,6 +1469,26 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_retiring_editor_replay_restore(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<bool, String> {
+        let Some(output) = self.output.as_mut() else {
+            return Ok(false);
+        };
+        if !output
+            .publication
+            .control()
+            .is_some_and(|control| self.plugins.begin_retiring_replay_renewal(control, context))
+        {
+            return Ok(false);
+        }
+        self.plugins
+            .prepare_restore(output, context)
+            .map(|stage| stage.is_some())
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn retiring_editor_close_blocker(
         &self,
     ) -> Option<hex_session::service::RetiringEditorCloseBlocker> {

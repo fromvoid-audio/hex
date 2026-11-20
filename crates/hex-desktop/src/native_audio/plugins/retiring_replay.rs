@@ -202,6 +202,9 @@ impl Plugins {
     }
 
     fn replay_index(&self) -> Option<usize> {
+        if self.restore.is_some() {
+            return None;
+        }
         self.sources.iter().position(|source| {
             source
                 .editor_retirement
@@ -213,6 +216,43 @@ impl Plugins {
 
     pub(in crate::native_audio) fn retiring_editor_replay_ready(&self) -> bool {
         self.replay_index().is_some()
+    }
+
+    pub(in crate::native_audio) fn begin_retiring_replay_renewal(
+        &mut self,
+        control: &PublicationControl,
+        context: AudioSourceContext,
+    ) -> bool {
+        let Some(index) = self.replay_index() else {
+            return false;
+        };
+        let Ok(successor) = self.retiring_successor(index) else {
+            return false;
+        };
+        if successor.context != context
+            || control
+                .status
+                .native_parameter_source(false)
+                .is_none_or(|(source, _)| {
+                    source.context != context || source.output_identity != successor.binding.root
+                })
+            || control
+                .native_source_endpoint_status(successor.binding)
+                .is_none_or(|(_, live)| live)
+        {
+            return false;
+        }
+        let Some(pending) = self.sources[index].editor_retirement.batch.as_mut() else {
+            return false;
+        };
+        if pending.renewal_attempted
+            || pending.offer.successor != successor.binding
+            || pending.offer.successor_context != context
+        {
+            return false;
+        }
+        pending.renewal_attempted = true;
+        true
     }
 
     pub(in crate::native_audio) fn next_retiring_editor_replay(

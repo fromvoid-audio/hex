@@ -15,6 +15,7 @@ pub(super) struct PendingBatch {
     pub(super) offer: RetiringEditorBatch,
     receipt: RetiringEditReceipt,
     pub(super) replay_attempted: bool,
+    pub(super) renewal_attempted: bool,
     pub(super) successor_unconfirmed: bool,
 }
 
@@ -41,6 +42,34 @@ pub(super) struct Retirement {
 }
 
 impl Retirement {
+    /// The stopped restore owns an exact same-worker binding renewal. An
+    /// unborrowed offer follows that epoch while its original receipt stays
+    /// with the retiring worker.
+    pub(super) fn renew_successor(
+        &mut self,
+        previous: Binding,
+        renewed: Binding,
+        context: AudioSourceContext,
+    ) {
+        let Some(successor) = self
+            .successor
+            .as_mut()
+            .filter(|successor| successor.binding == previous && successor.context == context)
+        else {
+            return;
+        };
+        if let Some(pending) = self.batch.as_mut() {
+            if pending.replay_attempted
+                || pending.offer.successor != previous
+                || pending.offer.successor_context != context
+            {
+                return;
+            }
+            pending.offer.successor = renewed;
+        }
+        successor.binding = renewed;
+    }
+
     pub(super) fn parked(&self) -> bool {
         matches!(self.stage, Stage::NeedsDisposition | Stage::Failed)
     }
@@ -237,6 +266,7 @@ impl Plugins {
                             offer,
                             receipt,
                             replay_attempted: false,
+                            renewal_attempted: false,
                             successor_unconfirmed: false,
                         })
                     }

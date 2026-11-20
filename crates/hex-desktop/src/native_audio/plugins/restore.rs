@@ -215,9 +215,18 @@ impl Plugins {
                                 lease,
                             ) {
                                 Ok(binding) => {
+                                    let previous = source.binding;
+                                    let observes_latency = source.observes_latency;
                                     source.binding = binding;
                                     source.queued = false;
-                                    if source.observes_latency {
+                                    for pending in &mut self.sources {
+                                        pending.editor_retirement.renew_successor(
+                                            previous,
+                                            binding,
+                                            restore.context,
+                                        );
+                                    }
+                                    if observes_latency {
                                         restore.stage = Stage::RefreshLatency(binding);
                                         return Ok(false);
                                     }
