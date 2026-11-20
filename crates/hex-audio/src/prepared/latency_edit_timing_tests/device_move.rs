@@ -4,24 +4,34 @@ use hex_lattice_contract::NativeDeviceState;
 
 #[test]
 fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocations() {
-    assert_running_effect_move(feedback_delay(20.0));
+    assert_running_effect_move(feedback_delay(20.0), Some([-0.125, 0.25]));
 }
 
 #[test]
 fn running_reverb_moves_its_decay_to_the_destination_track() {
+    assert_running_effect_move(full_wet_reverb(), Some([-0.125, 0.25]));
+}
+
+#[test]
+fn running_effects_keep_sounding_when_moved_to_an_empty_track() {
+    for state in [feedback_delay(20.0), full_wet_reverb()] {
+        assert_running_effect_move(state, None);
+    }
+}
+
+fn full_wet_reverb() -> NativeDeviceState {
     use hex_devices::reverb::{REVERB_DEFINITION, parameter};
 
-    let state = REVERB_DEFINITION
+    REVERB_DEFINITION
         .patch_parameter(
             &REVERB_DEFINITION.default_state().unwrap(),
             parameter::DRY_WET,
             ParameterValue::Float(100.0),
         )
-        .unwrap();
-    assert_running_effect_move(state);
+        .unwrap()
 }
 
-fn assert_running_effect_move(state: NativeDeviceState) {
+fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Option<Frame>) {
     const FRAMES: usize = 4096;
     const CUT: usize = 2048;
     const FADE: usize = 240;
@@ -31,7 +41,9 @@ fn assert_running_effect_move(state: NativeDeviceState) {
     source[1600] = [0.5, -0.25];
     source[3000] = [0.25, 0.125];
     let mut destination = vec![[0.0; 2]; FRAMES];
-    destination[DESTINATION_ONSET..].fill([-0.125, 0.25]);
+    if let Some(signal) = destination_signal {
+        destination[DESTINATION_ONSET..].fill(signal);
+    }
     let unrelated = vec![[0.0625, -0.03125]; FRAMES];
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
     let mut media = BTreeMap::new();
@@ -41,6 +53,18 @@ fn assert_running_effect_move(state: NativeDeviceState) {
         .into_iter()
         .enumerate()
     {
+        if index == 1 && destination_signal.is_none() {
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: "empty destination".into(),
+                })
+                .unwrap()
+            else {
+                panic!("empty track")
+            };
+            tracks.push(track);
+            continue;
+        }
         let Created::Imported { track, asset, .. } = editor
             .execute(Command::ImportAudioTrack {
                 name: format!("move {index}"),

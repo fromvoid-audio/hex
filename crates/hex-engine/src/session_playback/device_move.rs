@@ -76,6 +76,8 @@ impl SessionPlayback {
                 return None;
             }
         }
+        // The direct Arrangement route can process the transferred effect on
+        // silence. A track with no clips may also donate a tail from an earlier cut.
         for playback in [self, previous] {
             for index in [source, destination] {
                 let track = playback.revision.arrangement().tracks().get(index)?;
@@ -83,7 +85,6 @@ impl SessionPlayback {
                 if !matches!(route.owner, RouteOwner::Arrangement)
                     || route.pending.is_some()
                     || route.audio_release.is_some()
-                    || track.clips.is_empty()
                     || track.instrument_id.is_some()
                     || track.source_id.is_some()
                     || track.midi_source_index.is_some()
