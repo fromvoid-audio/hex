@@ -49,8 +49,28 @@ impl SessionPlayback {
             }
         }
         let track = previous.revision.arrangement().tracks().get(index)?;
-        match previous.routes.get(index)?.owner {
+        let route = previous.routes.get(index)?;
+        match route.owner {
             RouteOwner::Arrangement if !track.clips.is_empty() => Some(index),
+            RouteOwner::SessionAudio { clip, .. }
+                if route.pending.is_none() && route.audio_release.is_none() =>
+            {
+                // Retain the exact resident clip and its existing launch clock.
+                // Concurrent source/route changes need their own transition proof.
+                previous
+                    .revision
+                    .session()
+                    .audio_clip(clip)
+                    .zip(self.revision.session().audio_clip(clip))
+                    .filter(|(old, next)| {
+                        old.track == route.id
+                            && old.resident_audio().is_some()
+                            && next.resident_audio().is_some()
+                            && next.source_matches(old)
+                            && next.gain == old.gain
+                    })
+                    .map(|_| index)
+            }
             _ => None,
         }
     }
@@ -67,6 +87,15 @@ mod tests {
 
     #[test]
     fn exact_reorder_installs_at_zero_and_cancellation_restores_the_running_track() {
+        exact_reorder(false);
+    }
+
+    #[test]
+    fn session_reorder_preserves_its_source_origin_and_refuses_changed_sources() {
+        exact_reorder(true);
+    }
+
+    fn exact_reorder(session: bool) {
         const RATE: u32 = 48_000;
         const FADE: usize = 240;
         const SIGNAL: [f32; 2] = [0.25, -0.125];
@@ -98,6 +127,47 @@ mod tests {
             };
             first.get_or_insert(device);
         }
+        let session_clip = session.then(|| {
+            let clip = editor.project().track(track).unwrap().clips()[0].id();
+            editor.execute(Command::RemoveClip(clip)).unwrap();
+            let Created::Scene(scene) = editor
+                .execute(Command::AddScene {
+                    name: "scene".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene");
+            };
+            let Created::SessionClip(clip) = editor
+                .execute(Command::CreateSessionAudioClip {
+                    track,
+                    scene,
+                    name: "session".into(),
+                    asset,
+                    source_start: 0,
+                    source_end: 2048,
+                })
+                .unwrap()
+            else {
+                panic!("session clip");
+            };
+            let Created::Scene(second_scene) = editor
+                .execute(Command::AddScene {
+                    name: "second".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene");
+            };
+            editor
+                .execute(Command::DuplicateSessionAudioCell {
+                    track,
+                    from_scene: scene,
+                    to_scene: second_scene,
+                })
+                .unwrap();
+            clip
+        });
         let media = BTreeMap::from([(asset, Audio::new(RATE, vec![SIGNAL; 2048]).unwrap())]);
         let table = Arc::new(crate::SineTable::new());
         let prepare = |project: &Project| {
@@ -112,10 +182,93 @@ mod tests {
             })
             .unwrap();
         let after = prepare(editor.project());
+        let changed_source = session_clip.map(|clip| {
+            editor
+                .execute(Command::SetSessionAudioClipSource {
+                    clip,
+                    asset,
+                    source_start: 1,
+                    source_end: 2048,
+                })
+                .unwrap();
+            prepare(editor.project())
+        });
+        let missing_source = session_clip.map(|clip| {
+            let scene = after.session().audio_clip(clip).unwrap().scene;
+            editor
+                .execute(Command::ClearSessionCell { track, scene })
+                .unwrap();
+            prepare(editor.project())
+        });
+        if let Some(clip) = session_clip {
+            for pending in [false, true] {
+                let mut old = SessionPlayback::new(Arc::clone(&before)).unwrap();
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                old.apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: crate::LaunchQuantization::Immediate,
+                })
+                .unwrap();
+                old.render(&mut [[0.0; 2]; 32]).unwrap();
+                if pending {
+                    old.apply(SessionPlaybackCommand::StopTrack {
+                        track,
+                        quantization: crate::LaunchQuantization::OneBar,
+                    })
+                    .unwrap();
+                    assert!(old.routes[0].pending.is_some());
+                } else {
+                    let second = before
+                        .session()
+                        .audio_clips()
+                        .iter()
+                        .find(|other| other.id != clip)
+                        .unwrap()
+                        .id;
+                    old.apply(SessionPlaybackCommand::LaunchClip {
+                        clip: second,
+                        quantization: crate::LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+                    assert!(old.routes[0].audio_release.is_some());
+                }
+                let mut next = SessionPlayback::new(Arc::clone(&after)).unwrap();
+                next.require_continuous_insert = true;
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old).unwrap(),
+                    NativeRemovalProgress::NotApplicable
+                );
+                assert!(!old.track_faders[0].active());
+            }
+        }
         for cancel in [false, true] {
             let mut old = SessionPlayback::new(Arc::clone(&before)).unwrap();
             old.apply(SessionPlaybackCommand::Play).unwrap();
+            let launch = if let Some(clip) = session_clip {
+                old.render(&mut [[0.0; 2]; 17]).unwrap();
+                old.apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: crate::LaunchQuantization::Immediate,
+                })
+                .unwrap();
+                17
+            } else {
+                0
+            };
             old.render(&mut [[0.0; 2]; 32]).unwrap();
+            let owner = old.routes[0].owner;
+            for changed in [changed_source.as_ref(), missing_source.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                let mut changed = SessionPlayback::new(Arc::clone(changed)).unwrap();
+                changed.require_continuous_insert = true;
+                assert_eq!(
+                    changed.advance_native_removal_from(&mut old).unwrap(),
+                    NativeRemovalProgress::NotApplicable
+                );
+                assert!(!old.track_faders[0].active());
+            }
             let mut next = SessionPlayback::new(Arc::clone(&after)).unwrap();
             next.require_continuous_insert = true;
             assert_eq!(
@@ -139,7 +292,8 @@ mod tests {
                 next.render(&mut fading).unwrap();
                 assert_eq!(fading[FADE - 1], SIGNAL);
                 assert!(!next.track_faders[0].active());
-                assert_eq!(next.performance_frame(), (32 + FADE * 2) as u64);
+                assert_eq!(next.performance_frame(), (launch + 32 + FADE * 2) as u64);
+                assert_eq!(next.routes[0].owner, owner);
             }
         }
     }
