@@ -1,6 +1,6 @@
 //! Real signed scratch preparation alongside an applied authored effect.
 use super::*;
-use crate::plugin_effects::{Hosting, ManualBaseCapture};
+use crate::plugin_effects::{Hosting, ManualBaseCapture, ManualBaseCaptureError};
 use hex_plugin_host::transport::ParameterPoint;
 
 #[test]
@@ -86,7 +86,10 @@ fn ordered_manual_base_capture_flushes_each_cohort_without_changing_the_live_lan
     assert!(begin(&mut f.control, &[vec![(7, 0.75), (7, 0.5)]]).is_err());
     let first = vec![(7, 0.75), (11, 0.5)];
     let mut refused = begin(&mut f.control, &[first.clone(), vec![(63, 0.25)]]).unwrap();
-    assert!(poll(&mut f.control, &mut refused, false).is_err());
+    assert!(matches!(
+        poll(&mut f.control, &mut refused, false),
+        Err(ManualBaseCaptureError::Failed(_))
+    ));
     assert_eq!(
         f.control.native_source_prepared_state(binding),
         Some(initial.clone())
@@ -106,10 +109,20 @@ fn ordered_manual_base_capture_flushes_each_cohort_without_changing_the_live_lan
     );
     assert_eq!(
         f.control.native_source_prepared_state(binding),
-        Some(initial)
+        Some(initial.clone())
     );
     assert_eq!(f.control.status.native_effect_source(), Some(source));
     assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
+    let mut abandoned = begin(&mut f.control, &[vec![(7, 0.25)]]).unwrap();
+    f.control.stop();
+    assert!(matches!(
+        poll(&mut f.control, &mut abandoned, false),
+        Err(ManualBaseCaptureError::SourceChanged)
+    ));
+    assert_eq!(
+        f.control.native_source_prepared_state(binding),
+        Some(initial)
+    );
 }
 
 #[test]
@@ -246,7 +259,10 @@ fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scrat
     };
 
     let mut abandoned = start(&mut f, &initial, point);
-    assert!(poll(&mut f.control, &mut abandoned, true).is_err());
+    assert!(matches!(
+        poll(&mut f.control, &mut abandoned, true),
+        Err(ManualBaseCaptureError::Cancelled)
+    ));
     assert!(
         abandoned
             .poll_on_control(&mut f.control, &mut || false)
@@ -712,7 +728,7 @@ fn poll(
     output: &mut PublicationControl,
     capture: &mut ManualBaseCapture,
     cancelled: bool,
-) -> Result<NativeDeviceState, String> {
+) -> Result<NativeDeviceState, ManualBaseCaptureError> {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
         if let Some(terminal) = capture.poll_on_control(output, &mut || cancelled) {

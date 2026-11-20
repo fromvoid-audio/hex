@@ -1,6 +1,7 @@
 //! Resolve one available retiring receipt against its original successor.
 use super::*;
 use hex_audio::{
+    plugin_effects::ManualBaseCaptureError,
     plugin_worker::{
         ControllerRequest, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
         NativeWorkerControllerQuery, NativeWorkerGuardedCaptureProgress,
@@ -17,7 +18,10 @@ use hex_session::service::{
     PluginParameterCapture, RequestCancellation, ResidentRuntimeLoop, RetiringEditorBatch,
     RetiringEditorReplayCompletion, RetiringEditorReplayDisposition, RetiringEditorReplayMode,
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::Ordering::Acquire,
+    time::{Duration, Instant},
+};
 
 pub(in crate::native_audio) struct ReplayCapture {
     pub(super) binding: Binding,
@@ -26,7 +30,6 @@ pub(in crate::native_audio) struct ReplayCapture {
     source: AppliedAudioSource,
     transport_epoch: u64,
     playing: bool,
-    stop_rejected: bool,
     // An isolated capture cannot use the active worker's guarded-write fact.
     // Its exact producer hold remains owned through callback confirmation.
     fact: Option<NativeWorkerStateAfterGuardedWrite>,
@@ -271,10 +274,8 @@ impl Plugins {
         batch: &RetiringEditorBatch,
         disposition: RetiringEditorReplayDisposition,
     ) -> Result<RetiringEditorReplayCompletion, String> {
-        let retry_stopped = self
-            .retiring_replay_capture
-            .take()
-            .is_some_and(|capture| capture.stop_rejected)
+        self.retiring_replay_capture = None;
+        let retry_stopped = std::mem::take(&mut self.retiring_replay_stopped)
             && matches!(disposition, RetiringEditorReplayDisposition::Refused);
         let restore = self.retiring_replay_restore.take();
         let (accepted, recovery) = match disposition {
@@ -319,25 +320,24 @@ impl Plugins {
         publication: AudioSourceContext,
         previous: ResidentRuntimeLoop,
     ) -> bool {
-        let Some(replay) = self.retiring_replay_capture.as_mut() else {
+        let Some(replay) = self.retiring_replay_capture.as_ref() else {
             return false;
         };
         if replay.publication != publication
-            || !replay.playing
             || replay.fact.is_some()
             || previous.output_identity != replay.source.output_identity
             || previous.audio_revision != replay.source.audio_revision
             || previous.source_context != Some(replay.source.context)
-            || control
-                .status
-                .native_parameter_source(false)
-                .is_none_or(|(source, epoch)| {
-                    source != replay.source || epoch <= replay.transport_epoch
-                })
+            || !stopped_on_replay_source(
+                control,
+                replay.source,
+                replay.transport_epoch,
+                replay.playing,
+            )
         {
             return false;
         }
-        replay.stop_rejected = true;
+        self.retiring_replay_stopped = true;
         true
     }
 
@@ -410,10 +410,7 @@ impl Plugins {
         let authored = native.authored.is_some();
         let identity = NativeProcessorIdentity::new(owner, batch.device)
             .map_err(|_| "vst3 replay target identity differs")?;
-        let playing = control
-            .status
-            .playing
-            .load(std::sync::atomic::Ordering::Acquire);
+        let playing = control.status.playing.load(Acquire);
         let (source, transport_epoch) = control
             .status
             .native_parameter_source(playing)
@@ -461,6 +458,8 @@ impl Plugins {
                 control.status.native_parameter_source(playing) == Some((source, transport_epoch))
             };
             if !current(control) {
+                self.retiring_replay_stopped = apply.is_some()
+                    && stopped_on_replay_source(control, source, transport_epoch, playing);
                 return Err("vst3 replay applied source changed".into());
             }
             let Some((publication, cohorts)) = apply else {
@@ -469,7 +468,7 @@ impl Plugins {
                     after: canonical.clone(),
                 });
             };
-            let after = capture_isolated_replay(
+            let captured = capture_isolated_replay(
                 host,
                 control,
                 canonical,
@@ -478,10 +477,23 @@ impl Plugins {
                 binding,
                 playing,
                 cancellation,
-            )?
+                #[cfg(all(test, feature = "allocation-probe"))]
+                self.replay_capture_gate.take(),
+            );
+            let after = match captured {
+                Ok(after) => after,
+                Err(error) => {
+                    self.retiring_replay_stopped =
+                        matches!(error, ManualBaseCaptureError::SourceChanged)
+                            && stopped_on_replay_source(control, source, transport_epoch, playing);
+                    return Err(error.to_string());
+                }
+            }
             .with_host_metadata_from(canonical)
             .map_err(|error| error.to_string())?;
             if !current(control) {
+                self.retiring_replay_stopped =
+                    stopped_on_replay_source(control, source, transport_epoch, playing);
                 return Err("vst3 replay applied source changed".into());
             }
             self.retiring_replay_capture = Some(ReplayCapture {
@@ -491,7 +503,6 @@ impl Plugins {
                 source,
                 transport_epoch,
                 playing,
-                stop_rejected: false,
                 fact: None,
                 before: canonical.clone(),
                 after: after.clone(),
@@ -632,13 +643,27 @@ impl Plugins {
             source,
             transport_epoch,
             playing,
-            stop_rejected: false,
             fact: Some(fact),
             before: canonical.clone(),
             after: after.clone(),
         });
         Ok(PluginParameterCapture { before, after })
     }
+}
+
+fn stopped_on_replay_source(
+    control: &PublicationControl,
+    source: AppliedAudioSource,
+    transport_epoch: u64,
+    was_playing: bool,
+) -> bool {
+    was_playing
+        && !control.status.device_fault.load(Acquire)
+        && !control.status.render_fault.load(Acquire)
+        && control
+            .status
+            .native_parameter_source(false)
+            .is_some_and(|(stopped, epoch)| stopped == source && epoch > transport_epoch)
 }
 
 #[allow(clippy::too_many_arguments)] // Keep the exact native source and its canonical input explicit.
@@ -651,10 +676,14 @@ fn capture_isolated_replay(
     binding: Binding,
     playing: bool,
     cancellation: Option<&RequestCancellation>,
-) -> Result<NativeDeviceState, String> {
+    #[cfg(all(test, feature = "allocation-probe"))] capture_gate: Option<(
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+) -> Result<NativeDeviceState, ManualBaseCaptureError> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut scratch = loop {
-        edits::check_cancel(cancellation)?;
+        edits::check_cancel(cancellation).map_err(ManualBaseCaptureError::Failed)?;
         match host.begin_ordered_manual_base_capture_on_control(
             control, source, binding, canonical, cohorts, playing,
         ) {
@@ -666,9 +695,14 @@ fn capture_isolated_replay(
             {
                 edits::poll_control(control)
             }
-            result => break result?,
+            result => break result.map_err(ManualBaseCaptureError::Failed)?,
         }
     };
+    #[cfg(all(test, feature = "allocation-probe"))]
+    if let Some((admitted, resume)) = capture_gate {
+        admitted.send(()).unwrap();
+        resume.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
     loop {
         let mut cancelled = || {
             cancellation.is_some_and(RequestCancellation::is_cancelled)

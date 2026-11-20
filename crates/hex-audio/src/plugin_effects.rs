@@ -41,7 +41,7 @@ pub use hex_plugin_host::protocol::{
 };
 pub use hosting::{EffectPresentation, EffectSelection, Hosting, PluginProfile};
 pub(crate) use manual_base_capture::BaseCaptureSource;
-pub use manual_base_capture::ManualBaseCapture;
+pub use manual_base_capture::{ManualBaseCapture, ManualBaseCaptureError};
 mod canonical_bases;
 pub use canonical_bases::{CanonicalBasesCapture, CapturedCanonicalBases};
 mod control;
