@@ -682,6 +682,13 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_return_device"; ["return_track" => return_track.value(), "before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
+        Command::ReplaceReturnDevice {
+            return_track,
+            replacing,
+            state,
+        } => {
+            describe!("replace_return_device"; ["return_track" => return_track.value(), "replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::MoveReturnDevice { device, before } => {
             describe!("move_return_device"; ["device" => device.value(), "before" => before.map(|id| id.value())]; omitted="")
         }

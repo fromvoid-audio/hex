@@ -138,18 +138,29 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                 None => target.devices.len(),
             };
             let id = DeviceId(project.allocate_id()?);
-            find_mut(project, return_track)?.devices.insert(
-                index,
-                Device {
-                    modulation: Default::default(),
-                    parent: None,
-                    automation: Vec::new(),
-                    comparison: None,
-                    id,
-                    state,
-                    bypassed: false,
-                },
-            );
+            find_mut(project, return_track)?
+                .devices
+                .insert(index, Device::fresh_serial_leaf(id, state));
+            Ok(crate::Created::Device(id))
+        }
+        Command::ReplaceReturnDevice {
+            return_track,
+            replacing,
+            state,
+        } => {
+            let target = find(project, return_track)?;
+            let index = target
+                .devices
+                .iter()
+                .position(|device| device.id == replacing && device.parent.is_none())
+                .ok_or(Invalid("return device replacement target changed"))?;
+            if crate::device_inventory::serial_unit_span(&target.devices, index)?.len() != 1 {
+                return Err(Invalid(
+                    "return device replacement requires a single effect",
+                ));
+            }
+            let id = DeviceId(project.allocate_id()?);
+            find_mut(project, return_track)?.devices[index] = Device::fresh_serial_leaf(id, state);
             Ok(crate::Created::Device(id))
         }
         Command::MoveReturnDevice { device, before } => {
@@ -251,4 +262,90 @@ pub(crate) fn device_count(project: &Project) -> Result<usize, Invalid> {
     project.devices().try_fold(0usize, |count, _| {
         count.checked_add(1).ok_or(Invalid("device count overflow"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Created, Editor};
+    use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+
+    #[test]
+    fn return_replacement_keeps_exact_owner_neighbors_and_sends() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 12).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "source".into(),
+            })
+            .unwrap()
+        else {
+            panic!("source track");
+        };
+        let mut add_return = |name: &str| {
+            let Created::ReturnTrack(id) = editor
+                .execute(Command::AddReturnTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("return track");
+            };
+            id
+        };
+        let bus = add_return("wet");
+        let other = add_return("another return");
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let authored =
+            NativeDeviceState::new(DeviceTypeId::from_static("hex.utility"), 1, vec![1]).unwrap();
+        for _ in 0..3 {
+            editor
+                .execute(Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state: authored.clone(),
+                })
+                .unwrap();
+        }
+        let old = find(editor.project(), bus).unwrap().devices[1].id();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: old,
+                bypassed: true,
+            })
+            .unwrap();
+        let original = editor.project().clone();
+        let expected = original.next_identity();
+        let replace = |return_track| Command::ReplaceReturnDevice {
+            return_track,
+            replacing: old,
+            state: authored.clone(),
+        };
+        assert!(editor.execute(replace(other)).is_err());
+        assert_eq!(editor.project(), &original);
+        let Created::Device(new) = editor.execute(replace(bus)).unwrap() else {
+            panic!("replacement device");
+        };
+        assert_eq!(new.value(), expected);
+        let replaced = editor.project().clone();
+        let before = &find(&original, bus).unwrap().devices;
+        let after = &find(&replaced, bus).unwrap().devices;
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[2], before[2]);
+        assert_eq!(after[1].id(), new);
+        assert!(!after[1].bypassed());
+        assert_eq!(replaced.tracks(), original.tracks());
+        assert_eq!(
+            find(&replaced, other).unwrap(),
+            find(&original, other).unwrap()
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().return_tracks(), original.return_tracks());
+        assert!(editor.redo());
+        assert_eq!(editor.project().return_tracks(), replaced.return_tracks());
+    }
 }
