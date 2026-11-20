@@ -368,6 +368,7 @@ impl<'a> MusicalEventFadePreview<'a> {
                 source: [Some(source_first..source_end), None],
                 sample: FrameFadeSample {
                     source_frame,
+                    source_id: 0,
                     event: Some(span.event.id),
                     gains: [event_fade, span.gain, clip_fade, self.gain],
                 },

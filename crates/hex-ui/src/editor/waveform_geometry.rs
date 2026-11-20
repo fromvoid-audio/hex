@@ -1262,7 +1262,13 @@ fn build_waveform_geometry(
                     if projection.has_exact_pcm() && end - start <= frame_detail_budget as u64 {
                         waveform_frame::detail(frame, waveform, start..end, frame_detail_budget)?
                     } else {
-                        waveform_frame::coarse(frame, waveform, start..end, &mut range_budget)?
+                        waveform_frame::coarse(
+                            frame,
+                            waveform,
+                            projection.grouped_sources(),
+                            start..end,
+                            &mut range_budget,
+                        )?
                     };
                 Some(peaks)
             }

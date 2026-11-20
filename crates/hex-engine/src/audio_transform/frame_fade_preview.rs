@@ -18,12 +18,17 @@ pub use musical::{DirectedMusicalDestinationFade, MusicalEventFadePreview};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameFadeSample {
     source_frame: u64,
+    source_id: u64,
     event: Option<u64>,
     gains: [f32; 4],
 }
 impl FrameFadeSample {
     pub fn source_frame(self) -> u64 {
         self.source_frame
+    }
+    /// Zero selects the direct source. A retained child uses its group-local ID.
+    pub fn source_id(self) -> u64 {
+        self.source_id
     }
     pub fn event(self) -> Option<u64> {
         self.event
@@ -84,8 +89,8 @@ pub struct FrameFadeCoverage {
 /// Unprocessed reads use the converted asset. Transformed frame events use
 /// the accepted, pre-event processing root after warp, pitch and source gain.
 /// Directed frame reads reflect the event read and keep the clip envelope in
-/// the forward destination clock. Musical/frozen clocks and retained children
-/// use their existing display paths. The caller binds the waveform to the
+/// the forward destination clock. Grouped reads address each compiled child by
+/// its retained ID. The caller binds the waveform to the
 /// chosen source and its `source_frames()`. Held/pending edits use that same
 /// basis without dividing baked peaks by an old fade.
 /// Construction validates on control and may allocate validation metadata;
@@ -112,6 +117,13 @@ struct SourceRead {
     length: u64,
     phase: u64,
     looping: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PreviewSource {
+    Asset,
+    Prepared(u64),
+    Group,
 }
 
 /// Forward envelope coverage within a directed frame clip. The reflected
@@ -186,7 +198,7 @@ impl<'a> FrameFadePreview<'a> {
         asset: &Asset,
         overrides: FrameFadeOverrides<'a>,
     ) -> Result<Option<Self>, Invalid> {
-        Self::mapped(clip, tempo, asset, overrides, None)
+        Self::mapped(clip, tempo, asset, overrides, PreviewSource::Asset)
     }
 
     /// Resolve coordinates against the accepted pre-event summary of this
@@ -199,7 +211,24 @@ impl<'a> FrameFadePreview<'a> {
         overrides: FrameFadeOverrides<'a>,
         source_frames: u64,
     ) -> Result<Option<Self>, Invalid> {
-        Self::mapped(clip, tempo, asset, overrides, Some(source_frames))
+        Self::mapped(
+            clip,
+            tempo,
+            asset,
+            overrides,
+            PreviewSource::Prepared(source_frames),
+        )
+    }
+
+    /// Query a grouped frame clip. Bind the returned child IDs to the accepted
+    /// group table. Preview overrides can change event amplitude within that table.
+    pub fn with_grouped_sources(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        asset: &Asset,
+        overrides: FrameFadeOverrides<'a>,
+    ) -> Result<Option<Self>, Invalid> {
+        Self::mapped(clip, tempo, asset, overrides, PreviewSource::Group)
     }
 
     fn mapped(
@@ -207,12 +236,20 @@ impl<'a> FrameFadePreview<'a> {
         tempo: &'a TempoMap,
         asset: &Asset,
         overrides: FrameFadeOverrides<'a>,
-        prepared_frames: Option<u64>,
+        source: PreviewSource,
     ) -> Result<Option<Self>, Invalid> {
         if clip.asset() != asset.id() {
             return Err(Invalid("fade preview asset differs from clip"));
         }
         let asset_frames = asset.playback_frames();
+        let grouped = matches!(source, PreviewSource::Group);
+        if grouped != clip.has_retained_audio_roots() {
+            return Ok(None);
+        }
+        let prepared_frames = match source {
+            PreviewSource::Prepared(frames) => Some(frames),
+            _ => None,
+        };
         let projection = if let Some(edit) = clip.audio_edit() {
             let supported_source = if let Some(frames) = prepared_frames {
                 frames == edit.domain.clock.length()
@@ -227,10 +264,6 @@ impl<'a> FrameFadePreview<'a> {
                 || !matches!(edit.timing, AudioClipTiming::Frames)
                 || !supported_source
                 || edit.domain.musical_event_source.is_some()
-                || edit.domain.events.as_ref().is_some_and(|events| {
-                    !events.sources.is_empty()
-                        || events.events.iter().any(|event| event.source != 0)
-                })
             {
                 return Ok(None);
             }
@@ -290,7 +323,12 @@ impl<'a> FrameFadePreview<'a> {
                 .and_then(|edit| edit.domain.events.as_deref())
         });
         if let Some(events) = events {
-            if !events.sources.is_empty() || events.events.iter().any(|event| event.source != 0) {
+            let canonical = clip
+                .audio_edit()
+                .and_then(|edit| edit.domain.events.as_deref());
+            if grouped == events.sources.is_empty()
+                || (grouped && canonical.is_none_or(|old| old.sources != events.sources))
+            {
                 return Ok(None);
             }
             events
@@ -484,11 +522,18 @@ impl<'a> FrameFadePreview<'a> {
         } else {
             1.0
         };
-        self.source_sample(
-            read,
-            event.map(|event| event.id),
-            [event_fade, event_gain, clip_fade, self.clip_gain],
-        )
+        let gains = [event_fade, event_gain, clip_fade, self.clip_gain];
+        if let Some(event) = event.filter(|event| event.source != 0) {
+            // The validated event interval is already in the compiled child's
+            // output clock, including its own crop, phase and direction.
+            return Ok(Some(FrameFadeSample {
+                source_frame: read,
+                source_id: event.source,
+                event: Some(event.id),
+                gains,
+            }));
+        }
+        self.source_sample(read, event.map(|event| event.id), gains)
     }
     fn source_sample(
         &self,
@@ -512,6 +557,7 @@ impl<'a> FrameFadePreview<'a> {
             .ok_or(Invalid("fade preview sample exceeds source"))?;
         Ok(Some(FrameFadeSample {
             source_frame,
+            source_id: 0,
             event,
             gains,
         }))

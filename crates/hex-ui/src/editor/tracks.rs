@@ -2670,7 +2670,7 @@ impl EditorView {
                 &state.project,
                 clip,
                 waveform,
-                event_source.and_then(|source| source.frame_waveform()),
+                prepared,
                 fade,
                 events,
                 gain,

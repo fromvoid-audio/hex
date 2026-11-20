@@ -2450,6 +2450,17 @@ fn event_fade_lower_pointer_extremes_clamp_and_recover_without_canonical_edits(
 fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
     cx: &mut TestAppContext,
 ) {
+    grouped_event_fade_workflow(cx, false);
+}
+
+#[gpui::test]
+fn grouped_fade_preview_tracks_cropped_reflected_repeat_through_ack(cx: &mut TestAppContext) {
+    grouped_event_fade_workflow(cx, true);
+}
+
+fn grouped_event_fade_workflow(cx: &mut TestAppContext, reflected_repeat: bool) {
+    use crate::editor::waveform_geometry::painted_clip_waveform_outline;
+
     let (_files, mut visual, editor, first) = open(cx);
     let (track, asset, start, length) = editor.read_with(&visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
@@ -2473,6 +2484,13 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
         },
     );
     let second = editor.read_with(&visual, |v, _| v.selected_clip.unwrap());
+    command(
+        &mut visual,
+        Command::SetAudioClipGain {
+            clip: second,
+            millidb: -6_000,
+        },
+    );
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::GroupClips {
             project_generation: v.project_generation,
@@ -2538,17 +2556,63 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
     });
     pump(&editor, &mut visual);
     let group = editor.read_with(&visual, |v, _| v.selected_clip.unwrap());
+    if reflected_repeat {
+        let (start, duration) = editor.read_with(&visual, |v, _| {
+            let clip = v.state.as_ref().unwrap().project.clip(group).unwrap();
+            (clip.start(), clip.duration())
+        });
+        for edit in [
+            Command::ResizeAudioClipView {
+                clip: group,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: start + 2 * duration,
+                },
+            },
+            Command::ReverseClips(vec![group]),
+            Command::TrimClipEdge {
+                clip: group,
+                edge: hex_project::TrimEdge::Left,
+                frame: start + 137,
+            },
+        ] {
+            command(&mut visual, edit);
+        }
+    }
     editor.update(&mut visual, |v, cx| {
         assert!(v.error.is_none(), "{:?}", v.error);
         let clip = v.state.as_ref().unwrap().project.clip(group).unwrap();
         let root = clip.audio_event_root();
         let event = clip.audio_events().events[0];
         assert!(event.source_start > root.domain.clock.length());
+        v.viewport = Some(Viewport {
+            start: clip.start(),
+            length: clip.duration(),
+        });
         v.audio_event_editor.viewport = None;
         v.audio_event_editor.grid = SnapGrid::Off;
         cx.notify();
     });
     repaint(&mut visual, &editor);
+    let outlines = |visual: &mut VisualTestContext| {
+        let thumb = painted_clip_waveform_outline(&editor, visual, group);
+        let events = ["audio-event-waveform-1", "audio-event-waveform-2"].map(|selector| {
+            let bounds = visual
+                .debug_bounds(selector)
+                .expect("painted grouped event");
+            editor.read_with(visual, |view, _| {
+                view.clip_waveform_geometry_cache
+                    .borrow()
+                    .painted_waveforms()
+                    .iter()
+                    .rev()
+                    .find(|paint| paint.bounds == bounds)
+                    .unwrap()
+                    .outline_fingerprint
+            })
+        });
+        (thumb, events)
+    };
+    let original = outlines(&mut visual);
     focus_events(&mut visual);
     fade_key(&mut visual, true);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
@@ -2562,12 +2626,26 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
     repaint(&mut visual, &editor);
     let held = visual.debug_bounds("audio-event-fade-in-top-1").unwrap();
     assert!(held.center().x > down.x + px(8.0));
+    let preview = outlines(&mut visual);
+    assert_ne!(
+        preview.0, original.0,
+        "the Arrangement waveform follows the held grouped fade"
+    );
+    assert_ne!(
+        preview.1[0], original.1[0],
+        "the selected child waveform follows the held fade"
+    );
+    assert_eq!(
+        preview.1[1], original.1[1],
+        "the neighboring child keeps its own waveform"
+    );
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     fade_key(&mut visual, false);
     for _ in 0..3 {
         repaint(&mut visual, &editor);
         assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
     }
+    assert_eq!(outlines(&mut visual), preview);
     editor.read_with(&visual, |v, _| {
         assert!(v.audio_event_editor.pending.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -2575,6 +2653,7 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
     pump(&editor, &mut visual);
     repaint(&mut visual, &editor);
     assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
+    assert_eq!(outlines(&mut visual), preview);
     let accepted = editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
         assert!(v.audio_event_editor.pending.is_none());
@@ -2594,13 +2673,35 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     pump(&editor, &mut visual);
+    assert_eq!(outlines(&mut visual), original);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
+    assert_eq!(outlines(&mut visual), preview);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
+    });
+    focus_events(&mut visual);
+    fade_key(&mut visual, true);
+    let down = visual
+        .debug_bounds("audio-event-fade-in-top-1")
+        .unwrap()
+        .center();
+    let target = point(down.x - px(18.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    repaint(&mut visual, &editor);
+    assert_ne!(outlines(&mut visual).0, preview.0);
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    fade_key(&mut visual, false);
+    repaint(&mut visual, &editor);
+    assert_eq!(outlines(&mut visual), preview);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
     });
 }
 
