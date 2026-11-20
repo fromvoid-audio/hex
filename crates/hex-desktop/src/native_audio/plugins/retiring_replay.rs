@@ -238,23 +238,22 @@ impl Plugins {
             .effect_preparation()
             .visit_plugin_devices(|destination, device, state| {
                 if device == batch.device {
-                    if destination.is_instrument() {
-                        return Err(
-                            "vst3 instrument replay requires a separate continuation".into()
-                        );
-                    }
-                    target = Some((destination.owner(), state));
+                    target = Some((destination, state));
                 }
                 Ok(())
             })?;
-        let (owner, canonical) = target.ok_or("vst3 replay canonical target changed")?;
+        let (destination, canonical) = target.ok_or("vst3 replay canonical target changed")?;
+        if destination.is_instrument() && matches!(mode, RetiringEditorReplayMode::Apply { .. }) {
+            return Err("vst3 instrument replay requires a separate continuation".into());
+        }
+        let owner = destination.owner();
         let native = self
             .sources
             .iter()
             .find(|native| native.binding == binding)
             .ok_or("vst3 replay successor is unavailable")?;
         if native.owner != owner || native.authored.is_some() {
-            return Err("vst3 replay requires an ordinary effect without authored input".into());
+            return Err("vst3 replay requires an ordinary source without authored input".into());
         }
         let identity = NativeProcessorIdentity::new(owner, batch.device)
             .map_err(|_| "vst3 replay target identity differs")?;

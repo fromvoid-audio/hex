@@ -282,6 +282,243 @@ fn pre_cut_editor_conflict_preserves_the_replacement_and_original_receipt() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_confirms_matching_receipt_while_playing() {
+    retiring_instrument_confirmation(true);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_preserves_conflicting_receipt_while_playing() {
+    retiring_instrument_confirmation(false);
+}
+
+fn retiring_instrument_confirmation(matching: bool) {
+    const CHILD: &str = "HEX_RETIRING_INSTRUMENT_CONFIRMATION";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        let traces = files.0.join("traces");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&traces).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .env("HEX_ORIGINAL_EDITOR_TOUCH", "1")
+            .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
+            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    use crate::native_audio::tests::resident_preview::{
+        EditorRecordingProbe, emit_replay_fixture_edit,
+    };
+    use hex_project::BeatTime;
+    use hex_session::service::{
+        DeviceAutomationTakeProgress as Progress, RetiringEditorCloseBlocker,
+        RetiringEditorEventKind,
+    };
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "synth".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    applied = h.applied(applied).0;
+    let length = BeatTime::from_quarters(64).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("midi clip")
+    };
+    applied = h.applied(applied).0;
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: length,
+        pitch: 60,
+        channel: 2,
+        velocity: 64,
+    }));
+    applied = h.applied(applied).0;
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &note.state,
+            PluginEffectDestination::Instrument(track),
+        )))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    applied = h.applied(applied).0;
+    let original = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    let device = original.id();
+    let original_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let traces = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let original_trace = traces.join(
+        fs::read_dir(&traces)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .file_name(),
+    );
+    emit_replay_fixture_edit(&original_trace);
+    let replacement = with_gain(original.state(), if matching { 3.0 } else { 1.5 });
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: replacement.clone(),
+        }))
+        .unwrap();
+    let installed = ordinary_terminal(&mut h);
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    let (installed_revision, _) = h.applied(applied);
+    let installed_binding = |h: &ResidentHarness| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .into_iter()
+            .flatten()
+            .find_map(|(id, binding, _)| (id == device.value()).then_some(binding))
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let successor = loop {
+        h.pump();
+        if let Some(binding) = installed_binding(&h)
+            && binding != original_binding
+        {
+            break binding;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replacement instrument was not installed"
+        );
+        std::thread::yield_now();
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut baseline = 0.0_f32;
+    for _ in 0..8 {
+        let block = super::super::instruments::render_completed_block(&h);
+        baseline = block[255][0];
+        if baseline.abs() > 0.01 {
+            break;
+        }
+    }
+    assert!(
+        baseline.abs() > 0.01,
+        "replacement note did not reach the output"
+    );
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
+        b"end",
+    )
+    .unwrap();
+    let mut request_id = 1;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let settled = loop {
+        h.service
+            .submit(Request::QueryDeviceAutomationCloseSafety { request_id })
+            .unwrap();
+        let event = ordinary_terminal(&mut h);
+        let safety = event.device_automation_take_complete.unwrap();
+        assert_eq!(safety.request_id, request_id);
+        match safety.progress {
+            Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Transferring) => {}
+            result => break (result, event.state),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the original instrument did not settle"
+        );
+        request_id += 1;
+    };
+    assert_eq!(settled.1.project, installed.state.project);
+    assert_eq!(settled.1.revision, installed.state.revision);
+    assert_eq!(installed_binding(&h), Some(successor));
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status.native_effect_source().unwrap().audio_revision,
+        installed_revision
+    );
+    assert!(status.playing.load(Acquire));
+    let retained = super::super::editor_recording::probe(&h, |reply| {
+        EditorRecordingProbe::RetiringBatch(original_binding, reply)
+    });
+    let block = super::super::instruments::render_completed_block(&h);
+    assert!((block[255][0] - baseline).abs() < 1.0e-6);
+    if matching {
+        assert_eq!(settled.0, Progress::CloseSafe);
+        assert!(retained.is_none());
+        let files = Files::new();
+        let path = files.0.join("confirmed.hex");
+        assert!(h.run(Request::SaveNew(path.clone())).save_complete);
+        let project = hex_storage::load(path).unwrap();
+        assert_eq!(project.device(device).unwrap().state(), &replacement);
+    } else {
+        assert_eq!(
+            settled.0,
+            Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Unresolved)
+        );
+        let retained = retained.unwrap();
+        assert_eq!(retained.successor, successor);
+        assert_eq!(retained.predecessor_admitted_through, Some(2));
+        assert_eq!(
+            retained
+                .events()
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            [
+                RetiringEditorEventKind::Begin,
+                RetiringEditorEventKind::Perform,
+                RetiringEditorEventKind::End
+            ],
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn earlier_group_matching_both_values_releases_the_original_receipt() {
     retiring_editor_replay_roundtrip(ReplayCase::EarlierGrouped);
 }
