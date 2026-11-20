@@ -1115,14 +1115,13 @@ impl NativeAudioSink {
         } else {
             None
         };
-        let powered_off = playback.prepared_revision().and_then(|revision| {
-            let [device] = revision.arrangement().main_device_chain.as_ref() else {
-                return None;
-            };
-            (observation.processor_status(device.device_id, device.device_type)
-                == Some(hex_engine::PreparedDeviceProcessing::PoweredOff))
-            .then_some(device.device_id)
-        });
+        let powered_off = playback
+            .prepared_revision()
+            .and_then(|revision| revision.sole_powered_off_main_device_on_control())
+            .filter(|device| {
+                observation.processor_status(*device, hex_plugin_state::TYPE_ID)
+                    == Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
+            });
         self.reap_resident_control_owners();
         let existing = self.resident.observations.iter().position(|row| {
             row.as_ref()
