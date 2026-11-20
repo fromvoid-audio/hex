@@ -15,12 +15,22 @@ use crate::{
 use hex_project::{BeatTime, ClipId, TrackId};
 use std::sync::Arc;
 
+/// Resource-free processing selection from one exact prepared graph.
+/// Consumers must correlate this observation with its installed output/revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedDeviceProcessing {
+    Native,
+    Foreign,
+    PoweredOff,
+    Unavailable,
+}
+
 #[derive(Debug)]
 struct Meter {
     id: u64,
     kind: hex_lattice_contract::DeviceTypeId,
     meter: Arc<hex_lattice::DeviceMeter>,
-    foreign: bool,
+    processing: PreparedDeviceProcessing,
     latency: Option<crate::ProcessorGraphLatency>,
 }
 #[derive(Debug)]
@@ -205,12 +215,12 @@ impl PreparedPlaybackObservation {
         let mut meters = reserved(meter_sources(revision).count())?;
         let arrangement = revision.arrangement();
         let graph = arrangement.signal_graph.as_deref();
-        for (id, kind, meter, foreign, generator_track) in meter_sources(revision) {
+        for (id, kind, meter, processing, generator_track) in meter_sources(revision) {
             meters.push(Meter {
                 id,
                 kind,
                 meter: Arc::clone(meter),
-                foreign,
+                processing,
                 latency: graph.and_then(|graph| graph.processor_latency(id, generator_track)),
             });
         }
@@ -361,12 +371,23 @@ impl PreparedPlaybackObservation {
         device_id: u64,
         device_type: hex_lattice_contract::DeviceTypeId,
     ) -> Option<bool> {
+        self.processor_status(device_id, device_type)
+            .map(|status| status == PreparedDeviceProcessing::Foreign)
+    }
+
+    /// Explicit Off is distinct from native processing and unavailable hosting.
+    /// This scalar observation grants no source or installation authority.
+    pub fn processor_status(
+        &self,
+        device_id: u64,
+        device_type: hex_lattice_contract::DeviceTypeId,
+    ) -> Option<PreparedDeviceProcessing> {
         self.meters
             .binary_search_by_key(&device_id, |meter| meter.id)
             .ok()
             .and_then(|index| self.meters.get(index))
             .filter(|meter| meter.kind == device_type)
-            .map(|meter| meter.foreign)
+            .map(|meter| meter.processing)
     }
     pub fn retained_bytes_on_control(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<Self>()
@@ -557,7 +578,7 @@ fn meter_sources(
         u64,
         hex_lattice_contract::DeviceTypeId,
         &Arc<hex_lattice::DeviceMeter>,
-        bool,
+        PreparedDeviceProcessing,
         Option<TrackId>,
     ),
 > + Clone {
@@ -574,7 +595,15 @@ fn meter_sources(
                         id.value(),
                         state.type_id(),
                         &track.instrument_meter,
-                        track.foreign_instrument.is_some(),
+                        if track.foreign_instrument.is_some() {
+                            PreparedDeviceProcessing::Foreign
+                        } else if state.type_id()
+                            == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+                        {
+                            PreparedDeviceProcessing::Unavailable
+                        } else {
+                            PreparedDeviceProcessing::Native
+                        },
                         track.canonical_track_id(),
                     )
                 })
@@ -584,10 +613,7 @@ fn meter_sources(
                         device.device_id,
                         device.device_type,
                         &device.meter,
-                        matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        ),
+                        processor_kind(device),
                         None,
                     )
                 }))
@@ -604,15 +630,29 @@ fn meter_sources(
                         device.device_id,
                         device.device_type,
                         &device.meter,
-                        matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        ),
+                        processor_kind(device),
                         None,
                     )
                 }),
         )
 }
+fn processor_kind(device: &hex_lattice::PreparedRuntimeInstance) -> PreparedDeviceProcessing {
+    match device.definition.as_ref() {
+        Some(hex_lattice::PreparedProcessorFactory::PoweredOff) => {
+            PreparedDeviceProcessing::PoweredOff
+        }
+        Some(hex_lattice::PreparedProcessorFactory::Foreign(_)) => {
+            PreparedDeviceProcessing::Foreign
+        }
+        None if device.device_type
+            == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3") =>
+        {
+            PreparedDeviceProcessing::Unavailable
+        }
+        _ => PreparedDeviceProcessing::Native,
+    }
+}
+
 fn add(total: &mut usize, bytes: Option<usize>) -> Result<(), Invalid> {
     *total = total
         .checked_add(bytes.ok_or(Invalid("observation storage overflow"))?)

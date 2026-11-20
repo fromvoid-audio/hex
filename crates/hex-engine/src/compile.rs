@@ -1138,9 +1138,11 @@ fn compile_project_inner<'a>(
     )?;
     for device in &main_plan.device_chain {
         if let Some(definition) = &device.definition {
-            stateful_count = stateful_count
-                .checked_add(1)
-                .ok_or(Invalid("stateful device count overflow"))?;
+            if !definition.is_powered_off() {
+                stateful_count = stateful_count
+                    .checked_add(1)
+                    .ok_or(Invalid("stateful device count overflow"))?;
+            }
             stateful_bytes = stateful_bytes
                 .checked_add(
                     definition

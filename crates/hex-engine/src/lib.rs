@@ -4416,7 +4416,9 @@ pub mod live;
 pub mod live_expression;
 mod midi_activity;
 mod playback_observation;
-pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
+pub use playback_observation::{
+    PreparedDeviceProcessing, PreparedMidiActivity, PreparedPlaybackObservation,
+};
 mod launch_quantization;
 mod midi_clip_volume;
 pub mod midi_compile;
