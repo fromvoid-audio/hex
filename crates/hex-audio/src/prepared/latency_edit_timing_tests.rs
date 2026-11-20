@@ -439,6 +439,7 @@ fn resident_native_removal_installs_with_an_ordinary_stream_workspace() {
             Playback::try_from_prepared_with_session(dry).unwrap(),
             PublicationPolicy::DeviceInsert { predecessor, fence },
             next_context,
+            Instant::now() + std::time::Duration::from_secs(10),
             |_| {},
             |_| Ok::<(), ()>(()),
         )
@@ -1144,6 +1145,7 @@ fn assert_approved_latency_cut(
                 Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap(),
                 PublicationPolicy::DeviceInsert { predecessor, fence },
                 next_context,
+                Instant::now() + std::time::Duration::from_secs(10),
                 |_| {},
                 |_| Ok::<(), ()>(()),
             )
@@ -1167,6 +1169,7 @@ fn assert_approved_latency_cut(
             .publish_confirmed_device_insert_with_receipt_on_control(
                 Playback::try_from_prepared_with_session(Arc::clone(&after)).unwrap(),
                 offer,
+                Instant::now() + std::time::Duration::from_secs(10),
                 |_| {},
                 |_| Ok::<(), ()>(()),
             )
@@ -1362,6 +1365,7 @@ fn ordinary_workspace_uses_the_same_insert_continuity_law_during_preflight() {
         .publish_confirmed_device_insert_with_receipt_on_control(
             Playback::try_from_prepared_with_session(next).unwrap(),
             consent,
+            Instant::now() + std::time::Duration::from_secs(10),
             |receipt| approved_receipt = Some(receipt.clone()),
             |_| Ok::<_, ()>(()),
         )

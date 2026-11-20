@@ -961,6 +961,7 @@ fn fenced_nested_effect_removal(effect: hex_lattice_contract::NativeDeviceState)
                 runtime(graph),
                 PublicationPolicy::DeviceInsert { predecessor, fence },
                 next_context,
+                std::time::Instant::now() + std::time::Duration::from_secs(10),
                 |_| {},
                 |_| Ok::<_, ()>(()),
             )

@@ -5071,6 +5071,7 @@ fn ordinary_file_removal_rollback(cancel: bool) {
                     editor_revision,
                     ..old_context
                 },
+                Instant::now() + std::time::Duration::from_secs(10),
                 |_| {},
                 |_| Ok::<_, ()>(()),
             )

@@ -1,7 +1,7 @@
 //! Desktop-injected native publication, driven only by the canonical worker.
 //! Session owns no device or page endpoints and never interprets their tokens.
 use super::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
@@ -522,6 +522,8 @@ pub enum ResidentPublicationPolicy {
         hosted: bool,
         /// Exact seamless refusal whose interruption the user approved.
         confirmation: Option<ResidentGraphSubmission>,
+        /// This attempt expires at the callback, even if preparation queued in time.
+        preparation_deadline: Instant,
     },
     /// The sink owns the shared arrangement gate through exact callback installation.
     /// A playing witness inherits the actual boundary runtime; a stopped witness
