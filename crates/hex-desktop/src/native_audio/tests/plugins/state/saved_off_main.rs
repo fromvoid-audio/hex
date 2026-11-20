@@ -23,6 +23,70 @@ fn observed(h: &ResidentHarness, device: hex_project::DeviceId) -> PreparedDevic
         .unwrap()
 }
 
+// Drive only the old Off callback while SDK preparation is private. The two
+// existing gates then hold the graph before enqueue and immediately after its
+// exact submission, so callback ACK cannot accidentally make the test pass.
+fn prepare_on_before_ack(
+    h: &mut ResidentHarness,
+    device: hex_project::DeviceId,
+    source: hex_audio::prepared::AppliedAudioSource,
+) -> hex_session::service::Event {
+    let (private, enqueue, _) = h.probe_next_native_publication();
+    let (submitted, release) = h.probe_next_submitted_device_insert();
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        h.pump();
+        if private.try_recv().is_ok() {
+            break;
+        }
+        if let Ok(event) = h.service.try_event() {
+            assert!(
+                event.error.is_none(),
+                "private On refusal: {:?}",
+                event.error
+            );
+            assert!(!event.request_complete, "On completed while still private");
+        }
+        h.render_plugin_block();
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .recording_source(),
+            Some(source)
+        );
+        assert!(
+            Instant::now() < until,
+            "On private stage: loaded={} completed={} binding={:?}",
+            h.plugin_records.load(Acquire),
+            h.plugin_completed.load(Acquire),
+            h.plugin_progress.lock().unwrap().binding
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(h.plugin_completed.load(Acquire), 0);
+    enqueue.send(()).unwrap();
+    let queued = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(queued.output_identity, source.output_identity);
+    assert_ne!(queued.audio_revision, source.audio_revision);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(source)
+    );
+    release.send(()).unwrap();
+    h.next()
+}
+
 #[test]
 #[ignore = "source-only product follow-up oracle; original signed SDK/helper receipts required"]
 fn saved_off_main_reopens_without_worker_then_installs_fresh_stopped_on() {
@@ -128,10 +192,7 @@ fn saved_off_main_reopens_without_worker_then_installs_fresh_stopped_on() {
     fs::rename(&parked_catalog, &saved.catalog).unwrap();
 
     // A valid catalog On is prepared fresh, while canonical Off waits for its ACK.
-    h.service
-        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
-        .unwrap();
-    let pending = h.next();
+    let pending = prepare_on_before_ack(&mut h, device, off_source);
     assert!(pending.error.is_none(), "{:?}", pending.error);
     assert!(!pending.request_complete);
     assert_eq!(pending.state.project, saved_off.state.project);
@@ -212,10 +273,7 @@ fn play_after_source_free_on_staging_keeps_canonical_off() {
         .unwrap()
         .recording_source()
         .unwrap();
-    h.service
-        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
-        .unwrap();
-    let pending = h.next();
+    let pending = prepare_on_before_ack(&mut h, device, off_source);
     assert!(pending.error.is_none(), "{:?}", pending.error);
     assert!(!pending.request_complete);
     assert_eq!(pending.state.project, opened.state.project);
@@ -244,7 +302,10 @@ fn play_after_source_free_on_staging_keeps_canonical_off() {
     );
     // Off remains authoritative after refusal; running On must not take the old fallback.
     let records = h.plugin_records.load(Acquire);
-    let running = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let running = edits::ordinary_terminal(&mut h);
     assert!(running.error.is_some());
     assert_eq!(running.state.project, opened.state.project);
     assert_eq!(h.plugin_records.load(Acquire), records);
@@ -264,10 +325,7 @@ fn play_after_source_free_on_staging_keeps_canonical_off() {
             .paused_input_interval()
             .is_some()
     });
-    h.service
-        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
-        .unwrap();
-    let retry = h.next();
+    let retry = prepare_on_before_ack(&mut h, device, off_source);
     assert!(retry.error.is_none(), "{:?}", retry.error);
     assert!(!retry.request_complete);
     assert_eq!(retry.state.project, opened.state.project);
