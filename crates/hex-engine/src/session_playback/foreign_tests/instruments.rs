@@ -207,6 +207,74 @@ fn prepare_instruments_with_media(
 }
 
 #[test]
+fn staged_native_to_hosted_replacement_requests_a_cut_without_touching_the_sine() {
+    let (mut editor, initial) = fixture();
+    let track = editor.project().tracks()[0].id();
+    let original = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let sine = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.sine"),
+    )
+    .unwrap();
+    let Created::Device(native) = editor
+        .execute(Command::ReplaceTrackInstrument {
+            track,
+            replacing: original,
+            state: sine,
+        })
+        .unwrap()
+    else {
+        panic!("native instrument");
+    };
+    let previous = prepare(&editor, initial, true).unwrap();
+    let Created::Device(foreign) = editor
+        .execute(Command::ReplaceTrackInstrument {
+            track,
+            replacing: native,
+            state: NativeDeviceState::new(VST3, 1, vec![19]).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("foreign instrument");
+    };
+    let identity =
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(track.value()), foreign.value())
+            .unwrap();
+    let prepared = prepare(&editor, identity, true).unwrap();
+    let mut playing = SessionPlayback::new(Arc::clone(&previous)).unwrap();
+    let mut reference = SessionPlayback::new(previous).unwrap();
+    let mut actual = [[0.0; 2]; 64];
+    let mut expected = actual;
+    for playback in [&mut playing, &mut reference] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut actual).unwrap();
+    }
+    assert!(actual.iter().any(|&sample| sample != [0.0; 2]));
+
+    let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    assert!(matches!(
+        ordinary.try_inherit_state_live_from(&mut playing),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+    let mut staged = SessionPlayback::new(prepared).unwrap();
+    staged.require_continuous_insert = true;
+    assert!(matches!(
+        staged.try_inherit_state_live_from(&mut playing),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    ));
+    assert_eq!(playing.performance_frame(), 64);
+    playing.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
     let (mut editor, first) = fixture();
     let mut playing = SessionPlayback::new(prepare(&editor, first, true).unwrap()).unwrap();
