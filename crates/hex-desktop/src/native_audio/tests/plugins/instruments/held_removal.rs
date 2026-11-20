@@ -407,4 +407,9 @@ fn resident_vst3_removal_and_stopped_history_wait_for_callback_receipts() {
     assert_eq!(source(&h).output_identity, restored_source.output_identity);
     assert_eq!(redone.state.revision, undone.state.revision + 1);
     assert_eq!(redone.state.project, installed.state.project);
+    wait(|| {
+        h.pump();
+        h.render_plugin_block();
+        h.plugin_records.load(Acquire) == 0
+    });
 }
