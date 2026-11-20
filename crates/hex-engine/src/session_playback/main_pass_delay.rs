@@ -33,7 +33,12 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active)
             || old.tail_output_active.iter().any(|active| *active)
             || !old.releases.is_empty()
-            || device.device_type != hex_devices::overdrive::OVERDRIVE_TYPE_ID
+            || ![
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::saturator::SATURATOR_TYPE_ID,
+                hex_devices::rattle::RATTLE_TYPE_ID,
+            ]
+            .contains(&device.device_type)
             || after.main_latency_frames() != 0
         {
             return None;
