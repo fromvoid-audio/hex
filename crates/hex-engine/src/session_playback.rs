@@ -30,6 +30,7 @@ mod candidate_storage;
 mod device_move;
 mod device_reorder;
 mod foreign_arrangement;
+mod instrument_removal;
 mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;

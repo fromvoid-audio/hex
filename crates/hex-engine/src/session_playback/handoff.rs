@@ -4086,12 +4086,16 @@ impl SessionPlayback {
                 .unwrap_or(contributor);
             powered_off_receivers[receiver]
         };
+        let faded_analytic_track = self
+            .native_removal
+            .and_then(|pending| pending.faded_analytic_track(previous));
         for (old_index, _) in previous.routes.iter().enumerate() {
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
-            if !arrangement_instrument_changed
-                .get(old_index)
-                .copied()
-                .unwrap_or(false)
+            if faded_analytic_track == Some(old_route.id)
+                || !arrangement_instrument_changed
+                    .get(old_index)
+                    .copied()
+                    .unwrap_or(false)
                 || old_route.owner != RouteOwner::Arrangement
             {
                 continue;
@@ -4622,7 +4626,12 @@ impl SessionPlayback {
             }
         }
         for entry in &previous.releases {
-            if entry.end_frame() <= previous.performance_frame {
+            // Only the already-faded current route is cut. Detached suffixes
+            // and every unrelated release retain their ordinary lifecycle.
+            if (faded_analytic_track == Some(entry.track_id)
+                && entry.location.tail_group().is_none())
+                || entry.end_frame() <= previous.performance_frame
+            {
                 continue;
             }
             if self.release_scratch.len() >= self.release_capacity {
