@@ -850,10 +850,11 @@ impl NativeAudioSink {
                 return;
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            let hosted_effects = match self
-                .plugins
-                .verified_effect_bindings(snapshot.canonical().effect_preparation())
-            {
+            let hosted_effects = match self.plugins.verified_effect_bindings(
+                snapshot.canonical().effect_preparation(),
+                edit.as_ref()
+                    .and_then(|edit| edit.attempt.proposal_control()),
+            ) {
                 Ok(bindings) => bindings,
                 Err(error) => {
                     self.refuse_verified_source(&snapshot, error);
@@ -1928,6 +1929,27 @@ impl WorkerAudioSink for NativeAudioSink {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
         self.plugins.prepare_saved_verified_effects(input, prepare)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_verified_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        proposal: Option<&Arc<hex_session::service::PluginEffectControl>>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        let bindings = self.plugins.verified_effect_bindings(input, proposal)?;
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("verified audio output is unavailable")?;
+        control.with_native_effect_definition(&bindings, |definition| {
+            hex_engine::AudioCandidateEffects::with_host_definitions(&[definition], prepare)
+                .map_err(|error| error.to_string())
+        })
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn begin_stopped_foreign_history(

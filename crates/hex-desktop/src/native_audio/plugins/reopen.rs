@@ -44,40 +44,6 @@ impl Plugins {
         Hosting::prepare_unavailable_on_control(&effects, prepare)
     }
 
-    /// Borrow definitions only from sources prepared for this output and
-    /// canonical project. Root separately authenticates each supplied binding.
-    pub(in crate::native_audio) fn verified_effect_bindings(
-        &self,
-        input: ResidentEffectPreparation<'_>,
-    ) -> Result<Vec<Binding>, String> {
-        let mut bindings = Vec::new();
-        input.visit_plugin_devices(|destination, device, _| {
-            let authored = edits::requested_selection(&input, device)?;
-            let source = self
-                .sources
-                .iter()
-                .rev()
-                .find(|source| {
-                    source.project_generation == input.context().project_generation
-                        && source.owner == destination.owner()
-                        && source.device == device
-                        && source.accepted
-                        && !source.retiring
-                        && edits::source_covers_selection(
-                            source.authored.as_ref(),
-                            authored.as_ref(),
-                        )
-                })
-                .ok_or("verified graph has no exact prepared vst3 source")?;
-            bindings
-                .try_reserve(1)
-                .map_err(|_| "verified vst3 bindings allocation refused")?;
-            bindings.push(source.binding);
-            Ok(())
-        })?;
-        Ok(bindings)
-    }
-
     pub(in crate::native_audio) fn request_reopen(
         &mut self,
         snapshot: &CanonicalAudioSourceSnapshot,

@@ -185,6 +185,11 @@ impl VerifiedGraphEditAttempt {
         self.0.tempo_cut
     }
 
+    /// Borrow the caller's exact proposal identity without granting native custody.
+    pub fn proposal_control(&self) -> Option<&Arc<PluginEffectControl>> {
+        self.0.proposal_control.as_ref()
+    }
+
     /// Latest apply decision for a verified device edit. Audio retains this
     /// deadline with the receipt once control hands the candidate to it.
     pub fn preparation_deadline(&self) -> Instant {
@@ -396,7 +401,10 @@ impl Pending {
                     attempt.retiring_gain(),
                     Some(refused),
                     false,
-                    self.proposal_control.clone(),
+                    attempt
+                        .proposal_control()
+                        .cloned()
+                        .or_else(|| self.proposal_control.clone()),
                 );
                 sink.begin_verified_graph_edit(retry.clone())
                     .map_err(SessionError::NativeAudio)?;
@@ -689,24 +697,20 @@ impl Session {
             sink.begin_verified_graph_edit(attempt.clone())
                 .map_err(SessionError::NativeAudio)?;
         }
-        let prepared = crate::prepare_with_waveforms(
+        let prepared = self.prepare_verified_edit_revision(
             edit.project(),
-            &self.media_bank(),
-            self.sine_table(),
-            previous.map(|artifact| artifact.session().as_ref()),
-            &self.audio_transforms,
-            &self.audio_clip_waveforms,
-        )
-        .and_then(|prepared| {
-            crate::tuning_prepared_transition(prepared, self.project(), edit.project(), previous)
-        });
+            previous,
+            attempt.source().context(),
+            attempt.proposal_control(),
+            sink,
+        );
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 if tempo_cut {
                     sink.finish_verified_graph_edit(&attempt, false);
                 }
-                return Err(error.into());
+                return Err(error);
             }
         };
         if !tempo_cut {
@@ -728,6 +732,68 @@ impl Session {
             proposal_control: None,
             publish_created: true,
         }))
+    }
+
+    pub(super) fn prepare_verified_edit_revision(
+        &self,
+        project: &Project,
+        previous: Option<&PreparedRevision>,
+        context: hex_engine::AudioSourceContext,
+        proposal: Option<&Arc<PluginEffectControl>>,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> Result<PreparedRevision, SessionError> {
+        let media = self.media_bank();
+        let previous_session = previous.map(|artifact| artifact.session().as_ref());
+        let input = ResidentEffectPreparation {
+            project,
+            context,
+            restoring_plugin_state: false,
+            preparing_edit: true,
+        };
+        let prepared = if input.requires_plugin_profile() {
+            sink.prepare_verified_effects(input, proposal, &mut |effects| {
+                crate::prepare_with_waveforms_using(
+                    project,
+                    &media,
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                    || {
+                        if media.verified.is_empty() {
+                            effects.prepare_semantic_revision(
+                                project,
+                                &media.resident,
+                                self.sine_table(),
+                                previous_session,
+                                &self.audio_transforms,
+                            )
+                        } else {
+                            media.prepare_with_effects(
+                                project,
+                                self.sine_table(),
+                                previous_session,
+                                Some(effects),
+                            )
+                        }
+                    },
+                )
+            })
+            .map_err(SessionError::NativeAudio)?
+        } else {
+            crate::prepare_with_waveforms(
+                project,
+                &media,
+                self.sine_table(),
+                previous_session,
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+            )?
+        };
+        Ok(crate::tuning_prepared_transition(
+            prepared,
+            self.project(),
+            project,
+            previous,
+        )?)
     }
 
     /// Stage the exact replacement graph. An unchanged move leaves the

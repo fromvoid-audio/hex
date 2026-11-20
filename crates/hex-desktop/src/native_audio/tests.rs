@@ -272,6 +272,22 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn prepare_plugin_effect(
+        &mut self,
+        input: hex_session::service::PluginEffectPreparation<'_>,
+    ) -> Result<hex_session::service::PluginEffectPreparationState, String> {
+        self.inner.prepare_plugin_effect(input)
+    }
+    fn plugin_effect_ready(&self) -> bool {
+        self.inner.plugin_effect_ready()
+    }
+    fn finish_plugin_effect(
+        &mut self,
+        control: &Arc<hex_session::service::PluginEffectControl>,
+        accepted: bool,
+    ) {
+        self.inner.finish_plugin_effect(control, accepted);
+    }
     fn prepare_saved_verified_effects(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,
@@ -281,6 +297,18 @@ impl WorkerAudioSink for ObservedSink {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
         self.inner.prepare_saved_verified_effects(input, prepare)
+    }
+    fn prepare_verified_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        proposal: Option<&Arc<hex_session::service::PluginEffectControl>>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        self.inner
+            .prepare_verified_effects(input, proposal, prepare)
     }
     fn confirms_verified_device_inserts(&self) -> bool {
         self.inner.confirms_verified_device_inserts()

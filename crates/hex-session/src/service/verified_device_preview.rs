@@ -88,6 +88,19 @@ impl VerifiedDeviceParameterSource {
             match source.candidate_reservation_quote() {
                 Ok(_) => {}
                 Err(hex_engine::AudioStorageError::UnsupportedGraph) => {
+                    // Desktop alone can quote a graph with the exact existing
+                    // hosted sources. This projection grants no such source.
+                    let mut hosted = false;
+                    canonical
+                        .effect_preparation()
+                        .visit_plugin_devices(|_, _, _| {
+                            hosted = true;
+                            Ok(())
+                        })
+                        .map_err(SessionError::NativeAudio)?;
+                    if hosted {
+                        return Ok(Some(source));
+                    }
                     hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
                         Ok(source.reservation_quote_with_effects(effects))
                     })

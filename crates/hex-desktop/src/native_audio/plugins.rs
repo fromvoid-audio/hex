@@ -724,6 +724,51 @@ impl Plugins {
         .then(|| Arc::clone(&pending.operation))
     }
 
+    /// Select only installed sources or the exact ready worker owned by this
+    /// proposal. Root's borrowed definition still validates the actual state.
+    pub(super) fn verified_effect_bindings(
+        &self,
+        input: ResidentEffectPreparation<'_>,
+        proposal: Option<&Arc<PluginEffectControl>>,
+    ) -> Result<Vec<Binding>, String> {
+        let pending = self.pending.as_ref().filter(|pending| {
+            proposal.is_some_and(|proposal| Arc::ptr_eq(proposal, &pending.operation))
+                && pending.canonical_context.project_generation
+                    == input.context().project_generation
+                && pending.canonical_context.editor_revision.checked_add(1)
+                    == Some(input.context().editor_revision)
+                && matches!(pending.result, Some(Ok(_)))
+                && !pending.operation.is_cancelled()
+        });
+        let mut bindings = Vec::new();
+        input.visit_plugin_devices(|destination, device, _| {
+            let authored = edits::requested_selection(&input, device)?;
+            let source = self
+                .sources
+                .iter()
+                .rev()
+                .find(|source| {
+                    source.project_generation == input.context().project_generation
+                        && source.owner == destination.owner()
+                        && source.device == device
+                        && !source.retiring
+                        && (source.accepted
+                            || pending.is_some_and(|pending| source.binding == pending.binding))
+                        && edits::source_covers_selection(
+                            source.authored.as_ref(),
+                            authored.as_ref(),
+                        )
+                })
+                .ok_or("verified graph has no exact prepared vst3 source")?;
+            bindings
+                .try_reserve(1)
+                .map_err(|_| "verified vst3 bindings allocation refused")?;
+            bindings.push(source.binding);
+            Ok(())
+        })?;
+        Ok(bindings)
+    }
+
     pub fn finish(&mut self, operation: &Arc<PluginEffectControl>, accepted: bool) {
         if self
             .pending
