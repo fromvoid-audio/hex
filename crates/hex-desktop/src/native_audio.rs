@@ -346,7 +346,12 @@ impl NativeAudioSink {
             self.editor_windows = None;
         }
         self.pending_latency_event = None;
-        self.pending_parameter_event = None;
+        if !matches!(
+            self.pending_parameter_event,
+            Some(EditorAudioEvent::PluginEditorRetirementIssue { .. })
+        ) {
+            self.pending_parameter_event = None;
+        }
         self.pending_plugin_transport = None;
         self.preparation = None;
         self.domains = std::array::from_fn(|_| None);
@@ -2387,6 +2392,10 @@ impl WorkerAudioSink for NativeAudioSink {
     }
     fn poll(&mut self) {
         self.resident.reap_control_owners();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.output_generation.is_none() || self.output.is_none() {
+            self.plugins.poll_retiring_edits();
+        }
         self.poll_edit_timeout();
         self.poll_section_edit();
         self.poll_open();
@@ -2474,9 +2483,6 @@ impl WorkerAudioSink for NativeAudioSink {
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 self.plugins
                     .poll_editor_recording(output.publication.control());
-                if self.pending_parameter_event.is_none() {
-                    self.pending_parameter_event = self.plugins.take_parameter_touch();
-                }
                 if let Some((project_generation, output_identity, devices)) =
                     self.plugins.take_degraded_change()
                 {
@@ -2496,6 +2502,13 @@ impl WorkerAudioSink for NativeAudioSink {
             self.output = Some(output);
         }
         self.poll_document_rebind();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.pending_parameter_event.is_none() {
+            self.pending_parameter_event = self.plugins.take_retiring_editor_issue();
+        }
+        if self.pending_parameter_event.is_none() && self.output_generation.is_some() {
+            self.pending_parameter_event = self.plugins.take_parameter_touch();
+        }
         self.flush_events();
     }
     /// Idle only with every poll-driven duty quiescent (#4574): no open,
@@ -2551,6 +2564,8 @@ impl WorkerAudioSink for NativeAudioSink {
         self.verified_clip_control.reset();
         self.shutdown_sampler();
         self.relinquish_output();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.plugins.handoff_editor_receipts_on_shutdown();
         self.pending_release_event = None;
         self.relinquished_output_identity = None;
         self.desired = None;

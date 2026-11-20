@@ -46,6 +46,7 @@ impl Plugins {
         for source in &mut self.sources {
             if matches!(source.operation, SourceOperation::Edit(current) if current == context) {
                 source.accepted = accepted && !source.retiring;
+                source.editor_retirement.ever_accepted |= source.accepted;
                 source.retiring |= !source.accepted;
             }
         }
@@ -318,6 +319,7 @@ impl Plugins {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             observed_latency_receipt: false,

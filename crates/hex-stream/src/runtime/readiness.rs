@@ -192,16 +192,30 @@ struct RenderHold {
     epoch: Option<u64>,
     complete: bool,
 }
+const PROTECTION_ROLES: usize = 3;
+const RENDER_HOLDS: usize = 2;
+
 pub(super) struct PreparedReadiness {
     catalog: CatalogLease,
-    roles: [Role; 3],
-    render_holds: [RenderHold; 2],
+    roles: [Role; PROTECTION_ROLES],
+    render_holds: [RenderHold; RENDER_HOLDS],
     readiness_id: u64,
     render_epoch: u64,
     limit: usize,
     epoch: u64,
 }
 impl PreparedReadiness {
+    /// Requested extent backing for wanted/protected vectors in each role and
+    /// one vector in each independent render hold. Seal still checks capacity.
+    pub(super) fn requested_backing_bytes(
+        reservation: StreamReadinessReservation,
+    ) -> Option<usize> {
+        reservation
+            .extents_per_role
+            .checked_mul(2 * PROTECTION_ROLES + RENDER_HOLDS)?
+            .checked_mul(std::mem::size_of::<StreamResourceExtent>())
+    }
+
     pub(super) fn try_new(
         catalog: &CatalogLease,
         pages: &StreamCallbackPages,
@@ -215,7 +229,7 @@ impl PreparedReadiness {
         {
             return Err(AudioStreamStorageError::ReservationExceeded);
         }
-        let mut roles: [Role; 3] = std::array::from_fn(|_| Role::default());
+        let mut roles: [Role; PROTECTION_ROLES] = std::array::from_fn(|_| Role::default());
         for role in &mut roles {
             role.wanted
                 .try_reserve_exact(reservation.extents_per_role)
@@ -224,7 +238,8 @@ impl PreparedReadiness {
                 .try_reserve_exact(reservation.extents_per_role)
                 .map_err(|_| AudioStreamStorageError::Capacity)?;
         }
-        let mut render_holds: [RenderHold; 2] = std::array::from_fn(|_| RenderHold::default());
+        let mut render_holds: [RenderHold; RENDER_HOLDS] =
+            std::array::from_fn(|_| RenderHold::default());
         for hold in &mut render_holds {
             hold.extents
                 .try_reserve_exact(reservation.extents_per_role)

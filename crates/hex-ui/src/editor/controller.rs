@@ -987,6 +987,24 @@ impl EditorView {
                         changed = true;
                     }
                 }
+                crate::EditorAudioEvent::PluginEditorRetirementIssue {
+                    project_generation,
+                    device: _,
+                    issue,
+                } => {
+                    if project_generation == self.project_generation {
+                        let (message, failed) = match issue {
+                            crate::PluginEditorRetirementIssue::NeedsDisposition => ("vst3 editor changes are retained · pending project confirmation".to_owned(), true),
+                            crate::PluginEditorRetirementIssue::Failure(reason) => (format!("vst3 audio needs attention · {} · recent edits may not be saved", reason.to_lowercase()), true),
+                            crate::PluginEditorRetirementIssue::TailLatencyPending => ("vst3 tail latency changed · timing may be affected while the tail plays".to_owned(), false),
+                        };
+                        self.status = message.clone();
+                        if failed {
+                            self.error = Some(message.into());
+                        }
+                        changed = true;
+                    }
+                }
                 crate::EditorAudioEvent::DegradedPlugins {
                     project_generation,
                     output_identity,
