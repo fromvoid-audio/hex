@@ -40,6 +40,7 @@ pub(super) struct Retirement {
     stage: Stage,
     issue: Option<PluginEditorRetirementIssue>,
     latency_reported: bool,
+    pub(super) pending_controller: Option<hex_audio::plugin_worker::NativeWorkerControllerQuery>,
 }
 
 impl Retirement {
@@ -157,6 +158,7 @@ impl Plugins {
                         Stage::Acknowledge(receipt) => Some(receipt),
                         _ => None,
                     },
+                    retirement.pending_controller.take(),
                 );
             }
         }

@@ -6,6 +6,83 @@ use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn shutdown_consumes_original_pending_admission_before_sealing_the_editor() {
+    use crate::candidate_custody::{AudioCandidateDomainReservation, CandidateRoot};
+    use hex_plugin_host::protocol::{ControllerRequest, EditorAdmissionState};
+    use std::num::NonZeroU64;
+
+    for release in [false, true] {
+        let outer = CandidateRoot::new(2).unwrap();
+        outer
+            .configure_domains(AudioCandidateDomainReservation {
+                max_retained_data_bytes: 64 * 1024 * 1024,
+                max_construction_peak_data_bytes: 64 * 1024 * 1024,
+            })
+            .unwrap();
+        outer
+            .configure_native_source_preparation(1, source_reservation())
+            .unwrap();
+        let root = &outer.0.eligible;
+        let binding = start(root);
+        root.complete_native_source(
+            binding,
+            Some(hex_plugin_host::protocol::PresentationLatency {
+                input_frames: 77,
+                output_frames: 91,
+            }),
+        )
+        .unwrap();
+        root.start_native_effect(binding).unwrap();
+        let lease = RetiringEditLease::reserve(&outer, binding).unwrap();
+        let ordinal = NonZeroU64::new(1).unwrap();
+        let mut query = root
+            .begin_native_controller_query(binding, ControllerRequest::HoldEditorAdmission(ordinal))
+            .unwrap();
+        if release {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                match root.poll_native_controller_query(binding, &query).unwrap() {
+                    NativeWorkerControllerProgress::Pending => {}
+                    NativeWorkerControllerProgress::EditorAdmission(
+                        EditorAdmissionState::Held {
+                            admitted_through: 0,
+                        },
+                    ) => break,
+                    result => panic!("original hold failed: {result:?}"),
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            query = root
+                .begin_native_controller_query(
+                    binding,
+                    ControllerRequest::ReleaseEditorAdmission(ordinal),
+                )
+                .unwrap();
+        }
+        // Never poll the final query on desktop. Shutdown must retain this
+        // exact token even if the SDK has already produced its terminal.
+        root.close();
+        lease.handoff_on_shutdown(true, None, None, Some(query));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let returned = loop {
+            root.advance_on_control(false);
+            assert!(!root.cleanup_failed(), "pending admission blocked shutdown");
+            if let Some(returned) = root.recover_native_source(binding) {
+                break returned;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pending admission lost its terminal"
+            );
+            std::thread::yield_now();
+        };
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn refused_unpublished_source_can_release_its_unclaimed_reservation() {
     use crate::candidate_custody::{AudioCandidateDomainReservation, CandidateRoot};
     crate::lifecycle::prepare_candidate_cleanup().unwrap();
@@ -291,7 +368,10 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
     }
     let has_project_disposition = matches!(mode.as_str(), "acknowledged" | "stale_ack");
     if !has_project_disposition && mode != "active" {
-        lease.take().unwrap().handoff_on_shutdown(true, None, None);
+        lease
+            .take()
+            .unwrap()
+            .handoff_on_shutdown(true, None, None, None);
     }
     root.advance_on_control(false);
     assert_eq!(
@@ -326,7 +406,10 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
         // Reclaim the returned endpoint before handing off the live reader.
         root.advance_on_control(false);
         assert!(!lock(&root.bank).sources.slots[0].endpoint_loaned);
-        lease.take().unwrap().handoff_on_shutdown(true, None, None);
+        lease
+            .take()
+            .unwrap()
+            .handoff_on_shutdown(true, None, None, None);
     }
     if has_project_disposition {
         let mut lease = lease.take().unwrap();
@@ -355,7 +438,7 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
         } else {
             accepted
         };
-        lease.handoff_on_shutdown(true, None, Some(accepted));
+        lease.handoff_on_shutdown(true, None, Some(accepted), None);
     }
 
     if matches!(mode.as_str(), "empty" | "acknowledged") {
