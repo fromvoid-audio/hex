@@ -98,13 +98,15 @@ impl SessionPlayback {
             }
             match (a.output, b.output) {
                 (TrackOutput::Main { .. }, TrackOutput::Main { .. }) => {}
-                (TrackOutput::Group { target: a, .. }, TrackOutput::Group { target: b, .. }) if a == b => {}
+                (TrackOutput::Group { target: a, .. }, TrackOutput::Group { target: b, .. })
+                    if a == b => {}
                 (TrackOutput::Main { .. }, TrackOutput::Group { target, .. }) => {
+                    // The compiled Group edge names the target in the same
+                    // stable inventory. Its input may have no other child.
                     if changed.replace(index).is_some()
                         || old.clips.is_empty()
                         || !matches!(old_graph.tracks.get(target)?.output, TrackOutput::Main { .. })
                         || !matches!(new_graph.tracks.get(target)?.output, TrackOutput::Main { .. })
-                        || !old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target: parent, .. } if parent == target))
                         || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == index))
                     {
                         return None;
