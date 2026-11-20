@@ -1,5 +1,7 @@
 //! Bounded peak ordinates and fade sampling for waveform paint and previews.
-use hex_project::{Clip, ClipFade};
+use hex_project::{
+    AudioViewOccurrence, AudioViewProjection, Clip, ClipFade, Invalid, ProjectedAudioFade,
+};
 use hex_session::CachedPeak;
 
 const FADE_ENVELOPE_SAMPLES: usize = 32;
@@ -121,11 +123,8 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
             visible_end,
         );
     }
-    if edit.placement.is_some()
-        && edit.content_view.is_none()
-        && matches!(edit.domain.clock, hex_project::AudioDomainClock::Frames(_))
-    {
-        return placed_frame_fade_samples(clip, tempo, visible_start, visible_end);
+    if edit.placement.is_some() && edit.content_view.is_none() {
+        return placed_legacy_fade_samples(clip, tempo, visible_start, visible_end);
     }
     let fade = edit.projected_fade(tempo)?;
     let (_, _, view_start, _) = edit.projected_domain(tempo)?;
@@ -216,19 +215,14 @@ fn outer_fade_samples(
     Ok(samples)
 }
 
-/// Legacy frame placements retain their original per-occurrence fade law.
-fn placed_frame_fade_samples(
+/// Legacy placements retain their original per-occurrence fade law.
+fn placed_legacy_fade_samples(
     clip: &Clip,
     tempo: &hex_project::TempoMap,
     visible_start: u64,
     visible_end: u64,
 ) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
-    use hex_project::{AudioViewProjection, Invalid};
-    let edit = clip
-        .audio_edit()
-        .ok_or(Invalid("audio clip has no projected fade"))?;
     let projection = AudioViewProjection::new(clip, tempo)?;
-    let fade = edit.projected_fade(tempo)?;
     let length = visible_end - visible_start;
     let count = length.min(FADE_ENVELOPE_SAMPLES as u64) as usize;
     let mut positions = Vec::new();
@@ -239,18 +233,9 @@ fn placed_frame_fade_samples(
         positions.push(visible_start + fraction_u64(length - 1, index, count.saturating_sub(1)));
     }
     // Binary search the visible occurrence interval; never walk hidden repeats.
-    let mut first = 0;
-    let mut end = projection.occurrence_count();
-    while first < end {
-        let mid = first + (end - first) / 2;
-        if projection.occurrence(mid)?.destination_end <= visible_start {
-            first = mid + 1;
-        } else {
-            end = mid;
-        }
-    }
+    let first = first_occurrence_ending_after(&projection, visible_start, 0)?;
     let mut last = first;
-    end = projection.occurrence_count();
+    let mut end = projection.occurrence_count();
     while last < end {
         let mid = last + (end - last) / 2;
         if projection.occurrence(mid)?.destination_start < visible_end {
@@ -265,11 +250,7 @@ fn placed_frame_fade_samples(
     knots
         .try_reserve_exact(FADE_ENVELOPE_BREAKPOINTS)
         .map_err(|_| Invalid("fade geometry allocation failed"))?;
-    for position in fade_domain_positions(clip.retained_fade()) {
-        if let Some(root) = fade.frame_at_domain_position(position)? {
-            knots.push(root);
-        }
-    }
+    knots.extend(fade_domain_positions(clip.retained_fade()));
     let extra = selected * (2 + 3 * knots.len());
     if extra > MAX_PLACED_FADE_POINTS - count {
         return Err(Invalid("fade geometry exceeds bounded points"));
@@ -279,10 +260,13 @@ fn placed_frame_fade_samples(
         .map_err(|_| Invalid("fade geometry allocation failed"))?;
     for index in 0..selected {
         let ordinal = first + fraction_u64(visible_count - 1, index, selected.saturating_sub(1));
-        let occurrence = projection.occurrence(ordinal)?;
+        let (occurrence, fade) = projection.legacy_fade_occurrence(ordinal)?;
         positions.push(occurrence.destination_start.max(visible_start));
         positions.push((occurrence.destination_end - 1).min(visible_end - 1));
-        for &knot in &knots {
+        for &position in &knots {
+            let Some(knot) = fade.frame_at_domain_position(position)? else {
+                continue;
+            };
             for root in [knot.saturating_sub(1), knot, knot.saturating_add(1)] {
                 if root < occurrence.root_start || root >= occurrence.root_end {
                     continue;
@@ -303,13 +287,27 @@ fn placed_frame_fade_samples(
     samples
         .try_reserve_exact(positions.len())
         .map_err(|_| Invalid("fade geometry allocation failed"))?;
+    let mut index = first;
+    let mut current: Option<(AudioViewOccurrence, ProjectedAudioFade<'_>)> = None;
     for frame in positions {
-        let gain = match projection.root_position_for_frame(frame)? {
-            Some(root) => fade.gain_at(root)?,
-            // No processing-root read (an exhausted Once or silent period) has
-            // no authored envelope to shade.
-            None => 1.0,
-        };
+        if current
+            .as_ref()
+            .is_none_or(|(occurrence, _)| occurrence.destination_end <= frame)
+        {
+            index = first_occurrence_ending_after(&projection, frame, index)?;
+            current = if index < last {
+                Some(projection.legacy_fade_occurrence(index)?)
+            } else {
+                None
+            };
+        }
+        let mut gain = 1.0;
+        if let Some((occurrence, fade)) = &current
+            && let Some(offset) = frame.checked_sub(occurrence.destination_start)
+            && offset < occurrence.root_end - occurrence.root_start
+        {
+            gain = fade.gain_at(occurrence.root_start + offset)?;
+        }
         let x = if length == 1 {
             0.0
         } else {
@@ -318,6 +316,23 @@ fn placed_frame_fade_samples(
         samples.push((x, gain));
     }
     Ok(samples)
+}
+
+fn first_occurrence_ending_after(
+    projection: &AudioViewProjection<'_>,
+    frame: u64,
+    mut first: u64,
+) -> Result<u64, Invalid> {
+    let mut end = projection.occurrence_count();
+    while first < end {
+        let mid = first + (end - first) / 2;
+        if projection.occurrence(mid)?.destination_end <= frame {
+            first = mid + 1;
+        } else {
+            end = mid;
+        }
+    }
+    Ok(first)
 }
 
 pub(in crate::editor) fn fade_envelope_samples(
