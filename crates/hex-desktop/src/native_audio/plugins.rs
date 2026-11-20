@@ -1240,8 +1240,17 @@ impl Plugins {
         }) {
             return Err("vst3 state restoration is pending".into());
         }
+        // Document preparation precedes source_changed/request_reopen. Its
+        // next-generation declaration can select resource-free Off directly;
+        // this grants no SDK source or fresh-On permission.
+        let incoming_document = !input.preparing_edit()
+            && desired.is_none_or(|source| {
+                source.context().project_generation.checked_add(1)
+                    == Some(input.context().project_generation)
+            });
         if let Some((device, state)) = input.powered_off_main()
-            && (self.saved_off_document == Some((input.context().project_generation, device))
+            && (incoming_document
+                || self.saved_off_document == Some((input.context().project_generation, device))
                 || powered_off == Some(device))
             && !self.has_accepted_main_source(input.context(), device)
         {
