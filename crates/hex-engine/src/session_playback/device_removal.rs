@@ -135,6 +135,7 @@ enum RemovalTransition {
     Device(NativeRemovalTransition),
     Track(usize),
     Reorder(usize),
+    Move(super::device_move::NativeTrackMove),
     Return(ReturnId),
 }
 
@@ -148,6 +149,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Device(transition) => Some(transition),
             RemovalTransition::Track(_)
             | RemovalTransition::Reorder(_)
+            | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
         }
     }
@@ -157,6 +159,33 @@ impl PendingNativeRemoval {
             RemovalTransition::Return(id) => Some(id),
             _ => None,
         }
+    }
+
+    pub(super) fn track_move(self) -> Option<super::device_move::NativeTrackMove> {
+        match self.transition {
+            RemovalTransition::Move(movement) => Some(movement),
+            _ => None,
+        }
+    }
+
+    pub(super) fn faded_native_identity(self) -> Option<hex_lattice::ProcessorInstanceIdentity> {
+        self.device_transition()
+            .map(|transition| transition.identity())
+            .or_else(|| self.track_move().map(|movement| movement.identity))
+    }
+
+    pub(super) fn faded_track(self, previous: &SessionPlayback, id: hex_project::TrackId) -> bool {
+        self.reordered_track(previous) == Some(id)
+            || self.track_move().is_some_and(|movement| {
+                [movement.source, movement.destination]
+                    .into_iter()
+                    .any(|index| {
+                        previous
+                            .routes
+                            .get(index)
+                            .is_some_and(|route| route.id == id)
+                    })
+            })
     }
 
     pub(super) fn reordered_track(
@@ -177,12 +206,21 @@ impl PendingNativeRemoval {
             RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
             RemovalTransition::Device(_)
             | RemovalTransition::Reorder(_)
+            | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
         }
     }
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
+            RemovalTransition::Move(movement) => [movement.source, movement.destination]
+                .into_iter()
+                .all(|index| {
+                    previous
+                        .track_faders
+                        .get(index)
+                        .is_some_and(|fader| fader.removal_ready())
+                }),
             RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
             RemovalTransition::Return(id) => previous
                 .return_fade
@@ -278,6 +316,10 @@ impl SessionPlayback {
                     .map(RemovalTransition::Reorder)
             })
             .or_else(|| {
+                self.direct_audio_track_move_from(previous)
+                    .map(RemovalTransition::Move)
+            })
+            .or_else(|| {
                 self.flat_return_removal_from(previous)
                     .map(RemovalTransition::Return)
             })
@@ -305,6 +347,21 @@ impl SessionPlayback {
         }
         if !pending.started {
             let started = match pending.transition {
+                RemovalTransition::Move(movement) => {
+                    let indices = [movement.source, movement.destination];
+                    let valid = indices
+                        .into_iter()
+                        .all(|index| previous.track_faders.get(index).is_some());
+                    if valid {
+                        let rate = previous.revision.arrangement().sample_rate();
+                        for index in indices {
+                            if let Some(fader) = previous.track_faders.get_mut(index) {
+                                fader.begin_removal(rate);
+                            }
+                        }
+                    }
+                    valid
+                }
                 RemovalTransition::Device(transition) => previous
                     .native_removal_chain_mut(transition.identity().owner())
                     .is_some_and(|chain| chain.begin_native_removal(transition)),
@@ -358,6 +415,19 @@ impl SessionPlayback {
             && pending.runtime == previous.capture_runtime
         {
             match pending.transition {
+                RemovalTransition::Move(movement) => {
+                    let arrangement = previous.revision.arrangement();
+                    for index in [movement.source, movement.destination] {
+                        if let Some(track) = arrangement.tracks().get(index)
+                            && let Some(fader) = previous.track_faders.get_mut(index)
+                        {
+                            fader.cancel_removal(
+                                track.mix().channel_gain(),
+                                arrangement.sample_rate(),
+                            );
+                        }
+                    }
+                }
                 RemovalTransition::Device(transition) => {
                     if let Some(chain) =
                         previous.native_removal_chain_mut(transition.identity().owner())

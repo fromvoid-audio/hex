@@ -10,6 +10,8 @@ use std::{collections::BTreeMap, sync::Arc};
 mod aligned_power;
 mod analytic_power;
 #[cfg(feature = "allocation-probe")]
+mod device_move;
+#[cfg(feature = "allocation-probe")]
 mod reorder;
 #[cfg(feature = "allocation-probe")]
 mod return_removal;
