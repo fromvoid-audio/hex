@@ -1071,6 +1071,7 @@ impl Session {
                 } else if plugin.is_some() {
                     match &command {
                         Command::ReplaceTrackInstrument { .. }
+                        | Command::ReplaceTrackDevice { .. }
                         | Command::ReplaceMainDevice { .. }
                         | Command::ReplaceReturnDevice { .. } => GraphEditOperation::ReplaceDevice,
                         _ => GraphEditOperation::InsertDevice,

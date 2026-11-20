@@ -176,6 +176,27 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             let id = insert(project, track, before, state)?;
             Ok(crate::Created::Device(id))
         }
+        Command::ReplaceTrackDevice {
+            track,
+            replacing,
+            state,
+        } => {
+            let target = project
+                .track(track)
+                .filter(|target| !target.is_group())
+                .ok_or(Invalid("effect replacement requires an ordinary track"))?;
+            let index = target
+                .devices
+                .iter()
+                .position(|device| device.id == replacing && device.parent.is_none())
+                .ok_or(Invalid("track effect replacement target changed"))?;
+            if crate::device_inventory::serial_unit_span(&target.devices, index)?.len() != 1 {
+                return Err(Invalid("track effect replacement requires a single effect"));
+            }
+            let id = DeviceId(project.allocate_id()?);
+            project.track_mut(track)?.devices[index] = Device::fresh_serial_leaf(id, state);
+            Ok(crate::Created::Device(id))
+        }
         Command::InsertInstrument { track, state } => {
             let id = insert_instrument(project, track, state)?;
             Ok(crate::Created::Device(id))
@@ -1495,6 +1516,79 @@ mod tests {
                 .is_err()
         );
         assert_eq!(editor.project().snapshot(), before_failure);
+    }
+
+    #[test]
+    fn track_effect_replacement_preserves_the_instrument_gap_and_history() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "chain");
+        let other = track_id(&mut editor, "other");
+        let instrument = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let first = device_id(&mut editor, track);
+        let old = device_id(&mut editor, track);
+        let last = device_id(&mut editor, track);
+        editor
+            .execute(Command::MoveTrackDevice {
+                device: instrument,
+                track,
+                before: Some(last),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: old,
+                bypassed: true,
+            })
+            .unwrap();
+        let original = editor.project().clone();
+        let replaced_state = state(vec![19]);
+        let replace = |track, replacing| Command::ReplaceTrackDevice {
+            track,
+            replacing,
+            state: replaced_state.clone(),
+        };
+        assert!(editor.execute(replace(other, old)).is_err());
+        assert!(editor.execute(replace(track, instrument)).is_err());
+        assert_eq!(editor.project(), &original);
+
+        let crate::Created::Device(fresh) = editor.execute(replace(track, old)).unwrap() else {
+            panic!("expected a fresh effect id");
+        };
+        assert_eq!(fresh.value(), original.next_identity());
+        let replaced = editor.project().clone();
+        let original_track = original.track(track).unwrap();
+        let replaced_track = replaced.track(track).unwrap();
+        assert_eq!(replaced_track.source_id(), original_track.source_id());
+        assert_eq!(replaced_track.instrument_position(), Some(2));
+        assert_eq!(replaced.native_sources(), original.native_sources());
+        assert_eq!(
+            replaced_track
+                .ordered_device_chain()
+                .map(|node| match node {
+                    crate::TrackDeviceRef::Instrument(device)
+                    | crate::TrackDeviceRef::Effect(device) => device.id(),
+                })
+                .collect::<Vec<_>>(),
+            [first, fresh, instrument, last],
+        );
+        assert_eq!(replaced.device(first), original.device(first));
+        assert_eq!(replaced.device(last), original.device(last));
+        assert_eq!(replaced.device(instrument), original.device(instrument));
+        assert_eq!(replaced.device(fresh).unwrap().state(), &replaced_state);
+        assert!(!replaced.device(fresh).unwrap().bypassed());
+        assert!(replaced.device(old).is_none());
+        assert!(editor.execute(replace(track, old)).is_err());
+        assert_eq!(editor.project(), &replaced);
+        assert!(editor.undo());
+        assert_eq!(editor.project().tracks(), original.tracks());
+        assert!(editor.redo());
+        assert_eq!(editor.project().tracks(), replaced.tracks());
     }
 
     #[test]

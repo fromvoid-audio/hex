@@ -406,6 +406,13 @@ pub enum Command {
         before: Option<DeviceId>,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Replace one direct effect on an ordinary track with a fresh identity.
+    /// The local ordinal and the separately authored instrument gap survive.
+    ReplaceTrackDevice {
+        track: TrackId,
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     /// Fill a removed native instrument slot with a new stable device identity.
     InsertInstrument {
         track: TrackId,
@@ -2304,6 +2311,7 @@ impl Project {
             | Command::ReplaceMainDevice { .. }
             | Command::MoveMainDevice { .. }) => crate::main_devices::apply(self, main_command),
             device_command @ (Command::InsertDevice { .. }
+            | Command::ReplaceTrackDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
             | Command::ReplaceTrackInstrument { .. }
