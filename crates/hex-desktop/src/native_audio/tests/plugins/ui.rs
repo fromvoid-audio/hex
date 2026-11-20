@@ -1056,7 +1056,6 @@ enum Terminal {
     BrowserEscape,
     EditorEscape,
     StaleRevision,
-    UnknownPresentation,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1206,14 +1205,15 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
         Terminal::BrowserEscape,
         Terminal::EditorEscape,
         Terminal::StaleRevision,
-        Terminal::UnknownPresentation,
     ] {
-        let presentation =
-            (!matches!(terminal, Terminal::UnknownPresentation)).then_some(EffectPresentation {
+        let mut fixture = open_browser(
+            cx,
+            2,
+            Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: 512,
-            });
-        let mut fixture = open_browser(cx, 2, presentation);
+            }),
+        );
         fixture.activate_to_facts(cx, false);
         until(
             "pre-existing publications drained before terminal control",
@@ -1248,7 +1248,6 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     "the intervening edit must be queued before native preparation resumes"
                 );
             }
-            Terminal::UnknownPresentation => {}
         }
         if matches!(terminal, Terminal::StaleRevision) {
             until(
@@ -1296,9 +1295,6 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     fixture.state.revision
                 );
             }
-            if matches!(terminal, Terminal::UnknownPresentation) {
-                assert!(view.pending);
-            }
             assert!(view.applied.is_none());
             assert!(
                 fixture
@@ -1309,9 +1305,6 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     ))
                     .is_none()
             );
-        }
-        if matches!(terminal, Terminal::UnknownPresentation) {
-            fixture.resume.send(()).unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -1395,28 +1388,97 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     fixture.state.can_redo
                 )
             );
-            if matches!(terminal, Terminal::UnknownPresentation) {
-                assert!(
-                    view.error
-                        .as_ref()
-                        .is_some_and(|error| error.contains("presentation")),
-                    "{terminal:?}: {:?}",
-                    view.error
-                );
-            } else {
-                assert!(operation.is_cancelled());
-                assert!(
-                    view.error
-                        .as_ref()
-                        .is_none_or(|error| error.contains("cancel")),
-                    "{terminal:?}: {:?}",
-                    view.error
-                );
-            }
+            assert!(operation.is_cancelled());
+            assert!(
+                view.error
+                    .as_ref()
+                    .is_none_or(|error| error.contains("cancel")),
+                "{terminal:?}: {:?}",
+                view.error
+            );
         }
         fixture.visual.update(|window, _| window.remove_window());
         fixture.visual.run_until_parked();
     }
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_native_effect_allows_unknown_presentation_at_its_exact_install(
+    cx: &mut TestAppContext,
+) {
+    let _native = native_fixture();
+    let mut submission_probe = None;
+    // No device-presentation contribution is available to this output.
+    // Desktop explicitly permits Unknown for this normal hosted insertion.
+    let mut fixture = open_browser_metadata(
+        cx,
+        2,
+        None,
+        "Fx",
+        0,
+        None,
+        false,
+        Some(&mut |h| {
+            submission_probe = Some(h.device_insert_probe());
+        }),
+    );
+    let (submitted, resume_install) = submission_probe.unwrap().next_submitted();
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let mut exact = None;
+    until("Main effect submitted with unknown presentation", || {
+        if let Ok(submission) = submitted.try_recv() {
+            exact = Some(submission);
+            return true;
+        }
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        false
+    });
+    let exact = exact.unwrap();
+    let expected = fixture.state.project.next_identity();
+    let new_shell = Box::leak(format!("device-shell-{expected}").into_boxed_str());
+    for _ in 0..3 {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.pending && view.error.is_none(), "{:?}", view.error);
+        let state = view.state.unwrap();
+        assert_eq!(state.project, fixture.state.project);
+        assert_eq!(state.revision, fixture.state.revision);
+        assert!(fixture.visual.debug_bounds(new_shell).is_none());
+    }
+    resume_install.send(()).unwrap();
+    until(
+        "unknown presentation crosses its matching audio and canonical receipts",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            !view.pending
+                && view.applied.is_some_and(|source| {
+                    source.context == exact.context
+                        && source.audio_revision == exact.audio_revision
+                        && source.output_identity == exact.output_identity
+                })
+        },
+    );
+    let state = fixture.view(cx).state.unwrap();
+    let [device] = state.project.main_devices() else {
+        panic!("expected one installed Main VST3");
+    };
+    assert_eq!(device.id().value(), expected);
+    assert_eq!(state.revision, fixture.state.revision + 1);
+    assert!(fixture.visual.debug_bounds(new_shell).is_some());
+    assert!(
+        fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .is_none()
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
 }
 
 #[gpui::test]

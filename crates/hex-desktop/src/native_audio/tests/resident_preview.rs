@@ -2242,6 +2242,14 @@ impl WorkerAudioSink for ResidentSink {
             .resident_file_seek_storage_bytes(prepared, sources)
     }
 
+    fn stopped_resident_power_fence(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        self.inner.stopped_resident_power_fence(context, device)
+    }
+
     fn resident_runtime_loop(
         &mut self,
         context: AudioSourceContext,
