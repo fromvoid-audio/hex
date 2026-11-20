@@ -4730,6 +4730,195 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn verified_file_zero_latency_removal_uses_the_stage_fade_without_consent() {
+    verified_file_native_removal(false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn verified_file_removal_yields_to_priority_stop_during_the_local_fade() {
+    verified_file_native_removal(true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn verified_file_native_removal(stop_during_fade: bool) {
+    use hex_audio::audio_diagnostics::{
+        AudioDiagnosticKind, AudioDiagnosticsFlags, PublicationWaitReason,
+    };
+    use hex_project::{Command, Created};
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_192);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            ))
+    );
+    let (applied, _) = h.applied(applied);
+    let native = |name| {
+        hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(name))
+            .unwrap()
+    };
+    let reverb = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: native("hex.reverb"),
+    }));
+    let Some(Created::Device(removed)) = reverb.created else {
+        panic!("reverb was not inserted");
+    };
+    let (applied, _) = h.applied(applied);
+    let delay = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: native("hex.delay"),
+    }));
+    let Some(Created::Device(surviving)) = delay.created else {
+        panic!("delay was not inserted");
+    };
+    h.applied(applied);
+
+    let status = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let previous = status(&h);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render().iter().flatten().all(|sample| *sample == 0.0) {
+        assert!(
+            Instant::now() < deadline,
+            "verified-file source never played"
+        );
+        std::thread::yield_now();
+    }
+    for _ in 0..24 {
+        h.render();
+    }
+    let cursor = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    h.audio
+        .as_ref()
+        .unwrap()
+        .control
+        .set_audio_diagnostics(AudioDiagnosticsFlags::ALL);
+    h.enable_confirmed_device_inserts();
+    h.service
+        .submit(Request::Edit(Command::RemoveDevice(removed)))
+        .unwrap();
+    let staged = h.next();
+    assert!(staged.error.is_none(), "{:?}", staged.error);
+    assert!(!staged.request_complete);
+    assert_eq!(staged.state.project, delay.state.project);
+    assert_eq!(status(&h), previous);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut saw_fade = false;
+    let result = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            break event;
+        }
+        if status(&h) != previous {
+            break h.next();
+        }
+        let pcm = h.render();
+        if saw_fade && !stop_during_fade {
+            assert!(
+                pcm.iter().flatten().any(|sample| *sample != 0.0),
+                "fitting removal interrupted the graph output"
+            );
+        }
+        let audio = h.audio.as_mut().unwrap();
+        while let Some(event) = audio.control.take_audio_diagnostic() {
+            if !saw_fade
+                && event.kind
+                    == (AudioDiagnosticKind::PublicationWaiting {
+                        reason: PublicationWaitReason::NativeRemovalFade,
+                    })
+            {
+                saw_fade = true;
+                assert_eq!(audio.status().unwrap().recording_source(), Some(previous));
+                if stop_during_fade {
+                    audio.control.stop();
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "removal did not terminate");
+        std::thread::yield_now();
+    };
+    assert!(
+        result.device_insert_confirmation.is_none(),
+        "fitting verified-file removal offered an interruption"
+    );
+    assert!(saw_fade, "the original filter must fade before retirement");
+    if stop_during_fade {
+        assert_eq!(result.state.project, delay.state.project);
+        assert_eq!(status(&h), previous);
+        assert_ne!(
+            result.device_insert_complete.unwrap().outcome,
+            DeviceInsertOutcome::Installed
+        );
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+        {
+            h.render();
+            assert!(Instant::now() < deadline, "priority Stop did not settle");
+        }
+        return;
+    }
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(
+        result.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    let installed = status(&h);
+    assert_eq!(installed.output_identity, previous.output_identity);
+    assert_eq!(installed.context.editor_revision, result.state.revision);
+    assert_ne!(installed.audio_revision, previous.audio_revision);
+    let devices = result.state.project.main_devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].id(), surviving);
+    let audio = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(audio.playing.load(Acquire));
+    assert!(audio.position.load(Acquire) > cursor);
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LimiterEdit {
     Insert,
@@ -4953,40 +5142,68 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
-fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppContext) {
+fn browser_limiter_insertion_waits_for_consent_and_installs_on_the_same_output(
+    cx: &mut gpui::TestAppContext,
+) {
+    // Exercise resident and verified-file playback, including Main and an
+    // ordinary audio track. Both use the stock browser action and real prompt.
+    for frame_limit in [262_144, 8_192] {
+        for main in [false, true] {
+            browser_limiter_insertion(&mut cx.new_app(), frame_limit, main);
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn browser_limiter_insertion(cx: &mut gpui::TestAppContext, frame_limit: u64, main: bool) {
+    use gpui::{Modifiers, MouseButton, point, px};
+    use hex_session::service::PluginEffectDestination;
+
     let _native = native_fixture();
     let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(262_144);
+    let mut h = ResidentHarness::with_frame_limit(frame_limit);
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
     let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
     h.applied(applied);
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
-    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    assert_eq!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .required_sources()
+            .any(|(_, binding)| matches!(
+                binding,
+                hex_session::AudioSourceBinding::VerifiedFile(_)
+            )),
+        frame_limit < 96_000
+    );
+    let track = imported.state.project.tracks()[0].id();
+    let audio = h.audio.as_mut().unwrap();
+    let previous = audio.status().unwrap().recording_source().unwrap();
+    audio.control.command(PlaybackCommand::Play).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[0.25; 2]; 64] {
+        assert!(
+            Instant::now() < deadline,
+            "original source never became audible"
+        );
+        std::thread::yield_now();
+    }
     h.enable_confirmed_device_inserts();
-    let state = hex_engine::default_native_device_state_for_class(
-        hex_engine::NativeDeviceClass::Effect,
-        hex_engine::DeviceTypeId::from_static("hex.limiter"),
-    )
-    .unwrap();
-    h.service
-        .submit(Request::Edit(hex_project::Command::InsertMainDevice {
-            before: None,
-            state,
-        }))
-        .unwrap();
+    // The harness consumed the import event before opening the view. A real
+    // read-only request delivers the current canonical snapshot to it.
+    let clip = imported.state.project.track(track).unwrap().clips()[0].id();
+    h.service.submit(Request::CopyClips(vec![clip])).unwrap();
     let callback = Arc::clone(&h.callback);
     let backend = h.into_plugin_ui_backend();
     let window =
         hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
             .unwrap();
-    let visual = gpui::VisualTestContext::from_window(window, cx);
-    let step = |cx: &mut gpui::TestAppContext| {
+    let mut visual = gpui::VisualTestContext::from_window(window, cx);
+    visual.update(|window, _| window.activate_window());
+    let step = |cx: &mut gpui::TestAppContext, visual: &mut gpui::VisualTestContext| {
         let mut pcm = [[0.0; 2]; 64];
         callback
             .lock()
@@ -5001,10 +5218,85 @@ fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppC
         std::thread::yield_now();
         pcm
     };
+    let read = |cx: &mut gpui::TestAppContext| {
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+    };
+    let resident_source = || {
+        callback
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(HeadlessBackend::status)
+            .and_then(hex_audio::prepared::Status::recording_source)
+    };
+    let before = &imported.state;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while read(cx).state.is_none_or(|s| s.revision != before.revision) {
+        step(cx, &mut visual);
+        assert!(
+            Instant::now() < deadline,
+            "original project did not reach the editor"
+        );
+    }
+    let (selector, owner) = if main {
+        ("main-track-header", PluginEffectDestination::Main)
+    } else {
+        let name: &'static str =
+            Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
+        (name, PluginEffectDestination::Track(track))
+    };
+    let header = visual.debug_bounds(selector).unwrap();
+    let selection = if main {
+        gpui::point(header.origin.x + gpui::px(8.0), header.center().y)
+    } else {
+        header.center()
+    };
+    visual.simulate_click(selection, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(read(cx).selected_owner, Some(owner));
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("limiter");
+    visual.run_until_parked();
+    let row = visual
+        .debug_bounds("browser-device-effect-hex.limiter")
+        .expect("the built-in Limiter search result")
+        .center();
+    if main {
+        visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            row + point(px(12.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let target = visual
+            .debug_bounds("main-device-drop-end")
+            .expect("the Main device chain")
+            .center();
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    } else {
+        for count in [1, 2] {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: row,
+                button: MouseButton::Left,
+                click_count: count,
+                first_mouse: false,
+                modifiers: Modifiers::default(),
+            });
+            visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(2);
     while !cx.has_pending_prompt() {
-        assert_eq!(step(cx), [[0.25; 2]; 64]);
-        assert!(Instant::now() < deadline, "confirmed insert did not prompt");
+        assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
+        assert!(
+            Instant::now() < deadline,
+            "browser Limiter did not prompt for {owner:?} at frame limit {frame_limit}: {:?}",
+            read(cx).error
+        );
     }
     let (title, detail) = cx.pending_prompt().unwrap();
     assert_eq!(title, "interrupt playback to insert this device?");
@@ -5013,28 +5305,46 @@ fn device_insert_dialog_waits_for_a_real_button_decision(cx: &mut gpui::TestAppC
         "playback will fade out briefly and resume from the same position. \
          held notes and effect tails may reset."
     );
-    let read = |cx: &mut gpui::TestAppContext| {
-        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
-            .unwrap()
-    };
-    assert_eq!(read(cx).state.unwrap().project, imported.state.project);
-    assert_eq!(step(cx), [[0.25; 2]; 64]);
+    let offered = read(cx);
+    assert_eq!(offered.state.unwrap().project, before.project);
+    assert_eq!(resident_source(), Some(previous));
+    assert!(offered.pending);
+    assert_eq!(step(cx, &mut visual), [[0.25; 2]; 64]);
+
     cx.simulate_prompt_answer("proceed");
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        step(cx);
+        step(cx, &mut visual);
         let view = read(cx);
         assert!(view.error.is_none(), "{:?}", view.error);
         if let Some(state) = view.state
-            && state.revision != imported.state.revision
+            && state.revision != before.revision
         {
-            assert_eq!(state.project.main_devices().len(), 1);
+            let devices = if main {
+                state.project.main_devices()
+            } else {
+                state.project.track(track).unwrap().devices()
+            };
+            assert_eq!(devices.len(), 1);
+            assert_eq!(
+                devices[0].state().type_id(),
+                hex_engine::DeviceTypeId::from_static("hex.limiter")
+            );
+            assert_eq!(state.revision, before.revision + 1);
+            let installed = resident_source().expect("installed audio source");
+            assert_eq!(installed.output_identity, previous.output_identity);
+            assert_eq!(installed.context.editor_revision, state.revision);
+            assert_ne!(installed.audio_revision, previous.audio_revision);
+            assert!(view.transport.is_some_and(|(_, playing)| playing));
+            assert!(!view.pending);
             assert!(!cx.has_pending_prompt());
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "proceed did not install the device"
+            "browser Limiter did not install after Proceed"
         );
     }
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
 }

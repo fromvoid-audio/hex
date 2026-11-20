@@ -1831,6 +1831,8 @@ pub(crate) fn split_clip_at_tempo(
     }
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
+    crate::audio_edit::retain_outer_fade_crop_context(original, &mut left, tempo)?;
+    crate::audio_edit::retain_outer_fade_crop_context(original, &mut right, tempo)?;
     Ok((left, right))
 }
 

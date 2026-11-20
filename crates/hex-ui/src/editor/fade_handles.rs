@@ -48,23 +48,21 @@ impl Hover {
     }
 }
 
-// The hit target stays square; the painted curve control is a diamond.
+// Center the compact marker within the square hit target.
 pub(super) fn handle_shape(curve: bool, state: theme::FadeHandleState) -> impl gpui::IntoElement {
     let style = theme::fade_handle_style(state);
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            let left = f32::from(bounds.left()) + 0.75;
-            let top = f32::from(bounds.top()) + 0.75;
-            let right = f32::from(bounds.right()) - 0.75;
-            let bottom = f32::from(bounds.bottom()) - 0.75;
+            let center = bounds.center();
+            let (x, y) = (f32::from(center.x), f32::from(center.y));
+            let half_extent = |extent: Pixels| (f32::from(extent) / 2.0 - 0.75).max(0.0) / 2.0;
+            let half_width = half_extent(bounds.size.width);
+            let half_height = half_extent(bounds.size.height);
+            let (left, right) = (x - half_width, x + half_width);
+            let (top, bottom) = (y - half_height, y + half_height);
             let vertices = if curve {
-                [
-                    ((left + right) / 2.0, top),
-                    (right, (top + bottom) / 2.0),
-                    ((left + right) / 2.0, bottom),
-                    (left, (top + bottom) / 2.0),
-                ]
+                [(x, top), (right, y), (x, bottom), (left, y)]
             } else {
                 [(left, top), (right, top), (right, bottom), (left, bottom)]
             };
@@ -467,7 +465,12 @@ impl EditorView {
     }
     pub(super) fn fade_preview(&self, clip: ClipId) -> Option<ClipFade> {
         self.displayed_fade_drag()
-            .filter(|drag| drag.clip.id() == clip && drag.moved && drag.preview != drag.original)
+            .filter(|drag| {
+                drag.clip.id() == clip
+                    && drag.moved
+                    && drag.preview != drag.original
+                    && drag.preview_clip.is_none()
+            })
             .map(|drag| drag.preview)
     }
     pub(super) fn fade_trim_preview(&self, clip: ClipId) -> Option<&Clip> {
@@ -522,18 +525,37 @@ impl EditorView {
         let controls = fade.reanchor(clip.duration()).ok()?;
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
+        let project = &self.state.as_ref()?.project;
+        let tempo = project.tempo_map();
+        let outer = if let Some(fade) =
+            preview.filter(|_| project.arrangement_fade_edit_uses_outer(clip))
+        {
+            Some(clip.projected_outer_fade_preview(tempo, fade).ok()?)
+        } else {
+            clip.projected_outer_fade(tempo).ok()?
+        };
+        let shape = if outer.is_some() { fade } else { controls };
         let mut positions = Vec::with_capacity(6);
-        for (handle, (domain_frame, subframe), gain) in knots(controls) {
-            if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
-                || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
+        for (handle, (domain_frame, subframe), gain) in knots(shape) {
+            if matches!(handle, Handle::InCurve) && shape.fade_in() < 3
+                || matches!(handle, Handle::OutCurve) && shape.fade_out() < 3
             {
                 continue;
             }
-            // Subtract integer origins before conversion, preserving short-clip
-            // precision even near the maximum absolute project frame. Local
-            // knots are clip frames, so a subframe is already a frame fraction.
-            let relative = (i128::from(domain_frame) - i128::from(visible.0 - clip.start())) as f64
-                + subframe.max(0.0);
+            let project_frame = match &outer {
+                Some(projection) => {
+                    let Some(frame) = projection.frame_at_domain_position(domain_frame).ok()?
+                    else {
+                        continue;
+                    };
+                    frame
+                }
+                None => clip.start().checked_add(domain_frame)?,
+            };
+            // Subtract integer origins before casting to preserve nearby knots
+            // near the high end of the timeline.
+            let relative =
+                (i128::from(project_frame) - i128::from(visible.0)) as f64 + subframe.max(0.0);
             if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
             {
                 continue;

@@ -44,6 +44,26 @@ pub(super) fn compensated_long_source_bypass(
         })
 }
 
+/// Give the existing Power Off cut sole custody until it becomes silent.
+pub(super) fn power_off_fade_blocks_reenable(
+    revision: &PreparedRevision,
+    previous: &SessionPlayback,
+) -> bool {
+    previous
+        .tail_mutable_instruments
+        .iter()
+        .flatten()
+        .any(|tail| {
+            tail.is_powering_off()
+                && !tail.committed_is_quiescent()
+                && tail.runtime.expression_identity.is_some_and(|device| {
+                    revision.arrangement().tracks().iter().any(|track| {
+                        track.instrument_slot_enabled() && track.instrument_id == Some(device)
+                    })
+                })
+        })
+}
+
 /// A short, already-releasing source must finish before another kernel for
 /// the same device is admitted. The callback can retry while the old graph
 /// renders; held live inputs and long releases retain the existing policy.
@@ -61,7 +81,8 @@ pub(super) fn short_source_release_blocks_reenable(
                     .iter()
                     .flatten()
                     .any(|tail| {
-                        tail.runtime.expression_identity == Some(device)
+                        !tail.is_powering_off()
+                            && tail.runtime.expression_identity == Some(device)
                             && tail.runtime.max_release_tail_frames() <= limit
                             && !tail.runtime.has_committed_live_occurrences()
                             && tail.runtime.proofs().all(|note| {
@@ -89,7 +110,8 @@ pub(super) fn reenabled_release_receivers(
     let short_limit = u64::from(candidate.revision.arrangement().sample_rate().div_ceil(200));
     for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
         let Some(tail) = tail.as_ref().filter(|tail| {
-            !tail.runtime.committed_is_quiescent() || tail.runtime.has_committed_live_occurrences()
+            !tail.is_powering_off()
+                && (!tail.committed_is_quiescent() || tail.runtime.has_committed_live_occurrences())
         }) else {
             continue;
         };
@@ -2871,7 +2893,7 @@ mod tests {
     }
 
     #[test]
-    fn live_sampler_long_release_survives_reenable_without_reusing_input_ids() {
+    fn live_sampler_power_cycles_without_reusing_old_input_ids() {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
             use crate::playback::PlaybackCommand;
@@ -2953,8 +2975,6 @@ mod tests {
                     input.set_key(0, None).unwrap();
                     oracle_input.set_key(0, None).unwrap();
                     compare(&mut actual, &mut oracle, 13, "physical release");
-                } else {
-                    oracle_input.set_key(0, None).unwrap();
                 }
                 f.editor
                     .execute(Command::SetDeviceBypass {
@@ -2966,18 +2986,31 @@ mod tests {
                 disabled
                     .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
                     .unwrap();
-                compare(&mut disabled, &mut oracle, 32, "disable release");
+                let mut actual_fade = [[0.0; 2]; 32];
+                let mut expected_fade = actual_fade;
+                disabled.render(&mut actual_fade).unwrap();
+                oracle.render(&mut expected_fade).unwrap();
+                apply_power_fade(&mut expected_fade, 0, 40);
+                for (actual, expected) in actual_fade
+                    .iter()
+                    .flatten()
+                    .zip(expected_fade.iter().flatten())
+                {
+                    assert!((actual - expected).abs() < 0.000_001);
+                }
                 assert!(input.is_cancelled(), "disabled input is terminal");
                 if key_up == "while-disabled" {
                     input.set_key(0, None).unwrap();
                 }
                 input.set_key(1, Some((67, 127, 2))).unwrap();
-                compare(
-                    &mut disabled,
-                    &mut oracle,
-                    7,
-                    "disabled key up and new press",
-                );
+                let mut settled = [[0.0; 2]; 32];
+                let mut expected = settled;
+                disabled.render(&mut settled).unwrap();
+                oracle.render(&mut expected).unwrap();
+                apply_power_fade(&mut expected, 32, 40);
+                for (actual, expected) in settled.iter().flatten().zip(expected.iter().flatten()) {
+                    assert!((actual - expected).abs() < 0.000_001);
+                }
                 f.editor
                     .execute(Command::SetDeviceBypass {
                         device,
@@ -2991,7 +3024,10 @@ mod tests {
                 enabled
                     .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
                     .unwrap();
-                compare(&mut enabled, &mut oracle, 13, "reenable release");
+                let oracle_input = Arc::new(ComputerKeyboardInput::default());
+                let (mut oracle, _) = live_playback(&f, &oracle_input);
+                oracle.apply(PlaybackCommand::Play);
+                compare(&mut enabled, &mut oracle, 13, "fresh kernel");
                 for keys in [&fresh, &oracle_input] {
                     keys.set_key(1, Some((67, 127, 1))).unwrap();
                 }
@@ -3299,9 +3335,7 @@ mod tests {
                 })
                 .unwrap();
             let mut disabled = playback(&f);
-            let mut oracle = playback(&f);
             disabled.try_inherit_state_from(&mut old).unwrap();
-            oracle.try_inherit_state_from(&mut reference).unwrap();
             assert!(disabled.mutable_instruments.iter().all(Option::is_none));
             assert_eq!(
                 disabled.tail_mutable_instruments.iter().flatten().count(),
@@ -3321,12 +3355,13 @@ mod tests {
             assert_eq!(
                 reenabled.try_inherit_state_live_from(&mut disabled),
                 Err(SessionPlaybackError::DeviceTransitionBusy),
-                "live publication must wait for the short original release"
+                "live publication must wait for the original power fade"
             );
-            let mut actual = [[0.0; 2]; 32];
+            let mut actual = [[0.0; 2]; 64];
             let mut expected = actual;
             disabled.render(&mut actual).unwrap();
-            oracle.render(&mut expected).unwrap();
+            reference.render(&mut expected).unwrap();
+            apply_power_fade(&mut expected, 0, 40);
             assert_eq!(
                 actual, expected,
                 "refusal preserves the only original tail owner"
@@ -3337,7 +3372,7 @@ mod tests {
                     .flatten()
                     .any(|sample| sample.abs() > 0.001)
             );
-            assert_eq!(actual[16..], [[0.0; 2]; 16]);
+            assert_eq!(actual[40..], [[0.0; 2]; 24]);
             reenabled
                 .try_inherit_state_live_from(&mut disabled)
                 .unwrap();
@@ -3373,17 +3408,379 @@ mod tests {
         device
     }
 
+    fn apply_power_fade(pcm: &mut [Frame], elapsed: usize, fade: usize) {
+        for (offset, frame) in pcm.iter_mut().enumerate() {
+            let gain = fade.saturating_sub(elapsed + offset) as f32 / fade as f32;
+            *frame = frame.map(|sample| sample * gain);
+        }
+    }
+
     #[test]
-    fn rapid_shared_source_reenable_preserves_the_original_long_release() {
+    fn shared_mutable_power_off_fades_the_held_waveform_and_starts_fresh() {
         on_control(|| {
             let mut f = fixture();
             let device = long_sampler_release(&mut f);
-            check_rapid_source_toggles(&mut f, device);
+            check_mutable_power_restart(&mut f, device);
+        });
+    }
+
+    fn check_mutable_power_restart(f: &mut Fixture, device: hex_project::DeviceId) {
+        const FADE: usize = 40;
+        let mut previous = playback(f);
+        let mut reference = playback(f);
+        for runtime in [&mut previous, &mut reference] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 7]).unwrap();
+        }
+        f.editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let mut disabled = playback(f);
+        disabled.try_inherit_state_from(&mut previous).unwrap();
+
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = actual;
+        disabled.render(&mut actual[..13]).unwrap();
+
+        // An ordinary following revision carries the remaining fade only.
+        let mut successor = playback(f);
+        successor
+            .try_inherit_state_live_from(&mut disabled)
+            .unwrap();
+        f.editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            })
+            .unwrap();
+        let mut enabled = playback(f);
+        assert_eq!(
+            enabled.try_inherit_state_live_from(&mut successor),
+            Err(SessionPlaybackError::DeviceTransitionBusy),
+        );
+        successor.render(&mut actual[13..]).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert!(
+            actual[FADE..].iter().all(|frame| *frame == [0.0; 2]),
+            "old mutable DSP rendered past the 5 ms power-off deadline"
+        );
+        assert_ne!(expected[0], [0.0; 2]);
+        apply_power_fade(&mut expected, 0, FADE);
+        for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+            assert!((actual - expected).abs() < 0.000_001);
+        }
+        // The provider would still render the held note. The host has ended
+        // its authority and keeps the allocation parked for control retirement.
+        let tail = successor
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .next()
+            .unwrap();
+        assert!(!tail.runtime.committed_is_quiescent());
+        assert!(tail.committed_is_quiescent());
+
+        enabled.try_inherit_state_live_from(&mut successor).unwrap();
+        enabled.render(&mut actual).unwrap();
+        assert_eq!(
+            actual, [[0.0; 2]; 64],
+            "the preceding note onset stays silent"
+        );
+        assert!(
+            enabled
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|runtime| runtime.committed_is_quiescent())
+        );
+        assert!(enabled.tail_mutable_instruments.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn power_fade_enters_the_live_stateful_receiver_once() {
+        on_control(|| {
+            let mut f = fixture();
+            let instrument = long_sampler_release(&mut f);
+            let Created::Device(gate) = f
+                .editor
+                .execute(Command::InsertDevice {
+                    track: f.receiver,
+                    before: None,
+                    state: crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID)
+                        .unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("Gate");
+            };
+            let mut previous = playback(&f);
+            let mut reference = playback(&f);
+            for runtime in [&mut previous, &mut reference] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+            }
+            let observed = |runtime: &mut SessionPlayback| {
+                let mut input = [[0.0; 2]; 64];
+                let mut count = 0;
+                let mut output = [[0.0; 2]; 64];
+                runtime
+                    .render_with_node_signal_observer(
+                        &mut output,
+                        Some(&mut |node, phase, offset, frames| {
+                            if node.device_id == gate.value()
+                                && phase == crate::NodeSignalPhase::Input
+                            {
+                                assert_eq!(offset, count, "one active receiver processor");
+                                count += frames.len();
+                                input[offset..count].copy_from_slice(frames);
+                            }
+                        }),
+                    )
+                    .unwrap();
+                assert_eq!(count, input.len());
+                (input, output)
+            };
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_from(&mut previous).unwrap();
+            let (mut expected, uninterrupted) = observed(&mut reference);
+            assert_ne!(expected[0], [0.0; 2]);
+            apply_power_fade(&mut expected, 0, 40);
+            let (actual, output) = observed(&mut disabled);
+            assert_eq!(
+                actual, expected,
+                "the live Gate consumes the bounded source fade"
+            );
+            assert_eq!(
+                output[0], uninterrupted[0],
+                "receiver detector history survives the cut"
+            );
+            assert!(
+                disabled
+                    .tail_groups
+                    .iter()
+                    .flatten()
+                    .all(|chain| chain.is_empty())
+            );
+
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: false,
+                })
+                .unwrap();
+            let mut enabled = playback(&f);
+            enabled.try_inherit_state_live_from(&mut disabled).unwrap();
+            let (input, _) = observed(&mut enabled);
+            assert_eq!(
+                input, [[0.0; 2]; 64],
+                "fresh kernel cannot replay the old note"
+            );
+        });
+    }
+
+    fn source_owned_effects(
+        f: &mut Fixture,
+        effects: impl IntoIterator<Item = hex_lattice_contract::NativeDeviceState>,
+    ) -> (hex_project::DeviceId, Vec<hex_project::DeviceId>) {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        let instrument = f
+            .editor
+            .project()
+            .native_source(f.source)
+            .unwrap()
+            .instrument()
+            .id();
+        f.editor
+            .execute(Command::ReplaceDeviceState {
+                device: instrument,
+                state: hex_devices::fm4::device::FM4_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap();
+        for track in [f.receiver, f.contributor] {
+            f.editor
+                .execute(Command::BindTrackSource {
+                    track,
+                    source: None,
+                })
+                .unwrap();
+        }
+        let ids = effects
+            .into_iter()
+            .map(|state| {
+                let Created::Device(device) = f
+                    .editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state,
+                    })
+                    .unwrap()
+                else {
+                    panic!("source effect");
+                };
+                device
+            })
+            .collect();
+        for track in [f.receiver, f.contributor] {
+            f.editor
+                .execute(Command::BindTrackSource {
+                    track,
+                    source: Some(f.source),
+                })
+                .unwrap();
+        }
+        (instrument, ids)
+    }
+
+    #[test]
+    fn source_owned_gate_keeps_its_single_path_through_mutable_power_cycles() {
+        on_control(|| {
+            let mut f = fixture();
+            let gate = crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID).unwrap();
+            let (instrument, _) = source_owned_effects(&mut f, [gate]);
+            let mut previous = playback(&f);
+            let mut reference = playback(&f);
+            assert!(previous.source_effects.has_chain(0));
+            for runtime in [&mut previous, &mut reference] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+            }
+            let mut uninterrupted = [[0.0; 2]; 1];
+            reference.render(&mut uninterrupted).unwrap();
+            assert_ne!(uninterrupted[0], [0.0; 2]);
+
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_live_from(&mut previous).unwrap();
+            assert!(disabled.receiver_power_off_slots[0].is_some());
+            let mut output = [[0.0; 2]; 64];
+            disabled.render(&mut output[..13]).unwrap();
+            let mut successor = playback(&f);
+            successor
+                .try_inherit_state_live_from(&mut disabled)
+                .unwrap();
+
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device: instrument,
+                    bypassed: false,
+                })
+                .unwrap();
+            let mut enabled = playback(&f);
+            assert_eq!(
+                enabled.try_inherit_state_live_from(&mut successor),
+                Err(SessionPlaybackError::DeviceTransitionBusy)
+            );
+            successor.render(&mut output[13..]).unwrap();
+            assert_eq!(output[0], uninterrupted[0]);
+            assert_eq!(output[40..], [[0.0; 2]; 24]);
+            assert!(
+                successor
+                    .tail_groups
+                    .iter()
+                    .flatten()
+                    .all(|chain| chain.is_empty())
+            );
+            enabled.try_inherit_state_live_from(&mut successor).unwrap();
+            enabled.render(&mut output).unwrap();
+            assert_eq!(output, [[0.0; 2]; 64]);
         });
     }
 
     #[test]
-    fn rapid_static_utility_receiver_reenable_preserves_the_original_release() {
+    fn source_owned_removal_fades_once_and_keeps_the_held_generator() {
+        use crate::session_playback::NativeRemovalProgress;
+        use hex_devices::delay::DEFINITION;
+        use hex_lattice_contract::NativeDeviceMetadata;
+        on_control(|| {
+            let delay = DEFINITION.default_state().unwrap();
+            for surviving_gate in [false, true] {
+                let mut f = fixture();
+                let gate =
+                    crate::default_native_device_state(hex_devices::gate::GATE_TYPE_ID).unwrap();
+                let (_, devices) = source_owned_effects(
+                    &mut f,
+                    surviving_gate
+                        .then_some(gate)
+                        .into_iter()
+                        .chain([delay.clone()]),
+                );
+                let mut old = playback(&f);
+                let mut wet = playback(&f);
+                f.editor
+                    .execute(Command::RemoveDevice(*devices.last().unwrap()))
+                    .unwrap();
+                let mut next = playback(&f);
+                let mut dry = playback(&f);
+                for runtime in [&mut old, &mut wet, &mut dry] {
+                    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                    runtime.render(&mut [[0.0; 2]; 129]).unwrap();
+                }
+                next.require_continuous_insert = true;
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old),
+                    Ok(NativeRemovalProgress::Fading)
+                );
+                assert_eq!(
+                    next.try_inherit_state_live_from(&mut old),
+                    Err(SessionPlaybackError::DeviceTransitionBusy)
+                );
+                let mut dry_pcm = [[0.0; 2]; 56];
+                let mut wet_pcm = dry_pcm;
+                let mut actual = dry_pcm;
+                dry.render(&mut dry_pcm).unwrap();
+                wet.render(&mut wet_pcm).unwrap();
+                assert!(dry_pcm.iter().any(|sample| sample[0].abs() > 0.01));
+                assert_ne!(wet_pcm, dry_pcm);
+                old.render(&mut actual[..11]).unwrap();
+                old.render(&mut actual[11..39]).unwrap();
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old),
+                    Ok(NativeRemovalProgress::Fading)
+                );
+                old.render(&mut actual[39..40]).unwrap();
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old),
+                    Ok(NativeRemovalProgress::Ready)
+                );
+                let report = next.try_inherit_state_live_from(&mut old).unwrap();
+                assert!(!report.running_audio_restart);
+                assert_eq!(next.performance_frame(), 169);
+                assert_eq!(next.source_effects.has_chain(0), surviving_gate);
+                next.render(&mut actual[40..]).unwrap();
+                for (index, actual) in actual.iter().enumerate() {
+                    let elapsed = (index + 1).min(40) as f32 / 40.0;
+                    for channel in 0..2 {
+                        let dry = dry_pcm[index][channel];
+                        let wet = wet_pcm[index][channel];
+                        let expected = dry + (wet - dry) * (1.0 - elapsed);
+                        assert!(
+                            (actual[channel] - expected).abs() < 1e-6,
+                            "{index} {channel}"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn static_utility_receiver_preserves_its_processing_during_power_fade() {
         on_control(|| {
             use hex_devices::utility::{UTILITY_DEFINITION as utility, parameter as p};
             use hex_lattice_contract::ParameterValue;
@@ -3426,15 +3823,16 @@ mod tests {
                         })
                         .unwrap();
                 }
-                check_rapid_source_toggles(&mut f, device);
+                check_mutable_power_restart(&mut f, device);
             }
         });
     }
 
     #[test]
-    fn rapid_shared_analytic_reenable_preserves_the_original_release() {
+    fn rapid_shared_analytic_reenable_keeps_the_first_power_off_deadline() {
         on_control(|| {
-            let mut f = fixture();
+            // A rate whose 5 ms deadline needs rounding to a whole frame.
+            let mut f = fixture_at(44_100);
             let device = f
                 .editor
                 .project()
@@ -3450,11 +3848,18 @@ mod tests {
                 })
                 .unwrap();
             assert!(playback(&f).mutable_instruments.iter().all(Option::is_none));
-            check_rapid_source_toggles(&mut f, device);
+            let maximum_tail = f.editor.project().sample_rate().div_ceil(200) as usize;
+            check_rapid_source_toggles(&mut f, device, maximum_tail);
         });
     }
 
-    fn check_rapid_source_toggles(f: &mut Fixture, device: hex_project::DeviceId) {
+    fn check_rapid_source_toggles(
+        f: &mut Fixture,
+        device: hex_project::DeviceId,
+        maximum_tail: usize,
+    ) {
+        const BLOCK: usize = 13;
+        const TOGGLES: [bool; 4] = [true, false, true, false];
         let mut current = playback(f);
         let mut reference = playback(f);
         let mut held = playback(f);
@@ -3464,7 +3869,7 @@ mod tests {
         }
         let mut boundary = [[0.0; 2]; 1];
         held.render(&mut boundary).unwrap();
-        for (turn, bypassed) in [true, false, true, false].into_iter().enumerate() {
+        for (turn, bypassed) in TOGGLES.into_iter().enumerate() {
             f.editor
                 .execute(Command::SetDeviceBypass { device, bypassed })
                 .unwrap();
@@ -3475,7 +3880,7 @@ mod tests {
                 disabled.try_inherit_state_from(&mut reference).unwrap();
                 reference = disabled;
             }
-            let mut actual = [[0.0; 2]; 13];
+            let mut actual = [[0.0; 2]; BLOCK];
             let mut expected = actual;
             candidate.render(&mut actual).unwrap();
             reference.render(&mut expected).unwrap();
@@ -3490,6 +3895,16 @@ mod tests {
             current = candidate;
         }
         let mut settled = [[1.0; 2]; 256];
+        let mut expected = settled;
+        current.render(&mut settled).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(settled, expected, "rapid toggles cannot restart the fade");
+        assert!(
+            settled[maximum_tail - BLOCK * TOGGLES.len()..]
+                .iter()
+                .all(|frame| *frame == [0.0; 2]),
+            "the original receiver cut sets the power-off deadline"
+        );
         for _ in 0..4 {
             current.render(&mut settled).unwrap();
         }

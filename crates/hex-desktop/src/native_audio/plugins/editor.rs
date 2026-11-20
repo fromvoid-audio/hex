@@ -565,6 +565,7 @@ mod tests {
                 operation: Arc::clone(&operation),
                 binding,
                 context,
+                canonical_context: context,
                 result: Some(Ok(NativeDeviceState::new(
                     hex_engine::DeviceTypeId::from_static("hex.vst3"),
                     1,

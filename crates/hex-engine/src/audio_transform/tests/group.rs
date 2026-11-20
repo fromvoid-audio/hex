@@ -92,6 +92,53 @@ fn group_fixture() -> (
     )
 }
 
+fn child_peaks(
+    revision: &crate::PreparedRevision,
+    group: hex_project::ClipId,
+) -> &Arc<PreparedGroupEventSources> {
+    revision
+        .arrangement()
+        .audio_clip_views()
+        .iter()
+        .find(|view| view.clip == group)
+        .unwrap()
+        .group_event_sources
+        .as_ref()
+        .expect("the group must expose the children used in composition")
+}
+
+fn assert_children_match_rendered_pcm(
+    revision: &crate::PreparedRevision,
+    clip: &hex_project::Clip,
+    original: &[crate::Frame],
+) {
+    let table = child_peaks(revision, clip.id());
+    let events = clip.audio_events();
+    assert_eq!(table.sources().len(), events.sources.len());
+    for child in &events.sources {
+        let peaks = &table.sources()[table.index_of(child.id).unwrap()].1;
+        assert_eq!(peaks.source_frames(), child.clip.duration() as usize);
+        let source_start = child.clip.start() as usize;
+        let frames = &original[source_start..source_start + peaks.source_frames()];
+        let bins = peaks.bins();
+        let width = frames.len() / bins.len();
+        let extra = frames.len() % bins.len();
+        let mut offset = 0;
+        for (index, bin) in bins.iter().enumerate() {
+            let end = offset + width + usize::from(index < extra);
+            for channel in 0..2 {
+                let values = frames[offset..end].iter().map(|frame| frame[channel]);
+                assert_eq!(
+                    bin.min[channel],
+                    values.clone().fold(f32::INFINITY, f32::min)
+                );
+                assert_eq!(bin.max[channel], values.fold(f32::NEG_INFINITY, f32::max));
+            }
+            offset = end;
+        }
+    }
+}
+
 #[test]
 fn retained_event_gain_matches_edit_before_group_and_undo() {
     let (mut editor, ids, media) = group_fixture();
@@ -331,14 +378,20 @@ fn directed_nested_group_preserves_pcm_and_undo() {
     };
     let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
     let expected = render(&prepare(&editor, &media, &context), 0, 19_000, 127);
-    editor
+    let Created::Clip(parent) = editor
         .execute(Command::GroupClips(vec![group, third]))
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("nested group")
+    };
+    let prepared = prepare(&editor, &media, &context);
+    assert_children_match_rendered_pcm(
+        &prepared,
+        editor.project().clip(parent).unwrap(),
+        &expected,
+    );
     for block in [64, 257] {
-        assert_eq!(
-            render(&prepare(&editor, &media, &context), 0, 19_000, block),
-            expected
-        );
+        assert_eq!(render(&prepared, 0, 19_000, block), expected);
     }
     assert!(editor.undo());
     assert_eq!(
@@ -407,6 +460,7 @@ fn grouped_sources_preserve_exact_pcm_gaps_gains_fades_loops_offsets_and_undo() 
         panic!("group")
     };
     let after = prepare(&editor, &media, &context);
+    assert_children_match_rendered_pcm(&after, editor.project().clip(group).unwrap(), &expected);
     for block in [1, 64, 257, 1_024] {
         assert_eq!(render(&after, 0, 16_000, block), expected);
         assert_eq!(
@@ -420,7 +474,11 @@ fn grouped_sources_preserve_exact_pcm_gaps_gains_fades_loops_offsets_and_undo() 
             .all(|frame| *frame == [0.0; 2])
     );
     let hits = context.cache_hits();
-    let _again = prepare(&editor, &media, &context);
+    let again = prepare(&editor, &media, &context);
+    assert!(Arc::ptr_eq(
+        child_peaks(&after, group),
+        child_peaks(&again, group)
+    ));
     assert!(context.cache_hits() > hits);
     assert_eq!(
         editor
@@ -480,9 +538,26 @@ fn grouped_sources_preserve_exact_pcm_gaps_gains_fades_loops_offsets_and_undo() 
         second_asset,
         Audio::new(16_000, vec![[0.0; 2]; 6_000]).unwrap(),
     );
-    let changed = render(&prepare(&editor, &changed_media, &context), 0, 16_000, 257);
+    let changed_view = prepare(&editor, &changed_media, &context);
+    assert!(!Arc::ptr_eq(
+        child_peaks(&after, group),
+        child_peaks(&changed_view, group)
+    ));
+    let changed = render(&changed_view, 0, 16_000, 257);
     assert_eq!(&changed[..11_000], &expected[..11_000]);
     assert!(changed[11_000..].iter().all(|frame| *frame == [0.0; 2]));
+    assert_children_match_rendered_pcm(
+        &changed_view,
+        editor.project().clip(group).unwrap(),
+        &changed,
+    );
+    let uncached = prepare(&editor, &media, &isolated(16 * 1024 * 1024, 0, 0));
+    assert!(
+        uncached.arrangement().audio_clip_views()[0]
+            .group_event_sources
+            .is_none()
+    );
+    assert_eq!(render(&uncached, 0, 16_000, 127), expected);
 }
 
 #[test]
@@ -636,10 +711,9 @@ fn grouped_warped_sources_keep_captured_tempo_and_resident_source_requirement() 
             tempo: Tempo::new(90_000_000).unwrap(),
         })
         .unwrap();
-    assert_eq!(
-        render(&prepare(&editor, &media, &context), 0, 16_000, 311),
-        expected
-    );
+    let prepared = prepare(&editor, &media, &context);
+    assert_eq!(render(&prepared, 0, 16_000, 311), expected);
+    assert_children_match_rendered_pcm(&prepared, editor.project().clip(group).unwrap(), &expected);
     let sources: BTreeMap<_, _> = media
         .iter()
         .map(|(id, audio)| {
@@ -1011,11 +1085,10 @@ fn grouped_child_and_event_fades_keep_source_phase_through_move_and_history() {
         frame[0] *= gain;
         frame[1] *= gain;
     }
+    let faded = prepare(&editor, &media, &context);
+    assert_children_match_rendered_pcm(&faded, editor.project().clip(group).unwrap(), &before);
     for block in [1, 17, 257] {
-        assert_eq!(
-            render(&prepare(&editor, &media, &context), 0, 15_000, block),
-            expected
-        );
+        assert_eq!(render(&faded, 0, 15_000, block), expected);
     }
     editor
         .execute(Command::EditAudioEvents {
@@ -1357,3 +1430,6 @@ fn grouped_transforms_charge_each_distinct_source_once() {
     );
     assert!(context.cache_hits() > 0);
 }
+
+#[path = "group_outer_fade.rs"]
+mod outer_fade;

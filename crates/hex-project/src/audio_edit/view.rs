@@ -37,6 +37,18 @@ impl Clip {
         gate_start: u64,
         tempo: &TempoMap,
     ) -> Result<Self, Invalid> {
+        let mut result = self.with_musical_leading_silence_source(gate_start, tempo)?;
+        retain_outer_fade_crop_context(self, &mut result, tempo)?;
+        Ok(result)
+    }
+
+    // A retained trim can rewind the source first. Its outer caller carries the
+    // one context transfer from the original clip across both steps.
+    pub(super) fn with_musical_leading_silence_source(
+        &self,
+        gate_start: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
         let edit = self
             .audio_edit()
             .filter(|edit| {
@@ -994,6 +1006,15 @@ impl<'a> AudioViewProjection<'a> {
     }
     /// Elapsed destination clock at a project frame; the exact end is permitted.
     pub fn elapsed_at_frame(&self, frame: u64) -> Result<u64, Invalid> {
+        u64::try_from(self.signed_elapsed_at_frame(frame)?)
+            .map_err(|_| Invalid("audio content frame precedes placement"))
+    }
+
+    /// Unwrapped forward destination context before/inside/after this gate.
+    /// Units are frames or raw beat ticks, following the same retained clock
+    /// and exact endpoint identities as elapsed_at_frame. Negative values are
+    /// technical crop/prefix context and do not grant negative placement.
+    pub(super) fn signed_elapsed_at_frame(&self, frame: u64) -> Result<i128, Invalid> {
         // A rounded frame endpoint can invert to one raw beat tick outside
         // its authored endpoint. Preserve the finite window's exact identity.
         if frame == self.placed_frames.0 {
@@ -1001,11 +1022,8 @@ impl<'a> AudioViewProjection<'a> {
         }
         if frame == self.placed_frames.1 {
             return self.content.map_or_else(
-                || {
-                    u64::try_from(self.end - self.start)
-                        .map_err(|_| Invalid("audio elapsed length overflow"))
-                },
-                |(window, _, _)| window.length(),
+                || Ok(self.end - self.start),
+                |(window, _, _)| window.length().map(i128::from),
             );
         }
         let (_, start, displacement) = self.content.unwrap_or((
@@ -1025,8 +1043,9 @@ impl<'a> AudioViewProjection<'a> {
         } else {
             raw
         };
-        u64::try_from(position - start)
-            .map_err(|_| Invalid("audio content frame precedes placement"))
+        position
+            .checked_sub(start)
+            .ok_or(Invalid("audio elapsed destination coordinate overflow"))
     }
     /// Project an elapsed destination clock boundary with the same live/frozen law.
     pub fn frame_at_elapsed(&self, elapsed: u64) -> Result<u64, Invalid> {

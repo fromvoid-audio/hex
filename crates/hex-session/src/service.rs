@@ -196,6 +196,67 @@ pub struct AudioClipWaveform {
     /// Original processing-root peaks for metadata-only placement gestures.
     /// Outer waveform above continues to match actual committed playback.
     pub preview_root: Option<AudioPreviewWaveform>,
+    /// Neutral destination peaks and their accepted musical placement clock.
+    pub neutral_musical: Option<AudioMusicalWaveform>,
+    /// Peak-only transformed source before event composition and fades.
+    pub event_source: Option<AudioEventSourceWaveform>,
+    /// Retained children before their events in this accepted group composition.
+    pub group_event_sources: Option<Arc<AudioGroupEventWaveforms>>,
+}
+
+pub struct AudioGroupEventWaveforms {
+    pub(crate) prepared: Arc<hex_engine::audio_transform::PreparedGroupEventSources>,
+    pub(crate) waveforms: Vec<Arc<Waveform>>,
+}
+
+impl AudioGroupEventWaveforms {
+    /// Peak-only waveform in the retained child's compiled playback coordinates.
+    pub fn waveform(&self, source_id: u64) -> Option<&Arc<Waveform>> {
+        self.waveforms.get(self.prepared.index_of(source_id)?)
+    }
+}
+
+#[derive(Clone)]
+pub struct AudioEventSourceWaveform {
+    pub waveform: Arc<Waveform>,
+    /// Source clock for beat-domain peaks, including a retained source origin.
+    pub musical_clock: Option<hex_engine::audio_transform::PreparedMusicalEventSourceClock>,
+    /// Verified shared-root loop read before any outer clip fade.
+    pub repeat: Option<hex_engine::PreparedAudioRepeat>,
+    /// Accepted occurrence reads when playback materializes distinct or directed roots.
+    pub occurrences: Option<Arc<AudioEventOccurrenceWaveforms>>,
+}
+
+/// Source peaks bound to the placement table from the same prepared revision.
+pub struct AudioEventOccurrenceWaveforms {
+    pub(crate) prepared: Arc<hex_engine::audio_transform::PreparedEventOccurrences>,
+    pub(crate) waveforms: Vec<Arc<Waveform>>,
+}
+
+impl AudioEventOccurrenceWaveforms {
+    pub fn reads(&self) -> &[hex_engine::audio_transform::PreparedEventOccurrence] {
+        self.prepared.reads()
+    }
+
+    pub fn waveform(&self, index: usize) -> Option<&Arc<Waveform>> {
+        self.waveforms.get(index)
+    }
+
+    pub fn directed(&self) -> Option<&hex_engine::audio_transform::PreparedDirectedEventRead> {
+        self.prepared.directed()
+    }
+}
+
+impl AudioEventSourceWaveform {
+    pub fn frame_waveform(&self) -> Option<&Arc<Waveform>> {
+        self.musical_clock.is_none().then_some(&self.waveform)
+    }
+}
+
+#[derive(Clone)]
+pub struct AudioMusicalWaveform {
+    pub waveform: Arc<Waveform>,
+    pub tempo: Arc<hex_project::TempoMap>,
 }
 
 #[derive(Clone)]
@@ -3305,9 +3366,8 @@ fn run_worker(
         &document_intent,
         &mut recording_barrier,
         session.native_reservation.is_some() || pending_recovery_outcome.is_some(),
-        pending_plugin_effect
-            .as_ref()
-            .map(|pending| &pending.insertion),
+        pending_plugin_effect.as_ref(),
+        device_gesture.snapshot().is_some(),
         pending_device_insert.as_ref(),
         pending_stopped_restore,
         hex_engine::AudioSourceContext {
@@ -3557,6 +3617,13 @@ fn run_worker(
         let queued = if events.resident_publication_enabled()
             && session.audio_mode() == DocumentAudioMode::Resident
             && (clip_audition_release
+                || (matches!(&queued.request, Request::ContinuePluginEffect)
+                    && pending_plugin_effect.as_ref().is_some_and(|pending| {
+                        pending.matches_context(hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        }) && !pending.insertion.control.is_cancelled()
+                    }))
                 || matches!(
                     &queued.request,
                     Request::MoveExistingClips { .. }
@@ -3713,6 +3780,12 @@ fn run_worker(
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
+        if publication_wait_failure.is_some()
+            && matches!(&request, Request::ContinuePluginEffect)
+            && let Some(pending) = pending_plugin_effect.take()
+        {
+            plugin_effect_complete.push(pending.finish(events.sampler_edit_audio(), false));
+        }
         let mut device_insert_confirmation = None;
         let mut device_insert_complete = None;
         let plugin_parameter_observation = request.is_read_only_observation();
@@ -5829,6 +5902,14 @@ fn run_worker(
                     }
                 }
                 Request::DeviceGesture(gesture) => {
+                    let independent_plugin_eq = device_gesture
+                        .snapshot()
+                        .filter(|active| active.key == gesture.key())
+                        .and_then(|active| {
+                            pending_plugin_effect
+                                .as_ref()?
+                                .independent_eq_gesture(session.project(), active.target)
+                        });
                     gesture_request = true;
                     gesture_protocol_ack = true;
                     let mut deferred = false;
@@ -5958,6 +6039,20 @@ fn run_worker(
                             crate::device_gesture::GesturePhase::Commit
                                 | crate::device_gesture::GesturePhase::Cancel
                         );
+                    if native_terminal_accepted
+                        && outcome.canonical_changed
+                        && let Some(device) = independent_plugin_eq
+                        && let Some(pending) = pending_plugin_effect.as_mut()
+                    {
+                        pending.rebase_after_accepted_eq_write(
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            session.project(),
+                            device,
+                        );
+                    }
                     if deferred {
                         request_complete = false;
                         plugin_recording.defer(gesture);
@@ -6522,7 +6617,7 @@ fn run_worker(
                                             return Err("vst3 preparation did not finish".into());
                                         };
                                         // Recheck the captured target before preparing the canonical transaction.
-                                        pending.insertion.validate(context, session.project())?;
+                                        pending.validate(context, session.project())?;
                                         let command = pending.insertion.command(state)?;
                                         let sink = events
                                             .resident_audio()
@@ -8696,6 +8791,16 @@ fn run_worker(
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
+                                    if let Some(pending) = pending_plugin_effect.as_mut() {
+                                        pending.rebase_after_accepted_eq_write(
+                                            hex_engine::AudioSourceContext {
+                                                project_generation,
+                                                editor_revision: revision,
+                                            },
+                                            session.project(),
+                                            device,
+                                        );
+                                    }
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     status = Some(
@@ -11094,14 +11199,16 @@ fn run_worker(
         // A lease resolved for this request but not consumed is released here.
         events.finish_stopped_fence();
         if pending_plugin_effect.as_ref().is_some_and(|pending| {
-            pending.insertion.context
-                != hex_engine::AudioSourceContext {
-                    project_generation,
-                    editor_revision: revision,
-                }
-                || pending.insertion.control.is_cancelled()
+            !pending.matches_context(hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            }) || pending.insertion.control.is_cancelled()
                 || pending_sampler_parameter.is_some()
-                || device_gesture.snapshot().is_some()
+                || device_gesture.snapshot().is_some_and(|gesture| {
+                    pending
+                        .independent_eq_gesture(session.project(), gesture.target)
+                        .is_none()
+                })
                 || tuning_gesture.snapshot().is_some()
         }) && let Some(pending) = pending_plugin_effect.take()
         {

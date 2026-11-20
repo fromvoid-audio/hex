@@ -2,13 +2,13 @@
 use super::*;
 fn geometry(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<[i32; 4]> {
     let b = visual.debug_bounds("midi-note-roll").unwrap();
-    let rows = editor.read_with(&*visual, |v, _| v.piano_pitch_rows);
+    let rows = editor.read_with(&*visual, |v, _| v.piano_pitch.test_row_count());
     let height = ((f32::from(b.size.height) - 2.) / f32::from(rows) - 2.).max(1.);
     let scale = gpui::ScaledPixels::from(visual.update(|w, _| w.scale_factor()));
     let mut result: Vec<_> = visual
         .rendered_filled_quads("midi-note-roll")
         .into_iter()
-        // Canonical notes also paint one-pixel leading/trailing borders.
+        // Ignore grid strokes and count only note bodies.
         .filter(|(b, _)| {
             (b.size.height / scale - height).abs() < 0.01 && b.size.width / scale > 1.01
         })

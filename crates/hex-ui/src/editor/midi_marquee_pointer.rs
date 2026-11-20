@@ -216,11 +216,7 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        let Some(pitch) =
-            super::super::PitchViewport::from_rows(self.piano_pitch_low, self.piano_pitch_rows)
-        else {
-            return;
-        };
+        let pitch = self.piano_pitch;
         let context = MarqueeContext {
             scene: super::super::midi_scene::SceneKey {
                 generation: self.project_generation,

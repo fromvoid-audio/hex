@@ -242,8 +242,7 @@ impl EditorView {
                 .is_some_and(|s| s.revision == g.context.revision)
             && self.piano_beat_start == g.context.view_start
             && self.piano_beat_span.raw() == g.context.view_span
-            && self.piano_pitch_low == g.context.pitch_low
-            && self.piano_pitch_rows == g.context.pitch_rows
+            && self.piano_pitch == g.context.pitch
             && self.midi_snap_grid == g.context.grid
             && self.midi_draw_mode == g.context.draw_mode
             && self.midi_draw_pitch_locked == g.context.pitch_locked

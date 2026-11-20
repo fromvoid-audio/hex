@@ -2233,7 +2233,7 @@ fn completed_foreign_track_suffix_does_not_reuse_a_changed_endpoint() {
 #[test]
 fn completed_foreign_track_does_not_discard_native_suffix_history() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
-    let prepare = |epoch| {
+    let prepare = |epoch, gain_db| {
         let mut f = fixture(&[&[]], 64);
         let track = f.tracks[0];
         let Created::Device(device) = f
@@ -2258,7 +2258,7 @@ fn completed_foreign_track_does_not_discard_native_suffix_history() {
             .execute(Command::InsertDevice {
                 track,
                 before: None,
-                state: utility,
+                state: utility.with_output_gain_db(gain_db).unwrap(),
             })
             .unwrap();
         let foreign = BorrowedDefinition {
@@ -2287,26 +2287,59 @@ fn completed_foreign_track_does_not_discard_native_suffix_history() {
         .unwrap();
         SessionPlayback::new(Arc::new(revision)).unwrap()
     };
-    let mut old = prepare(1);
-    let mut next = prepare(2);
-    let chain = &mut old.device_chains[0];
-    assert_eq!(chain.len(), 2);
-    chain.begin_block();
-    chain
-        .process_range_with_foreign(
-            0..chain.len(),
-            &mut [[0.0; 2]; 64],
-            0,
-            None,
-            None,
-            &mut QuietTrackEffect,
-        )
-        .unwrap();
-    chain.commit_block();
-    assert!(chain.committed_range_is_quiescent(0..chain.len()));
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    assert!(next.try_inherit_state_from(&mut old).is_err());
-    assert!(old.playing);
+    let mut old = prepare(1, 0.0);
+    let mut next = prepare(2, -12.0);
+    let mut reference = prepare(1, -12.0);
+    let mut matching_old = prepare(1, 0.0);
+    for runtime in [&mut old, &mut matching_old] {
+        let chain = &mut runtime.device_chains[0];
+        assert_eq!(chain.len(), 2);
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(
+                0..chain.len(),
+                &mut [[0.0; 2]; 64],
+                0,
+                None,
+                None,
+                &mut QuietTrackEffect,
+            )
+            .unwrap();
+        chain.commit_block();
+        assert!(chain.committed_range_is_quiescent(0..chain.len()));
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    reference.try_inherit_state_from(&mut matching_old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    assert!(next.playing);
+    assert!(next.tail_groups.iter().all(Option::is_none));
+    assert_eq!(
+        next.device_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+
+    // Observe the continuing native gain ramp on fresh input. A discarded
+    // native history would start immediately at the new target gain.
+    let input = [[0.25; 2]; 8];
+    let render_native = |runtime: &mut SessionPlayback| {
+        let mut output = input;
+        let chain = &mut runtime.device_chains[0];
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(1..2, &mut output, 0, None, None, &mut QuietTrackEffect)
+            .unwrap();
+        chain.commit_block();
+        output
+    };
+    let fresh = render_native(&mut prepare(2, -12.0));
+    let expected = render_native(&mut reference);
+    assert_ne!(expected, fresh, "nontrivial native continuation");
+    assert_eq!(render_native(&mut next), expected);
 }
 
 mod shared_source_release;

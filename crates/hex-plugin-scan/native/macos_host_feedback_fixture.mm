@@ -146,7 +146,10 @@ int main(int argc,char** argv) { @autoreleasepool {
     // Do not detach mid-gesture; fence reentrant callbacks only during detach.
     Host detaching;
     assert(detaching.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+    assert(detaching.editor_admission_sequence_on_worker()==0);
     assert(detaching.beginEdit(7)==kResultOk);
+    assert(detaching.editor_admission_sequence_on_worker()==1);
+    assert(detaching.editor_frontier_on_worker()==0);
     assert(detaching.performEdit(7,0.5)==kResultOk);
     assert(detaching.begin_editor_detach_on_control()==EditorDetachAdmission::GestureActive);
     assert(detaching.endEdit(7)==kResultOk);
@@ -225,10 +228,13 @@ int main(int argc,char** argv) { @autoreleasepool {
     Host grouped(false,true);
     assert(grouped.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
     assert(grouped.startGroupEdit()==kResultOk);
+    assert(grouped.editor_admission_sequence_on_worker()==1);
     assert(grouped.beginEdit(7)==kResultOk && grouped.performEdit(7,0.5)==kResultOk);
     assert(grouped.begin_editor_detach_on_control()==EditorDetachAdmission::GestureActive);
     assert(!grouped.seal_editor_edits_on_control()); // An unfinished cohort is not discarded.
     assert(grouped.endEdit(7)==kResultOk && grouped.finishGroupEdit()==kResultOk);
+    assert(grouped.editor_admission_sequence_on_worker()==5);
+    assert(grouped.editor_frontier_on_worker()==4);
     assert(grouped.begin_editor_detach_on_control()==EditorDetachAdmission::Granted);
     assert(grouped.startGroupEdit()==kResultFalse);
     assert(grouped.finishGroupEdit()==kResultFalse);
@@ -241,6 +247,7 @@ int main(int argc,char** argv) { @autoreleasepool {
         return kResultOk;
     })==kResultOk);
     assert(grouped.startGroupEdit()==kResultFalse && grouped.finishGroupEdit()==kResultFalse);
+    assert(grouped.editor_admission_sequence_on_worker()==5);
     assert(grouped.refusal_flags()==0 && grouped.pending_parameter_edits()==5);
     assert(grouped.dispatch(&controller).disposition==HostDisposition::EditQueued);
     const uint32 expected[]={GroupBegin,Begin,Perform,End,GroupEnd};

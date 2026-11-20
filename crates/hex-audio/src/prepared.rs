@@ -3446,7 +3446,9 @@ impl Callback {
         if publication.approved_device_insert().is_some() {
             self.release_device_insert_fade_pins();
         }
-        if (publication.approved_device_insert().is_some() || publication.tempo_cut().is_some())
+        if (publication.approved_device_insert().is_some()
+            || publication.tempo_cut().is_some()
+            || publication.playback.native_removal_pending())
             && let Some(streams) = publication.streams.as_mut()
         {
             streams.cancel_install(&mut self.domain_pages);
@@ -3770,18 +3772,20 @@ impl Callback {
         self.diagnostics
             .push(event, &self.status.diagnostics_dropped);
     }
-    /// Native adapter supplies its already measured whole-host-callback time.
+    /// Native adapter supplies measured host callback duration and entry cadence.
     /// Reading the clock and formatting remain outside this record operation.
     pub(crate) fn trace_callback_timing(
         &mut self,
         elapsed_ns: u64,
         deadline_ns: u64,
         frames: usize,
+        start_interval_ns: Option<u64>,
     ) {
         self.trace_audio(
             AudioDiagnosticKind::CallbackTiming {
                 elapsed_ns,
                 deadline_ns,
+                start_interval_ns,
             },
             self.status.applied_revision.load(Relaxed),
             None,
@@ -3907,7 +3911,12 @@ impl Callback {
             }
             return;
         }
-        if confirmed_insert && self.retired.is_full() {
+        if self.retired.is_full()
+            && (confirmed_insert
+                || self.deferred.as_ref().is_some_and(|next| {
+                    next.streams.is_some() && next.playback.native_removal_started()
+                }))
+        {
             self.abort_blocked_device_insert();
             return;
         }
@@ -4231,7 +4240,7 @@ impl Callback {
                             next.source_context,
                             frames.unwrap_or(0),
                         );
-                        self.deferred = Some(next);
+                        self.defer_for_stream_pages(next);
                         return;
                     }
                     // A fresh replacement is a recovery path when the current
@@ -4290,14 +4299,14 @@ impl Callback {
                                 if let Some(streams) = next.streams.as_mut() {
                                     streams.cancel_install(&mut self.domain_pages);
                                 }
-                                self.deferred = Some(next);
+                                self.defer_for_stream_pages(next);
                                 return;
                             }
                             None
                         }
                         Ok(None) => None,
                         Err(crate::candidate_custody::QuantumFailure::PendingAction) => {
-                            self.deferred = Some(next);
+                            self.defer_for_stream_pages(next);
                             return;
                         }
                         Err(crate::candidate_custody::QuantumFailure::Capacity) => {
@@ -4306,7 +4315,7 @@ impl Callback {
                                 .as_mut()
                                 .is_some_and(|streams| streams.retry_capacity_conflict())
                             {
-                                self.deferred = Some(next);
+                                self.defer_for_stream_pages(next);
                                 return;
                             }
                             Some(PlaybackHandoffRejection::StreamedPageCapacity)
@@ -4411,6 +4420,30 @@ impl Callback {
                 }
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        match self.advance_paged_native_removal(&mut next) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                self.trace_audio(
+                                    AudioDiagnosticKind::PublicationWaiting {
+                                        reason: PublicationWaitReason::NativeRemovalFade,
+                                    },
+                                    next.revision,
+                                    next.source_context,
+                                    frames.unwrap_or(0),
+                                );
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            Err(reason) => {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                self.reject_publication(next.revision, reason);
+                                self.return_graph(next);
+                                self.status.publication_pending.store(false, Release);
+                                return;
+                            }
+                        }
                         // Page planning may span callbacks. Revalidate the
                         // actual fence before promoting its protected pages.
                         if let PublicationPolicy::InheritUnderArrangement(token) = next.policy
@@ -4455,7 +4488,7 @@ impl Callback {
                                     self.status.publication_pending.store(false, Release);
                                 } else {
                                     self.restore_parameter_predecessor_prewarm(&next);
-                                    self.deferred = Some(next);
+                                    self.defer_for_stream_pages(next);
                                 }
                                 return;
                             }
@@ -4476,7 +4509,7 @@ impl Callback {
                                 if let Some(streams) = next.streams.as_mut() {
                                     streams.cancel_install(&mut self.domain_pages);
                                 }
-                                self.deferred = Some(next);
+                                self.defer_for_stream_pages(next);
                                 return;
                             }
                         }
@@ -4496,7 +4529,7 @@ impl Callback {
                             next.source_context,
                             frames.unwrap_or(0),
                         );
-                        self.deferred = Some(next);
+                        self.defer_for_stream_pages(next);
                         return;
                     }
                     refused => {
@@ -4513,7 +4546,7 @@ impl Callback {
                             if let Some(streams) = next.streams.as_mut() {
                                 streams.cancel_install(&mut self.domain_pages);
                             }
-                            self.deferred = Some(next);
+                            self.defer_for_stream_pages(next);
                             return;
                         }
                         let source_changed = next

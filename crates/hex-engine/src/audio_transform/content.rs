@@ -15,6 +15,31 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Clip, Invalid> {
+        let projection = clip.projected_outer_fade(tempo_map)?;
+        let fade = OuterPlaybackFade::projected(projection.as_ref(), edit.domain.clock)?;
+        self.compile_content_with_outer_fade(tempo_map, clip, edit, asset, source, fade)
+    }
+
+    /// The destination envelope belongs to the prepared clip, after reflection
+    /// and crop. Directed PCM keeps the processing and retained event laws.
+    pub(super) fn compile_content_with_outer_fade(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        fade: Option<OuterPlaybackFade<'_>>,
+    ) -> Result<Clip, Invalid> {
+        if fade.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
+            return Err(Invalid("directed fade differs from its processing clock"));
+        }
+        if let Some(fade) = fade {
+            fade.admit(
+                clip.duration(),
+                matches!(&source, PreparedAudioSourceRef::Resident(_)),
+            )?;
+        }
         edit.content_view
             .ok_or(Invalid("directed audio view missing"))?;
         let projection = AudioViewProjection::new(clip, tempo_map)?;
@@ -33,11 +58,17 @@ impl AudioTransformPreparation {
                 "directed audio preparation currently requires resident media; source changes were not committed",
             ));
         };
+        let finish = |audio: Audio| {
+            let compiled = super::view::placed_clip(audio, clip)?;
+            self.finish_outer_fade(compiled, fade)
+        };
+        let processing = super::processing_root::unfaded_outer_edit(edit, tempo_map)?;
+        let edit = processing.as_ref();
         let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio) = self.lookup_key(source, asset, |key| {
             key.matches_view(edit, tempo_map, clip.start(), clip.duration())
         })? {
-            return super::view::placed_clip(audio, clip);
+            return finish(audio);
         }
         let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
         let map_bytes = (2 * hex_project::MAX_TEMPO_POINTS + 2)
@@ -102,8 +133,16 @@ impl AudioTransformPreparation {
             .try_reserve_exact(length)
             .map_err(|_| Invalid("directed audio allocation failed"))?;
         frames.resize(length, [0.0; 2]);
-        if musical {
-            self.render_musical_content(tempo_map, clip, asset, source, &mut frames)?;
+        let event_source_occurrences = if musical {
+            self.render_musical_content(
+                tempo_map,
+                clip,
+                asset,
+                source,
+                &mut frames,
+                self.entry_limit > 0 && bytes <= self.cache_limit,
+            )?
+            .map(Arc::new)
         } else {
             // Only the transient pre-fade processing program is neutralized. Saved
             // fade/source settings and source PCM are never rewritten.
@@ -122,7 +161,8 @@ impl AudioTransformPreparation {
                 let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
                 self.copy_frame_content(clip, &projection, root.frames(), &mut frames)?;
             }
-        }
+            None
+        };
         self.apply_content_fade(tempo_map, clip, edit, &projection, &mut frames)?;
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
@@ -140,9 +180,12 @@ impl AudioTransformPreparation {
             conversion: asset.conversion_version(),
             source_rate: asset.source_sample_rate(),
             prepared: audio.clone(),
+            event_source_peaks: None,
+            event_source_occurrences,
+            group_event_sources: None,
             bytes,
         })?;
-        super::view::placed_clip(audio, clip)
+        finish(audio)
     }
     /// Reflect admitted frame-root PCM through the canonical directed view.
     /// Shared by ordinary and composite roots; no intermediate PCM is allocated.
@@ -219,31 +262,19 @@ impl AudioTransformPreparation {
         projection: &AudioViewProjection<'_>,
         frames: &mut [crate::Frame],
     ) -> Result<(), Invalid> {
-        let view = edit
-            .content_view
-            .ok_or(Invalid("directed audio view missing"))?;
         if !edit.domain.fade.is_neutral() {
             // A fade keeps its original forward container clock. Iterate base
             // occurrences once; no fade buffer or callback work is introduced.
-            let consumed = view
-                .base_start_delta
-                .checked_neg()
-                .ok_or(Invalid("audio content fade displacement overflow"))?;
+            let clock = super::content_fade_clock::DirectedFadeClock::new(projection)?;
             let mut covered = 0usize;
             for i in 0..projection.occurrence_count() {
                 let occurrence = projection.occurrence(i)?;
-                let a = (i128::from(occurrence.elapsed_start) - consumed).max(0);
-                let b = (i128::from(occurrence.elapsed_end) - consumed)
-                    .min(i128::from(view.window.length()?));
-                if a >= b {
+                let destination = clock.destination(projection, occurrence)?;
+                if destination.is_empty() {
                     continue;
                 }
-                let first = projection.frame_at_elapsed(a as u64)?.max(clip.start());
-                let last = projection
-                    .frame_at_elapsed(b as u64)?
-                    .min(clip.start() + clip.duration());
-                let start = (first - clip.start()) as usize;
-                let end = (last - clip.start()) as usize;
+                let start = (destination.start - clip.start()) as usize;
+                let end = (destination.end - clip.start()) as usize;
                 for f in frames
                     .get_mut(covered..start)
                     .ok_or(Invalid("directed fade coverage overflow"))?
@@ -255,16 +286,8 @@ impl AudioTransformPreparation {
                 let fade = root_edit
                     .projected_fade(tempo_map)
                     .map_err(|e| Invalid(e.0))?;
-                for frame in first..last {
-                    let elapsed =
-                        u64::try_from(consumed + i128::from(projection.elapsed_at_frame(frame)?))
-                            .map_err(|_| Invalid("directed fade clock overflow"))?;
-                    let base = projection.base_frame_at_elapsed(elapsed)?;
-                    let sample = occurrence
-                        .root_start
-                        .checked_add(base.saturating_sub(occurrence.destination_start))
-                        .ok_or(Invalid("directed fade sample overflow"))?
-                        .clamp(occurrence.root_start, occurrence.root_end - 1);
+                for frame in destination {
+                    let sample = clock.root_sample(projection, occurrence, frame)?;
                     let gain = fade.gain_at(sample).map_err(|e| Invalid(e.0))?;
                     let f = frames
                         .get_mut((frame - clip.start()) as usize)
@@ -298,7 +321,8 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: &Audio,
         frames: &mut [crate::Frame],
-    ) -> Result<(), Invalid> {
+        capture_sources: bool,
+    ) -> Result<Option<PreparedEventOccurrences>, Invalid> {
         let edit = clip
             .audio_edit()
             .ok_or(Invalid("directed audio edit missing"))?;
@@ -330,6 +354,31 @@ impl AudioTransformPreparation {
         };
 
         let (base_start, base_end) = read_map::base_bounds(&projection, edit)?;
+        let window = projection
+            .content_window()
+            .ok_or(Invalid("directed audio view missing"))?;
+        let law = edit
+            .content_view
+            .ok_or(Invalid("directed audio view missing"))?
+            .read_resampler;
+        let budget = super::preview_peaks::event_source_budget();
+        let count = projection.occurrence_count();
+        let mut event_sources = if capture_sources && count > 0 {
+            PreparedEventOccurrences::admit(count, budget).and_then(|mut table| {
+                table.directed = Some(PreparedDirectedEventRead::admit(
+                    base_start..base_end,
+                    crop.clone(),
+                    clip.start(),
+                    window.reversed,
+                    law,
+                    count,
+                    budget,
+                )?);
+                Some(table)
+            })
+        } else {
+            None
+        };
         let length = usize::try_from(base_end - base_start)
             .map_err(|_| Invalid("directed filter context size overflow"))?;
         let bytes = length
@@ -354,6 +403,7 @@ impl AudioTransformPreparation {
             if root.frames().len() as u64 != occurrence.root_frame_length {
                 return Err(Invalid("directed root differs from admitted pcm"));
             }
+            self.capture_event_occurrence(&mut event_sources, occurrence, &root);
             let input = root
                 .frames()
                 .get(occurrence.root_start as usize..occurrence.root_end as usize)
@@ -378,11 +428,7 @@ impl AudioTransformPreparation {
             }
             output.copy_from_slice(input);
         }
-        if projection
-            .content_window()
-            .ok_or(Invalid("directed audio view missing"))?
-            .reversed
-        {
+        if window.reversed {
             for i in 0..base.len() / 2 {
                 if i % 1024 == 0 && self.cancelled() {
                     return Err(Invalid("audio preparation cancelled"));
@@ -392,11 +438,7 @@ impl AudioTransformPreparation {
             }
         }
         let base = Audio::from_derived(source.sample_rate(), base, reservation)?;
-        let law = super::warp_law(
-            edit.content_view
-                .ok_or(Invalid("directed audio view missing"))?
-                .read_resampler,
-        );
+        let resampler = super::warp_law(law);
         for i in 0..projection.occurrence_count() {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
@@ -409,7 +451,22 @@ impl AudioTransformPreparation {
                     .ok_or(Invalid(
                         "directed filtered destination exceeds admitted pcm",
                     ))?;
-                self.render_content_span(&base, &span.map, law, destination)?;
+                self.render_content_span(&base, &span.map, resampler, destination)?;
+                if let Some(table) = &mut event_sources
+                    && table
+                        .directed
+                        .as_mut()
+                        .and_then(|read| {
+                            read.record(
+                                span.first - output_start..span.last - output_start,
+                                span.map,
+                                budget,
+                            )
+                        })
+                        .is_none()
+                {
+                    event_sources = None;
+                }
             }
         }
         if cropped {
@@ -421,7 +478,13 @@ impl AudioTransformPreparation {
             }
             frames.copy_from_slice(retained);
         }
-        Ok(())
+        if let Some(read) = event_sources
+            .as_mut()
+            .and_then(|table| table.directed.as_mut())
+        {
+            read.finish();
+        }
+        Ok(event_sources)
     }
     fn render_content_span(
         &self,
