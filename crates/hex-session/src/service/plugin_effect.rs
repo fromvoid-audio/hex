@@ -578,7 +578,11 @@ impl Pending {
                     && (!replaces_effect || sink.confirms_device_inserts())
             }
             DocumentAudioMode::VerifiedStreaming => {
-                !replaces_effect
+                (!replaces_effect
+                    || matches!(
+                        self.insertion.destination,
+                        PluginEffectDestination::ReplaceMainEffect { .. }
+                    ))
                     && self
                         .insertion
                         .destination

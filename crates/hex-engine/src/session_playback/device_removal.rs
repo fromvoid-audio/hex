@@ -711,8 +711,8 @@ impl SessionPlayback {
         }
     }
 
-    /// Admit a post-DSP fade for a flat Return whose processor can stay in the donor
-    /// until the cut, including a running zero-latency Reverb with active decay.
+    /// Fade a flat Return after its native effects while the complete chain
+    /// stays in the predecessor until the cut.
     fn flat_return_removal_from(&self, previous: &Self) -> Option<ReturnId> {
         if self.compensation.is_some()
             || previous.compensation.is_some()
@@ -757,19 +757,28 @@ impl SessionPlayback {
         {
             return None;
         }
-        match removed.device_chain.as_ref() {
-            [] => Some(removed.id),
-            [device]
-                if device.foreign_processor().is_none()
-                    && device.algorithmic_latency_frames() == Some(0)
-                    && (device.device_type == hex_devices::delay::DEFINITION.type_id()
-                        || (!device.bypassed
-                            && device.device_type == hex_devices::reverb::REVERB_TYPE_ID)) =>
-            {
-                Some(removed.id)
+        let devices = removed.device_chain.as_ref();
+        let delay = hex_devices::delay::DEFINITION.type_id();
+        let reverb = hex_devices::reverb::REVERB_TYPE_ID;
+        let supported_chain = match devices {
+            [] => true,
+            [device] => {
+                device.device_type == delay || (!device.bypassed && device.device_type == reverb)
             }
-            _ => None,
-        }
+            [first, second] => {
+                !first.bypassed
+                    && !second.bypassed
+                    && ((first.device_type == delay && second.device_type == reverb)
+                        || (first.device_type == reverb && second.device_type == delay))
+            }
+            _ => false,
+        };
+        (supported_chain
+            && devices.iter().all(|device| {
+                device.foreign_processor().is_none()
+                    && device.algorithmic_latency_frames() == Some(0)
+            }))
+        .then_some(removed.id)
     }
 
     fn native_removal_transition_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
