@@ -846,6 +846,73 @@ fn native_moves_wait_for_the_exact_audio_receipt_and_preserve_noops() {
 }
 
 #[test]
+fn cancelled_resident_paste_keeps_the_clipboard_for_one_confirmed_history_step() {
+    use crate::service::DeviceClipboardAction;
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+
+    let (service, fixture, _) = service();
+    let run = |request| {
+        service.submit(request).unwrap();
+        receive(&service)
+    };
+    insert_utility(&service);
+    let original = install_candidate(&service, &fixture).state;
+    let owner = DeviceChainOwner::Main;
+    let device = &original.project.main_devices()[0];
+    let clipboard = |action| Request::DeviceClipboard {
+        project_generation: 0,
+        revision: original.revision,
+        action,
+    };
+    run(clipboard(DeviceClipboardAction::Copy {
+        owner,
+        selected: DeviceSelectionIds::new(&[device.id()]).unwrap(),
+    }));
+    let paste = || {
+        clipboard(DeviceClipboardAction::Paste {
+            owner,
+            before: None,
+        })
+    };
+    let pending = run(paste());
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, original.project);
+    {
+        let mut fixture = fixture.lock().unwrap();
+        fixture.offer_deadline = Some(Instant::now() + Duration::from_secs(3));
+        fixture
+            .candidate
+            .as_ref()
+            .unwrap()
+            .state
+            .store(REFUSED, Ordering::Release);
+    }
+    let offer = receive(&service).device_insert_confirmation.unwrap();
+    assert!(offer.cancel());
+    let cancelled = receive(&service);
+    assert_eq!(
+        cancelled.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(cancelled.state.project, original.project);
+    assert_eq!(cancelled.state.revision, original.revision);
+
+    assert!(!run(paste()).request_complete);
+    let pasted = install_candidate(&service, &fixture).state;
+    assert_eq!(pasted.revision, original.revision + 1);
+    let [retained, duplicate] = pasted.project.main_devices() else {
+        panic!("original and pasted devices");
+    };
+    assert_eq!(retained, device);
+    assert_ne!(duplicate.id(), device.id());
+    assert_eq!(duplicate.state(), device.state());
+    let undone = run(Request::Undo).state;
+    assert_eq!(undone.project.main_devices(), std::slice::from_ref(device));
+    assert!(undone.can_redo);
+    assert_eq!(run(Request::Redo).state.project, pasted.project);
+}
+
+#[test]
 fn native_insert_is_saved_and_undone_only_after_its_install_receipt() {
     let (service, fixture, initial) = service();
     let pending = insert_utility(&service);
