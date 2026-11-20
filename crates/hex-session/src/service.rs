@@ -9801,7 +9801,7 @@ fn run_worker(
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
-                            pending_history = session.stage_resident_move_history(
+                            pending_history = session.stage_resident_graph_history(
                                 redo,
                                 context,
                                 sink,

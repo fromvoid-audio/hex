@@ -52,6 +52,26 @@ impl NativeEndpointBank {
     pub(crate) fn rendering_revoked(&self) -> bool {
         self.has_endpoints() && self.cycle.revoked()
     }
+
+    /// Read from the exact active endpoint before it stages any more input.
+    pub(crate) fn settled_main_pass_delay(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
+        if self.cycle.revoked() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        let index = self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            })
+            .map_err(|_| DeviceContractError::ForeignProcessingUnavailable)?;
+        let endpoint = self.entries[self.routing[index]]
+            .as_ref()
+            .and_then(|entry| entry.0.callback.as_ref())
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+        endpoint.settled_main_pass_delay()
+    }
     pub(crate) fn begin_rendering(&mut self, frames: usize) -> Result<(), Fault> {
         let Some(quantum) = self.quantum_frames() else {
             return Ok(());

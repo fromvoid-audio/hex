@@ -1,5 +1,6 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
+mod detached_history;
 mod main_history;
 mod stopped_power;
 
@@ -1099,7 +1100,7 @@ impl Session {
         )
     }
 
-    pub(in crate::service) fn stage_resident_move_history(
+    pub(in crate::service) fn stage_resident_graph_history(
         &mut self,
         redo: bool,
         context: hex_engine::AudioSourceContext,
@@ -1126,6 +1127,13 @@ impl Session {
             None,
             document_intent,
             |session| {
+                if let Some((edge, operation)) = detached_history::stage(&mut session.editor, redo)?
+                {
+                    return Ok(Some((
+                        StagedChange::History(edge),
+                        Operation::HostedHistory(operation),
+                    )));
+                }
                 Ok(move_history::stage(&mut session.editor, redo)?
                     .map(|edge| (StagedChange::History(edge), Operation::ResidentMoveHistory)))
             },

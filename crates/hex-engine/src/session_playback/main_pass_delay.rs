@@ -9,6 +9,7 @@ impl SessionPlayback {
             + self
                 .main_pass_delay
                 .as_ref()
+                .filter(|_| self.native_removal.is_none())
                 .map_or(0, |delay| delay.latency_frames())
     }
 
@@ -42,7 +43,7 @@ impl SessionPlayback {
                 .any(|tail| tail.output_active)
             || old.tail_output_active.iter().any(|active| *active)
             || !old.releases.is_empty()
-            || !(short_native || fixed_short_limiter)
+            || !(short_native || fixed_short_limiter || device.foreign_processor().is_some())
             || after.main_latency_frames() != 0
         {
             return None;

@@ -1,10 +1,11 @@
 //! Physical SDK gate and exact predecessor through a Resident removal offer.
 use super::*;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+use std::sync::atomic::Ordering::Release;
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
-fn running_resident_vst3_removal_offers_the_exact_cut() {
+fn resident_vst3_removal_and_stopped_history_wait_for_callback_receipts() {
     const CHILD: &str = "HEX_TEST_HOSTED_INSTRUMENT_REMOVAL_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let trace = Files::new();
@@ -263,4 +264,153 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
             h.retirement_issues
         );
     }
+
+    h.audio.as_ref().unwrap().control.stop();
+    h.render_plugin_block();
+    let mut stopped = h.run(Request::RestoreStoppedPlayback);
+    if !stopped.stopped_playback_restore_complete {
+        stopped = restored_terminal(&mut h);
+    }
+    assert!(stopped.error.is_none(), "{:?}", stopped.error);
+    assert_eq!(stopped.state.project, installed.state.project);
+    let (_, stopped_metadata) = h.applied(queued.audio_revision);
+    assert!(stopped_metadata.stopped_restore);
+    let stopped_source = source(&h);
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    let (private, resume, _) = h.probe_next_native_publication();
+    h.service.submit(Request::Undo).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while private.try_recv().is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(
+                !event.request_complete,
+                "Undo ended before native publication"
+            );
+        }
+        h.render_plugin_block();
+        assert!(
+            Instant::now() < deadline,
+            "fresh native Undo did not prepare"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(source(&h), stopped_source);
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    let fresh = h.plugin_progress.lock().unwrap().newest_source.unwrap().1;
+    assert_ne!(fresh, binding);
+    resume.send(()).unwrap();
+
+    // Control may now submit the prepared runtime, but no callback has run.
+    // The editor still owns the removed snapshot and its original history.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert_eq!(source(&h), stopped_source);
+            assert!(
+                !event.request_complete,
+                "Undo completed before callback admission"
+            );
+            assert_eq!(event.state.project, stopped.state.project);
+            assert_eq!(event.state.revision, stopped.state.revision);
+            assert_eq!(event.state.can_undo, stopped.state.can_undo);
+            assert_eq!(event.state.can_redo, stopped.state.can_redo);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Undo did not acknowledge the private graph"
+        );
+        std::thread::yield_now();
+    }
+    let undone = loop {
+        let event = event(&mut h);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if event.request_complete {
+            break event;
+        }
+    };
+    let receipt = undone.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(source(&h).audio_revision, receipt.submission.audio_revision);
+    assert_eq!(source(&h).context, receipt.submission.context);
+    assert_eq!(source(&h).output_identity, stopped_source.output_identity);
+    assert_eq!(undone.state.revision, stopped.state.revision + 1);
+    assert_eq!(undone.state.project, before.state.project);
+    wait(|| {
+        h.pump();
+        worker(&h) == Some(fresh)
+    });
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+
+    let restored_source = source(&h);
+    h.refuse.store(true, Release);
+    h.service.submit(Request::Redo).unwrap();
+    let refused = h.next();
+    assert!(refused.request_complete && refused.error.is_some());
+    assert_eq!(refused.state.project, undone.state.project);
+    assert_eq!(refused.state.revision, undone.state.revision);
+    assert_eq!(refused.state.can_undo, undone.state.can_undo);
+    assert_eq!(refused.state.can_redo, undone.state.can_redo);
+    assert_eq!(source(&h), restored_source);
+    h.refuse.store(false, Release);
+
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    h.service.submit(Request::Redo).unwrap();
+    let queued = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(source(&h), restored_source);
+    resume.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        h.pump();
+        if let Ok(pending) = h.service.try_event() {
+            assert!(pending.error.is_none(), "{:?}", pending.error);
+            assert!(
+                !pending.request_complete,
+                "Redo completed before callback admission"
+            );
+            assert_eq!(pending.state.project, undone.state.project);
+            assert_eq!(pending.state.revision, undone.state.revision);
+            assert_eq!(pending.state.can_undo, undone.state.can_undo);
+            assert_eq!(pending.state.can_redo, undone.state.can_redo);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Redo did not acknowledge the private graph"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(source(&h), restored_source);
+    let redone = loop {
+        let event = event(&mut h);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if event.request_complete {
+            break event;
+        }
+    };
+    let receipt = redone.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission, queued);
+    assert_eq!(source(&h).audio_revision, queued.audio_revision);
+    assert_eq!(source(&h).context, queued.context);
+    assert_eq!(source(&h).output_identity, restored_source.output_identity);
+    assert_eq!(redone.state.revision, undone.state.revision + 1);
+    assert_eq!(redone.state.project, installed.state.project);
+    wait(|| {
+        h.pump();
+        h.render_plugin_block();
+        h.plugin_records.load(Acquire) == 0
+    });
 }
