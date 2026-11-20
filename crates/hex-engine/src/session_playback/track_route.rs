@@ -4,7 +4,7 @@
 //! The Group and Main faders never participate, and compensation copy rules stay
 //! unchanged: zero-delay graphs consume the current transport stamp at the cut.
 use super::{RouteOwner, SessionPlayback};
-use crate::signal_graph::TrackOutput;
+use crate::signal_graph::{SignalGraph, TrackOutput};
 
 impl SessionPlayback {
     // Entry and exit have the same immutable identity checks. Classifying the
@@ -29,14 +29,9 @@ impl SessionPlayback {
             {
                 return None;
             }
-            let graph = &playback.compensation.as_ref()?.graph;
-            if !graph.supports_closed_group_stream()
-                || !graph.supports_closed_compensated_audio_groups()
-                || playback.revision.arrangement().main_latency_frames() != 0
-            {
-                return None;
-            }
         }
+        let old_graph = previous.resident_group_cut_graph()?;
+        let new_graph = self.resident_group_cut_graph()?;
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
         if old.sample_rate != new.sample_rate
@@ -56,8 +51,6 @@ impl SessionPlayback {
         {
             return None;
         }
-        let old_graph = &previous.compensation.as_ref()?.graph;
-        let new_graph = &self.compensation.as_ref()?.graph;
         let mut changed = None;
         for (index, (old, new)) in old.tracks().iter().zip(new.tracks()).enumerate() {
             let old_chain = previous.device_chains.get(index)?;
@@ -116,6 +109,27 @@ impl SessionPlayback {
             }
         }
         changed
+    }
+
+    fn resident_group_cut_graph(&self) -> Option<&SignalGraph> {
+        let arrangement = self.revision.arrangement();
+        let graph = arrangement.signal_graph.as_deref()?;
+        if arrangement.main_latency_frames() != 0 || !arrangement.return_buses().is_empty() {
+            return None;
+        }
+        // Before the first child joins (or after the last leaves), the flat
+        // graph has no routing runtime. The zero-delay grouped side reads
+        // only current-frame stamps, so there is no clock history to transfer.
+        let supported = match &self.compensation {
+            None => !graph.needs_runtime(),
+            Some(runtime) => {
+                runtime.horizon() == 0
+                    && std::ptr::eq(graph, runtime.graph.as_ref())
+                    && graph.supports_closed_group_stream()
+                    && graph.supports_closed_compensated_audio_groups()
+            }
+        };
+        supported.then_some(graph)
     }
 }
 
