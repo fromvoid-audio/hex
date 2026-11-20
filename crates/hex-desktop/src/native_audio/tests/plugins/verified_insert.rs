@@ -8,6 +8,189 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_running_vst3_copy_keeps_the_original_until_exact_install() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+    use hex_session::service::{DeviceClipboardAction, DeviceInsertOutcome};
+
+    fn status(h: &Harness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let _native = native_fixture();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.progress = Some(Arc::clone(&progress));
+    });
+    let files = Files::new();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    h.applied(h.context.unwrap());
+    let submit = |h: &Harness, request| h.service.as_ref().unwrap().submit(request).unwrap();
+    submit(
+        &h,
+        Request::InsertPluginEffect(request(&imported.state, PluginEffectDestination::Main)),
+    );
+    let inserted = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let predecessor = h.applied(h.context.unwrap());
+    let original = &inserted.state.project.main_devices()[0];
+    let binding = || progress.lock().unwrap().source_bindings[0];
+    wait(|| binding().is_some());
+    let (_, original_binding, _) = binding().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..4 {
+        let mut sample = 0.0;
+        wait(|| {
+            sample = render_hosted_quantum(&h);
+            status(&h).performance_frame.load(Acquire) == (block + 1) * 256
+        });
+        wait(|| {
+            binding()
+                .and_then(|(_, _, completed)| completed)
+                .is_some_and(|completed| completed > block)
+        });
+        let expected = if block < 2 {
+            0.0
+        } else {
+            0.125 + (block - 2) as f32 * 0.03125
+        };
+        assert_eq!(sample, expected);
+    }
+    assert_eq!(binding().unwrap().1, original_binding);
+    let clipboard = |action| Request::DeviceClipboard {
+        project_generation: predecessor.context.project_generation,
+        revision: inserted.state.revision,
+        action,
+    };
+    let approved = std::cell::Cell::new(false);
+    let next_running_event = |h: &Harness| {
+        let mut event = None;
+        wait(|| {
+            if let Ok(received) = h.service.as_ref().unwrap().try_event() {
+                event = Some(received);
+                return true;
+            }
+            let frame = status(h).performance_frame.load(Acquire);
+            let sample = render_hosted_quantum(h);
+            if !approved.get() && status(h).performance_frame.load(Acquire) == frame + 256 {
+                assert_eq!(status(h).applied_audio_source(), Some(predecessor));
+                let expected = 0.125 + (frame / 256 - 2) as f32 * 0.03125;
+                assert_eq!(sample, expected, "preparing a copy changed predecessor PCM");
+            }
+            wait(|| {
+                h.backend
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control()
+                    == Some(true)
+            });
+            false
+        });
+        event.unwrap()
+    };
+    let offer = |h: &Harness| loop {
+        let pending = next_running_event(h);
+        assert!(
+            pending.error.is_none(),
+            "Verified VST3 copy refused: {:?}",
+            pending.error
+        );
+        assert!(!pending.request_complete);
+        assert_eq!(pending.state.project, inserted.state.project);
+        if let Some(offer) = pending.device_insert_confirmation {
+            assert_eq!(status(h).applied_audio_source(), Some(predecessor));
+            break offer;
+        }
+    };
+    submit(
+        &h,
+        clipboard(DeviceClipboardAction::Duplicate {
+            source: DeviceChainOwner::Main,
+            selected: DeviceSelectionIds::new(&[original.id()]).unwrap(),
+            destination: DeviceChainOwner::Main,
+            before: None,
+        }),
+    );
+    assert!(offer(&h).cancel());
+    let cancelled = next_running_event(&h);
+    assert_eq!(
+        cancelled.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(cancelled.state.project, inserted.state.project);
+    assert_eq!(cancelled.state.revision, inserted.state.revision);
+    assert_eq!(cancelled.state.can_undo, inserted.state.can_undo);
+    assert_eq!(cancelled.state.can_redo, inserted.state.can_redo);
+    assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
+    assert_eq!(binding().unwrap().1, original_binding);
+
+    h.run(clipboard(DeviceClipboardAction::Copy {
+        owner: DeviceChainOwner::Main,
+        selected: DeviceSelectionIds::new(&[original.id()]).unwrap(),
+    }));
+    submit(
+        &h,
+        clipboard(DeviceClipboardAction::Paste {
+            owner: DeviceChainOwner::Main,
+            before: None,
+        }),
+    );
+    let consent = offer(&h);
+    assert!(consent.proceed());
+    approved.set(true);
+    let installed = loop {
+        let event = next_running_event(&h);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if event.request_complete {
+            break event;
+        }
+        assert_eq!(event.state.project, inserted.state.project);
+    };
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    let applied = status(&h).applied_audio_source().unwrap();
+    assert_eq!(receipt.submission.audio_revision, applied.audio_revision);
+    assert_eq!(receipt.submission.context, applied.context);
+    assert_eq!(applied.output_identity, predecessor.output_identity);
+    assert_eq!(installed.state.revision, inserted.state.revision + 1);
+    let [retained, copy] = installed.state.project.main_devices() else {
+        panic!("original and its copy");
+    };
+    assert_eq!(retained, original);
+    assert_ne!(copy.id(), original.id());
+    assert_eq!(copy.state(), original.state());
+    let bindings = progress.lock().unwrap().source_bindings;
+    assert_eq!(bindings[0].unwrap().1, original_binding);
+    let (copied_device, copied_binding, _) = bindings[1].unwrap();
+    assert_eq!(copied_device, copy.id().value());
+    assert_ne!(copied_binding, original_binding);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
     let _native = native_fixture();
     let files = Files::new();

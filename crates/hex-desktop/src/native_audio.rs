@@ -855,7 +855,7 @@ impl NativeAudioSink {
                 edit.as_ref()
                     .and_then(|edit| edit.attempt.proposal_control()),
                 edit.as_ref()
-                    .is_some_and(|edit| edit.attempt.stages_hosted_history()),
+                    .is_some_and(|edit| edit.attempt.prepares_hosted_sources()),
             ) {
                 Ok(bindings) => bindings,
                 Err(error) => {
@@ -1983,12 +1983,16 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
-        let history = self.verified_edit.as_ref().is_some_and(|edit| {
-            edit.attempt.stages_hosted_history()
-                && edit.attempt.source().context() == input.context()
-                && edit.attempt.preparing()
-        });
-        if history {
+        let staged_deadline = self
+            .verified_edit
+            .as_ref()
+            .filter(|edit| {
+                edit.attempt.prepares_hosted_sources()
+                    && edit.attempt.source().context() == input.context()
+                    && edit.attempt.preparing()
+            })
+            .map(|edit| edit.attempt.preparation_deadline());
+        if staged_deadline.is_some() {
             self.plugins.prepare_edit_sources(
                 self.output.as_mut(),
                 &input,
@@ -1997,18 +2001,50 @@ impl WorkerAudioSink for NativeAudioSink {
                 true,
             )?;
         }
-        let bindings = self
-            .plugins
-            .verified_effect_bindings(input, proposal, history)?;
+        let bindings =
+            self.plugins
+                .verified_effect_bindings(input, proposal, staged_deadline.is_some())?;
         let control = self
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("verified audio output is unavailable")?;
-        control.with_native_effect_definition(&bindings, |definition| {
-            hex_engine::AudioCandidateEffects::with_host_definitions(&[definition], prepare)
+        loop {
+            if let Some(deadline) = staged_deadline {
+                if std::time::Instant::now() >= deadline {
+                    return Err("verified vst3 preparation timed out".into());
+                }
+                if self
+                    .request_cancellation
+                    .as_ref()
+                    .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
+                {
+                    return Err("verified vst3 preparation cancelled".into());
+                }
+            }
+            match control.with_native_effect_definition(&bindings, |definition| {
+                hex_engine::AudioCandidateEffects::with_host_definitions(
+                    &[definition],
+                    &mut *prepare,
+                )
                 .map_err(|error| error.to_string())
-        })
+            }) {
+                Err(error)
+                    if staged_deadline.is_some()
+                        && matches!(
+                            error.as_str(),
+                            "native effect preparation is busy" | "native effect selection is busy"
+                        ) =>
+                {
+                    // A playing worker can temporarily hold Root Work while
+                    // the control-side projection is borrowing definitions.
+                    control.reclaim();
+                    control.poll_resident_publication();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn begin_stopped_foreign_history(

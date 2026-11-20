@@ -271,13 +271,13 @@ impl Plugins {
         state: &NativeDeviceState,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
-        fresh_history_source: bool,
+        fresh_source: bool,
     ) -> Result<(), String> {
         let context = input.context();
         let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         self.extend_edit_targets(control, input, destination, device, state, cancellation)?;
-        if !fresh_history_source
+        if !fresh_source
             && self
                 .matching_edit_source(
                     control,
