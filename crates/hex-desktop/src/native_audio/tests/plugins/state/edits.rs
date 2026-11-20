@@ -300,6 +300,12 @@ fn retiring_instrument_replays_late_receipt_without_restarting_held_note() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_late_receipt_without_restarting_held_session_note() {
+    retiring_instrument_receipt(InstrumentReceipt::LateSession);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn retiring_instrument_restores_held_note_gain_when_late_publication_refuses() {
     retiring_instrument_receipt(InstrumentReceipt::LateRefused);
 }
@@ -309,6 +315,7 @@ enum InstrumentReceipt {
     Matching,
     Conflict,
     Late,
+    LateSession,
     LateRefused,
 }
 
@@ -374,13 +381,35 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     };
     applied = h.applied(applied).0;
     let length = BeatTime::from_quarters(64).unwrap();
-    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
-        track,
-        start: BeatTime::ZERO,
-        length,
-    }));
-    let Some(Created::Clip(clip)) = placed.created else {
-        panic!("midi clip")
+    let session_note = case == InstrumentReceipt::LateSession;
+    let clip = if session_note {
+        let scene = h.run(Request::Edit(Command::AddScene {
+            name: "console".into(),
+        }));
+        let Some(Created::Scene(scene)) = scene.created else {
+            panic!("scene");
+        };
+        applied = h.applied(applied).0;
+        let placed = h.run(Request::Edit(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "console notes".into(),
+            source_length: length,
+        }));
+        let Some(Created::SessionClip(clip)) = placed.created else {
+            panic!("session midi clip");
+        };
+        clip
+    } else {
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("midi clip");
+        };
+        clip
     };
     applied = h.applied(applied).0;
     let note = h.run(Request::Edit(Command::AddMidiNote {
@@ -427,7 +456,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     };
     let late = matches!(
         case,
-        InstrumentReceipt::Late | InstrumentReceipt::LateRefused
+        InstrumentReceipt::Late | InstrumentReceipt::LateRefused | InstrumentReceipt::LateSession
     );
     let publication = if late {
         Some(h.probe_next_native_publication())
@@ -478,6 +507,18 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
+    if session_note {
+        super::super::instruments::render_completed_block(&h);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    }
     let mut baseline = 0.0_f32;
     for _ in 0..8 {
         let block = super::super::instruments::render_completed_block(&h);
@@ -527,7 +568,10 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
         );
         request_id += 1;
     };
-    let replayed = case == InstrumentReceipt::Late;
+    let replayed = matches!(
+        case,
+        InstrumentReceipt::Late | InstrumentReceipt::LateSession
+    );
     if replayed {
         assert_eq!(settled.0, Progress::CloseSafe);
         assert_eq!(settled.1.revision, installed.state.revision + 1);
@@ -555,7 +599,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     let block = super::super::instruments::render_completed_block(&h);
     let expected_output = if replayed { baseline * 2.0 } else { baseline };
     assert!((block[255][0] - expected_output).abs() < 1.0e-6);
-    if matches!(case, InstrumentReceipt::Matching | InstrumentReceipt::Late) {
+    if replayed || case == InstrumentReceipt::Matching {
         assert_eq!(settled.0, Progress::CloseSafe);
         assert!(retained.is_none());
     } else {

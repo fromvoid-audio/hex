@@ -2,7 +2,8 @@
 //! the bounded note ledger. The audio host owns the worker and accepts or
 //! revokes staged events with the complete physical callback.
 use super::{
-    MAX_TRACKS, MidiSpanBuffer, PreparedRevision, RouteOwner, SessionPlaybackError, TrackRoute,
+    MAX_TRACKS, MidiSpanBuffer, PreparedRevision, RouteOwner, SessionPlayback,
+    SessionPlaybackError, TrackRoute, effective_midi_route,
 };
 use crate::computer_keyboard::{
     COMPUTER_KEY_COUNT, ComputerKeyboardInput, KeyboardActivationClock,
@@ -108,10 +109,71 @@ impl Generator {
 /// No borrowed or owned endpoint crosses this boundary.
 pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
+    held_session_for_old: [bool; MAX_TRACKS],
     retimed_cursor: bool,
     pub(super) requires_clock_continuity: bool,
     pub(super) keeps_first_pass_loop_clock: bool,
     pub(super) keeps_unautomated_loop_clock: bool,
+}
+
+impl Handoff {
+    pub(super) fn carries_held_session_from(&self, old_index: usize) -> bool {
+        self.held_session_for_old[old_index]
+    }
+
+    pub(super) fn has_held_session(&self) -> bool {
+        self.held_session_for_old.contains(&true)
+    }
+
+    /// Check the effective route after all candidate route ownership is staged.
+    /// With the same clock, origin, and complete MIDI source, the donor's gate
+    /// identity and deadline remain valid at the candidate's first frame.
+    pub(super) fn validate_held_session_sources(
+        &self,
+        previous: &SessionPlayback,
+        candidate: &SessionPlayback,
+    ) -> Result<(), SessionPlaybackError> {
+        let old_midi = EffectiveSessionMidi::new(
+            previous.revision.session(),
+            previous.midi_admission.as_ref(),
+        );
+        let new_midi = EffectiveSessionMidi::new(
+            candidate.revision.session(),
+            candidate.midi_admission.as_ref(),
+        );
+        for (new_index, old_index) in self.old_indices.iter().copied().enumerate() {
+            let Some(old_index) = old_index.filter(|&index| self.carries_held_session_from(index))
+            else {
+                continue;
+            };
+            let old = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            let new =
+                effective_midi_route(&candidate.revision, &candidate.route_scratch, new_index)?;
+            let RouteOwner::Session { clip, .. } = old.owner else {
+                return Err(INCOMPATIBLE_HANDOFF);
+            };
+            let held_owner = previous.foreign_arrangement.generators[old_index]
+                .as_ref()
+                .and_then(|generator| generator.committed.route);
+            if old.id != new.id
+                || held_owner != Some(old.owner)
+                || old.owner != new.owner
+                || old.current_incarnation != new.current_incarnation
+                || old.current_first_frame != new.current_first_frame
+                || !old_midi
+                    .midi_clip_for_track(clip, old.id)
+                    .zip(new_midi.midi_clip_for_track(clip, new.id))
+                    .is_some_and(|(old, new)| {
+                        old.source_content_matches(&new)
+                            && old.instrument_retarget_compatible(&new)
+                            && new.instrument_enabled()
+                    })
+            {
+                return Err(INCOMPATIBLE_HANDOFF);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
@@ -292,6 +354,7 @@ impl ForeignArrangement {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // Transport retiming and parameter continuation have distinct proofs.
     pub(super) fn plan_handoff(
         &mut self,
         old: &Self,
@@ -300,10 +363,12 @@ impl ForeignArrangement {
         fresh: Option<TrackId>,
         loops: [Option<hex_project::LoopRegion>; 2],
         tempo_cut: Option<(u64, u64)>,
+        parameter_continuation: bool,
     ) -> Result<Handoff, SessionPlaybackError> {
         let [tracks, old_tracks] = tracks;
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
+            held_session_for_old: [false; MAX_TRACKS],
             retimed_cursor: tempo_cut.is_some(),
             requires_clock_continuity: false,
             keeps_first_pass_loop_clock: true,
@@ -362,7 +427,13 @@ impl ForeignArrangement {
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
                 && ledger.has_held_notes()
             {
-                return Err(INCOMPATIBLE_HANDOFF);
+                if !parameter_continuation
+                    || candidate.has_authored_automation
+                    || donor.has_authored_automation
+                {
+                    return Err(INCOMPATIBLE_HANDOFF);
+                }
+                plan.held_session_for_old[old_index] = true;
             }
             if let Some((arrangement, pass)) = tempo_cut {
                 let prepared_track = tracks

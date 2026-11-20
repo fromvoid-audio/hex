@@ -1580,6 +1580,7 @@ impl SessionPlayback {
             fresh,
             [old_loop_region, new_loop_region],
             tempo_cut,
+            continuation.is_some(),
         )?;
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS
@@ -2145,6 +2146,14 @@ impl SessionPlayback {
         }
         let same_periodic_timing =
             previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
+        if foreign_handoff.has_held_session()
+            && (relocate
+                || !same_base_timing
+                || !same_periodic_timing
+                || old_loop_region != new_loop_region)
+        {
+            return Err(foreign_arrangement::INCOMPATIBLE_HANDOFF);
+        }
         // The planner anchors any changed periodic tempo at the current
         // performance beat. Arrangement gates stay on their validated frame
         // deadlines because the base map and both frame cursors are retained.
@@ -3762,11 +3771,13 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::RevisionTrackMismatch);
             };
             *mapped_index = new_index;
-            if previous
-                .revision
-                .source_routing()
-                .source(old_index)
-                .is_some()
+            let retained_foreign_session = foreign_handoff.carries_held_session_from(old_index);
+            if retained_foreign_session
+                || previous
+                    .revision
+                    .source_routing()
+                    .source(old_index)
+                    .is_some()
                 || self.revision.source_routing().source(new_index).is_some()
             {
                 route.current_incarnation = old_route.current_incarnation;
@@ -3872,7 +3883,8 @@ impl SessionPlayback {
                                 .is_some_and(|index| {
                                     analytic_new_for_old[usize::from(index)].is_some()
                                 });
-                            if !next.instrument_config_matches(&old)
+                            if !retained_foreign_session
+                                && !next.instrument_config_matches(&old)
                                 && !analytic_retarget
                                 && !carried_by_retarget
                             {
@@ -5771,6 +5783,9 @@ impl SessionPlayback {
                     RouteTarget::Session(clip) => valid_clip(clip),
                     _ => true,
                 });
+        }
+        if foreign_handoff.has_held_session() {
+            foreign_handoff.validate_held_session_sources(previous, self)?;
         }
         self.preflight_shared_context_leases(previous)?;
 
