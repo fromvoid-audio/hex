@@ -8,9 +8,14 @@ use super::*;
 use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_host::Error;
 use hex_plugin_host::protocol::StateCaptureRefusal;
-use std::sync::{TryLockError, Weak};
 use std::time::Instant;
+use std::{
+    num::NonZeroU64,
+    sync::{TryLockError, Weak},
+};
+mod guarded;
 mod stopped;
+pub use guarded::{NativeWorkerGuardedCaptureProgress, NativeWorkerStateAfterGuardedWrite};
 #[cfg(test)]
 mod tests;
 
@@ -139,6 +144,28 @@ impl AppliedParameter {
     }
 }
 
+enum CaptureAfter<'a> {
+    Parameter(
+        &'a super::NativeWorkerParameterChange,
+        NativeWorkerParameterApplication,
+    ),
+    GuardedWrite(NonZeroU64),
+}
+
+enum CapturedInput {
+    Parameter(AppliedParameter),
+    GuardedWrite(NonZeroU64),
+}
+
+impl CapturedInput {
+    fn current(&self, slot: &super::parameter_change::Slot) -> bool {
+        match *self {
+            Self::Parameter(parameter) => parameter.current(slot),
+            Self::GuardedWrite(ordinal) => slot.guarded_write_is_current(ordinal),
+        }
+    }
+}
+
 /// Correlation with this exact joining worker's original shared cell, binding
 /// and operation. The weak anchor owns no processor, endpoint or native lease.
 /// Caller-owned token storage/weak alias is separate from constructor handles;
@@ -148,7 +175,7 @@ pub struct NativeWorkerCapture {
     binding: Binding,
     ordinal: u64,
     mode: Mode,
-    after_parameter: Option<AppliedParameter>,
+    after: Option<CapturedInput>,
 }
 
 #[cfg(test)]
@@ -232,7 +259,7 @@ impl NativeWorker {
         input: &super::NativeWorkerParameterChange,
     ) -> Result<NativeWorkerCapture, &'static str> {
         self.require_parameter_change_source(input)?;
-        self.begin_state_capture(Some((
+        self.begin_state_capture(Some(CaptureAfter::Parameter(
             input,
             NativeWorkerParameterApplication::ProcessedPcm,
         )))
@@ -244,15 +271,15 @@ impl NativeWorker {
         input: &super::NativeWorkerParameterChange,
     ) -> Result<NativeWorkerCapture, &'static str> {
         self.require_parameter_change_source(input)?;
-        self.begin_state_capture(Some((input, NativeWorkerParameterApplication::IdleFlushed)))
+        self.begin_state_capture(Some(CaptureAfter::Parameter(
+            input,
+            NativeWorkerParameterApplication::IdleFlushed,
+        )))
     }
 
     fn begin_state_capture(
         &mut self,
-        input: Option<(
-            &super::NativeWorkerParameterChange,
-            NativeWorkerParameterApplication,
-        )>,
+        input: Option<CaptureAfter<'_>>,
     ) -> Result<NativeWorkerCapture, &'static str> {
         if self.retirement_requested || !self.retains_original_source_on_control() {
             return Err("native capture source is not live");
@@ -278,8 +305,8 @@ impl NativeWorker {
         if slot.capture_pending() {
             return Err("native capture is already pending");
         }
-        let after_parameter = match input {
-            Some((input, application)) => {
+        let after = match input {
+            Some(CaptureAfter::Parameter(input, application)) => {
                 let current = match application {
                     NativeWorkerParameterApplication::ProcessedPcm
                         if slot.parameter_change.is_processed(input) =>
@@ -295,12 +322,18 @@ impl NativeWorker {
                 };
                 let (ordinal, parameter, normalized_bits) = current
                     .ok_or("native parameter input was not the latest matching operation")?;
-                Some(AppliedParameter {
+                Some(CapturedInput::Parameter(AppliedParameter {
                     ordinal,
                     parameter,
                     normalized_bits,
                     application,
-                })
+                }))
+            }
+            Some(CaptureAfter::GuardedWrite(ordinal)) => {
+                if !slot.parameter_change.guarded_write_is_current(ordinal) {
+                    return Err("native guarded editor write was not the latest applied input");
+                }
+                Some(CapturedInput::GuardedWrite(ordinal))
             }
             None => None,
         };
@@ -317,7 +350,7 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             mode,
-            after_parameter,
+            after,
         })
     }
 
@@ -333,7 +366,7 @@ impl NativeWorker {
         &mut self,
         request: &NativeWorkerCapture,
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
-        if request.after_parameter.is_some() {
+        if request.after.is_some() {
             return Err("native sequenced capture requires its exact terminal");
         }
         self.poll_state_capture(request)
@@ -346,9 +379,9 @@ impl NativeWorker {
         &mut self,
         request: &NativeWorkerCapture,
     ) -> Result<NativeWorkerSequencedCaptureProgress, &'static str> {
-        let applied = request
-            .after_parameter
-            .ok_or("native sequenced capture differs")?;
+        let Some(CapturedInput::Parameter(applied)) = request.after else {
+            return Err("native sequenced capture differs");
+        };
         match self.poll_state_capture(request)? {
             NativeWorkerCaptureProgress::Pending => {
                 Ok(NativeWorkerSequencedCaptureProgress::Pending)
@@ -470,8 +503,9 @@ impl NativeWorker {
             return Ok(NativeWorkerCaptureProgress::Pending);
         };
         let superseded = request
-            .after_parameter
-            .is_some_and(|parameter| !parameter.current(&slot.parameter_change));
+            .after
+            .as_ref()
+            .is_some_and(|input| !input.current(&slot.parameter_change));
         drop(slot);
         if superseded {
             return Err("native sequenced capture was superseded");

@@ -10,6 +10,7 @@ use hex_plugin_host::{
     },
 };
 use std::{
+    num::NonZeroU64,
     sync::{TryLockError, Weak},
     time::Instant,
 };
@@ -75,6 +76,7 @@ pub struct NativeWorkerControllerQuery {
     ordinal: u64,
     stopped: bool,
     kind: Kind,
+    parameter_ordinal: Option<NonZeroU64>,
 }
 impl NativeWorkerControllerQuery {
     /// Whether the original completion allocation has been released. This
@@ -191,7 +193,7 @@ impl NativeWorker {
             .ordinal
             .checked_add(1)
             .ok_or("native controller ordinal exhausted")?;
-        let parameter_admission = if query.kind() == Kind::GuardedWrite {
+        let guarded = if query.kind() == Kind::GuardedWrite {
             // Supersede both control-side sequenced facts and any callback
             // permit from earlier non-guarded writes before accepting input.
             let next = slot.parameter_change.next_ordinal()?;
@@ -206,7 +208,7 @@ impl NativeWorker {
                     _ => "native parameter input generation differs",
                 })?;
             slot.parameter_change.supersede_with_guarded_write(next);
-            Some(admission)
+            Some((next, admission))
         } else {
             None
         };
@@ -216,9 +218,10 @@ impl NativeWorker {
         slot.requested = true;
         slot.complete = false;
         slot.stopped = stopped;
-        if let Some(admission) = parameter_admission {
+        let parameter_ordinal = guarded.map(|(ordinal, admission)| {
             admission.publish();
-        }
+            ordinal
+        });
         self.reaper
             .completed
             .controller_requested
@@ -229,6 +232,7 @@ impl NativeWorker {
             ordinal,
             stopped,
             kind: query.kind(),
+            parameter_ordinal,
         })
     }
 
@@ -317,6 +321,11 @@ impl NativeWorker {
         }
         let reply = slot.reply;
         slot.requested = false;
+        if let Some(ordinal) = request.parameter_ordinal
+            && reply.guarded_write == Some(NativeWorkerGuardedEditorWriteProgress::Applied)
+        {
+            mailbox.parameter_change.record_guarded_write(ordinal);
+        }
         drop(mailbox);
         Ok(Poll::Ready(reply))
     }

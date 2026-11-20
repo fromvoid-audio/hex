@@ -2,7 +2,10 @@
 //! Fixed request/result storage belongs to the original completion allocation;
 //! no SDK callback, invented process block, reader or source owner is added.
 use super::*;
-use std::sync::{TryLockError, Weak};
+use std::{
+    num::NonZeroU64,
+    sync::{TryLockError, Weak},
+};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -42,6 +45,7 @@ pub(super) struct Slot {
     ordinal: u64,
     last_processed: Option<u64>,
     last_idle_flush: Option<u64>,
+    last_guarded_write: Option<NonZeroU64>,
     phase: Phase,
     point: ParameterPoint,
     intent: Intent,
@@ -586,6 +590,16 @@ impl Slot {
         self.ordinal = ordinal.get();
         self.last_processed = None;
         self.last_idle_flush = None;
+    }
+
+    pub(super) fn record_guarded_write(&mut self, ordinal: NonZeroU64) {
+        self.last_guarded_write = Some(ordinal);
+    }
+
+    pub(super) fn guarded_write_is_current(&self, ordinal: NonZeroU64) -> bool {
+        self.phase == Phase::Idle
+            && self.ordinal == ordinal.get()
+            && self.last_guarded_write == Some(ordinal)
     }
 
     pub(super) fn processed_ordinal(&self) -> Option<u64> {
