@@ -46,6 +46,22 @@ impl StagedProjectEdit {
     }
 }
 
+/// One exact Undo or Redo target and its reserved history transfer. Dropping
+/// it leaves the canonical project and both history stacks unchanged.
+#[must_use]
+pub struct StagedProjectHistory {
+    editor_identity: Arc<()>,
+    history_revision: u64,
+    project: Project,
+    redo: bool,
+}
+
+impl StagedProjectHistory {
+    pub fn project(&self) -> &Project {
+        &self.project
+    }
+}
+
 pub struct Editor {
     project: Project,
     undo: VecDeque<HistoryEntry>,
@@ -215,6 +231,15 @@ impl Editor {
 
     fn advance_history_revision(&mut self) {
         self.history_revision = self.history_revision.saturating_add(1);
+    }
+
+    fn renew_history_identity_if_exhausted(&mut self) {
+        // Renew before admission so the commit does not allocate a new key and
+        // an exhausted revision cannot alias older staged operations.
+        if self.history_revision == u64::MAX {
+            self.identity = Arc::new(());
+            self.history_revision = 0;
+        }
     }
 
     /// Commit one device state with the actual pre-gesture state as its Undo
@@ -387,12 +412,7 @@ impl Editor {
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve edit history"))?;
         }
-        // Renew the identity before admission so commit never allocates a
-        // replacement key, and an exhausted revision cannot alias old edits.
-        if self.history_revision == u64::MAX {
-            self.identity = Arc::new(());
-            self.history_revision = 0;
-        }
+        self.renew_history_identity_if_exhausted();
         Ok(StagedProjectEdit {
             editor_identity: Arc::clone(&self.identity),
             history_revision: self.history_revision,
@@ -590,30 +610,7 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
-        let Some(previous) = self.undo.back() else {
-            return Ok(None);
-        };
-        let mut candidate = previous.project.clone();
-        let effect = previous.midi_effect;
-        let section_publication = previous.section_publication;
-        let stopped_bounce = previous.stopped_bounce;
-        candidate.next_id = candidate.next_id.max(self.project.next_id);
-        candidate.retain_gain_touch_epochs_from(&self.project);
-        self.redo
-            .try_reserve(1)
-            .map_err(|_| E::from(Invalid("could not reserve redo history")))?;
-        let prepared = prepare(&self.project, &candidate)?;
-        let Some(_) = self.undo.pop_back() else {
-            return Err(E::from(Invalid("undo history changed during preparation")));
-        };
-        self.redo.push(HistoryEntry {
-            project: std::mem::replace(&mut self.project, candidate),
-            midi_effect: effect,
-            section_publication,
-            stopped_bounce,
-        });
-        self.advance_history_revision();
-        Ok(Some(prepared))
+        self.prepare_history_transition(false, prepare)
     }
 
     pub fn redo(&mut self) -> bool {
@@ -654,33 +651,76 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
-        let Some(next) = self.redo.last() else {
+        self.prepare_history_transition(true, prepare)
+    }
+
+    fn prepare_history_transition<T, E: From<Invalid>>(
+        &mut self,
+        redo: bool,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let Some(history) = self.stage_history(redo)? else {
             return Ok(None);
         };
-        let mut candidate = next.project.clone();
-        let effect = next.midi_effect;
-        let section_publication = next.section_publication;
-        let stopped_bounce = next.stopped_bounce;
-        candidate.next_id = candidate.next_id.max(self.project.next_id);
-        candidate.retain_gain_touch_epochs_from(&self.project);
-        self.undo
-            .try_reserve(1)
-            .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
-        let prepared = prepare(&self.project, &candidate)?;
-        let Some(_) = self.redo.pop() else {
-            return Err(E::from(Invalid("redo history changed during preparation")));
-        };
-        if self.undo.len() == self.capacity {
-            self.undo.pop_front();
-        }
-        self.undo.push_back(HistoryEntry {
-            project: std::mem::replace(&mut self.project, candidate),
-            midi_effect: effect,
-            section_publication,
-            stopped_bounce,
-        });
-        self.advance_history_revision();
+        let prepared = prepare(&self.project, history.project())?;
+        self.commit_staged_history(history)?;
         Ok(Some(prepared))
+    }
+
+    /// Normalize the exact adjacent history target and reserve its inverse
+    /// before an external owner prepares or installs that target.
+    pub fn stage_history(&mut self, redo: bool) -> Result<Option<StagedProjectHistory>, Invalid> {
+        let Some(mut project) = self.inspect_history(redo, |_, target| target.clone()) else {
+            return Ok(None);
+        };
+        project.next_id = project.next_id.max(self.project.next_id);
+        project.retain_gain_touch_epochs_from(&self.project);
+        if redo {
+            self.undo
+                .try_reserve(1)
+                .map_err(|_| Invalid("could not reserve undo history"))?;
+        } else {
+            self.redo
+                .try_reserve(1)
+                .map_err(|_| Invalid("could not reserve redo history"))?;
+        }
+        self.renew_history_identity_if_exhausted();
+        Ok(Some(StagedProjectHistory {
+            editor_identity: Arc::clone(&self.identity),
+            history_revision: self.history_revision,
+            project,
+            redo,
+        }))
+    }
+
+    /// Commit the same staged history target after external approval. Prevent
+    /// intervening edits once its external publication may install.
+    pub fn commit_staged_history(&mut self, history: StagedProjectHistory) -> Result<(), Invalid> {
+        if history.history_revision != self.history_revision
+            || !Arc::ptr_eq(&history.editor_identity, &self.identity)
+        {
+            return Err(Invalid("staged history no longer matches editor history"));
+        }
+        let edge = if history.redo {
+            self.redo.pop()
+        } else {
+            self.undo.pop_back()
+        }
+        .ok_or(Invalid("staged history target is unavailable"))?;
+        let inverse = HistoryEntry {
+            project: std::mem::replace(&mut self.project, history.project),
+            ..edge
+        };
+        if history.redo {
+            if self.undo.len() == self.capacity {
+                self.undo.pop_front();
+            }
+            self.undo.push_back(inverse);
+        } else {
+            self.redo.push(inverse);
+        }
+        self.advance_history_revision();
+        Ok(())
     }
 }
 
@@ -720,6 +760,56 @@ mod staged_edit_tests {
         assert!(!editor.can_undo());
         assert!(editor.redo());
         assert_eq!(editor.project(), &candidate);
+    }
+
+    #[test]
+    fn staged_history_keeps_undo_and_redo_private_until_exact_commit() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        assert!(editor.stage_history(false).unwrap().is_none());
+        editor.execute(insert()).unwrap();
+        let before = editor.project().clone();
+
+        let abandoned = editor.stage_history(false).unwrap().unwrap();
+        assert!(abandoned.project().main_devices().is_empty());
+        assert_eq!(abandoned.project().next_identity(), before.next_identity());
+        drop(abandoned);
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_undo() && !editor.can_redo());
+
+        let undo = editor.stage_history(false).unwrap().unwrap();
+        let expected = undo.project().clone();
+        editor.commit_staged_history(undo).unwrap();
+        assert_eq!(editor.project(), &expected);
+        assert!(!editor.can_undo() && editor.can_redo());
+
+        let redo = editor.stage_history(true).unwrap().unwrap();
+        assert_eq!(redo.project(), &before);
+        assert_eq!(editor.project(), &expected);
+        editor.commit_staged_history(redo).unwrap();
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_undo() && !editor.can_redo());
+    }
+
+    #[test]
+    fn staged_history_refuses_foreign_and_obsolete_targets() {
+        let initial = Project::new(48_000).unwrap();
+        let mut editor = Editor::new(initial.clone(), 2).unwrap();
+        let mut other = Editor::new(initial, 2).unwrap();
+        editor.execute(insert()).unwrap();
+        other.execute(insert()).unwrap();
+        let before = editor.project().clone();
+
+        let foreign = editor.stage_history(false).unwrap().unwrap();
+        assert!(other.commit_staged_history(foreign).is_err());
+        assert_eq!(other.project(), &before);
+        assert!(other.can_undo() && !other.can_redo());
+
+        let stale = editor.stage_history(false).unwrap().unwrap();
+        assert!(editor.try_undo().unwrap());
+        assert!(editor.try_redo().unwrap());
+        assert!(editor.commit_staged_history(stale).is_err());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_undo() && !editor.can_redo());
     }
 
     #[test]
