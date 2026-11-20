@@ -142,6 +142,8 @@ enum Reroute {
     ExitSoleGroup,
     EnterNested,
     ExitNested,
+    EnterFromAbove,
+    ExitAbove,
 }
 
 #[test]
@@ -253,14 +255,30 @@ fn abandoning_a_nested_group_reroute_preserves_its_predecessor() -> Result {
     Ok(())
 }
 
+#[test]
+fn changing_the_moving_leafs_row_keeps_the_correct_fader_and_history() -> Result {
+    for partition in [1, 257] {
+        for reroute in [Reroute::EnterFromAbove, Reroute::ExitAbove] {
+            route_cut(partition, Terminal::Install, true, reroute)?;
+        }
+    }
+    Ok(())
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
     let exiting = matches!(
         reroute,
-        Reroute::Exit | Reroute::ExitLastChild | Reroute::ExitSoleGroup | Reroute::ExitNested
+        Reroute::Exit
+            | Reroute::ExitLastChild
+            | Reroute::ExitSoleGroup
+            | Reroute::ExitNested
+            | Reroute::ExitAbove
     );
+    let changes_row_order = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
     let nested = matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
     let has_other_group = !matches!(reroute, Reroute::EnterSoleGroup | Reroute::ExitSoleGroup);
-    let has_sibling = nested || matches!(reroute, Reroute::Enter | Reroute::Exit);
+    let has_sibling =
+        changes_row_order || nested || matches!(reroute, Reroute::Enter | Reroute::Exit);
     let mut a = vec![[0.125, -0.0625]; FRAMES];
     a[1700] = [0.5, -0.25];
     a[CUT + 53] = [-0.375, 0.1875];
@@ -309,6 +327,12 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         before: None,
         state: delay(5.0),
     })?;
+    if changes_row_order {
+        editor.execute(Command::MoveTracksBefore {
+            tracks: TrackSelectionIds::new(&[moved])?,
+            before: Some(destination),
+        })?;
+    }
     let before = prepare(&editor, &media)?;
     let inventory: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
     editor.execute(Command::ReparentTracks {
@@ -318,22 +342,19 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             before: None,
         },
     })?;
-    assert_eq!(
-        editor
-            .project()
-            .tracks()
-            .iter()
-            .map(|t| t.id())
-            .collect::<Vec<_>>(),
-        inventory
-    );
+    let entered_inventory: Vec<_> = editor.project().tracks().iter().map(|t| t.id()).collect();
+    assert_eq!(entered_inventory != inventory, changes_row_order);
     let after = prepare(&editor, &media)?;
     let (before, after) = if exiting {
         editor.execute(Command::ReparentTracks {
             tracks: TrackSelectionIds::new(&[moved])?,
             destination: TrackDestination {
                 parent_group: None,
-                before: Some(unrelated_root),
+                before: Some(if changes_row_order {
+                    destination
+                } else {
+                    unrelated_root
+                }),
             },
         })?;
         assert_eq!(
