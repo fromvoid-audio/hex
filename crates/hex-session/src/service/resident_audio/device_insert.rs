@@ -491,6 +491,32 @@ pub(in crate::service) fn graph_edit_operation(command: &Command) -> Option<Grap
     catalog_graph_edit_operation(command, false)
 }
 
+/// An installed Resident graph can prepare fresh clipboard processors through
+/// its native effect binding path. With no output, retain ordinary clipboard
+/// preparation and publish the canonical source when an output opens.
+pub(in crate::service) fn should_stage_resident_graph_edit(
+    command: &Command,
+    sink: &mut dyn WorkerAudioSink,
+) -> bool {
+    sink.confirms_device_inserts()
+        && (graph_edit_operation(command) == Some(GraphEditOperation::InsertDevice)
+            || (resident_graph_edit_operation(command, false).is_some()
+                && !matches!(
+                    sink.resident_publication_readiness(),
+                    ResidentPublicationReadiness::NoOutput
+                )))
+}
+
+fn resident_graph_edit_operation(
+    command: &Command,
+    controlled: bool,
+) -> Option<GraphEditOperation> {
+    match command {
+        Command::PasteDevices { .. } => Some(GraphEditOperation::InsertDevice),
+        _ => catalog_graph_edit_operation(command, controlled),
+    }
+}
+
 fn catalog_graph_edit_operation(command: &Command, controlled: bool) -> Option<GraphEditOperation> {
     match command {
         Command::InitializeDevice(initialization) => {
@@ -823,7 +849,7 @@ impl Session {
                 // The hosted browser also stages replacement of an instrument.
                 GraphEditOperation::InsertDevice
             } else {
-                catalog_graph_edit_operation(&command, proposal_control.is_some())
+                resident_graph_edit_operation(&command, proposal_control.is_some())
                     .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
             };
             let edit = self.editor.stage_edit(command)?;

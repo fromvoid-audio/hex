@@ -2537,6 +2537,178 @@ fn native_effect_failed_state_restore_preserves_last_confirmed_state_and_history
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn running_native_device_duplicate_waits_for_the_exact_install() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+    use hex_session::service::{DeviceClipboardAction, DeviceInsertOutcome};
+
+    let _native = native_fixture();
+    let (mut h, _files, before) = fixture_with_frames(Start::Unsaved, 8192);
+    let original = &before.project.main_devices()[0];
+    let (_, original_binding, accepted) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert!(accepted);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 256];
+    for _ in 0..4 {
+        pcm = super::super::instruments::render_completed_block(&h);
+    }
+    assert_eq!(pcm, [[0.15625; 2]; 256]);
+    let predecessor = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    h.enable_confirmed_device_inserts();
+    let (compiling, enqueue, _) = h.probe_next_native_publication();
+    h.service
+        .submit(Request::DeviceClipboard {
+            project_generation: predecessor.context.project_generation,
+            revision: before.revision,
+            action: DeviceClipboardAction::Duplicate {
+                source: DeviceChainOwner::Main,
+                selected: DeviceSelectionIds::new(&[original.id()]).unwrap(),
+                destination: DeviceChainOwner::Main,
+                before: None,
+            },
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while compiling.recv_timeout(Duration::from_millis(10)).is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            panic!("duplicate stopped before publication: {:?}", event.error);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "duplicate graph was not prepared"
+        );
+        let previous = pcm[0][0];
+        pcm = h.render_plugin_block();
+        workers_idle(&h);
+        assert_eq!(pcm, [[previous + 0.03125; 2]; 256]);
+    }
+    assert_eq!(
+        h.render_plugin_block(),
+        [[pcm[0][0] + 0.03125; 2]; 256],
+        "preparing a copy interrupted the original processor"
+    );
+    workers_idle(&h);
+    enqueue.send(()).unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(predecessor)
+    );
+    assert!(
+        !pending.request_complete,
+        "duplicate completed before audio installed its graph"
+    );
+    assert_eq!(pending.state.project, before.project);
+    assert_eq!(pending.state.revision, before.revision);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let installed = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.request_complete {
+                break event;
+            }
+            assert_eq!(event.state.project, before.project);
+            if let Some(offer) = event.device_insert_confirmation {
+                let (submitted, resume) = h.probe_next_submitted_device_insert();
+                assert!(offer.proceed());
+                let confirmed = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(confirmed.context, offer.submission().context);
+                resume.send(()).unwrap();
+            }
+        }
+        assert!(Instant::now() < deadline, "duplicate did not install");
+        h.render_plugin_block();
+        workers_idle(&h);
+    };
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
+    assert!(receipt.submission.audio_revision > predecessor.audio_revision);
+    assert_eq!(
+        receipt.submission.context.editor_revision,
+        before.revision + 1
+    );
+    assert_eq!(installed.state.revision, before.revision + 1);
+    let applied = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_eq!(applied.audio_revision, receipt.submission.audio_revision);
+    assert_eq!(applied.context, receipt.submission.context);
+    let [retained, duplicate] = installed.state.project.main_devices() else {
+        panic!("original and its copy");
+    };
+    assert_eq!(retained, original);
+    assert_ne!(duplicate.id(), original.id());
+    assert_eq!(duplicate.state(), original.state());
+    let bindings = h.plugin_progress.lock().unwrap().source_bindings;
+    let binding = |device: hex_project::DeviceId| {
+        bindings
+            .into_iter()
+            .flatten()
+            .find_map(|(id, binding, _)| (id == device.value()).then_some(binding))
+    };
+    assert_eq!(binding(original.id()), Some(original_binding));
+    assert_ne!(binding(duplicate.id()).unwrap(), original_binding);
+
+    let clipboard = |action| Request::DeviceClipboard {
+        project_generation: predecessor.context.project_generation,
+        revision: installed.state.revision,
+        action,
+    };
+    h.run(clipboard(DeviceClipboardAction::Copy {
+        owner: DeviceChainOwner::Main,
+        selected: DeviceSelectionIds::new(&[duplicate.id()]).unwrap(),
+    }));
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(clipboard(DeviceClipboardAction::Paste {
+            owner: DeviceChainOwner::Main,
+            before: None,
+        }))
+        .unwrap();
+    let refused = ordinary_terminal(&mut h);
+    assert!(
+        refused
+            .error
+            .unwrap()
+            .contains("fixture final admission refusal")
+    );
+    assert_eq!(refused.state.project, installed.state.project);
+    assert_eq!(refused.state.revision, installed.state.revision);
+    assert_eq!(refused.state.can_undo, installed.state.can_undo);
+    assert_eq!(refused.state.can_redo, installed.state.can_redo);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_redo() {
     let _native = native_fixture();
     let files = Files::new();
