@@ -751,3 +751,420 @@ fn source_delay_history_survives_live_receiver_move_without_callback_allocations
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
 }
+
+#[test]
+fn fenced_nested_effect_removal_and_cancel_allocate_and_free_nothing() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    fenced_nested_effect_removal(hex_devices::delay::DEFINITION.default_state().unwrap());
+    fenced_nested_effect_removal(
+        UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                INVERT_LEFT,
+                ParameterValue::Bool(true),
+            )
+            .unwrap(),
+    );
+}
+
+fn fenced_nested_effect_removal(effect: hex_lattice_contract::NativeDeviceState) {
+    use hex_audio::prepared::{
+        FreshRuntimeCancellationResult, PublicationPolicy, PublicationReceiptState,
+    };
+    use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    use std::sync::atomic::AtomicBool;
+
+    const RATE: u32 = 8_000;
+    const FADE: usize = 40;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "generator".into(),
+            devices: vec![
+                hex_devices::fm4::device::FM4_DEFINITION
+                    .default_state()
+                    .unwrap(),
+                effect,
+            ],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source");
+    };
+    let removed = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .devices()
+        .nth(1)
+        .unwrap()
+        .id();
+    for (ordinal, pitch) in [60, 67].into_iter().enumerate() {
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+        if ordinal == 0 {
+            editor
+                .execute(Command::SetNativeSourceReceiver {
+                    source,
+                    track: Some(track),
+                })
+                .unwrap();
+        }
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                velocity: 96,
+                channel: 0,
+            })
+            .unwrap();
+    }
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "independent audio".into(),
+            path: "independent.wav".into(),
+            sample_rate: RATE,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("independent audio");
+    };
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(RATE, vec![[0.2, -0.05]; 512]).unwrap(),
+    )]);
+    let table = Arc::new(SineTable::new());
+    let cancelled = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &ResidentDeviceAssets::default(),
+        editor.project(),
+        1 << 20,
+        &cancelled,
+    )
+    .unwrap();
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare_with_device_resources(
+                project,
+                &media,
+                Arc::clone(&table),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                0,
+                &cancelled,
+            )
+            .unwrap(),
+        )
+    };
+    let old = prepare(editor.project());
+    editor.execute(Command::RemoveDevice(removed)).unwrap();
+    let new = prepare(editor.project());
+    let other_receiver = editor.project().tracks()[1].id();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(other_receiver),
+        })
+        .unwrap();
+    let incompatible = prepare(editor.project());
+    let runtime = |graph: &Arc<PreparedRevision>| {
+        Playback::try_from_prepared_with_device_resources(Arc::clone(graph), &resources).unwrap()
+    };
+    let reference = |graph: &Arc<PreparedRevision>| {
+        let mut result =
+            hex_engine::SessionPlayback::new_with_device_resources(Arc::clone(graph), &resources)
+                .unwrap();
+        result.apply(SessionPlaybackCommand::Play).unwrap();
+        result
+    };
+    let (mut wet_reference, mut dry_reference) = (reference(&old), reference(&new));
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 256,
+                root_rows: 64,
+                max_retained_bytes: 2_000_000,
+                max_construction_peak_bytes: 2_000_000,
+            },
+        )
+        .unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 1,
+        editor_revision: 2,
+    };
+    control
+        .publish_with_admission_and_source_on_control(
+            runtime(&old),
+            PublicationPolicy::InstallFreshRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut render = |count: usize| {
+        let mut actual = vec![[0.0; 2]; count];
+        let mut wet = actual.clone();
+        let mut dry = actual.clone();
+        wet_reference.render(&mut wet).unwrap();
+        dry_reference.render(&mut dry).unwrap();
+        measured(|| {
+            callback.begin_block();
+            callback.render(&mut actual).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+        (actual, wet, dry)
+    };
+    let (actual, wet, dry) = render(129);
+    assert_eq!(actual, wet);
+    assert_ne!(wet, dry);
+    let predecessor = control.status.recording_source().unwrap();
+    let next_context = hex_engine::AudioSourceContext {
+        editor_revision: 3,
+        ..context
+    };
+    let submit = |control: &mut prepared::Control, graph| {
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_device_insert_with_receipt_on_control(
+                runtime(graph),
+                PublicationPolicy::DeviceInsert { predecessor, fence },
+                next_context,
+                |_| {},
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        control.fresh_runtime_receipt(revision).unwrap()
+    };
+    let refused = submit(&mut control, &incompatible);
+    let (actual, wet, _) = render(11);
+    assert!(matches!(
+        refused.state(),
+        PublicationReceiptState::Refused(_)
+    ));
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    assert_eq!(
+        actual, wet,
+        "an incompatible receiver edit must not arm a fade"
+    );
+    control.reclaim();
+
+    let cancelled = submit(&mut control, &new);
+    let _ = render(11);
+    assert_eq!(cancelled.state(), PublicationReceiptState::Pending);
+    assert_eq!(
+        cancelled.cancel(),
+        FreshRuntimeCancellationResult::Cancelled
+    );
+    let (actual, wet, _) = render(FADE + 8);
+    assert_eq!(cancelled.state(), PublicationReceiptState::Cancelled);
+    assert_eq!(control.status.recording_source(), Some(predecessor));
+    assert_eq!(actual[FADE..], wet[FADE..]);
+    control.reclaim();
+
+    let accepted = submit(&mut control, &new);
+    let mut elapsed = 0;
+    for count in [11, 28, 1] {
+        let (actual, wet, dry) = render(count);
+        for index in 0..count {
+            let mix = 1.0 - (elapsed + index + 1) as f32 / FADE as f32;
+            for channel in 0..2 {
+                let dry = dry[index][channel];
+                let wet = wet[index][channel];
+                assert!((actual[index][channel] - (dry + (wet - dry) * mix)).abs() < 1e-6);
+            }
+        }
+        elapsed += count;
+        assert_eq!(accepted.state(), PublicationReceiptState::Pending);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+    }
+    let (actual, _, dry) = render(16);
+    assert_eq!(actual, dry);
+    assert_eq!(accepted.state(), PublicationReceiptState::Installed);
+    let applied = control.status.recording_source().unwrap();
+    assert_eq!(applied.audio_revision, accepted.revision());
+    assert_eq!(applied.context, next_context);
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+}
+
+#[test]
+fn selected_session_note_chase_off_handoff_and_pause_allocate_nothing() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "session".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                hex_devices::SINE_INSTRUMENT_TYPE_ID,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "notes".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let hex_project::SessionCellContentSnapshot::Midi(clip) =
+        &mut snapshot.session.cells[0].content
+    else {
+        panic!("clip");
+    };
+    const Q: u64 = 1 << 32;
+    clip.playback_offset_raw = 3 * Q / 16;
+    clip.source.source_length_raw = Q / 4;
+    clip.source.source_start_raw = 0;
+    clip.source.loop_start_raw = Q / 16;
+    clip.source.loop_end_raw = Q / 4;
+    clip.source.looping = true;
+    clip.source.notes = vec![
+        hex_project::MidiNoteSnapshot {
+            active: true,
+            id: 1_000_001,
+            start_raw: Q / 8,
+            duration_raw: Q / 8,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        },
+        hex_project::MidiNoteSnapshot {
+            active: true,
+            id: 1_000_002,
+            start_raw: 3 * Q / 16,
+            duration_raw: Q / 64,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        },
+    ];
+    snapshot.next_id = 1_000_003;
+    let mut oracle_snapshot = snapshot.clone();
+    let hex_project::SessionCellContentSnapshot::Midi(clip) =
+        &mut oracle_snapshot.session.cells[0].content
+    else {
+        panic!("clip");
+    };
+    clip.playback_offset_raw = 0;
+    clip.source.source_start_raw = 3 * Q / 16;
+    let revisions = [snapshot, oracle_snapshot].map(|snapshot| {
+        Arc::new(
+            PreparedRevision::prepare(
+                &Project::from_snapshot(snapshot).unwrap(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    });
+    let (mut control, mut callback) = prepared::channel(8_000).unwrap();
+    let (mut oracle_control, mut oracle_callback) = prepared::channel(8_000).unwrap();
+    for (control, revision) in [
+        (&mut control, &revisions[0]),
+        (&mut oracle_control, &revisions[1]),
+    ] {
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(revision)).unwrap())
+            .unwrap_or_else(|e| panic!("{}", e.reason));
+        control
+            .session_command_with_ticket(SessionPlaybackCommand::LaunchClipWithNoteChase {
+                clip: revision.session().midi_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+                note_chase: hex_engine::NoteChase::Off,
+            })
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+    }
+    for step in 0..8 {
+        if step == 1 {
+            for (control, revision) in [
+                (&mut control, &revisions[0]),
+                (&mut oracle_control, &revisions[1]),
+            ] {
+                control
+                    .publish(
+                        Playback::try_from_prepared_with_session(Arc::clone(revision)).unwrap(),
+                    )
+                    .unwrap_or_else(|e| panic!("{}", e.reason));
+            }
+        }
+        if step == 2 {
+            control.command(PlaybackCommand::Pause).unwrap();
+            oracle_control.command(PlaybackCommand::Pause).unwrap();
+        }
+        let mut expected = [[0.0; 2]; 32];
+        oracle_callback.begin_block();
+        oracle_callback.render(&mut expected).unwrap();
+        let mut output = [[0.0; 2]; 32];
+        measured(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(output, expected, "step {step}");
+        if step == 0 {
+            assert!(output.iter().flatten().any(|s| *s != 0.0));
+        }
+        control.reclaim();
+        oracle_control.reclaim();
+    }
+    control.stop();
+    oracle_control.stop();
+    let mut output = [[0.0; 2]; 32];
+    measured(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    });
+    oracle_callback.begin_block();
+    oracle_callback.render(&mut output).unwrap();
+    control.reclaim();
+    oracle_control.reclaim();
+}

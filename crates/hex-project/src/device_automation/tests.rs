@@ -339,7 +339,6 @@ fn unsupported_time_transforms_refuse_without_separating_envelopes_from_music() 
         crate::AUTOMATION_EDIT_UNSUPPORTED
     );
     for command in [
-        Command::DuplicateArrangementSection(section),
         Command::DeleteArrangementSection(section),
         Command::ResizeArrangementSection {
             section,
@@ -354,6 +353,205 @@ fn unsupported_time_transforms_refuse_without_separating_envelopes_from_music() 
         assert_eq!(e.project(), &original);
     }
 }
+
+#[test]
+fn section_copies_carry_base_and_touch_automation_at_the_final_insertion() {
+    use AutomationInterpolation::{Linear, Step};
+
+    let (mut editor, _, device) = fixture();
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let mut add = |name: &str, start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: name.into(),
+                color: crate::ElementColor::Cyan,
+                start: beat(start),
+                end: beat(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let early = add("early", 0, 2);
+    let section = add("source", 2, 6);
+    let later = add("later", 6, 10);
+    let target = DeviceAutomationTarget::Parameter(ParameterId::from_static(1));
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: vec![
+                point(1, 0.25, Linear),
+                point(6, 0.875, Step),
+                point(6, 0.25, Linear),
+                point(9, 0.625, Step),
+                point(13, 0.5, Step),
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SpliceDeviceAutomationTouch {
+            device,
+            target,
+            vst3_class: None,
+            spans: vec![DeviceAutomationTouchSpan {
+                start: beat(4),
+                end: beat(8),
+                steps: vec![
+                    DeviceAutomationTouchStep {
+                        beat: beat(4),
+                        value: AutomationValue::new(1.0).unwrap(),
+                    },
+                    DeviceAutomationTouchStep {
+                        beat: beat(7),
+                        value: AutomationValue::new(0.0).unwrap(),
+                    },
+                ],
+            }],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetDeviceAutomationReadSelection {
+            device,
+            target,
+            selection: AutomationReadSelection::Base,
+        })
+        .unwrap();
+
+    let snapshot = editor.project().snapshot();
+    let lane = |project: &Project| {
+        project
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .unwrap()
+            .clone()
+    };
+    let original = lane(editor.project());
+    let mut original_base = original.clone();
+    original_base.touch.clear();
+    for (insertion, command) in [
+        (6, Command::DuplicateArrangementSection(section)),
+        (
+            0,
+            Command::DuplicateArrangementSectionAt {
+                section,
+                target: early,
+                after: false,
+            },
+        ),
+        (
+            10,
+            Command::DuplicateArrangementSectionAt {
+                section,
+                target: later,
+                after: true,
+            },
+        ),
+        (
+            12,
+            Command::AppendArrangementSectionCopy {
+                section,
+                start: beat(12),
+                gap_name: "gap".into(),
+                gap_color: crate::ElementColor::Cyan,
+            },
+        ),
+    ] {
+        let mut editor = Editor::new(Project::from_snapshot(snapshot.clone()).unwrap(), 4).unwrap();
+        let Created::ArrangementSection(copy) = editor.execute(command).unwrap() else {
+            panic!("section copy")
+        };
+        let copy = editor.project().arrangement_section(copy).unwrap();
+        assert_eq!(
+            (copy.start(), copy.end()),
+            (beat(insertion), beat(insertion + 4))
+        );
+        let copied = lane(editor.project());
+        assert_eq!(copied.read_selection, AutomationReadSelection::Base);
+        let mut copied_base = copied.clone();
+        copied_base.touch.clear();
+        let times = (0..=38)
+            .map(|n| BeatTime::from_ratio(n, 2).unwrap().raw())
+            .chain([beat(insertion + 4).raw() - 1]);
+        for time in times {
+            let old_time = if time < beat(insertion).raw() {
+                time
+            } else if time < beat(insertion + 4).raw() {
+                beat(2).raw() + time - beat(insertion).raw()
+            } else {
+                time - beat(4).raw()
+            };
+            for (before, after) in [(&original, &copied), (&original_base, &copied_base)] {
+                let expected = before.value_at(BeatTime::from_raw(old_time)).unwrap().get();
+                let actual = after.value_at(BeatTime::from_raw(time)).unwrap().get();
+                assert!(
+                    (actual - expected).abs() < 1e-6,
+                    "copy at {insertion}, time {time}: {actual} != {expected}"
+                );
+            }
+        }
+        let result = editor.project().snapshot();
+        assert_eq!(
+            Project::from_snapshot(result.clone()).unwrap().snapshot(),
+            result
+        );
+        assert!(editor.undo());
+        assert_eq!(lane(editor.project()), original);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), result);
+    }
+}
+
+#[test]
+fn section_copy_refuses_real_point_overflow_without_spending_capacity_on_holds() {
+    let (mut editor, _, device) = fixture();
+    let Created::ArrangementSection(section) = editor
+        .execute(Command::AddArrangementSection {
+            name: "dense".into(),
+            color: crate::ElementColor::Cyan,
+            start: BeatTime::ZERO,
+            end: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
+    let parameter = ParameterId::from_static(1);
+    let length = BeatTime::from_quarters(4).unwrap().raw();
+    for offset in [0, length * 2] {
+        let points = (0..MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
+            .map(|tick| AutomationPoint {
+                beat: BeatTime::from_raw(offset + tick as u64),
+                ..point(0, 0.5, AutomationInterpolation::Step)
+            })
+            .collect();
+        editor
+            .execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        let result = editor.execute(Command::DuplicateArrangementSection(section));
+        if offset == 0 {
+            assert_eq!(
+                result.unwrap_err().0,
+                "device automation section copy exceeds the lane point limit"
+            );
+            assert_eq!(editor.project().snapshot(), before);
+        } else {
+            result.unwrap();
+            let lane = &editor.project().device(device).unwrap().automation()[0];
+            assert_eq!(lane.points.len(), MAX_DEVICE_AUTOMATION_POINTS_PER_LANE);
+            assert_eq!(lane.points[0].beat.raw(), offset + length);
+        }
+    }
+}
+
 #[test]
 fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let (e, _, _) = fixture();

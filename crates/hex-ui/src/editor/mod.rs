@@ -164,6 +164,7 @@ mod midi_recording;
 mod midi_viewport_grid;
 mod missing_media;
 mod native_automation_recording;
+mod playback_settings;
 mod track_defaults;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
@@ -181,6 +182,17 @@ mod midi_pitch_viewport;
 mod midi_ruler;
 mod midi_scene;
 use midi_pitch_viewport::PitchViewport;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+impl PitchViewport {
+    fn first_test_pitch(self) -> u8 {
+        self.coverage().start
+    }
+
+    fn test_row_count(self) -> u8 {
+        self.coverage().len() as u8
+    }
+}
 mod midi_selection;
 mod midi_source_controls;
 mod midi_step;
@@ -285,9 +297,12 @@ mod update_flow;
 mod viewport;
 mod waveform;
 mod waveform_columns;
+mod waveform_frame;
 mod waveform_geometry;
 mod waveform_loop;
+mod waveform_musical_event;
 mod waveform_overrange;
+mod waveform_prepared_fade;
 mod waveform_source;
 mod waveform_stretch;
 mod zoom_fit;
@@ -925,14 +940,14 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
-    piano_pitch_wheel_accum: f32,
     poll_cadence: poll_cadence::PollCadence,
     piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: i128,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
-    pub(in crate::editor) piano_pitch_low: u8,
-    piano_pitch_rows: u8,
+    pub(in crate::editor) piano_pitch: PitchViewport,
     piano_pitch_zoom: Option<midi_pitch_zoom::Zoom>,
+    piano_pitch_grid_height: f32,
+    piano_pitch_note_fit: bool,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
@@ -1145,6 +1160,7 @@ pub(super) struct EditorView {
     theme_settings: theme_settings::ThemeSettingsState,
     project_rate_settings: project_rate_settings::State,
     audio_import_settings: audio_import_settings::State,
+    playback_settings: playback_settings::State,
     track_defaults: track_defaults::State,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
@@ -1647,6 +1663,8 @@ impl EditorView {
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let project_directory = project_directory::State::new(project_directory_path);
+        let playback_settings =
+            playback_settings::State::new(theme_preferences_path.with_file_name("playback.json"));
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path.with_file_name("audio-import.json"),
         );
@@ -1745,15 +1763,15 @@ impl EditorView {
             midi_hover: None,
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
-            piano_pitch_wheel_accum: 0.0,
             poll_cadence,
             piano_pitch_scroll_accum: 0.0,
             piano_beat_start: 0,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
-            piano_pitch_low: 48,
-            piano_pitch_rows: 24,
+            piano_pitch: PitchViewport::DEFAULT,
             piano_pitch_zoom: None,
+            piano_pitch_grid_height: 0.0,
+            piano_pitch_note_fit: false,
             midi_snap_grid: midi_drag::MidiGrid::default(),
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
@@ -1955,6 +1973,7 @@ impl EditorView {
             theme_settings,
             project_rate_settings: project_rate_settings::State::default(),
             audio_import_settings,
+            playback_settings,
             track_defaults,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
@@ -1993,6 +2012,7 @@ impl EditorView {
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
+        view.start_playback_preferences_load(cx);
         view.start_track_defaults_load(cx);
         view.start_controller_preferences_load(cx);
         view
@@ -2060,22 +2080,23 @@ impl EditorView {
             self.error = Some("project change pending · playback is paused".into());
             return;
         }
+        let device_playing = self
+            .audio_status()
+            .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
+        if self.playback_settings.pending.take().is_some() {
+            self.status = "playback start cancelled".into();
+            if self.desired_playing(device_playing) {
+                self.pause_from_play_toggle();
+            }
+            return;
+        }
         if self.recovery.generation().is_some() {
-            self.defer_play_until_audio_recovers();
+            self.queue_normal_play(self.playback_start_frame());
             return;
         }
         if self.section_install_pending() {
-            let playing = self
-                .audio
-                .as_ref()
-                .and_then(|audio| audio.control.status())
-                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
-            if self.desired_playing(playing) {
-                #[cfg(test)]
-                {
-                    self.last_transport_command = Some(PlaybackCommand::Pause);
-                }
-                self.queue_audio_command(PlaybackCommand::Pause);
+            if self.desired_playing(device_playing) {
+                self.pause_from_play_toggle();
             } else if let Some(source) = self.section_copy_play_source() {
                 if let Some(frame) = self.section_copy_play_start() {
                     self.queue_section_copy_play(frame, source);
@@ -2087,28 +2108,28 @@ impl EditorView {
             }
             return;
         }
-        let device_playing = self.audio.as_ref().is_some_and(|audio| {
-            audio
-                .control
-                .status()
-                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
-        });
         let start_frame = self.playback_start_frame();
-        let command = match self.play_toggle_action(device_playing, start_frame) {
-            arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
-            arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
+        match self.play_toggle_action(device_playing, start_frame) {
+            arrangement_seek::ToggleAction::Pause => self.pause_from_play_toggle(),
+            arrangement_seek::ToggleAction::PlayFrom(frame) => {
+                self.queue_normal_play(frame);
+            }
             arrangement_seek::ToggleAction::Unavailable => {
-                if !self.recover_degraded_play_at(start_frame) {
+                if self.has_degraded_vst3_output() {
+                    self.queue_normal_play(start_frame);
+                } else {
                     self.error = Some("playback source is unavailable · cannot seek safely".into());
                 }
-                return;
             }
-        };
+        }
+    }
+
+    fn pause_from_play_toggle(&mut self) {
         #[cfg(test)]
         {
-            self.last_transport_command = Some(command);
+            self.last_transport_command = Some(PlaybackCommand::Pause);
         }
-        self.queue_audio_command(command);
+        self.queue_audio_command(PlaybackCommand::Pause);
     }
 
     /// A Stop reset supplies absolute frame zero until the next selection

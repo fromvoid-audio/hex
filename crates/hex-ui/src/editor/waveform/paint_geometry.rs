@@ -90,7 +90,7 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
     tempo: &hex_project::TempoMap,
     visible_start: u64,
     visible_end: u64,
-    preview: Option<ClipFade>,
+    preview: Option<(ClipFade, bool)>,
 ) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
     let edit = clip
         .audio_edit()
@@ -101,19 +101,31 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
     {
         return Ok(Vec::new());
     }
+    if let Some((fade, outer)) = preview {
+        if !outer {
+            return Ok(fade_envelope_samples(
+                fade,
+                clip.start(),
+                visible_start,
+                visible_end,
+            ));
+        }
+        let projection = clip.projected_outer_fade_preview(tempo, fade)?;
+        return outer_fade_samples(&projection, fade, visible_start, visible_end);
+    }
+    if let Some(projection) = clip.projected_outer_fade(tempo)? {
+        return outer_fade_samples(
+            &projection,
+            clip.retained_fade(),
+            visible_start,
+            visible_end,
+        );
+    }
     if edit.placement.is_some()
         && edit.content_view.is_none()
         && matches!(edit.domain.clock, hex_project::AudioDomainClock::Frames(_))
     {
-        return placed_frame_fade_samples(clip, tempo, visible_start, visible_end, preview);
-    }
-    if let Some(preview) = preview {
-        return Ok(fade_envelope_samples(
-            preview,
-            clip.start(),
-            visible_start,
-            visible_end,
-        ));
+        return placed_frame_fade_samples(clip, tempo, visible_start, visible_end);
     }
     let fade = edit.projected_fade(tempo)?;
     let (_, _, view_start, _) = edit.projected_domain(tempo)?;
@@ -160,14 +172,56 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
     Ok(result)
 }
 
-/// Frame placements reuse one processing root. Sample the same root phase for
-/// idle, held and pending shade; outer elapsed must never address beyond it.
+/// One bounded destination envelope. Repeat density never affects this pass.
+fn outer_fade_samples(
+    projection: &hex_project::ProjectedOuterAudioFade<'_>,
+    fade: ClipFade,
+    visible_start: u64,
+    visible_end: u64,
+) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
+    if projection.is_neutral() {
+        return Ok(Vec::new());
+    }
+    let length = visible_end - visible_start;
+    let count = length.min(FADE_ENVELOPE_SAMPLES as u64) as usize;
+    let mut positions = Vec::new();
+    positions
+        .try_reserve_exact(count + 3 * (FADE_ENVELOPE_BREAKPOINTS + 2))
+        .map_err(|_| hex_project::Invalid("fade geometry allocation failed"))?;
+    for index in 0..count {
+        positions.push(visible_start + fraction_u64(length - 1, index, count.saturating_sub(1)));
+    }
+    for knot in fade_domain_positions(fade).chain([fade.offset(), fade.span()]) {
+        if let Some(frame) = projection.frame_at_domain_position(knot)? {
+            positions.extend(
+                [frame.saturating_sub(1), frame, frame.saturating_add(1)]
+                    .into_iter()
+                    .filter(|frame| (visible_start..visible_end).contains(frame)),
+            );
+        }
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    let mut samples = Vec::new();
+    samples
+        .try_reserve_exact(positions.len())
+        .map_err(|_| hex_project::Invalid("fade geometry allocation failed"))?;
+    for frame in positions {
+        let x = (frame - visible_start) as f32 / (length - 1).max(1) as f32;
+        samples.push((x, projection.gain_at(frame)?));
+    }
+    if samples.iter().all(|(_, gain)| *gain == 1.0) {
+        samples.clear();
+    }
+    Ok(samples)
+}
+
+/// Legacy frame placements retain their original per-occurrence fade law.
 fn placed_frame_fade_samples(
     clip: &Clip,
     tempo: &hex_project::TempoMap,
     visible_start: u64,
     visible_end: u64,
-    preview: Option<ClipFade>,
 ) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
     use hex_project::{AudioViewProjection, Invalid};
     let edit = clip
@@ -211,14 +265,8 @@ fn placed_frame_fade_samples(
     knots
         .try_reserve_exact(FADE_ENVELOPE_BREAKPOINTS)
         .map_err(|_| Invalid("fade geometry allocation failed"))?;
-    for position in fade_domain_positions(preview.unwrap_or(clip.retained_fade())) {
-        let root = match preview {
-            Some(preview) => position
-                .checked_sub(preview.offset())
-                .and_then(|age| edit.view_start.checked_add(age)),
-            None => fade.frame_at_domain_position(position)?,
-        };
-        if let Some(root) = root {
+    for position in fade_domain_positions(clip.retained_fade()) {
+        if let Some(root) = fade.frame_at_domain_position(position)? {
             knots.push(root);
         }
     }
@@ -257,12 +305,7 @@ fn placed_frame_fade_samples(
         .map_err(|_| Invalid("fade geometry allocation failed"))?;
     for frame in positions {
         let gain = match projection.root_position_for_frame(frame)? {
-            Some(root) => match preview {
-                Some(preview) => root
-                    .checked_sub(edit.view_start)
-                    .map_or(0.0, |at| preview.gain_at(at)),
-                None => fade.gain_at(root)?,
-            },
+            Some(root) => fade.gain_at(root)?,
             // No processing-root read (an exhausted Once or silent period) has
             // no authored envelope to shade.
             None => 1.0,
@@ -591,7 +634,7 @@ mod tests {
                         editor.project().tempo_map(),
                         a,
                         b,
-                        Some(preview),
+                        Some((preview, true)),
                     )
                     .unwrap()
                 })
@@ -612,9 +655,103 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(committed, expected, "phase={phase} window={a}..{b}");
-                assert_eq!(committed.first().unwrap().0, 0.0);
-                assert_eq!(committed.last().unwrap().0, 1.0);
+                if (a, b) == windows[0] {
+                    assert_eq!(committed.first(), Some(&(0.0, 0.0)));
+                    assert_eq!(committed.last(), Some(&(1.0, 0.0)));
+                } else {
+                    assert!(
+                        committed.is_empty(),
+                        "middle cycles have no outer fade shade"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn musical_repeat_shade_keeps_one_destination_envelope_through_tempo_and_reflection() {
+        use hex_project::{
+            AudioClipTiming, AudioViewProjection, AudioViewResizeOperation, BeatTime, Command,
+            Tempo,
+        };
+        let (mut editor, id) = repeated_fixture(19_174, 4);
+        editor
+            .execute(Command::SetClipFades {
+                clip: id,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ONE,
+                tempo: Tempo::new(72_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip: id,
+                enabled: true,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 82_000,
+                },
+            })
+            .unwrap();
+        let clip = editor.project().clip(id).unwrap();
+        let end = clip.start() + clip.duration();
+        let visible = (clip.start(), end);
+        let fade = ClipFade::new(clip.duration(), 0, 24_000, 19_000)
+            .unwrap()
+            .with_curve_laws([ClipFade::DEFAULT_S_CURVE; 2]);
+        let sample = |project: &hex_project::Project, preview| {
+            projected_fade_envelope_samples(
+                project.clip(id).unwrap(),
+                project.tempo_map(),
+                visible.0,
+                visible.1,
+                preview,
+            )
+            .unwrap()
+        };
+        let held = sample(editor.project(), Some((fade, true)));
+        assert_eq!(held.first(), Some(&(0.0, 0.0)));
+        assert_eq!(held.last(), Some(&(1.0, 0.0)));
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip: id, fade })
+            .unwrap();
+        assert_eq!(sample(editor.project(), None), held);
+
+        for command in [
+            Command::SetAudioClipMusical {
+                clip: id,
+                enabled: false,
+            },
+            Command::SetTempoPoint {
+                beat: BeatTime::ONE,
+                tempo: Tempo::new(180_000_000).unwrap(),
+            },
+            Command::ReverseClips(vec![id]),
+        ] {
+            editor.execute(command).unwrap();
+            assert_eq!(sample(editor.project(), None), held);
+        }
+        let project = editor.project();
+        let clip = project.clip(id).unwrap();
+        let edit = clip.audio_edit().unwrap();
+        assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
+        assert!(edit.content_view.unwrap().window.reversed);
+        let view = AudioViewProjection::new(clip, project.tempo_map()).unwrap();
+        let inside = view.occurrence(1).unwrap().destination_end;
+        assert!(
+            projected_fade_envelope_samples(clip, project.tempo_map(), inside, inside + 200, None)
+                .unwrap()
+                .is_empty(),
+            "an interior repeat boundary must have no clip-level shading"
+        );
     }
 }

@@ -29,9 +29,16 @@ pub(super) enum SectionLoopKey {
     ForwardedToMidi,
 }
 
+/// One gesture's immutable playback law, retained by the existing loop receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CapturedSectionLaunch {
+    pub section: SectionLaunch,
+    pub note_chase: hex_engine::NoteChase,
+}
+
 pub(super) struct SectionLaunchAfterLoop {
     project: ProjectRevision,
-    section: SectionLaunch,
+    launch: CapturedSectionLaunch,
     expected_loop: Option<LoopRegion>,
 }
 
@@ -173,12 +180,29 @@ impl EditorView {
             self.error = Some("section playback source is unavailable".into());
             return;
         }
+        self.queue_normal_start(super::playback_settings::Start::Section { section });
+    }
+
+    /// Begin the loop transaction only after the original gesture captured its policy.
+    pub(super) fn prepare_section_launch_with_note_chase(
+        &mut self,
+        section: SectionLaunch,
+        note_chase: hex_engine::NoteChase,
+    ) {
+        if self.mode != super::EditorMode::Arrangement {
+            self.error = Some("section playback requires arrangement view".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };
+        let launch = CapturedSectionLaunch {
+            section,
+            note_chase,
+        };
         let current = state.project.loop_region();
         if section.matches_loop(current) {
-            self.section_loop_committed(section);
+            self.section_loop_committed(launch);
             return;
         }
         let region = if section.region.enabled() {
@@ -187,16 +211,16 @@ impl EditorView {
             current.and_then(|current| LoopRegion::new(current.start(), current.end(), false).ok())
         };
         if let Some(region) = region {
-            self.submit_section_launch_loop(section, region);
+            self.submit_section_launch_loop(launch, region);
         }
     }
 
-    pub(super) fn section_loop_committed(&mut self, section: SectionLaunch) {
+    pub(super) fn section_loop_committed(&mut self, launch: CapturedSectionLaunch) {
         let Some(state) = self.state.as_ref() else {
             return;
         };
         let expected_loop = state.project.loop_region();
-        if !section.matches_loop(expected_loop) {
+        if !launch.section.matches_loop(expected_loop) {
             return;
         }
         self.section_launch_after_loop = Some(SectionLaunchAfterLoop {
@@ -204,7 +228,7 @@ impl EditorView {
                 generation: self.project_generation,
                 revision: state.revision,
             },
-            section,
+            launch,
             expected_loop,
         });
         self.wake_poll();
@@ -257,7 +281,7 @@ impl EditorView {
             return true;
         }
         if self.applied_project_revision() != Some(pending.project.revision)
-            && !self.section_can_replace_refused_loop(pending.section)
+            && !self.section_can_replace_refused_loop(pending.launch.section)
         {
             if let Some(admission) = self.audio_admission.current()
                 && admission.project == pending.project
@@ -269,9 +293,9 @@ impl EditorView {
             }
             return false;
         }
-        let section = pending.section;
+        let launch = pending.launch;
         self.section_launch_after_loop = None;
-        self.request_section_launch(section);
+        self.request_section_launch_with_note_chase(launch.section, launch.note_chase);
         true
     }
 
@@ -280,6 +304,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_section_launch_wait(&mut self) {
+        self.playback_settings.pending = None;
         self.section_launch_after_loop = None;
         self.cancel_pending_loop_launch();
     }

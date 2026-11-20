@@ -63,17 +63,19 @@ pub(crate) fn rebase_alias_content(
             edit.anchor_at_reference(target.start, reference_start, tempo)?;
             // Fade shapes stay in their original frame domain, independently of
             // the one shared conversion of event/root coordinates.
-            let local_start_raw = edit.domain.fade_start;
-            Arc::make_mut(&mut edit.domain).fade_projection = Some(AudioFadeProjection {
-                tempo: tempo.clone(),
-                origin_beat_raw: audio_projection_beat(
-                    tempo,
-                    old_origin
-                        .checked_add(i128::from(old_fade_start))
-                        .ok_or(Invalid("alias fade origin overflow"))?,
-                )?,
-                local_start_raw,
-            });
+            if edit.domain.fade_clock == AudioClipFadeClock::LegacyRoot {
+                let local_start_raw = edit.domain.fade_start;
+                Arc::make_mut(&mut edit.domain).fade_projection = Some(AudioFadeProjection {
+                    tempo: tempo.clone(),
+                    origin_beat_raw: audio_projection_beat(
+                        tempo,
+                        old_origin
+                            .checked_add(i128::from(old_fade_start))
+                            .ok_or(Invalid("alias fade origin overflow"))?,
+                    )?,
+                    local_start_raw,
+                });
+            }
         }
         (AudioDomainClock::Beats(_), AudioDomainClock::Frames(_)) => {
             return Err(Invalid(

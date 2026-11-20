@@ -36,8 +36,10 @@ impl RuntimeOwner {
                 crate::PlaybackAction::SetMetronome(_) => {}
                 crate::PlaybackAction::Session(
                     crate::SessionPlaybackCommand::LaunchClip { .. }
+                    | crate::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                     | crate::SessionPlaybackCommand::CueMidiClip { .. }
                     | crate::SessionPlaybackCommand::LaunchScene { .. }
+                    | crate::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                     | crate::SessionPlaybackCommand::StopTrack { .. }
                     | crate::SessionPlaybackCommand::StopAllClips { .. }
                     | crate::SessionPlaybackCommand::BackToArrangement { .. }
@@ -45,7 +47,9 @@ impl RuntimeOwner {
                 )
                 | crate::PlaybackAction::LaunchAndPlay(
                     crate::SessionPlaybackCommand::LaunchClip { .. }
-                    | crate::SessionPlaybackCommand::LaunchScene { .. },
+                    | crate::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
+                    | crate::SessionPlaybackCommand::LaunchScene { .. }
+                    | crate::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. },
                 ) if self.sampler_console_available() => {}
                 _ => {
                     return Err(crate::PlaybackActionError::Session(

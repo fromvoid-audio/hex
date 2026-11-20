@@ -34,14 +34,24 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| {
         assert!((v.piano_beat_start as f64 / BeatTime::ONE.raw() as f64 - 3.0).abs() < 0.000001);
-        assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), (54, 24));
+        assert_eq!(
+            (
+                v.piano_pitch.first_test_pitch(),
+                v.piano_pitch.test_row_count()
+            ),
+            (54, 24)
+        );
         let s = v.state.as_ref().unwrap();
         assert_eq!(
             (s.project.snapshot(), s.revision, s.can_undo, s.can_redo),
             before
         );
         assert!(!v.edit_pending());
-        (v.piano_beat_start, v.piano_beat_span, v.piano_pitch_low)
+        (
+            v.piano_beat_start,
+            v.piano_beat_span,
+            v.piano_pitch.first_test_pitch(),
+        )
     });
     visual.simulate_mouse_down(down, MouseButton::Middle, Modifiers::default());
     editor.update(&mut visual, |v, _| {
@@ -57,7 +67,11 @@ fn middle_drag_moves_both_axes_without_editing_and_ack_keeps_blank_space(cx: &mu
     }
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start, v.piano_beat_span, v.piano_pitch_low),
+            (
+                v.piano_beat_start,
+                v.piano_beat_span,
+                v.piano_pitch.first_test_pitch()
+            ),
             viewport
         );
         assert_eq!(v.detail_clip_id(), Some(clip));
@@ -140,7 +154,7 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_pan.enabled);
         assert!(v.midi_pan.gesture.is_some());
-        assert_eq!(v.piano_pitch_low, 24);
+        assert_eq!(v.piano_pitch.first_test_pitch(), 24);
         assert!(v.midi_stroke.is_none());
         assert!(v.midi_creation.is_none());
     });
@@ -148,13 +162,16 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| {
         assert!(v.midi_pan.gesture.is_none());
-        (v.piano_beat_start, v.piano_pitch_low)
+        (v.piano_beat_start, v.piano_pitch.first_test_pitch())
     });
     visual.simulate_mouse_move(roll.center(), Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!((v.piano_beat_start, v.piano_pitch_low), viewport);
+        assert_eq!(
+            (v.piano_beat_start, v.piano_pitch.first_test_pitch()),
+            viewport
+        );
         assert!(
             v.state
                 .as_ref()
@@ -179,8 +196,7 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
         editor.update(&mut visual, |v, cx| {
             v.piano_beat_span = BeatTime::from_raw(span);
             v.piano_beat_start = 0;
-            v.piano_pitch_low = 0;
-            v.piano_pitch_rows = rows;
+            v.piano_pitch = crate::editor::PitchViewport::from_rows(0, rows).unwrap();
             cx.notify();
         });
         visual.run_until_parked();
@@ -198,7 +214,7 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
             visual.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert_eq!(v.piano_pitch_low, expected_low);
+                assert_eq!(v.piano_pitch.first_test_pitch(), expected_low);
                 assert_eq!(v.piano_beat_start, expected_start);
             });
             visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());

@@ -243,10 +243,19 @@ pub trait PreparedNativeProcessor: Send + Sync {
     fn supports_smoothed_bypass(&self) -> bool {
         false
     }
+    /// Opt into authored power-off for a zero-latency smoothed effect or an
+    /// effect with validated host-aligned dry latency. Once the off ramp
+    /// commits, the host resets both runtime twins in place and skips their
+    /// block transactions until the stage turns on. The aligned dry delay
+    /// remains active. Reset must be bounded, allocation-free, and restore
+    /// fresh DSP and control history.
+    fn supports_power_off(&self) -> bool {
+        false
+    }
     /// Opt in to host-aligned bypass for an exact, fixed latency from 1 to
-    /// 16 frames. The host keeps untrimmed dry history and continues ordinary
-    /// wet processing and automation while bypassed. A bypass edit changes
-    /// only the wet/dry ramp, never the graph latency or processor owner.
+    /// 16 frames. The host keeps untrimmed dry history. Ordinary bypass
+    /// continues wet processing and automation. An explicit power-off opt-in
+    /// stops the wet runtime after the fade. The graph retains its latency.
     fn supports_latency_aligned_bypass(&self) -> bool {
         false
     }
@@ -907,6 +916,14 @@ impl RuntimeEntry {
         self.supports_power_off && self.bypassed && !self.removal_bypassing && !ramp.is_active()
     }
 
+    fn committed_is_quiescent(&self) -> bool {
+        (self.powered_off(self.committed_bypass_ramp) || self.runtime.committed_is_quiescent())
+            && self
+                .committed_aligned_dry
+                .as_ref()
+                .is_none_or(bypass_ramp::AlignedDry::is_quiet)
+    }
+
     fn modulates_host_input(&self) -> bool {
         !self.bypassed
             && !self.automation_frozen
@@ -1252,16 +1269,50 @@ pub struct NativeInsertTransition {
     position: usize,
 }
 
-/// The exact stage on a retiring predecessor that may ramp from wet to dry.
+/// The exact stage on a retiring predecessor. An authored bypass retains its
+/// existing path to dry and needs no provisional mix.
 #[derive(Clone, Copy)]
 pub struct NativeRemovalTransition {
     position: usize,
     identity: ProcessorInstanceIdentity,
+    authored_bypass: bool,
 }
 
 impl NativeRemovalTransition {
     pub fn identity(self) -> ProcessorInstanceIdentity {
         self.identity
+    }
+
+    fn matches(self, entry: &RuntimeEntry) -> bool {
+        entry.owner == self.identity.owner() && entry.device_id == self.identity.device_id()
+    }
+}
+
+/// The retiring chain can keep a whole tail range, or leave only completed
+/// foreign processors behind while other entries transfer normally.
+enum HistoryExclusion {
+    RetainedTail(std::ops::Range<usize>),
+    CompletedForeign(std::ops::Range<usize>),
+}
+
+impl HistoryExclusion {
+    fn range(&self) -> &std::ops::Range<usize> {
+        match self {
+            Self::RetainedTail(range) | Self::CompletedForeign(range) => range,
+        }
+    }
+
+    fn valid_for(&self, len: usize) -> bool {
+        let range = self.range();
+        range.start <= range.end && range.end <= len
+    }
+
+    fn skips(&self, index: usize, old: &RuntimeEntry) -> bool {
+        self.range().contains(&index)
+            && (matches!(self, Self::RetainedTail(_))
+                || (matches!(old.runtime, RuntimeOwnership::Foreign(_))
+                    && old.runtime.committed_is_quiescent()
+                    && old.committed_is_quiescent()))
     }
 }
 
@@ -1460,10 +1511,7 @@ impl NativeRuntimeChain {
                 .map(PreparedProcessorFactory::reserved_bypass_frames)
                 .transpose()?
                 .flatten();
-            let supports_power_off = (reserved_frames.is_some()
-                || (supports_smoothed_bypass && latency == Some(0)))
-                && matches!(&instance.definition, Some(PreparedProcessorFactory::Owned(value))
-                        if value.supports_power_off());
+            let zero_latency_smoothing = supports_smoothed_bypass && latency == Some(0);
             let (committed_aligned_dry, scratch_aligned_dry) = if let Some(frames) = reserved_frames
             {
                 (
@@ -1487,6 +1535,17 @@ impl NativeRuntimeChain {
                 )
             } else {
                 (None, None)
+            };
+            let supports_power_off = match &instance.definition {
+                Some(PreparedProcessorFactory::Legacy(value)) => {
+                    (zero_latency_smoothing || committed_aligned_dry.is_some())
+                        && value.supports_power_off()
+                }
+                Some(PreparedProcessorFactory::Owned(value)) => {
+                    (zero_latency_smoothing || reserved_frames.is_some())
+                        && value.supports_power_off()
+                }
+                Some(PreparedProcessorFactory::Foreign(_)) | None => false,
             };
             let mut runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             let modulation = match prepared_modulation {
@@ -2350,16 +2409,17 @@ impl NativeRuntimeChain {
     /// future output under zero input. Invalid ranges conservatively return
     /// false. Stateless matrix entries are immediately quiescent.
     pub fn committed_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
-        self.entries.get(range).is_some_and(|entries| {
-            entries.iter().all(|entry| {
-                (entry.powered_off(entry.committed_bypass_ramp)
-                    || entry.runtime.committed_is_quiescent())
-                    && entry
-                        .committed_aligned_dry
-                        .as_ref()
-                        .is_none_or(bypass_ramp::AlignedDry::is_quiet)
-            })
-        })
+        self.entries
+            .get(range)
+            .is_some_and(|entries| entries.iter().all(RuntimeEntry::committed_is_quiescent))
+    }
+
+    /// Render silent input while a bypass mix still needs to reach its target,
+    /// even when there is no remaining processor signal history.
+    pub fn needs_zero_input_render(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.scratch_bypass_ramp.is_active() || !entry.committed_is_quiescent())
     }
 
     /// Speculative counterpart used only after processing scratch state in the
@@ -2434,7 +2494,7 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) -> bool {
-        self.can_inherit_preflight(previous, excluded_old_range, false)
+        self.can_inherit_preflight(previous, HistoryExclusion::RetainedTail(excluded_old_range))
     }
 
     /// Preflight a completed foreign suffix without retaining its old endpoint.
@@ -2448,18 +2508,14 @@ impl NativeRuntimeChain {
         previous: &Self,
         completed_old_range: std::ops::Range<usize>,
     ) -> bool {
-        self.can_inherit_preflight(previous, completed_old_range, true)
+        self.can_inherit_preflight(
+            previous,
+            HistoryExclusion::CompletedForeign(completed_old_range),
+        )
     }
 
-    fn can_inherit_preflight(
-        &self,
-        previous: &Self,
-        excluded_old_range: std::ops::Range<usize>,
-        completed_foreign_only: bool,
-    ) -> bool {
-        if excluded_old_range.start > excluded_old_range.end
-            || excluded_old_range.end > previous.entries.len()
-        {
+    fn can_inherit_preflight(&self, previous: &Self, excluded: HistoryExclusion) -> bool {
+        if !excluded.valid_for(previous.len()) {
             return false;
         }
         self.entries.iter().all(|entry| {
@@ -2471,10 +2527,7 @@ impl NativeRuntimeChain {
             }) else {
                 return true;
             };
-            (excluded_old_range.contains(&index)
-                && (!completed_foreign_only
-                    || (matches!(&old.runtime, RuntimeOwnership::Foreign(_))
-                        && old.runtime.committed_is_quiescent())))
+            excluded.skips(index, old)
                 || (entry.runtime.can_inherit_from(&old.runtime)
                     && Self::can_preserve_aligned_dry(entry, old))
         })
@@ -2569,9 +2622,10 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) {
-        self.inherit_host_stage_ramps(previous, &excluded_old_range);
-        self.inherit_bypass_ramps(previous, &excluded_old_range);
-        self.inherit_modulation(previous, &excluded_old_range);
+        let excluded = HistoryExclusion::RetainedTail(excluded_old_range);
+        self.inherit_host_stage_ramps(previous, &excluded);
+        self.inherit_bypass_ramps(previous, &excluded);
+        self.inherit_modulation(previous, &excluded);
         for entry in &mut self.entries {
             if entry.powered_off(entry.committed_bypass_ramp) {
                 entry.runtime.reset();
@@ -2579,7 +2633,7 @@ impl NativeRuntimeChain {
                 previous.entries.iter().enumerate().find(|(_, old)| {
                     Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
                 })
-                && !excluded_old_range.contains(&index)
+                && !excluded.skips(index, old)
             {
                 entry.runtime.inherit_from(&old.runtime);
             }
@@ -2592,7 +2646,7 @@ impl NativeRuntimeChain {
     /// legacy and foreign entries retain their existing copy laws. Neither
     /// chain nor any resource is destroyed; the host still retires the donor.
     pub fn transfer_history_from(&mut self, previous: &mut Self) {
-        self.transfer_history_excluding_unchecked(previous, 0..0);
+        self.transfer_history_excluding_unchecked(previous, HistoryExclusion::RetainedTail(0..0));
     }
 
     /// Find a single new native stage that can ramp in at the same sample
@@ -2603,31 +2657,45 @@ impl NativeRuntimeChain {
         previous: &Self,
         continuation: Option<&ForeignConfigurationContinuation<'_>>,
     ) -> Option<NativeInsertTransition> {
-        let position = self.extra_native_stage_from(previous, |old, current| {
-            Self::entry_configuration_matches(old, current, continuation)
-        })?;
+        let position = self.extra_native_stage_from(
+            previous,
+            |added| !added.bypassed && !matches!(added.runtime, RuntimeOwnership::Memoryless),
+            |old, current| Self::entry_configuration_matches(old, current, continuation),
+        )?;
         self.can_inherit_from(previous)
             .then_some(NativeInsertTransition { position })
     }
 
-    /// Prove one native removal with all surviving stages in their original
-    /// order and history-compatible. This does not change either runtime.
+    /// Prove one smoothed zero-latency removal, including a memoryless matrix,
+    /// with all surviving stages in order and history-compatible.
     pub fn native_removal_transition_from(
         &self,
         previous: &Self,
     ) -> Option<NativeRemovalTransition> {
-        let position = previous.extra_native_stage_from(self, |current, old| {
-            Self::entry_configuration_matches(old, current, None)
-        })?;
+        let position = previous.extra_native_stage_from(
+            self,
+            |removed| {
+                !removed.removal_bypassing
+                    && (!removed.bypassed
+                        || removed.powered_off(removed.committed_bypass_ramp)
+                        || matches!(removed.runtime, RuntimeOwnership::Memoryless))
+            },
+            |current, old| Self::entry_configuration_matches(old, current, None),
+        )?;
         let removed = previous.entries.get(position)?;
         let identity = ProcessorInstanceIdentity::new(removed.owner, removed.device_id).ok()?;
         self.can_inherit_from(previous)
-            .then_some(NativeRemovalTransition { position, identity })
+            .then_some(NativeRemovalTransition {
+                position,
+                identity,
+                authored_bypass: removed.bypassed,
+            })
     }
 
     fn extra_native_stage_from(
         &self,
         shorter: &Self,
+        accepts_extra: impl Fn(&RuntimeEntry) -> bool,
         compatible: impl Fn(&RuntimeEntry, &RuntimeEntry) -> bool,
     ) -> Option<usize> {
         if shorter.len().checked_add(1) != Some(self.len()) {
@@ -2645,13 +2713,10 @@ impl NativeRuntimeChain {
             .iter()
             .take(position)
             .chain(self.entries.iter().skip(position + 1));
-        (!extra.bypassed
+        (accepts_extra(extra)
             && extra.algorithmic_latency_frames == Some(0)
             && extra.supports_smoothed_bypass
-            && matches!(
-                extra.runtime,
-                RuntimeOwnership::Legacy { .. } | RuntimeOwnership::Owned(_)
-            )
+            && !matches!(extra.runtime, RuntimeOwnership::Foreign(_))
             && shorter.entries.iter().zip(retained).all(|(short, long)| {
                 short.device_id != extra.device_id
                     && short.algorithmic_latency_frames == long.algorithmic_latency_frames
@@ -2663,22 +2728,28 @@ impl NativeRuntimeChain {
     /// Start a proved removal on its predecessor. Only the affected stage's
     /// wet/dry mix changes. Its DSP stays owned by the predecessor.
     pub fn begin_native_removal(&mut self, transition: NativeRemovalTransition) -> bool {
-        self.set_native_removal_bypass(transition, true)
+        if transition.authored_bypass {
+            self.entries.get(transition.position).is_some_and(|entry| {
+                transition.matches(entry) && entry.bypassed && !entry.removal_bypassing
+            })
+        } else {
+            self.set_native_removal_bypass(transition, true)
+        }
     }
 
     /// Restore the same stage if the pending edit is cancelled or refused.
     pub fn cancel_native_removal(&mut self, transition: NativeRemovalTransition) {
-        self.set_native_removal_bypass(transition, false);
+        if !transition.authored_bypass {
+            self.set_native_removal_bypass(transition, false);
+        }
     }
 
-    /// Commit of the rendered bypass ramp is the terminal, independent of the
-    /// number or size of callback blocks used to render it.
+    /// Either the authored bypass or the provisional removal must reach dry.
     pub fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
         self.entries.get(transition.position).is_some_and(|entry| {
-            entry.owner == transition.identity.owner()
-                && entry.device_id == transition.identity.device_id()
-                && entry.removal_bypassing
+            transition.matches(entry)
                 && entry.bypassed
+                && entry.removal_bypassing != transition.authored_bypass
                 && !entry.committed_bypass_ramp.is_active()
         })
     }
@@ -2691,8 +2762,7 @@ impl NativeRuntimeChain {
         let Some(entry) = self.entries.get_mut(transition.position) else {
             return false;
         };
-        if entry.owner != transition.identity.owner()
-            || entry.device_id != transition.identity.device_id()
+        if !transition.matches(entry)
             || entry.bypassed == bypassed
             || entry.removal_bypassing == bypassed
         {
@@ -2737,7 +2807,26 @@ impl NativeRuntimeChain {
         previous: &mut Self,
         excluded: std::ops::Range<usize>,
     ) -> Result<(), DeviceContractError> {
-        if excluded.start > excluded.end || excluded.end > previous.entries.len() {
+        self.transfer_history_excluding(previous, HistoryExclusion::RetainedTail(excluded))
+    }
+
+    /// Transfer history after preflighting `can_inherit_with_completed_foreign_range`
+    /// for the same range. Only quiescent foreign entries in it stay with the
+    /// retiring chain. The caller supplies the separate endpoint-custody proof.
+    pub fn transfer_history_with_completed_foreign_range(
+        &mut self,
+        previous: &mut Self,
+        completed: std::ops::Range<usize>,
+    ) -> Result<(), DeviceContractError> {
+        self.transfer_history_excluding(previous, HistoryExclusion::CompletedForeign(completed))
+    }
+
+    fn transfer_history_excluding(
+        &mut self,
+        previous: &mut Self,
+        excluded: HistoryExclusion,
+    ) -> Result<(), DeviceContractError> {
+        if !excluded.valid_for(previous.len()) {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
         }
         self.transfer_history_excluding_unchecked(previous, excluded);
@@ -2746,7 +2835,7 @@ impl NativeRuntimeChain {
     fn transfer_history_excluding_unchecked(
         &mut self,
         previous: &mut Self,
-        excluded: std::ops::Range<usize>,
+        excluded: HistoryExclusion,
     ) {
         self.inherit_host_stage_ramps(previous, &excluded);
         self.inherit_bypass_ramps(previous, &excluded);
@@ -2758,21 +2847,21 @@ impl NativeRuntimeChain {
                 previous.entries.iter_mut().enumerate().find(|(_, old)| {
                     Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
                 })
-                && !excluded.contains(&index)
+                && !excluded.skips(index, old)
             {
                 entry.runtime.transfer_history_from(&mut old.runtime);
             }
         }
     }
 
-    fn inherit_modulation(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+    fn inherit_modulation(&mut self, previous: &Self, excluded: &HistoryExclusion) {
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 entry.owner == old.owner
                     && entry.device_id == old.device_id
                     && entry.device_type == old.device_type
                     && entry.sample_rate == old.sample_rate
-            }) && !excluded.contains(&index)
+            }) && !excluded.skips(index, old)
                 && let (Some(current), Some(old)) = (&mut entry.modulation, &old.modulation)
             {
                 current.inherit_graph_committed(old);
@@ -2783,21 +2872,25 @@ impl NativeRuntimeChain {
     /// Reuse one same-identity donor lookup for the independent output-trim
     /// and static-matrix trajectories. Excluded donors, bypass and automation
     /// keep the existing matrix law; the scalar proof lives with its owner.
-    fn inherit_host_stage_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+    fn inherit_host_stage_ramps(&mut self, previous: &Self, excluded: &HistoryExclusion) {
         for entry in &mut self.entries {
             let old = previous
                 .entries
                 .iter()
                 .enumerate()
                 .find(|(_, old)| Self::same_runtime_identity(entry, old));
-            host_output_gain_ramp::inherit(entry, old, excluded);
+            host_output_gain_ramp::inherit(
+                entry,
+                old.filter(|&(index, old)| !excluded.skips(index, old))
+                    .map(|(_, old)| old),
+            );
             let ramp = match old {
                 Some((index, old)) => matrix_ramp::MatrixRamp::inherited(
                     old.committed_matrix_ramp,
                     old.matrix,
                     entry.matrix,
                     entry.sample_rate,
-                    !excluded.contains(&index)
+                    !excluded.skips(index, old)
                         && !entry.bypassed
                         && !old.bypassed
                         && entry.automation.is_empty()
@@ -2811,7 +2904,7 @@ impl NativeRuntimeChain {
         }
     }
 
-    fn inherit_bypass_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+    fn inherit_bypass_ramps(&mut self, previous: &Self, excluded: &HistoryExclusion) {
         for entry in &mut self.entries {
             let old = previous
                 .entries
@@ -2820,7 +2913,7 @@ impl NativeRuntimeChain {
                 .find(|(_, old)| Self::same_runtime_identity(entry, old));
             let ramp = match old {
                 Some((index, old))
-                    if !excluded.contains(&index)
+                    if !excluded.skips(index, old)
                         && entry.can_smooth_bypass_from(old)
                         && entry.input_gain == old.input_gain
                         && entry.output_gain == old.output_gain
@@ -2856,7 +2949,7 @@ impl NativeRuntimeChain {
                 _ => bypass_ramp::BypassRamp::INACTIVE,
             };
             let inherited_dry = if let Some((index, old)) = old
-                && !excluded.contains(&index)
+                && !excluded.skips(index, old)
                 && entry.committed_aligned_dry.is_some()
                 && old.committed_aligned_dry.is_some()
                 && entry.algorithmic_latency_frames == old.algorithmic_latency_frames

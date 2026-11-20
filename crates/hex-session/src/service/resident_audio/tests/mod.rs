@@ -1036,6 +1036,7 @@ fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
     drop(publications);
     let accepted_before_seek = observed.accepted.lock().unwrap().len();
     let seek = ResidentArrangementSeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         history: crate::service::ResidentSeekHistory::Fresh,
         request_id: 1,
         project_generation: 0,
@@ -1759,6 +1760,7 @@ fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_re
     let (results, receiver) = mpsc::sync_channel(4);
     let mut lane = resident_seek::Lane::new(ArrangementSeekWorker::new().unwrap(), results);
     let intent = ResidentArrangementSeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         history: crate::service::ResidentSeekHistory::Fresh,
         request_id: 1,
         project_generation: 0,
@@ -1876,6 +1878,7 @@ fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_re
     .unwrap();
     let identity = preview.as_ref().unwrap().device_identity().unwrap();
     let intent = ResidentArrangementSeekIntent {
+        note_chase: hex_engine::NoteChase::On,
         history: crate::service::ResidentSeekHistory::Fresh,
         request_id: 2,
         project_generation: 0,
@@ -2047,6 +2050,7 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
     }
     service
         .submit_resident_arrangement_seek(ResidentArrangementSeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             history: ResidentSeekHistory::Fresh,
             request_id: 1,
             project_generation: view.project_generation,

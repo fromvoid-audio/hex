@@ -28,7 +28,7 @@ struct Seed {
 fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
     let (mut visual, editor, environment, clip) = fixture(cx);
     let pitch = editor.read_with(&visual, |v, _| {
-        v.piano_pitch_low + (v.piano_pitch_rows - 1) / 2
+        v.piano_pitch.first_test_pitch() + (v.piano_pitch.test_row_count() - 1) / 2
     });
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::AddMidiNotes {
@@ -123,7 +123,12 @@ fn bodies(visual: &mut VisualTestContext, y: Pixels) -> Vec<Bounds<Pixels>> {
 
 fn pitch_y(visual: &mut VisualTestContext, editor: &Entity<EditorView>, pitch: u8) -> Pixels {
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
-    let (low, rows) = editor.read_with(&*visual, |v, _| (v.piano_pitch_low, v.piano_pitch_rows));
+    let (low, rows) = editor.read_with(&*visual, |v, _| {
+        (
+            v.piano_pitch.first_test_pitch(),
+            v.piano_pitch.test_row_count(),
+        )
+    });
     roll.origin.y
         + px(1.0)
         + (roll.size.height - px(2.0))
@@ -150,8 +155,8 @@ fn held_move_and_leading_resize_paint_exact_prefix_then_real_ack_and_history(
         } = seed(cx, vertical);
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         let old_y = pitch_y(&mut visual, &editor, pitch);
-        let row =
-            roll.size.height / f32::from(editor.read_with(&visual, |v, _| v.piano_pitch_rows));
+        let row = roll.size.height
+            / f32::from(editor.read_with(&visual, |v, _| v.piano_pitch.test_row_count()));
         let baseline = bodies(&mut visual, old_y);
         assert_eq!(baseline.len(), if vertical { 1 } else { 2 });
         let old_rect = baseline[0];

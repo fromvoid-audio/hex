@@ -1351,6 +1351,17 @@ fn prepare_file_seek_runtime<'a>(
         ));
     }
     check(cancelled).map_err(seek_error)?;
+    if spec.note_chase == hex_engine::NoteChase::Off
+        && spec.mode
+            == hex_session::arrangement_seek::ArrangementSeekMode::HistoryPreservingInteractive
+    {
+        return Err(
+            hex_engine::SessionPlaybackError::MutableInstrumentDiagnostic(
+                "note chase off requires ordinary interactive playback",
+            )
+            .into(),
+        );
+    }
     let section = match spec.mode {
         hex_session::arrangement_seek::ArrangementSeekMode::SectionLoop(region) => Some(region),
         hex_session::arrangement_seek::ArrangementSeekMode::Interactive
@@ -1384,13 +1395,14 @@ fn prepare_file_seek_runtime<'a>(
             &mut pages,
         )?
     } else {
-        SessionPlayback::prepare_ordinary_arrangement_preroll_with_pages(
+        SessionPlayback::prepare_ordinary_arrangement_preroll_with_pages_and_note_chase(
             Arc::clone(&spec.prepared_revision),
             resources,
             spec.destination_frame,
             spec.work_budget_frames,
             spec.start_playing,
             section,
+            spec.note_chase,
             cancelled,
             &mut pages,
         )?

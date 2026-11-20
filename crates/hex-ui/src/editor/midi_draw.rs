@@ -201,8 +201,7 @@ impl EditorView {
             pitch_modifier: modifiers.pitch,
             view_start: self.piano_beat_start,
             view_span: self.piano_beat_span.raw(),
-            pitch_low: self.piano_pitch_low,
-            pitch_rows: self.piano_pitch_rows,
+            pitch: self.piano_pitch,
             bounds,
             pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
             draw_mode: self.midi_draw_mode,
@@ -218,8 +217,7 @@ pub(super) fn same_rendered_frame(current: StrokeContext, rendered: StrokeContex
         && current.grid == rendered.grid
         && current.view_start == rendered.view_start
         && current.view_span == rendered.view_span
-        && current.pitch_low == rendered.pitch_low
-        && current.pitch_rows == rendered.pitch_rows
+        && current.pitch == rendered.pitch
         && current.bounds == rendered.bounds
         && current.pitch_locked == (rendered.pitch_locked ^ current.pitch_modifier)
         && current.draw_mode == rendered.draw_mode
@@ -267,12 +265,7 @@ fn stroke_point(
         }
         beat_raw
     };
-    let row = ((local_y / bounds.height * f32::from(context.pitch_rows)).floor() as u8)
-        .min(context.pitch_rows.checked_sub(1)?);
-    let pitch = context
-        .pitch_low
-        .checked_add(context.pitch_rows.checked_sub(1)?)?
-        .checked_sub(row)?;
+    let pitch = context.pitch.pitch_at_y(local_y, bounds.height)?;
     Some(midi_stroke::StrokePoint { beat_raw, pitch })
 }
 
@@ -359,8 +352,7 @@ mod tests {
             pitch_modifier: false,
             view_start: 0,
             view_span: BeatTime::ONE.raw() * 4,
-            pitch_low: 48,
-            pitch_rows: 24,
+            pitch: crate::editor::PitchViewport::from_rows(48, 24).unwrap(),
             bounds: midi_stroke::CanvasBounds {
                 x: 10.0,
                 y: 20.0,

@@ -1,5 +1,6 @@
-//! Opt-in Arrangement history playback. The existing seek owner retains all
-//! intent, worker, native publication, cancellation and terminal display custody.
+//! Playback options: captured note chase and opt-in Arrangement history.
+//! The existing seek owner retains intent, worker, native publication,
+//! cancellation and terminal display custody.
 use super::{EditorMode, EditorView, context_menu::EditorContextAction, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Pixels, Point, Window};
@@ -11,17 +12,27 @@ pub(super) struct MenuAction {
     frame: u64,
 }
 
+#[derive(Clone)]
+pub(super) struct NoteChaseAction {
+    generation: u64,
+    enabled: bool,
+    checked: bool,
+}
+
+impl NoteChaseAction {
+    pub(super) fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 impl EditorView {
-    pub(super) fn open_history_playback_menu(
+    pub(super) fn open_playback_options_menu(
         &mut self,
         position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !device_panel::finalize_controls(self, cx) {
-            return;
-        }
-        if self.mode != EditorMode::Arrangement {
             return;
         }
         self.cancel_time_selection_gesture();
@@ -33,6 +44,29 @@ impl EditorView {
             revision: state.revision,
             frame: self.playback_start_frame(),
         };
+        let mut items = Vec::with_capacity(2);
+        if self.mode == EditorMode::Arrangement {
+            items.push(MenuItem {
+                label: "play with history",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::HistoryPlayback(action),
+            });
+        }
+        let settings = &self.playback_settings;
+        items.push(MenuItem {
+            label: "note chase",
+            swatch: None,
+            checked: settings.preferences.note_chase,
+            action: EditorContextAction::NoteChase(NoteChaseAction {
+                generation: self.project_generation,
+                enabled: !settings.loading && !settings.saving && settings.writable,
+                checked: settings.preferences.note_chase,
+            }),
+        });
+        if let Some(error) = &settings.error {
+            self.error = Some(error.clone().into());
+        }
         let focus = cx.focus_handle();
         let previous_focus = window.focused(cx);
         focus.focus(window);
@@ -43,13 +77,30 @@ impl EditorView {
             selected: 0,
             focus,
             previous_focus,
-            items: vec![MenuItem {
-                label: "play with history",
-                swatch: None,
-                checked: false,
-                action: EditorContextAction::HistoryPlayback(action),
-            }],
+            items,
         });
+        cx.notify();
+    }
+
+    pub(super) fn note_chase_menu_current(&self, action: &NoteChaseAction) -> bool {
+        let state = &self.playback_settings;
+        action.generation == self.project_generation
+            && action.checked == state.preferences.note_chase
+            && action.enabled == (!state.loading && !state.saving && state.writable)
+    }
+
+    pub(super) fn note_chase_menu_action(
+        &mut self,
+        action: NoteChaseAction,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.note_chase_menu_current(&action) {
+            self.error = Some("playback settings changed · open the menu again".into());
+        } else if action.enabled {
+            self.save_note_chase(!action.checked, cx);
+        } else if let Some(error) = &self.playback_settings.error {
+            self.error = Some(error.clone().into());
+        }
         cx.notify();
     }
 

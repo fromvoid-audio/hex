@@ -1088,6 +1088,115 @@ fn actual_sdk_stopped_editor_ignores_the_previous_processor_value() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn guarded_sdk_flush_refuses_newer_editor_input_and_preserves_the_worker() {
+    use crate::protocol::{ControllerRequest, FlushDisposition, ParameterEditKind};
+    use crate::transport::{ParameterPoint, Parameters};
+
+    fn editor_admission(instance: &mut Prepared) -> u64 {
+        instance
+            .begin_controller_request_on_worker(ControllerRequest::ReadEditorFrontier)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        loop {
+            match instance.poll_parameter_page_on_worker().unwrap() {
+                protocol::ParameterPageProgress::EditorFrontier(sequence) => return sequence,
+                protocol::ParameterPageProgress::Pending => {}
+                other => panic!("unexpected admission terminal: {other:?}"),
+            }
+            assert!(Instant::now() < until, "original helper must answer");
+            thread::yield_now();
+        }
+    }
+
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(147),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    let start = editor_admission(&mut instance);
+    assert_eq!(start, 0);
+    let mut points = Parameters::default();
+    points
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    let applied = instance
+        .flush_editor_parameters_on_worker(&points, start)
+        .unwrap();
+    assert_eq!(applied.disposition, FlushDisposition::Applied);
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.5);
+
+    fs::write(case.release(), b"newer edit on successor").unwrap();
+    let until = Instant::now() + Duration::from_secs(1);
+    while case.observation().is_none_or(|trace| trace[0] != 25) {
+        assert!(Instant::now() < until, "SDK editor callback must arrive");
+        thread::yield_now();
+    }
+    let current = editor_admission(&mut instance);
+    assert_eq!(current, 3);
+    for expected in [start, current] {
+        let conflict = instance
+            .flush_editor_parameters_on_worker(&points, expected)
+            .unwrap();
+        assert_eq!(conflict.disposition, FlushDisposition::EditorConflict);
+        assert!(conflict.as_slice().is_empty());
+    }
+    let mut drained = Vec::new();
+    while drained.len() < 3 {
+        let batch = instance.service_idle_editor_edits_on_worker().unwrap();
+        drained.extend_from_slice(batch.edits.as_slice());
+        assert!(
+            Instant::now() < until,
+            "new editor receipts must still drain"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(drained.len(), 3);
+    assert_eq!(drained[1].kind, ParameterEditKind::Perform);
+    assert_eq!(drained[1].normalized, 0.75);
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.75);
+    assert_eq!(editor_admission(&mut instance), current);
+
+    let mut invalid = Parameters::default();
+    invalid
+        .push(ParameterPoint {
+            frame: 0,
+            id: 9,
+            normalized: 0.5,
+        })
+        .unwrap();
+    let refused = instance
+        .flush_editor_parameters_on_worker(&invalid, current)
+        .unwrap();
+    assert_eq!(refused.disposition, FlushDisposition::EditorConflict);
+    let applied = instance
+        .flush_editor_parameters_on_worker(&points, current)
+        .unwrap();
+    assert_eq!(applied.disposition, FlushDisposition::Applied);
+    assert_eq!(first_controller_parameter(&mut instance).normalized, 0.5);
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    let input = request(instance.configuration(), 0);
+    instance.exchange_on_worker(input).unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_sdk_playback_does_not_replay_stale_editor_values() {
     for authored in [false, true] {
         let case = Case::new();

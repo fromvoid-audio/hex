@@ -419,21 +419,20 @@ impl NativeWorker {
             .capture
             .try_lock()
             .map_err(|_| "native parameter mailbox is busy")?;
+        if mailbox.controller.guarded_write_pending() {
+            return Err("native guarded editor write is pending");
+        }
         let slot = &mut mailbox.parameter_change;
-        if slot.phase != Phase::Idle {
+        if slot.pending() {
             return Err("native parameter input is already pending");
         }
-        let ordinal = slot
-            .ordinal
-            .checked_add(1)
-            .ok_or("native parameter input ordinal exhausted")?;
+        let ordinal_key = slot.next_ordinal()?;
+        let ordinal = ordinal_key.get();
         // A stopped idle flush retains the quiescent source after revocation;
         // its revoked endpoint cannot take part in a callback handoff.
         let admission = if intent == Intent::Idle && !self.transport_is_live_on_control() {
             None
         } else {
-            let ordinal_key = std::num::NonZeroU64::new(ordinal)
-                .ok_or("native parameter input ordinal exhausted")?;
             Some(
                 self.reaper
                     .control
@@ -566,7 +565,29 @@ impl NativeWorker {
         Ok(())
     }
 }
+impl Work {
+    pub(super) fn has_hold(&self) -> bool {
+        self.hold.is_some()
+    }
+}
 impl Slot {
+    pub(super) fn pending(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+
+    pub(super) fn next_ordinal(&self) -> Result<std::num::NonZeroU64, &'static str> {
+        self.ordinal
+            .checked_add(1)
+            .and_then(std::num::NonZeroU64::new)
+            .ok_or("native parameter input ordinal exhausted")
+    }
+
+    pub(super) fn supersede_with_guarded_write(&mut self, ordinal: std::num::NonZeroU64) {
+        self.ordinal = ordinal.get();
+        self.last_processed = None;
+        self.last_idle_flush = None;
+    }
+
     pub(super) fn processed_ordinal(&self) -> Option<u64> {
         (self.phase == Phase::Idle && self.last_processed == Some(self.ordinal))
             .then_some(self.ordinal)

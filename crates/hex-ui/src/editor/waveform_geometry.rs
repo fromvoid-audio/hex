@@ -18,6 +18,10 @@ use super::waveform::{
     WaveformAmplitudeScale, aggregate_peaks, aggregate_ranges, aggregate_ranges_with_detail,
     fraction_u64, peak_vertical_bounds, timeline_source_ranges_at,
 };
+use super::{
+    waveform_frame, waveform_overrange,
+    waveform_prepared_fade::{PreparedFade, PreparedMusicalFade},
+};
 
 #[cfg(test)]
 thread_local! {
@@ -94,6 +98,27 @@ pub(super) struct WaveformGeometryCache {
     painted: VecDeque<WaveformPaintSample>,
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn painted_clip_waveform_outline(
+    editor: &gpui::Entity<super::EditorView>,
+    visual: &mut gpui::VisualTestContext,
+    clip: hex_project::ClipId,
+) -> [u64; 2] {
+    let selector: &'static str =
+        Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_bounds = visual.debug_bounds(selector).expect("painted clip");
+    editor.read_with(visual, |view, _| {
+        view.waveform_geometry_cache
+            .borrow()
+            .painted_waveforms()
+            .iter()
+            .rev()
+            .find(|paint| clip_bounds.contains(&paint.bounds.origin))
+            .expect("completed clip waveform repaint")
+            .outline_fingerprint
+    })
+}
+
 #[derive(Default)]
 struct OverrangeCache {
     worker: Option<super::waveform_overrange::Worker>,
@@ -150,16 +175,32 @@ impl OverrangeCache {
         mapping: &WaveformMapping,
         layout: WaveformLayout,
     ) -> WaveformOverrange {
-        // The cached peaks repaint for every gain value. Exact sample checks
-        // use the committed gain so a drag cannot flood the worker.
-        let WaveformMapping::Clip {
-            clip,
-            timeline_origin,
-            gain: None,
-            fade: Some(fade),
-        } = mapping
-        else {
+        // Original-frame requests use effective amplitude identity across
+        // held, pending and canonical paints. The legacy clip path still
+        // checks committed gain only.
+        if matches!(
+            mapping,
+            WaveformMapping::Frame { .. } | WaveformMapping::PreparedFade(_)
+        ) && layout.all_columns_exact()
+        {
             return WaveformOverrange::NotApplicable;
+        }
+        let mapping = match mapping {
+            WaveformMapping::Clip {
+                clip,
+                timeline_origin,
+                gain: None,
+                fade: Some(fade),
+            } => waveform_overrange::Mapping::Clip {
+                clip: clip.clone(),
+                timeline_origin: *timeline_origin,
+                fade: Some(*fade),
+            },
+            WaveformMapping::Frame {
+                projection, clock, ..
+            } => waveform_overrange::Mapping::Frame(Arc::clone(projection), *clock),
+            WaveformMapping::PreparedFade(fade) => waveform_overrange::Mapping::PreparedFade(*fade),
+            _ => return WaveformOverrange::NotApplicable,
         };
         if let Some(index) = self
             .entries
@@ -223,10 +264,8 @@ impl OverrangeCache {
         let request = super::waveform_overrange::Request {
             id,
             slot: id,
-            clip: clip.clone(),
             waveform: Arc::clone(waveform),
-            timeline_origin: *timeline_origin,
-            fade: Some(*fade),
+            mapping,
             columns,
         };
         match worker.submit(request) {
@@ -379,6 +418,13 @@ struct CoarseEntryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    PreparedFade(PreparedFade),
+    PreparedMusicalFade(Arc<PreparedMusicalFade>),
+    Frame(Arc<waveform_frame::Key>, waveform_frame::Clock),
+    MusicalEventFade(
+        Arc<super::waveform_musical_event::Projection>,
+        Option<hex_project::AudioEvent>,
+    ),
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
@@ -412,7 +458,9 @@ enum WaveformMappingKey {
 
 pub(super) struct WaveformGeometry {
     display: hex_widgets::WaveformGeometry,
+    #[cfg(test)]
     pub(super) overrange: WaveformOverrange,
+    overrange_input: WaveformOverrange,
     #[cfg(test)]
     pub(super) channels: [WaveformChannelGeometry; 2],
     // X positions per channel, including both edges of coarse bins. Charge
@@ -630,6 +678,9 @@ impl WaveformGeometryCache {
                         root_offset,
                         ..
                     } => Some((timeline_origin, root_offset)),
+                    WaveformMappingKey::PreparedFade(fade) => {
+                        Some((fade.timeline_origin, fade.root_offset))
+                    }
                     _ => None,
                 },
                 spans: std::array::from_fn(|channel| {
@@ -669,13 +720,16 @@ fn coarse_entry_key(
     key: &WaveformGeometryKey,
     source: &Arc<CachedWaveform>,
 ) -> Option<CoarseEntryKey> {
-    let WaveformMappingKey::Clip {
-        id,
-        timeline_origin,
-        ..
-    } = &key.mapping
-    else {
-        return None;
+    let (clip_id, timeline_origin) = match &key.mapping {
+        WaveformMappingKey::Clip {
+            id,
+            timeline_origin,
+            ..
+        } => (*id, *timeline_origin),
+        WaveformMappingKey::Frame(key, waveform_frame::Clock::Arrangement) => (None, key.start),
+        WaveformMappingKey::PreparedFade(fade) => (None, fade.timeline_origin),
+        WaveformMappingKey::PreparedMusicalFade(fade) => (None, fade.start()),
+        _ => return None,
     };
     let WaveformPlacementKey::Coarse {
         frames_per_bin,
@@ -687,8 +741,8 @@ fn coarse_entry_key(
     };
     Some(CoarseEntryKey {
         source_address: Arc::as_ptr(source) as usize,
-        clip_id: *id,
-        timeline_origin: *timeline_origin,
+        clip_id,
+        timeline_origin,
         frames_per_bin: *frames_per_bin,
         pixel_pitch: *pixel_pitch,
     })
@@ -696,6 +750,18 @@ fn coarse_entry_key(
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
+    PreparedFade(PreparedFade),
+    PreparedMusicalFade(Arc<PreparedMusicalFade>),
+    Frame {
+        projection: Arc<waveform_frame::Projection>,
+        clock: waveform_frame::Clock,
+        fallback: Option<Arc<WaveformWindow>>,
+    },
+    MusicalEventFade {
+        projection: Arc<super::waveform_musical_event::Projection>,
+        clock: super::waveform_musical_event::Clock,
+        fallback: Option<Arc<WaveformWindow>>,
+    },
     MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
@@ -721,6 +787,24 @@ pub(super) enum WaveformMapping {
     Source {
         timeline_origin: u64,
     },
+}
+
+impl WaveformMapping {
+    fn can_prove_overrange(&self) -> bool {
+        match self {
+            Self::Frame { projection, .. } => projection.has_exact_pcm(),
+            Self::Clip { fade: Some(_), .. } | Self::PreparedFade(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// A waveform with its own visible coordinates. Events can have different
+/// origins in the prepared root and original source.
+pub(super) struct WaveformWindow {
+    pub(super) waveform: Arc<CachedWaveform>,
+    pub(super) mapping: WaveformMapping,
+    pub(super) visible: std::ops::Range<u64>,
 }
 
 mod grid;
@@ -796,6 +880,16 @@ impl WaveformLayout {
         })
     }
 
+    fn all_columns_exact(self) -> bool {
+        self.frames.div_ceil(self.grid.columns as u64) <= self.frame_detail_budget() as u64
+    }
+
+    fn frame_detail_budget(self) -> usize {
+        // Exact sample-by-sample fade/placement belongs to a close view.
+        // This matches the ordinary waveform's small exact-read window.
+        self.detail_budget().min(64)
+    }
+
     fn detail_budget(self) -> usize {
         (4_194_304 / self.grid.columns).min(4_096)
     }
@@ -865,8 +959,13 @@ pub(super) fn cached_waveform_geometry(
     let mut layout = None;
     let mut pitch = None;
     let mut offset = Point::default();
-    if matches!(request.mapping, WaveformMapping::Clip { .. })
-        && request.grid.is_some_and(|grid| grid.binned)
+    if matches!(
+        request.mapping,
+        WaveformMapping::Clip { .. }
+            | WaveformMapping::Frame { .. }
+            | WaveformMapping::PreparedFade(_)
+            | WaveformMapping::PreparedMusicalFade(_)
+    ) && request.grid.is_some_and(|grid| grid.binned)
     {
         let columns = WaveformLayout::new(request)?;
         if let Some(local) = columns.coarse_placement(request.bounds) {
@@ -891,7 +990,7 @@ pub(super) fn cached_waveform_geometry(
         *grid = request.grid.map(WaveformGrid::key);
     }
     let mut overrange = WaveformOverrange::NotApplicable;
-    if matches!(request.mapping, WaveformMapping::Clip { fade: Some(_), .. }) {
+    if request.mapping.can_prove_overrange() {
         let current = layout.or_else(|| WaveformLayout::new(request))?;
         if let Ok(mut cache) = cache.try_borrow_mut() {
             overrange = cache
@@ -907,7 +1006,7 @@ pub(super) fn cached_waveform_geometry(
         .ok()
         .and_then(|mut cache| cache.get(&key, waveform))
     {
-        if geometry.overrange.same_snapshot(&overrange) {
+        if geometry.overrange_input.same_snapshot(&overrange) {
             return Some((geometry, offset));
         }
         if let Ok(mut cache) = cache.try_borrow_mut() {
@@ -937,6 +1036,24 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::PreparedFade(fade) => WaveformMappingKey::PreparedFade(*fade),
+        WaveformMapping::PreparedMusicalFade(fade) => {
+            WaveformMappingKey::PreparedMusicalFade(Arc::clone(fade))
+        }
+        WaveformMapping::Frame {
+            projection, clock, ..
+        } => WaveformMappingKey::Frame(Arc::clone(&projection.key), *clock),
+        WaveformMapping::MusicalEventFade {
+            projection, clock, ..
+        } => WaveformMappingKey::MusicalEventFade(
+            Arc::clone(projection),
+            match clock {
+                super::waveform_musical_event::Clock::Arrangement => None,
+                // One event pane samples the held or pending descriptor
+                // directly, including its envelope and gain.
+                super::waveform_musical_event::Clock::Event(event) => Some(*event),
+            },
+        ),
         WaveformMapping::MusicalEvent(projection) => {
             WaveformMappingKey::MusicalEvent(projection.clone())
         }
@@ -1029,7 +1146,7 @@ pub(super) fn prepare_waveform_geometry_with_scale(
     waveform: &CachedWaveform,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<WaveformGeometry> {
-    let overrange = if matches!(request.mapping, WaveformMapping::Clip { fade: Some(_), .. }) {
+    let overrange = if request.mapping.can_prove_overrange() {
         WaveformOverrange::Unavailable
     } else {
         WaveformOverrange::NotApplicable
@@ -1072,6 +1189,31 @@ fn build_waveform_geometry(
     } else {
         bounds.origin.y
     };
+    let frame_query;
+    let frame = match mapping {
+        WaveformMapping::Frame {
+            projection, clock, ..
+        } => {
+            frame_query = projection.query()?;
+            Some(clock.resolve(&frame_query)?)
+        }
+        _ => None,
+    };
+    let mut range_budget = waveform_frame::RANGE_BUDGET;
+    let mut event_fade = match mapping {
+        WaveformMapping::MusicalEventFade {
+            projection, clock, ..
+        } => Some(projection.query(clock)?),
+        _ => None,
+    };
+    let musical = match mapping {
+        WaveformMapping::PreparedMusicalFade(fade) => Some(fade.projection()?),
+        _ => None,
+    };
+    let sampled_envelope = (frame.is_some() && mapping.can_prove_overrange())
+        || matches!(mapping, WaveformMapping::PreparedFade(_));
+    let mut exact_overrange =
+        (sampled_envelope && layout.all_columns_exact()).then(|| Vec::with_capacity(last - first));
     let gain = match mapping {
         WaveformMapping::MusicalEvent(projection) => projection.gain().linear(),
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
@@ -1079,7 +1221,11 @@ fn build_waveform_geometry(
         WaveformMapping::Clip { clip, gain, .. } => gain.unwrap_or_else(|| clip.gain().linear()),
         WaveformMapping::GainedSource { gain, .. } => *gain,
         WaveformMapping::Prepared { gain, .. } => gain.linear(),
-        WaveformMapping::Source { .. } => 1.0,
+        WaveformMapping::Source { .. }
+        | WaveformMapping::Frame { .. }
+        | WaveformMapping::MusicalEventFade { .. }
+        | WaveformMapping::PreparedFade(_)
+        | WaveformMapping::PreparedMusicalFade(_) => 1.0,
     };
     let clip_fade = match mapping {
         WaveformMapping::Clip {
@@ -1109,6 +1255,35 @@ fn build_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::Frame { projection, .. } => {
+                let frame = frame.as_ref()?;
+                let frame_detail_budget = layout.frame_detail_budget();
+                let peaks =
+                    if projection.has_exact_pcm() && end - start <= frame_detail_budget as u64 {
+                        waveform_frame::detail(frame, waveform, start..end, frame_detail_budget)?
+                    } else {
+                        waveform_frame::coarse(
+                            frame,
+                            waveform,
+                            projection.grouped_sources(),
+                            start..end,
+                            &mut range_budget,
+                        )?
+                    };
+                Some(peaks)
+            }
+            WaveformMapping::MusicalEventFade { .. } => Some(super::waveform_musical_event::peaks(
+                event_fade.as_mut()?,
+                waveform,
+                start..end,
+                &mut range_budget,
+            )?),
+            WaveformMapping::PreparedFade(fade) => {
+                Some(fade.peaks(waveform, start..end, layout.frame_detail_budget())?)
+            }
+            WaveformMapping::PreparedMusicalFade(fade) => {
+                Some(fade.peaks(musical.as_ref()?, waveform, start..end)?)
+            }
             WaveformMapping::MusicalEvent(projection) => {
                 let ranges = projection.ranges(start..end, waveform.source_frames());
                 aggregate_ranges(waveform, ranges.as_slice())
@@ -1205,6 +1380,9 @@ fn build_waveform_geometry(
                 peak.max *= gain;
             }
         }
+        if let Some(columns) = &mut exact_overrange {
+            columns.push(Some(waveform_frame::overrange(peaks)));
+        }
         stereo_peaks.push(peaks);
     }
 
@@ -1213,6 +1391,10 @@ fn build_waveform_geometry(
     #[cfg(all(test, feature = "ui-test-support"))]
     let _paths_timer =
         super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformPaths);
+    let overrange_input = overrange.clone();
+    let overrange = exact_overrange.map_or(overrange, |columns| {
+        WaveformOverrange::Ready(Arc::new(columns))
+    });
     let mut channels = Vec::with_capacity(2);
     #[cfg(test)]
     let mut outlines = std::array::from_fn(|_| WaveformChannelGeometry {
@@ -1250,7 +1432,7 @@ fn build_waveform_geometry(
             .iter()
             .zip(&minima)
             .any(|(maximum, minimum)| (f32::from(maximum.y - minimum.y)).abs() >= 0.5);
-        channels.push(WaveformChannel::new(
+        let display = WaveformChannel::new(
             WaveformEnvelope {
                 upper: &maxima,
                 lower: &minima,
@@ -1275,7 +1457,48 @@ fn build_waveform_geometry(
                 }),
             },
             std::iter::empty(),
-        )?);
+        )?;
+        let display = if let WaveformOverrange::Ready(columns) = &overrange
+            && sampled_envelope
+        {
+            let step = local_pitch.unwrap_or(grid.width / grid.columns as f32);
+            let left = if local_pitch.is_some() {
+                0.0
+            } else {
+                grid.left + first as f32 * step
+            };
+            let (top, bottom) = peak_vertical_bounds(
+                CachedPeak {
+                    min: -1.0,
+                    max: 1.0,
+                },
+                center,
+                amplitude,
+                amplitude_scale,
+            );
+            let spans = columns.iter().enumerate().flat_map(|(column, result)| {
+                let start = left + column as f32 * step;
+                let end = start + step;
+                result.iter().flat_map(move |result| {
+                    [
+                        (result.positive[channel], top),
+                        (result.negative[channel], bottom),
+                    ]
+                    .into_iter()
+                    .filter(move |(marked, _)| *marked && end > start)
+                    .map(move |(_, ordinate)| {
+                        [
+                            point(px(start), y + px(ordinate)),
+                            point(px(end), y + px(ordinate)),
+                        ]
+                    })
+                })
+            });
+            display.with_overrange_markers(spans, px(1.0))?
+        } else {
+            display
+        };
+        channels.push(display);
         #[cfg(test)]
         {
             outlines[channel] = WaveformChannelGeometry {
@@ -1289,7 +1512,9 @@ fn build_waveform_geometry(
     };
     Some(WaveformGeometry {
         display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
+        #[cfg(test)]
         overrange,
+        overrange_input,
         #[cfg(test)]
         channels: outlines,
         columns: point_count.saturating_add(decision_columns),
@@ -1304,6 +1529,94 @@ mod tests {
 
     use crate::editor::waveform::waveform_column_count;
     use std::time::Instant;
+
+    #[test]
+    fn frame_cache_keeps_held_overrange_through_commit_and_rechecks_replaced_source() {
+        use hex_project::{ClipFade, Command, Created, Editor, Project};
+
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = model
+            .execute(Command::ImportAudioTrack {
+                name: "detail".into(),
+                path: "detail.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("import detail clip");
+        };
+        let make_source = |sample| {
+            let audio = hex_engine::Audio::new(48_000, vec![sample; 8]).unwrap();
+            Arc::new(hex_media::waveform::summarize(&audio, 1).unwrap())
+        };
+        let old = make_source([2.0, -2.0]);
+        let new = make_source([-0.5, 0.5]);
+        let mapping = |model: &Editor, source: &CachedWaveform, fade| WaveformMapping::Frame {
+            projection: Arc::new(
+                waveform_frame::Projection::new(
+                    model.project(),
+                    model.project().clip(clip).unwrap(),
+                    source,
+                    fade,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            clock: waveform_frame::Clock::Arrangement,
+            fallback: None,
+        };
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let paint = |source: &Arc<CachedWaveform>, mapping: &WaveformMapping| {
+            cached_waveform_geometry(
+                &cache,
+                source,
+                &WaveformGeometryRequest {
+                    mapping,
+                    amplitude_scale: WaveformAmplitudeScale::default(),
+                    visible_start: 0,
+                    visible_end: 8,
+                    bounds: bounds(),
+                    scale: 1.0,
+                    columns: 8,
+                    grid: None,
+                },
+            )
+            .unwrap()
+            .0
+        };
+        let fade = ClipFade::new(8, 0, 5, 0).unwrap();
+        let held = paint(&old, &mapping(&model, &old, Some(fade)));
+        let WaveformOverrange::Ready(decisions) = &held.overrange else {
+            panic!("detail decisions are available during the drag");
+        };
+        assert_eq!(decisions[0], Some(Overrange::default()));
+        assert_eq!(
+            decisions[7],
+            Some(Overrange {
+                positive: [true, false],
+                negative: [false, true],
+            })
+        );
+        model
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &held,
+            &paint(&old, &mapping(&model, &old, None))
+        ));
+        let replacement = paint(&new, &mapping(&model, &new, None));
+        assert!(!Arc::ptr_eq(&held, &replacement));
+        let WaveformOverrange::Ready(decisions) = &replacement.overrange else {
+            panic!("replacement has its own exact decisions");
+        };
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| *decision == Some(Overrange::default()))
+        );
+    }
 
     fn waveform() -> Arc<CachedWaveform> {
         Arc::new(
@@ -1378,10 +1691,12 @@ mod tests {
         let filler = super::super::waveform_overrange::Request {
             id: 0,
             slot: 0,
-            clip,
             waveform: Arc::clone(&source),
-            timeline_origin: 0,
-            fade: None,
+            mapping: waveform_overrange::Mapping::Clip {
+                clip,
+                timeline_origin: 0,
+                fade: None,
+            },
             columns: std::iter::once(0..1).collect(),
         };
         let (worker, jobs, _replies) =

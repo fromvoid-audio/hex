@@ -46,8 +46,7 @@ impl EditorView {
             pending: c.pending,
             beat_start: c.beat_start,
             beat_span: c.beat_span,
-            pitch_low: c.pitch_low,
-            pitch_rows: c.pitch_rows,
+            pitch: c.pitch,
             grid: c.grid,
             bounds: c.bounds,
         }
@@ -60,8 +59,7 @@ impl EditorView {
             selection_epoch: self.midi_selection.epoch(),
             beat_start: self.piano_beat_start,
             beat_span: self.piano_beat_span.raw(),
-            pitch_low: self.piano_pitch_low,
-            pitch_rows: self.piano_pitch_rows,
+            pitch: self.piano_pitch,
             grid: self.midi_snap_grid,
             bounds,
             pending: self.edit_pending(),
@@ -78,8 +76,7 @@ impl EditorView {
                 && c.clip == Some(f.clip)
                 && c.beat_start == f.view_start
                 && c.beat_span == f.view_span
-                && c.pitch_low == f.pitch_low
-                && c.pitch_rows == f.pitch_rows
+                && c.pitch == f.pitch
                 && c.grid == f.grid
                 && c.bounds == rectangle(f.bounds)
                 && g.kind() == key.kind
@@ -98,8 +95,7 @@ impl EditorView {
                         pending: false,
                         beat_start: f.view_start,
                         beat_span: f.view_span,
-                        pitch_low: f.pitch_low,
-                        pitch_rows: f.pitch_rows,
+                        pitch: f.pitch,
                         grid: f.grid,
                         bounds: rectangle(f.bounds),
                     },

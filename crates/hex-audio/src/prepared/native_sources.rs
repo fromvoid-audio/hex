@@ -814,6 +814,41 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Queue one bounded conditional write on the exact accepted source.
+    /// Keep the token until its terminal or until the original worker releases.
+    /// This does no native I/O on the caller and grants no project authority.
+    pub fn begin_native_source_guarded_editor_write_on_control(
+        &mut self,
+        binding: Binding,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        self.candidate_root
+            .begin_guarded_editor_write(binding, expected_editor_admission, points)
+    }
+
+    /// Read the original write's SDK terminal. Source changes can suppress
+    /// delivery even if the SDK processed the write. Session owns disposition.
+    pub fn poll_native_source_guarded_editor_write_on_control(
+        &mut self,
+        binding: Binding,
+        token: &crate::plugin_worker::NativeWorkerControllerQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_guarded_editor_write(binding, token)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        Ok(result)
+    }
+
     /// Query actual SDK controller metadata through the original Root effect
     /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
     /// replacing them. Normally stopped transport uses its joined original

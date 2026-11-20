@@ -248,7 +248,6 @@ impl EditorView {
         self.device_panel.compressor_sidechains.clear_visible();
         self.reconcile_clip_detail_resize(window, cx);
         self.reconcile_velocity_size(window, cx);
-        self.reconcile_piano_pitch_zoom(window, cx);
         self.reconcile_piano_pan();
         self.reconcile_midi_ruler();
         self.reconcile_audio_loop();
@@ -304,6 +303,7 @@ impl EditorView {
         self.clip_detail_body_height = self
             .project_spectrum_detail_height(window, preferred)
             .max(minimum);
+        self.reconcile_piano_pitch_zoom(window, cx);
         let detail = if open {
             if self.device_panel_active {
                 Some(

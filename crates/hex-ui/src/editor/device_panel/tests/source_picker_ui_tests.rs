@@ -202,6 +202,7 @@ fn source_picker_preserves_sampler_numeric_draft(cx: &mut TestAppContext) {
         ];
         for request in requests {
             view.latched_seek_intent = Some(crate::editor::arrangement_seek::SeekIntent {
+                note_chase: hex_engine::NoteChase::On,
                 kind: crate::editor::arrangement_seek::SeekKind::Fresh,
                 recovery_generation: None,
                 destination_frame: 0,
@@ -1067,6 +1068,7 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdi
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             kind: crate::editor::arrangement_seek::SeekKind::Fresh,
             recovery_generation: None,
             destination_frame: 128,

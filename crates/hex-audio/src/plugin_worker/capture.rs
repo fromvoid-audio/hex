@@ -62,6 +62,10 @@ impl Default for Slot {
     }
 }
 impl Slot {
+    pub(super) fn capture_pending(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+
     /// Publish the worker's terminal for the requested `ordinal`: captured
     /// bytes or a non-terminal helper refusal. Any other slot state is a
     /// protocol fault.
@@ -268,7 +272,10 @@ impl NativeWorker {
             .capture
             .try_lock()
             .map_err(|_| "native capture mailbox is busy")?;
-        if slot.phase != Phase::Idle {
+        if slot.controller.guarded_write_pending() {
+            return Err("native guarded editor write is pending");
+        }
+        if slot.capture_pending() {
             return Err("native capture is already pending");
         }
         let after_parameter = match input {

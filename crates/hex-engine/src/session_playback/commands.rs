@@ -10,8 +10,10 @@ impl SessionPlayback {
             && matches!(
                 command,
                 SessionPlaybackCommand::LaunchClip { .. }
+                    | SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                     | SessionPlaybackCommand::CueMidiClip { .. }
                     | SessionPlaybackCommand::LaunchScene { .. }
+                    | SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                     | SessionPlaybackCommand::StopTrack { .. }
                     | SessionPlaybackCommand::StopAllClips { .. }
                     | SessionPlaybackCommand::BackToArrangement { .. }
@@ -130,7 +132,7 @@ impl SessionPlayback {
                         runtime.cut_gate_deadlines_at(self.performance_frame);
                     }
                     for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-                        if tail.runtime.is_source_owner() {
+                        if !tail.is_powering_off() && tail.runtime.is_source_owner() {
                             tail.runtime.cut_gate_deadlines_at(self.performance_frame);
                         }
                     }
@@ -187,7 +189,7 @@ impl SessionPlayback {
                 runtime.cut_gate_deadlines_at(self.performance_frame);
             }
             for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-                if tail.runtime.is_source_owner() {
+                if !tail.is_powering_off() && tail.runtime.is_source_owner() {
                     tail.runtime.cut_gate_deadlines_at(self.performance_frame);
                 }
             }
@@ -249,17 +251,19 @@ impl SessionPlayback {
             runtime.reset();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.reset();
+            tail.cancel();
         }
         for route in &mut self.routes {
             route.current_first_frame = false;
             route.audio_release = None;
             changed |= route.pending.take().is_some();
-            if let RouteOwner::Session { clip, origin } = route.owner {
+            changed |= route.owner.note_chase() != crate::NoteChase::On;
+            if let RouteOwner::Session { clip, origin, .. } = route.owner {
                 changed |= origin != SessionMidiOrigin::launch(BeatTime::ZERO);
                 route.owner = RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(BeatTime::ZERO),
+                    note_chase: crate::NoteChase::On,
                 };
             }
             if let RouteOwner::SessionAudio { clip, launch_frame } = route.owner {
@@ -281,7 +285,7 @@ impl SessionPlayback {
             .tail_mutable_instruments
             .iter()
             .flatten()
-            .any(|tail| !tail.runtime.committed_is_quiescent())
+            .any(|tail| !tail.committed_is_quiescent())
         {
             return Err(SessionPlaybackError::MutableInstrumentActive);
         }
@@ -356,6 +360,14 @@ impl SessionPlayback {
         };
         let generation = self.route_state_generation;
         self.install_seek(frame, beat);
+        for route in &mut self.routes {
+            if let RouteOwner::Session {
+                note_chase: policy, ..
+            } = &mut route.owner
+            {
+                *policy = note_chase;
+            }
+        }
         if self.route_state_generation == generation {
             self.advance_route_state_generation();
         }
@@ -409,6 +421,7 @@ impl SessionPlayback {
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
             changed |= route.pending.is_some();
+            changed |= route.owner.note_chase() != crate::NoteChase::On;
             if let RouteOwner::Session { origin, .. } = route.owner {
                 changed |= origin != SessionMidiOrigin::launch(beat);
             }
@@ -426,13 +439,14 @@ impl SessionPlayback {
         self.pending_shared_live = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
-        self.restart_audio_history();
+        self.restart_audio_history(&[false; MAX_TRACKS]);
         for route in &mut self.routes {
             route.pending = None;
             if let RouteOwner::Session { clip, .. } = route.owner {
                 route.owner = RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(beat),
+                    note_chase: crate::NoteChase::On,
                 };
             }
             if let RouteOwner::SessionAudio { clip, .. } = route.owner {
@@ -449,9 +463,9 @@ impl SessionPlayback {
 
     /// The seek law's audio cut without moving the transport: analytic
     /// releases/continuations, device chains, return/effect tails, the
-    /// compensation epoch and mutable voices start empty. Allocation-free:
-    /// existing owners are cleared or reset in place.
-    pub(super) fn restart_audio_history(&mut self) {
+    /// compensation epoch start empty. A confirmed publication can keep
+    /// already-staged generators at the same clock. Allocation-free.
+    pub(super) fn restart_audio_history(&mut self, retained_instruments: &[bool; MAX_TRACKS]) {
         self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;
@@ -480,11 +494,17 @@ impl SessionPlayback {
         }
         self.tail_output_active.fill(false);
         self.tail_output_scratch.fill(false);
-        for runtime in self.mutable_instruments.iter_mut().flatten() {
-            runtime.reset();
+        for (runtime, retained) in self
+            .mutable_instruments
+            .iter_mut()
+            .zip(retained_instruments)
+        {
+            if !retained && let Some(runtime) = runtime {
+                runtime.reset();
+            }
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.reset();
+            tail.cancel();
         }
     }
 
@@ -522,7 +542,7 @@ impl SessionPlayback {
                     .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
                 Ok(active)
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                     self.revision.session(),
                     self.midi_admission.as_ref(),
@@ -541,7 +561,13 @@ impl SessionPlayback {
                 );
                 prepared
                     .instrument_template()
-                    .query_with_origin(origin, &timing, frame, end, &mut self.spans)
+                    .query_with_origin_and_note_chase(
+                        origin,
+                        &timing,
+                        (frame, end),
+                        &mut self.spans,
+                        owner.note_chase(),
+                    )
                     .map_err(SessionPlaybackError::Midi)?;
                 Ok(self
                     .spans
@@ -574,6 +600,11 @@ impl SessionPlayback {
         &mut self,
         command: SessionPlaybackCommand,
     ) -> Result<TransitionMoment, SessionPlaybackError> {
+        let note_chase = match command {
+            SessionPlaybackCommand::LaunchClipWithNoteChase { note_chase, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { note_chase, .. } => note_chase,
+            _ => crate::NoteChase::On,
+        };
         self.route_scratch.copy_from_slice(&self.routes);
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
@@ -589,7 +620,9 @@ impl SessionPlayback {
             .retain(|entry| entry.end_frame() > self.performance_frame);
         let (target_frame, target_beat) = match command {
             SessionPlaybackCommand::LaunchClip { quantization, .. }
+            | SessionPlaybackCommand::LaunchClipWithNoteChase { quantization, .. }
             | SessionPlaybackCommand::LaunchScene { quantization, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { quantization, .. }
             | SessionPlaybackCommand::StopTrack { quantization, .. }
             | SessionPlaybackCommand::StopAllClips { quantization }
             | SessionPlaybackCommand::BackToArrangement { quantization } => {
@@ -609,7 +642,8 @@ impl SessionPlayback {
             performance_frame: self.performance_frame,
         };
         match command {
-            SessionPlaybackCommand::LaunchClip { clip, .. } => {
+            SessionPlaybackCommand::LaunchClip { clip, .. }
+            | SessionPlaybackCommand::LaunchClipWithNoteChase { clip, .. } => {
                 let track = crate::session_inventory::EffectiveSessionMidi::new(
                     self.revision.session(),
                     self.midi_admission.as_ref(),
@@ -624,7 +658,7 @@ impl SessionPlayback {
                 })
                 .ok_or(SessionPlaybackError::UnknownClip)?;
                 let index = self.route_index(track)?;
-                self.set_route(index, RouteTarget::Session(clip), moment, None)?;
+                self.set_route(index, RouteTarget::Session(clip), moment, None, note_chase)?;
             }
             SessionPlaybackCommand::CueMidiClip {
                 track,
@@ -683,9 +717,11 @@ impl SessionPlayback {
                     RouteTarget::Session(clip),
                     moment,
                     Some(SessionMidiOrigin::new(target_beat, elapsed)),
+                    note_chase,
                 )?;
             }
-            SessionPlaybackCommand::LaunchScene { scene, .. } => {
+            SessionPlaybackCommand::LaunchScene { scene, .. }
+            | SessionPlaybackCommand::LaunchSceneWithNoteChase { scene, .. } => {
                 let (start, end) = self
                     .revision
                     .session()
@@ -728,21 +764,21 @@ impl SessionPlayback {
                         }
                     };
                     let index = self.route_index(cell.track)?;
-                    self.set_route(index, target, moment, None)?;
+                    self.set_route(index, target, moment, None, note_chase)?;
                 }
             }
             SessionPlaybackCommand::StopTrack { track, .. } => {
                 let index = self.route_index(track)?;
-                self.set_route(index, RouteTarget::Silence, moment, None)?;
+                self.set_route(index, RouteTarget::Silence, moment, None, note_chase)?;
             }
             SessionPlaybackCommand::StopAllClips { .. } => {
                 for index in 0..self.route_scratch.len() {
-                    self.set_route(index, RouteTarget::Silence, moment, None)?;
+                    self.set_route(index, RouteTarget::Silence, moment, None, note_chase)?;
                 }
             }
             SessionPlaybackCommand::BackToArrangement { .. } => {
                 for index in 0..self.route_scratch.len() {
-                    self.set_route(index, RouteTarget::Arrangement, moment, None)?;
+                    self.set_route(index, RouteTarget::Arrangement, moment, None, note_chase)?;
                 }
             }
             _ => return Err(SessionPlaybackError::InvalidCommand),
@@ -897,6 +933,7 @@ impl SessionPlayback {
         target: RouteTarget,
         moment: TransitionMoment,
         origin_override: Option<SessionMidiOrigin>,
+        note_chase: crate::NoteChase,
     ) -> Result<(), SessionPlaybackError> {
         let owner = self
             .route_scratch
@@ -904,12 +941,19 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::UnknownTrack)?
             .owner;
         let next_owner = match (
-            self.owner_for_target(target, moment.target_beat, moment.performance_frame)?,
+            self.owner_for_target(
+                target,
+                moment.target_beat,
+                moment.performance_frame,
+                note_chase,
+            )?,
             origin_override,
         ) {
-            (RouteOwner::Session { clip, .. }, Some(origin)) => {
-                RouteOwner::Session { clip, origin }
-            }
+            (RouteOwner::Session { clip, .. }, Some(origin)) => RouteOwner::Session {
+                clip,
+                origin,
+                note_chase,
+            },
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
@@ -1050,6 +1094,7 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
             route.pending = Some(PendingRoute {
+                note_chase,
                 frame: moment.target_frame,
                 beat: moment.target_beat,
                 target,
@@ -1219,7 +1264,7 @@ impl SessionPlayback {
                     return Err(error);
                 }
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 // A prior handoff may have copied active held voices into the
                 // shared release bank. Cut those copies in-place in scratch
                 // before querying the current template so they are neither
@@ -1257,18 +1302,24 @@ impl SessionPlayback {
                 let template = prepared.instrument_template();
                 if let Some(floor) = self.historical_floor_for(index) {
                     template
-                        .query_after_onset_with_origin(
+                        .query_after_onset_with_origin_and_note_chase(
                             origin,
                             &timing,
-                            performance_frame,
-                            end,
+                            (performance_frame, end),
                             &mut self.spans,
                             floor,
+                            owner.note_chase(),
                         )
                         .map_err(SessionPlaybackError::Midi)?;
                 } else {
                     template
-                        .query_with_origin(origin, &timing, performance_frame, end, &mut self.spans)
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            &timing,
+                            (performance_frame, end),
+                            &mut self.spans,
+                            owner.note_chase(),
+                        )
                         .map_err(SessionPlaybackError::Midi)?;
                 }
                 for span in self.spans.spans() {

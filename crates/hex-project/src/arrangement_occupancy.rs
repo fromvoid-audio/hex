@@ -14,6 +14,32 @@ const OVERLAP: Invalid =
     Invalid("arrangement overlap needs opposing audio fade ramps; midi clips must remain disjoint");
 type Interval = (u64, u64);
 
+impl Project {
+    /// Arrangement fade authoring keeps the existing retained-root ramp proof
+    /// for overlapping legacy clips. Disjoint retained clips use the same
+    /// destination law for the pointer preview and the committed edit.
+    pub fn arrangement_fade_edit_uses_outer(&self, clip: &Clip) -> bool {
+        let Some(edit) = clip.audio_edit() else {
+            return false;
+        };
+        if edit.domain.fade_clock == crate::AudioClipFadeClock::Outer {
+            return true;
+        }
+        let end = clip.start().saturating_add(clip.duration());
+        !self
+            .tracks()
+            .iter()
+            .find(|track| track.clips().iter().any(|other| other.id() == clip.id()))
+            .is_some_and(|track| {
+                track.clips().iter().any(|other| {
+                    other.id() != clip.id()
+                        && other.start() < end
+                        && clip.start() < other.start().saturating_add(other.duration())
+                })
+            })
+    }
+}
+
 fn geometry_eq(a: &Track, b: &Track) -> bool {
     a.id == b.id
         && a.clips().len() == b.clips().len()

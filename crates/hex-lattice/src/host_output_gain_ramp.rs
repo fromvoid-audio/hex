@@ -203,15 +203,11 @@ pub(super) fn apply_modulated(
 /// Carry a canonical static output stage using the existing host-stage donor
 /// lookup. Ordinary DSP/source inheritance still owns eligibility; this adds no
 /// search pass, source fact, or transient Set/Clear interpretation.
-pub(super) fn inherit(
-    entry: &mut crate::RuntimeEntry,
-    old: Option<(usize, &crate::RuntimeEntry)>,
-    excluded: &std::ops::Range<usize>,
-) {
+pub(super) fn inherit(entry: &mut crate::RuntimeEntry, old: Option<&crate::RuntimeEntry>) {
     use crate::runtime_ownership::RuntimeOwnership;
     use hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
     let mut ramp = OutputGainRamp::INACTIVE;
-    if let Some((index, old)) = old {
+    if let Some(old) = old {
         // Most graph publications do not change this stage. Do not
         // recheck payloads or seed new control state for inactive gains.
         if entry.output_gain == old.output_gain && !old.committed_output_gain_ramp.active() {
@@ -241,8 +237,7 @@ pub(super) fn inherit(
                 }
                 _ => false,
             };
-        let eligible = !excluded.contains(&index)
-            && configuration_present
+        let eligible = configuration_present
             && (gain_edit || continuing)
             && !entry.automation_frozen
             && !old.automation_frozen
