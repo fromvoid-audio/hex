@@ -9,6 +9,7 @@ fn device_edit_preparation_deadline() -> Instant {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphEditOperation {
     InsertDevice,
+    ReplaceDevice,
     RemoveDevice,
     MoveDevice,
     /// A single Resident track reparent, confirmed by its exact graph receipt.
@@ -91,6 +92,7 @@ impl Operation {
             Self::Device(GraphEditOperation::InsertDevice) | Self::HostedClipboard => {
                 "device inserted"
             }
+            Self::Device(GraphEditOperation::ReplaceDevice) => "device replaced",
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::MoveTrack) => "track moved",

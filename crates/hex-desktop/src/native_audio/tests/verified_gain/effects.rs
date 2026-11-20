@@ -109,6 +109,83 @@ fn verified_builtin_proposal_cancels(use_picker: bool) {
 }
 
 #[test]
+fn verified_native_replacement_installs_in_the_existing_slot() {
+    use hex_engine::{DeviceTypeId, NativeDeviceClass, default_native_device_state_for_class};
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.wait = Duration::from_secs(2);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    h.run(Request::Import(files.wav(48_000, 96_000)));
+    h.applied(h.context.unwrap());
+    let before = h.run_verified_device_insert(Command::InsertMainDevice {
+        before: None,
+        state: default_native_device_state_for_class(
+            NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap(),
+    });
+    let predecessor = h.applied(h.context.unwrap());
+    let device = before.state.project.main_devices()[0].id();
+    let limiter = DeviceTypeId::from_static("hex.limiter");
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    wait_for_audio(&h);
+
+    let pending = h.run(Request::ReplaceNativeDevice {
+        device,
+        class: NativeDeviceClass::Effect,
+        type_id: Box::new(limiter),
+    });
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, before.state.project);
+    let offered = h.next_with_audio();
+    assert_eq!(offered.state.project, before.state.project);
+    let offer = offered.device_insert_confirmation.unwrap();
+    assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+    assert_eq!(
+        offer.submission().output_identity,
+        predecessor.output_identity
+    );
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    assert!(offer.proceed());
+    let installed = h.next_with_audio();
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    assert_eq!(installed.status.as_deref(), Some("device replaced"));
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    let active = h.applied(h.context.unwrap());
+    assert_eq!(active.audio_revision, receipt.submission.audio_revision);
+    assert_eq!(active.output_identity, predecessor.output_identity);
+    assert_eq!(installed.state.revision, before.state.revision + 1);
+    assert_eq!(installed.state.project.main_devices().len(), 1);
+    assert_eq!(
+        installed
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .type_id(),
+        limiter
+    );
+}
+
+#[test]
 fn verified_editor_insert_commits_only_the_confirmed_graph_and_one_undo() {
     use hex_session::service::DeviceInsertOutcome;
     let _native = native_fixture();
