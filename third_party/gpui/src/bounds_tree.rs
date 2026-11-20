@@ -228,7 +228,7 @@ where
 // Store both edges directly so ancestor unions never round an ordered edge
 // inward when constructing an origin and size.
 #[derive(Debug, Clone, PartialEq)]
-struct TreeBounds<U> {
+struct TreeBounds<U: Clone + Debug + Default + PartialEq> {
     min: Point<U>,
     max: Point<U>,
 }
