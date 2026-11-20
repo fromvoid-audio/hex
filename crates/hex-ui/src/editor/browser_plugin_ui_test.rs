@@ -42,6 +42,155 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
+fn verified_main_drag_captures_the_rendered_replace_pad(cx: &mut TestAppContext) {
+    use crate::editor::{drag::EffectBusDropSlot, rendered_test_fixture};
+    use hex_project::DeviceId;
+    use hex_session::{DocumentAudioMode, service::PluginEffectDestination};
+
+    cx.update(crate::editor::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+    let mut catalog = original_plugin_catalog(module);
+    let class = &mut catalog.entries[0]
+        .last_good
+        .as_mut()
+        .unwrap()
+        .discovery
+        .as_mut()
+        .unwrap()
+        .classes[0];
+    class.class_flags = Some(0);
+    class.subcategories = Some("Fx".into());
+    class.class_vendor = Some("Original Vendor".into());
+    class.class_version = Some("1".into());
+    class.class_sdk_version = Some("3.8".into());
+
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::ReturnTrack(wet) = model
+        .execute(Command::AddReturnTrack { name: "wet".into() })
+        .unwrap()
+    else {
+        panic!("return track");
+    };
+    let authored = hex_lattice_contract::NativeDeviceState::new(
+        hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+        1,
+        vec![0],
+    )
+    .unwrap();
+    let Created::Device(return_effect) = model
+        .execute(Command::InsertReturnDevice {
+            return_track: wet,
+            before: None,
+            state: authored.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("return effect");
+    };
+    let Created::Device(main_effect) = model
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: authored,
+        })
+        .unwrap()
+    else {
+        panic!("main effect");
+    };
+    let (handle, editor) =
+        rendered_test_fixture::editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
+        view.clip_view_open = true;
+        view.device_panel_active = true;
+        view.select_browser_source(BrowserSection::Plugins, cx);
+    });
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        view.apply_plugin_catalog(catalog, cx);
+        cx.notify();
+    });
+    let selector = |prefix: &str, control: &str, device: DeviceId| -> &'static str {
+        Box::leak(format!("{prefix}-{control}-{}", device.value()).into_boxed_str())
+    };
+    let left_button = MouseButton::Left;
+    let modifiers = Modifiers::default();
+    for (prefix, id, is_main) in [
+        ("return", return_effect, false),
+        ("main", main_effect, true),
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            view.focused_return = (!is_main).then_some(wet);
+            view.device_panel.main_selected = is_main.then_some(view.project_generation);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let row = visual.debug_bounds("browser-vst3-row-0").unwrap().center();
+        let card = visual
+            .debug_bounds(selector(prefix, "device-drop-card", id))
+            .unwrap();
+        visual.simulate_mouse_down(row, left_button, modifiers);
+        visual.simulate_mouse_move(point(row.x + px(12.0), row.y), left_button, modifiers);
+        for (x, edge) in [
+            (card.origin.x + px(12.0), "before"),
+            (card.right() - px(12.0), "after"),
+        ] {
+            visual.simulate_mouse_move(point(x, card.center().y), left_button, modifiers);
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds(selector(prefix, &format!("device-insertion-{edge}"), id))
+                    .is_some()
+            );
+        }
+        let pad = visual.debug_bounds(selector(prefix, "vst3-replace", id));
+        assert_eq!(pad.is_some(), is_main);
+        let Some(pad) = pad else {
+            visual.simulate_keystrokes("escape");
+            visual.simulate_mouse_up(card.center(), left_button, modifiers);
+            assert!(editor.read_with(&visual, |view, _| view.pending_plugin_effect.is_none()));
+            continue;
+        };
+        let drop = pad.center();
+        visual.simulate_mouse_move(drop, left_button, modifiers);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let drag = view.active_native_device_drag.as_ref().unwrap();
+            assert_eq!(
+                drag.return_destination.get().unwrap().slot,
+                EffectBusDropSlot::Replace(main_effect)
+            );
+        });
+        visual.simulate_mouse_up(drop, left_button, modifiers);
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            let pending = view.pending_plugin_effect.as_ref().unwrap_or_else(|| {
+                panic!("main drop did not enqueue replacement: {:?}", view.error)
+            });
+            assert_eq!(
+                pending.proposal.destination,
+                PluginEffectDestination::ReplaceMainEffect {
+                    replacing: main_effect
+                }
+            );
+            assert_eq!(pending.proposal.before, None);
+            assert_eq!(
+                view.state.as_ref().unwrap().project.main_devices()[0].id(),
+                main_effect
+            );
+        });
+        assert!(
+            visual
+                .debug_bounds(selector(prefix, "device-drop-card", id))
+                .is_some()
+        );
+        assert!(visual.debug_bounds("device-chain-loading-slot").is_some());
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
 fn browser_result_rows_use_compact_native_text_and_keep_selected_hover(cx: &mut TestAppContext) {
     use crate::theme;
     cx.use_native_text_system().expect("native text shaping");
