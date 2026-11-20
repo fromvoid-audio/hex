@@ -272,6 +272,8 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
     }
     assert!(stopped.error.is_none(), "{:?}", stopped.error);
     assert_eq!(stopped.state.project, installed.state.project);
+    let (_, stopped_metadata) = h.applied(queued.audio_revision);
+    assert!(stopped_metadata.stopped_restore);
     let stopped_source = source(&h);
     assert!(
         !h.audio
