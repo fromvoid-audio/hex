@@ -14,6 +14,7 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created};
 
 mod paused_monitor;
+mod streamed_effects;
 
 struct BorrowedDefinition {
     binding_epoch: Option<u64>,
@@ -759,16 +760,16 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
 }
 
 #[test]
-fn closed_stream_demand_refuses_foreign_return_to_track_feed() {
-    closed_stream_demand_refuses_foreign_return(true);
+fn closed_stream_demand_refuses_unbound_return_to_track_feed() {
+    closed_stream_demand_refuses_unbound_return(true);
 }
 
 #[test]
-fn closed_stream_demand_refuses_foreign_return_send() {
-    closed_stream_demand_refuses_foreign_return(false);
+fn closed_stream_demand_refuses_unbound_return_send() {
+    closed_stream_demand_refuses_unbound_return(false);
 }
 
-fn closed_stream_demand_refuses_foreign_return(feed: bool) {
+fn closed_stream_demand_refuses_unbound_return(feed: bool) {
     let mut f = fixture(&[&[], &[]], 64);
     let Created::ReturnTrack(bus) = f
         .editor

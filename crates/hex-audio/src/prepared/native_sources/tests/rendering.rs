@@ -7,6 +7,7 @@ use hex_lattice::{
 };
 use hex_project::{Command, Created, Editor, Project};
 
+mod closed_hosted;
 mod deadlines;
 mod epoch;
 mod ordinary;
