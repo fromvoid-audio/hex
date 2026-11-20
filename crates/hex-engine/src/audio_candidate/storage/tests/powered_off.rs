@@ -136,6 +136,7 @@ fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
     assert_eq!(chain.stateful_count(), 0);
     assert_eq!(chain.declared_pair_bytes(), 0);
     assert_eq!(playback.main_output_latency_frames(), 0);
+    assert_eq!(playback.foreign_nodes_on_control().count(), 0);
     assert!(
         chain
             .storage_view()
