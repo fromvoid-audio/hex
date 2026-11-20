@@ -27,12 +27,20 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
 
     let _native = native_fixture();
     let files = Files::new();
-    let mut h = ResidentHarness::with_plugins(
+    let catalog = Files::new();
+    let directory = catalog.0.canonicalize().unwrap();
+    let mut selected = selection();
+    let module = directory.join("original.vst3");
+    super::super::ui::copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selected, "Instrument|Synth", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
         }),
+        directory.join("plugin-catalog.json"),
     );
     h.next();
     let (mut applied, _) = h.applied(0);
@@ -71,10 +79,9 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
         velocity: 63,
     }));
     (applied, _) = h.applied(applied);
-    h.run(Request::InsertPluginEffect(request(
-        &authored.state,
-        PluginEffectDestination::Instrument(track),
-    )));
+    let mut insertion = request(&authored.state, PluginEffectDestination::Instrument(track));
+    insertion.selection = selected;
+    h.run(Request::InsertPluginEffect(insertion));
     let before = terminal(&mut h);
     assert!(before.plugin_effect_complete[0].accepted);
     let original = before
@@ -221,10 +228,19 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
     assert_eq!(source(&h).audio_revision, queued.audio_revision);
     assert_eq!(source(&h).context, queued.context);
     assert_eq!(source(&h).output_identity, predecessor.output_identity);
+    for _ in 0..2 {
+        render_completed_block(&h);
+    }
+    let dry = render_completed_block(&h);
+    assert!(
+        dry.iter()
+            .flatten()
+            .all(|sample| (*sample - 0.25).abs() < 1e-5)
+    );
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         h.pump();
-        h.render();
+        render_completed_block(&h);
         let words = fs::read(&trace)
             .ok()
             .and_then(|bytes| <[u8; 20]>::try_from(bytes).ok())
@@ -235,19 +251,14 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
             });
         if words.is_some_and(|[_, on, off, on_id, off_id]| {
             on == 1 && off == 1 && on_id > 0 && on_id == off_id
-        }) && worker(&h).is_none()
+        }) && h.plugin_records.load(Acquire) == 0
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "original gate did not retire: {words:?}"
+            "original gate did not retire: {words:?}, {:?}",
+            h.plugin_progress.lock().unwrap().native
         );
     }
-    let dry = h.render_plugin_block();
-    assert!(
-        dry.iter()
-            .flatten()
-            .all(|sample| (*sample - 0.25).abs() < 1e-5)
-    );
 }
