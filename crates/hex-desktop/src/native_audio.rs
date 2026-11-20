@@ -398,8 +398,17 @@ impl NativeAudioSink {
                 hex_audio::AudioLifecycleFailure::MismatchedOwner => {
                     "audio lifecycle ownership mismatch"
                 }
+                hex_audio::AudioLifecycleFailure::RetiringEditor => {
+                    "vst3 editor shutdown is unresolved · original source retained · audio reopen refused"
+                }
             };
-            self.open_error = Some(format!("{reason}; save your project and restart hex").into());
+            self.open_error = Some(
+                if failure == hex_audio::AudioLifecycleFailure::RetiringEditor {
+                    reason.into()
+                } else {
+                    format!("{reason}; save your project and restart hex").into()
+                },
+            );
             self.open_pending = false;
             // Abandon only this result request. The lifecycle owner retains the
             // old output lease, failed resources and first destructor payload.

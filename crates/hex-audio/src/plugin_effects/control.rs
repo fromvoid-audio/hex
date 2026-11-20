@@ -220,6 +220,20 @@ impl NativeEffect {
     ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
         self.worker.poll_stopped_edits_on_control(recovery)
     }
+    pub(crate) fn edit_read_mode(&self) -> Result<Option<bool>, &'static str> {
+        self.worker.edit_read_mode_on_control()
+    }
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        self.worker.transport_is_live_on_control()
+    }
+    pub(crate) fn revoke_retiring_edits(&self) {
+        self.worker.revoke_on_control();
+    }
+    pub(crate) fn poll_sealed_edits(
+        &mut self,
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        self.worker.poll_sealed_edits_on_control()
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -428,6 +442,9 @@ impl NativeEffectControl {
         recovery: bool,
     ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
         self.worker.poll_stopped_edits_on_control(recovery)
+    }
+    pub(crate) fn edit_read_mode(&self) -> Result<Option<bool>, &'static str> {
+        self.worker.edit_read_mode_on_control()
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()

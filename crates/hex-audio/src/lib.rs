@@ -96,9 +96,14 @@ pub(crate) mod candidate_window_probe {
         WINDOWS.with(|value| value.replace(None))
     }
 }
+/// Retiring-source archive budget for queued and already delivered edits.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const MAX_RETAINED_EDITOR_EDITS: usize = 80;
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use candidate_custody::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+    RetiringEditLease, RetiringEditProgress, RetiringEditReceipt,
 };
 pub mod foreign_parameter_delivery;
 pub mod gain_recording;

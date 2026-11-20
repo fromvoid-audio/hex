@@ -226,7 +226,12 @@ class RestoreController final : public IEditController {
         auto* self=static_cast<RestoreController*>(context);
         const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
-        if(grouped_editor(self->fault)) {self->grouped_edit_tick();return;}
+        if(grouped_editor(self->fault)) {
+            const bool was_sent=self->edits_sent;
+            self->grouped_edit_tick();
+            if(!was_sent && self->edits_sent) trace(25);
+            return;
+        }
         const auto* end_release=(self->fault==touched_automation_variant || self->fault==held_instrument_variant ||
             self->fault==stopped_editor_echo_variant)
             ?std::getenv("HEX_ORIGINAL_EDITOR_END_RELEASE"):nullptr;

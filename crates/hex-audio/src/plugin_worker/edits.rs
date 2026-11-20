@@ -68,6 +68,18 @@ impl State {
     }
 }
 impl NativeWorker {
+    pub(crate) fn edit_read_mode_on_control(&self) -> Result<Option<bool>, &'static str> {
+        let slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => "native edit observation is busy",
+                TryLockError::Poisoned(_) => "native edit mailbox failed",
+            })?;
+        Ok((slot.edits_pending || slot.edits_result.is_some()).then_some(slot.recovery_edits))
+    }
     #[cfg(test)]
     pub(crate) fn pending_edit_result_nonempty_for_test(&self) -> Option<bool> {
         let slot = self.reaper.completed.capture.try_lock().ok()?;

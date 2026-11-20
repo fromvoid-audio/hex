@@ -377,7 +377,7 @@ fn actual_root_epoch_completion_refusal_and_late_close_retain_disposal() {
         root.complete_native_source(old, presentation()).unwrap();
         root.start_native_effect(old).unwrap();
         let next = root
-            .quiesce_native_source_between(old, old.graph + 1, || {
+            .quiesce_native_source_between(old, old.graph + 1, None, || {
                 if mode == 1 {
                     root.close();
                 }
