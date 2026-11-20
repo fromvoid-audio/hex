@@ -800,8 +800,9 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
 }
 
 /// Borrowed exact old/new state identities for a foreign parameter continuation.
-/// Effect history requires an unchanged profile and bypass state, with no
-/// automation or modulation. The engine owns instrument note and program
+/// Effect history requires an unchanged profile and bypass state. An authored
+/// effect must retain its exact previous program under a host-fenced isolated
+/// edit. Modulation is excluded. The engine owns instrument note and program
 /// continuity. This matcher owns no source, endpoint, graph, or publication
 /// authority. The host must independently authenticate and fence its candidate and
 /// predecessor before passing it to a handoff; it must retain both states and
@@ -852,8 +853,6 @@ impl<'a> ForeignConfigurationContinuation<'a> {
             && previous.bypassed == candidate.bypassed
             && previous.input_gain == candidate.input_gain
             && previous.output_gain == candidate.output_gain
-            && previous.automation.is_empty()
-            && candidate.automation.is_empty()
             && previous.modulation.is_none()
             && candidate.modulation.is_none()
             && previous.runtime.foreign_modulation().is_none()
@@ -867,6 +866,18 @@ impl<'a> ForeignConfigurationContinuation<'a> {
             && candidate_state.shares_payload_storage_with(self.candidate)
             && previous_state == self.previous
             && candidate_state == self.candidate
+            && match (
+                previous.automation.foreign(),
+                candidate.automation.foreign(),
+            ) {
+                (None, None) => previous.automation.is_empty() && candidate.automation.is_empty(),
+                (Some(old), Some(next)) => {
+                    let old = old.borrow();
+                    let next = next.borrow();
+                    next.revision >= old.revision && next.retains_program_from(old, old.revision)
+                }
+                _ => false,
+            }
     }
 
     /// Compare both enabled instrument slots against the exact state and

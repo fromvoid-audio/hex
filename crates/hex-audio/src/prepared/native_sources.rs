@@ -244,11 +244,9 @@ impl PublicationControl {
                     })
                     && node.foreign_processor().is_some_and(|prepared| {
                         prepared.binding() == Some(request.binding)
-                            && (!prepared.is_instrument_profile()
-                                || (guarded
-                                    && !node.bypassed
-                                    && node.automation.is_empty()
-                                    && node.modulation.is_none()))
+                            && node.automation.is_empty()
+                            && node.modulation.is_none()
+                            && (!prepared.is_instrument_profile() || (guarded && !node.bypassed))
                     })
             })
             .count();

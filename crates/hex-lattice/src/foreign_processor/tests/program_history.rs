@@ -343,6 +343,71 @@ fn chain_matching_recognizes_exact_retained_programs_without_relaxing_source_or_
 }
 
 #[test]
+fn authored_effect_continuation_requires_exact_forward_program_and_state_owners() {
+    use crate::{ForeignConfigurationContinuation, ProcessorInstanceIdentity};
+
+    for owner in [
+        ProcessorChainOwner::Track(1),
+        ProcessorChainOwner::Return(2),
+        ProcessorChainOwner::Main,
+    ] {
+        let identity = ProcessorInstanceIdentity::new(owner, BINDING.instance).unwrap();
+        let before = state();
+        let after = Arc::new(
+            NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
+                .unwrap()
+                .with_host_metadata_from(&before)
+                .unwrap(),
+        );
+        let proof =
+            ForeignConfigurationContinuation::new(identity, BINDING, &before, &after).unwrap();
+        let make = |state, program| {
+            let mut entry = declaration(owner, false);
+            entry.device_id = BINDING.instance;
+            entry.configuration = Some(state);
+            entry.definition = Some(PreparedProcessorFactory::Foreign(
+                PreparedForeignProcessor::new(8, 3, 16)
+                    .unwrap()
+                    .with_binding(BINDING)
+                    .unwrap(),
+            ));
+            entry.automation = crate::PreparedParameterAutomation::for_foreign(program);
+            NativeRuntimeChain::new_prepared(vec![entry]).unwrap()
+        };
+        let old_program = program(2);
+        let mut next_program = program(3);
+        next_program
+            .retain_previous_on_control(&old_program)
+            .unwrap();
+        let old = make(Arc::clone(&before), old_program.clone());
+        let continued = make(Arc::clone(&after), next_program);
+        assert!(!old.configuration_matches_range(&continued, 0..1));
+        assert!(old.configuration_matches_range_with_foreign_continuation(
+            &continued,
+            0..1,
+            &proof
+        ));
+
+        let mut wrong_program = program(3);
+        wrong_program
+            .retain_previous_on_control(&program(2))
+            .unwrap();
+        let refused = make(Arc::clone(&after), wrong_program);
+        assert!(!old.configuration_matches_range_with_foreign_continuation(&refused, 0..1, &proof));
+        let mut donor_program = program(2);
+        let backwards = program(1);
+        donor_program
+            .retain_previous_on_control(&backwards)
+            .unwrap();
+        let donor = make(Arc::clone(&before), donor_program);
+        let refused = make(Arc::clone(&after), backwards);
+        assert!(
+            !donor.configuration_matches_range_with_foreign_continuation(&refused, 0..1, &proof)
+        );
+    }
+}
+
+#[test]
 fn delayed_effect_programs_resolve_by_exact_clock_and_reserve_the_joined_queue() {
     struct Bounded(usize);
     impl ForeignAutomationProgram for Bounded {
