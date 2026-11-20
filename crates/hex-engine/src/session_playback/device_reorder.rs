@@ -1,15 +1,32 @@
 //! A same-track, zero-latency native permutation shares the staged track fade.
 //! The handoff moves actual processor history once at zero output; no old tail
-//! route is retained. Compensated/Group/receiver paths need separate proof.
+//! route is retained. Zero-delay Group routes use the existing typed-edge and
+//! stamp-copy proof; other compensated/receiver paths need separate proof.
 use super::{RouteOwner, SessionPlayback};
 
 impl SessionPlayback {
     pub(super) fn direct_audio_track_reorder_from(&self, previous: &Self) -> Option<usize> {
-        // Compensation and Group routing need their own timing proof. This
-        // first route-local cut keeps the existing uncompensated render path.
-        if self.compensation.is_some() || previous.compensation.is_some() {
-            return None;
-        }
+        let grouped = match (&self.compensation, &previous.compensation) {
+            (None, None) => false,
+            (Some(next), Some(old))
+                if !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
+                    && next.graph.supports_closed_group_stream()
+                    && old.graph.supports_closed_group_stream()
+                    && next.graph.supports_closed_compensated_audio_groups()
+                    && old.graph.supports_closed_compensated_audio_groups()
+                    && self.foreign_runtime_bindings().next().is_none()
+                    && previous.foreign_runtime_bindings().next().is_none()
+                    && next.can_copy_from(old, None) =>
+            {
+                // Resident-only: the shared stream planner reaches this branch
+                // before proving file-backed pages or workspace readiness.
+                // Changed serial edges carry no PCM. Existing typed routing,
+                // arrivals and stamp history still pass the ordinary copy proof.
+                true
+            }
+            _ => return None,
+        };
         let old = previous.revision.arrangement().tracks();
         let new = self.revision.arrangement().tracks();
         if !old
@@ -53,7 +70,7 @@ impl SessionPlayback {
         match route.owner {
             RouteOwner::Arrangement if !track.clips.is_empty() => Some(index),
             RouteOwner::SessionAudio { clip, .. }
-                if route.pending.is_none() && route.audio_release.is_none() =>
+                if !grouped && route.pending.is_none() && route.audio_release.is_none() =>
             {
                 // Retain the exact resident clip and its existing launch clock.
                 // Concurrent source/route changes need their own transition proof.
@@ -87,15 +104,20 @@ mod tests {
 
     #[test]
     fn exact_reorder_installs_at_zero_and_cancellation_restores_the_running_track() {
-        exact_reorder(false);
+        exact_reorder(false, false);
     }
 
     #[test]
     fn session_reorder_preserves_its_source_origin_and_refuses_changed_sources() {
-        exact_reorder(true);
+        exact_reorder(true, false);
     }
 
-    fn exact_reorder(session: bool) {
+    #[test]
+    fn grouped_reorder_keeps_stamps_and_refuses_streamed_sources_or_changed_layouts() {
+        exact_reorder(false, true);
+    }
+
+    fn exact_reorder(session: bool, grouped: bool) {
         const RATE: u32 = 48_000;
         const FADE: usize = 240;
         const SIGNAL: [f32; 2] = [0.25, -0.125];
@@ -127,6 +149,27 @@ mod tests {
             };
             first.get_or_insert(device);
         }
+        let group_destination = grouped.then(|| {
+            let Created::Track(inner) = editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "inner".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            let Created::Track(outer) = editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[inner]).unwrap(),
+                    name: "outer".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            outer
+        });
         let session_clip = session.then(|| {
             let clip = editor.project().track(track).unwrap().clips()[0].id();
             editor.execute(Command::RemoveClip(clip)).unwrap();
@@ -173,6 +216,7 @@ mod tests {
         let prepare = |project: &Project| {
             Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
         };
+        let before_project = grouped.then(|| editor.project().clone());
         let before = prepare(editor.project());
         editor
             .execute(Command::ReorderDevices {
@@ -182,6 +226,91 @@ mod tests {
             })
             .unwrap();
         let after = prepare(editor.project());
+        if let Some(before_project) = &before_project {
+            let sources = BTreeMap::from([(
+                asset,
+                crate::compile::PreparedAudioSource::Streamed(Arc::new(
+                    crate::StreamedSourceMetadata::new(
+                        crate::StreamSourceKey::new(9, asset),
+                        RATE,
+                        RATE,
+                        2048,
+                        2048,
+                        hex_project::IDENTITY_CONVERSION,
+                        [19; 32],
+                    )
+                    .unwrap(),
+                )),
+            )]);
+            let prepare_streamed = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare_with_prepared_audio_sources(
+                        project,
+                        &sources,
+                        9,
+                        Arc::clone(&table),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let before_streamed = prepare_streamed(before_project);
+            let after_streamed = prepare_streamed(editor.project());
+            for (old, next) in [
+                (&before_streamed, &after_streamed),
+                (&before, &after_streamed),
+                (&before_streamed, &after),
+            ] {
+                let mut old = SessionPlayback::new(Arc::clone(old)).unwrap();
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut next = SessionPlayback::new(Arc::clone(next)).unwrap();
+                next.require_continuous_insert = true;
+                // This shared planner is called before the streamed page/workspace
+                // proof; the resident-only Group class must never begin a fade.
+                assert!(!next.plan_native_removal_from(&old).unwrap());
+                assert!(!next.native_removal_pending());
+                assert!(old.track_faders.iter().all(|fader| !fader.active()));
+            }
+        }
+        let track_index = before
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|candidate| candidate.canonical_track_id() == Some(track))
+            .unwrap();
+        let mut group_refusals = Vec::new();
+        if grouped {
+            let mut rerouted = Editor::new(editor.project().clone(), 8).unwrap();
+            rerouted
+                .execute(Command::ReparentTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    destination: hex_project::TrackDestination {
+                        parent_group: group_destination,
+                        before: None,
+                    },
+                })
+                .unwrap();
+            let rerouted = prepare(rerouted.project());
+            assert!(
+                rerouted
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .unwrap()
+                    .supports_closed_group_stream()
+            );
+            group_refusals.push(rerouted);
+            let mut delayed = Editor::new(editor.project().clone(), 8).unwrap();
+            delayed
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                })
+                .unwrap();
+            let delayed = prepare(delayed.project());
+            assert!(delayed.arrangement().main_latency_frames() > 0);
+            group_refusals.push(delayed);
+        }
         let changed_source = session_clip.map(|clip| {
             editor
                 .execute(Command::SetSessionAudioClipSource {
@@ -216,7 +345,7 @@ mod tests {
                         quantization: crate::LaunchQuantization::OneBar,
                     })
                     .unwrap();
-                    assert!(old.routes[0].pending.is_some());
+                    assert!(old.routes[track_index].pending.is_some());
                 } else {
                     let second = before
                         .session()
@@ -230,7 +359,7 @@ mod tests {
                         quantization: crate::LaunchQuantization::Immediate,
                     })
                     .unwrap();
-                    assert!(old.routes[0].audio_release.is_some());
+                    assert!(old.routes[track_index].audio_release.is_some());
                 }
                 let mut next = SessionPlayback::new(Arc::clone(&after)).unwrap();
                 next.require_continuous_insert = true;
@@ -238,7 +367,7 @@ mod tests {
                     next.advance_native_removal_from(&mut old).unwrap(),
                     NativeRemovalProgress::NotApplicable
                 );
-                assert!(!old.track_faders[0].active());
+                assert!(!old.track_faders[track_index].active());
             }
         }
         for cancel in [false, true] {
@@ -256,7 +385,7 @@ mod tests {
                 0
             };
             old.render(&mut [[0.0; 2]; 32]).unwrap();
-            let owner = old.routes[0].owner;
+            let owner = old.routes[track_index].owner;
             for changed in [changed_source.as_ref(), missing_source.as_ref()]
                 .into_iter()
                 .flatten()
@@ -267,7 +396,17 @@ mod tests {
                     changed.advance_native_removal_from(&mut old).unwrap(),
                     NativeRemovalProgress::NotApplicable
                 );
-                assert!(!old.track_faders[0].active());
+                assert!(!old.track_faders[track_index].active());
+            }
+            for refused in &group_refusals {
+                let mut refused = SessionPlayback::new(Arc::clone(refused)).unwrap();
+                refused.require_continuous_insert = true;
+                assert_eq!(refused.direct_audio_track_reorder_from(&old), None);
+                assert_eq!(
+                    refused.advance_native_removal_from(&mut old).unwrap(),
+                    NativeRemovalProgress::NotApplicable
+                );
+                assert!(!old.track_faders[track_index].active());
             }
             let mut next = SessionPlayback::new(Arc::clone(&after)).unwrap();
             next.require_continuous_insert = true;
@@ -282,18 +421,24 @@ mod tests {
                 next.cancel_native_removal_from(&mut old);
                 old.render(&mut fading).unwrap();
                 assert_eq!(fading[FADE - 1], SIGNAL);
-                assert!(!old.track_faders[0].active());
+                assert!(!old.track_faders[track_index].active());
             } else {
                 assert_eq!(
                     next.advance_native_removal_from(&mut old).unwrap(),
                     NativeRemovalProgress::Ready
                 );
                 next.try_inherit_state_live_from(&mut old).unwrap();
+                if grouped {
+                    assert_eq!(
+                        next.compensation.as_ref().unwrap().delays.latest_stamp(),
+                        old.compensation.as_ref().unwrap().delays.latest_stamp()
+                    );
+                }
                 next.render(&mut fading).unwrap();
                 assert_eq!(fading[FADE - 1], SIGNAL);
-                assert!(!next.track_faders[0].active());
+                assert!(!next.track_faders[track_index].active());
                 assert_eq!(next.performance_frame(), (launch + 32 + FADE * 2) as u64);
-                assert_eq!(next.routes[0].owner, owner);
+                assert_eq!(next.routes[track_index].owner, owner);
             }
         }
     }
