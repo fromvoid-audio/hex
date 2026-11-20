@@ -67,6 +67,11 @@ fn render(chain: &mut NativeRuntimeChain, count: usize, block: usize) -> Vec<[f3
 fn check_power_transition(definition: &'static dyn NativeDeviceDefinition, rate: u32) {
     let ramp_frames = rate.div_ceil(200) as usize;
     for old_bypassed in [false, true] {
+        let transition_frames = if old_bypassed {
+            rate.div_ceil(2000) as usize
+        } else {
+            ramp_frames
+        };
         let mut wet_reference = chain(definition, false, rate);
         if !old_bypassed {
             render(&mut wet_reference, 1024, 64);
@@ -81,7 +86,7 @@ fn check_power_transition(definition: &'static dyn NativeDeviceDefinition, rate:
             next.transfer_history_from(&mut old);
             let actual = render(&mut next, ramp_frames + 60, block);
             for (index, (frame, wet)) in actual.iter().zip(&wet).enumerate() {
-                let progress = (index + 1).min(ramp_frames) as f32 / ramp_frames as f32;
+                let progress = (index + 1).min(transition_frames) as f32 / transition_frames as f32;
                 let mix = if old_bypassed {
                     progress
                 } else {
