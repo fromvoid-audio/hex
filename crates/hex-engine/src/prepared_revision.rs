@@ -16,6 +16,7 @@ use hex_devices::SineTable;
 pub(crate) mod assembly;
 mod authored_midi;
 pub(crate) mod foreign_programs;
+mod powered_off;
 use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,

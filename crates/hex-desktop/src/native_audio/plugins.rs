@@ -234,6 +234,7 @@ pub(super) struct Plugins {
     installed_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
+    saved_off_document: Option<(u64, u64)>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -1193,6 +1194,7 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
+        powering_on_main: Option<u64>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
@@ -1200,6 +1202,7 @@ impl Plugins {
         input.visit_plugin_devices(|destination, device, state| {
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
+            let powering_on = powering_on_main == Some(device);
             let fresh_source = previous
                 .as_ref()
                 .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
@@ -1212,6 +1215,7 @@ impl Plugins {
                 desired,
                 cancellation,
                 fresh_source,
+                powering_on,
             )
             .map_err(bounded_error)
         })
@@ -1223,6 +1227,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
+        powered_off: Option<u64>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -1235,9 +1240,45 @@ impl Plugins {
         }) {
             return Err("vst3 state restoration is pending".into());
         }
+        // Document preparation precedes source_changed/request_reopen. Its
+        // next-generation declaration can select resource-free Off directly;
+        // this grants no SDK source or fresh-On permission.
+        let incoming_document = off_document_preparation(
+            input.preparing_edit(),
+            input.context(),
+            desired.map(|source| source.context()),
+        );
+        if let Some((device, state)) = input.powered_off_main()
+            && (incoming_document
+                || self.saved_off_document == Some((input.context().project_generation, device))
+                || powered_off == Some(device))
+            && !self.has_accepted_main_source(input.context(), device)
+        {
+            return Hosting::prepare_powered_off_on_control(
+                hex_audio::plugin_effects::PoweredOffEffect {
+                    owner: ProcessorChainOwner::Main,
+                    device_id: device,
+                    sample_rate: input.sample_rate(),
+                    state,
+                },
+                prepare,
+            )
+            .map(Some);
+        }
+        let powering_on = input
+            .stopped_main_power_on()
+            .filter(|intent| powered_off == Some(intent.device()))
+            .map(|intent| intent.device());
         let mut output = output;
         if input.preparing_edit() {
-            self.prepare_edit_sources(output.as_deref_mut(), &input, desired, cancellation, false)?;
+            self.prepare_edit_sources(
+                output.as_deref_mut(),
+                &input,
+                desired,
+                cancellation,
+                false,
+                powering_on,
+            )?;
         }
         let mut bindings = Vec::new();
         bindings
@@ -1654,5 +1695,58 @@ mod idle_tests {
         plugins.sources[0].edit_backlog = true;
         plugins.output_closed();
         assert!(plugins.idle());
+    }
+}
+
+/// Pure document-generation eligibility, never source or SDK authority.
+fn off_document_preparation(
+    preparing_edit: bool,
+    candidate: AudioSourceContext,
+    previous: Option<AudioSourceContext>,
+) -> bool {
+    !preparing_edit
+        && match previous {
+            Some(previous) => {
+                previous.project_generation.checked_add(1) == Some(candidate.project_generation)
+            }
+            None => candidate.project_generation == 0 && candidate.editor_revision == 0,
+        }
+}
+
+#[cfg(test)]
+mod powered_off_document_tests {
+    use super::*;
+    #[test]
+    fn only_bootstrap_or_the_exact_incoming_document_can_declare_initial_off() {
+        let boot = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 0,
+        };
+        let next = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 0,
+        };
+        assert!(off_document_preparation(false, boot, None));
+        assert!(off_document_preparation(false, next, Some(boot)));
+        assert!(!off_document_preparation(true, next, Some(boot)));
+        assert!(!off_document_preparation(false, next, None));
+        assert!(!off_document_preparation(
+            false,
+            AudioSourceContext {
+                editor_revision: 1,
+                ..boot
+            },
+            None
+        ));
+        assert!(!off_document_preparation(false, boot, Some(boot)));
+        assert!(!off_document_preparation(false, boot, Some(next)));
+        assert!(!off_document_preparation(
+            false,
+            AudioSourceContext {
+                project_generation: 2,
+                ..boot
+            },
+            Some(boot)
+        ));
     }
 }

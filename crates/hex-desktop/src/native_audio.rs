@@ -1954,11 +1954,24 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        let powered_off = self
+            .desired
+            .as_ref()
+            .map(|source| source.context())
+            .and_then(|context| self.applied_powered_off_main(context));
+        if let Some(intent) = input.stopped_main_power_on()
+            && powered_off == Some(intent.device())
+            && self.stopped_resident_power_fence(intent.source_context(), intent.device())?
+                != Some(intent.fence())
+        {
+            return Err("stopped power-on source changed before preparation".into());
+        }
         self.plugins.compile(
             self.output.as_mut(),
             input,
             self.desired.as_deref(),
             self.request_cancellation.as_ref(),
+            powered_off,
             prepare,
         )
     }
@@ -2000,6 +2013,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 self.desired.as_deref(),
                 Some(&cancellation),
                 true,
+                None,
             )?;
             Some(cancellation)
         } else {
@@ -2248,36 +2262,45 @@ impl WorkerAudioSink for NativeAudioSink {
         &mut self,
         context: AudioSourceContext,
         device: u64,
-    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            if !self.plugins.has_accepted_main_source(context, device) {
-                return None;
+            let off = self.applied_powered_off_main(context) == Some(device);
+            if !off && !self.plugins.has_accepted_main_source(context, device) {
+                return Ok(None);
             }
-            let control = self.output.as_mut()?.publication.control()?;
-            let interval = control.status.paused_input_interval()?;
-            if interval.0.context != context {
-                return None;
+            let fence = (|| {
+                let control = self.output.as_mut()?.publication.control()?;
+                let interval = control.status.paused_input_interval()?;
+                if interval.0.context != context
+                    || (off && self.resident.powered_off_main(interval.0) != Some(device))
+                {
+                    return None;
+                }
+                let fence = control.capture_fresh_runtime_fence()?;
+                if fence.expected_active_revision() != interval.0.audio_revision
+                    || control.status.paused_input_interval() != Some(interval)
+                {
+                    return None;
+                }
+                Some(hex_session::service::ResidentFreshRuntimeFence {
+                    output_identity: interval.0.output_identity,
+                    active_audio_revision: fence.expected_active_revision(),
+                    route_generation: fence.route_state_generation(),
+                    admitted_command_ticket: fence.admitted_command_ticket(),
+                    output_fault_epoch: fence.output_fault_epoch(),
+                    consumed_stop_generation: fence.consumed_stop_generation(),
+                })
+            })();
+            if off && fence.is_none() {
+                return Err("power on requires the original settled stop interval".into());
             }
-            let fence = control.capture_fresh_runtime_fence()?;
-            if fence.expected_active_revision() != interval.0.audio_revision
-                || control.status.paused_input_interval() != Some(interval)
-            {
-                return None;
-            }
-            Some(hex_session::service::ResidentFreshRuntimeFence {
-                output_identity: interval.0.output_identity,
-                active_audio_revision: fence.expected_active_revision(),
-                route_generation: fence.route_state_generation(),
-                admitted_command_ticket: fence.admitted_command_ticket(),
-                output_fault_epoch: fence.output_fault_epoch(),
-                consumed_stop_generation: fence.consumed_stop_generation(),
-            })
+            Ok(fence)
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
             let _ = (context, device);
-            None
+            Ok(None)
         }
     }
 
@@ -2759,7 +2782,7 @@ impl WorkerAudioSink for NativeAudioSink {
         hold
     }
     fn poll(&mut self) {
-        self.resident.reap_control_owners();
+        self.reap_resident_control_owners();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.output_generation.is_none() || self.output.is_none() {
             self.plugins.poll_retiring_edits();

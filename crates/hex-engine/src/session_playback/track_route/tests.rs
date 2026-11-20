@@ -186,12 +186,19 @@ fn route_only_device_proof_refuses_foreign_metadata_without_a_binding() {
 }
 
 #[test]
-fn group_reroute_refuses_unchanged_delay_upstream_of_main() {
+fn group_reroute_refuses_a_delayed_replacement_edge() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let (mut editor, media, leaf, group) = fixture();
+    let child = editor
+        .project()
+        .tracks()
+        .iter()
+        .find(|track| track.parent_group() == Some(group))
+        .unwrap()
+        .id();
     editor
         .execute(Command::InsertDevice {
-            track: group,
+            track: child,
             before: None,
             state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
         })
