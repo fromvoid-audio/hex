@@ -1517,9 +1517,9 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::DeviceTransitionBusy);
             }
             removal
-                .device_transition()
-                .map_or(DeviceEditTailPolicy::RequireConfirmation, |transition| {
-                    DeviceEditTailPolicy::FadedNative(transition.identity())
+                .faded_native_identity()
+                .map_or(DeviceEditTailPolicy::RequireConfirmation, |identity| {
+                    DeviceEditTailPolicy::FadedNative(identity)
                 })
         } else if continuous_insert {
             DeviceEditTailPolicy::RequireConfirmation
@@ -5359,7 +5359,12 @@ impl SessionPlayback {
                     == candidate_suffix_start
                     && old_track.instrument_suffix_matrix()
                         == candidate_track.instrument_suffix_matrix();
+                let moved_receiver = self
+                    .native_removal
+                    .and_then(|pending| pending.track_move())
+                    .is_some_and(|movement| movement.destination == candidate_index);
                 let transition = (continuous_insert
+                    && !moved_receiver
                     && !relocate
                     && same_instrument_placement
                     && candidate_track.device_chain.len() == candidate_chain.len())
@@ -5729,6 +5734,11 @@ impl SessionPlayback {
             }
         }
 
+        if let Some(movement) = self.native_removal.and_then(|pending| pending.track_move())
+            && self.direct_audio_track_move_from(previous) != Some(movement)
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         self.release_scratch.retain(|release| {
             !previous.routes.iter().enumerate().any(|(old_index, _)| {
                 analytic_import_new_for_old[old_index] != usize::MAX
@@ -6377,6 +6387,15 @@ impl SessionPlayback {
                 }
             }
         }
+        if let Some(movement) = self.native_removal.and_then(|pending| pending.track_move()) {
+            let (next, old) = self
+                .device_chains
+                .get_mut(movement.destination)
+                .zip(previous.device_chains.get_mut(movement.source))
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            next.transfer_cross_track_native_from(old)
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        }
         // The bypassed track saw no instrument signal. Its ordinary history
         // transfer above cannot supply the detached suffix's committed state.
         for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
@@ -6599,8 +6618,7 @@ impl SessionPlayback {
                     let rate = self.revision.arrangement().sample_rate();
                     if self
                         .native_removal
-                        .and_then(|pending| pending.reordered_track(previous))
-                        == Some(route.id)
+                        .is_some_and(|pending| pending.faded_track(previous, route.id))
                     {
                         self.track_faders[index].cancel_removal(gain, rate);
                     } else {
