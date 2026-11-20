@@ -1507,7 +1507,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             );
             std::thread::yield_now();
         };
-        let (_, publication) = h.applied(after);
+        let (replayed_audio, publication) = h.applied(after);
         assert_eq!(publication.context.editor_revision, event.state.revision);
         assert_eq!(event.state.revision, accepted.state.revision + 1);
         if stopped_during_replay {
@@ -1538,6 +1538,36 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             f32::from_le_bytes(captured.component.unwrap()[8..12].try_into().unwrap()),
             final_gain
         );
+        if case == ReplayCase::Publish {
+            // The transferred editor input owns a distinct history transition
+            // after the already confirmed replacement.
+            h.service.submit(Request::Undo).unwrap();
+            let undone = ordinary_terminal(&mut h);
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(undone.state.project, accepted.state.project);
+            assert!(undone.state.can_redo);
+            let (undo_audio, undo_metadata) = h.applied(replayed_audio);
+            assert_eq!(undo_metadata.context.editor_revision, undone.state.revision);
+            let mut serial = 0;
+            let value = |h: &mut ResidentHarness, serial: &mut u64| {
+                super::super::installed_edits::query(h, device, None, serial)
+                    .rows
+                    .unwrap()
+                    .into_iter()
+                    .find(|row| row.id == 7)
+                    .unwrap()
+                    .normalized
+            };
+            assert_eq!(value(&mut h, &mut serial), 0.375);
+
+            h.service.submit(Request::Redo).unwrap();
+            let redone = ordinary_terminal(&mut h);
+            assert!(redone.error.is_none(), "{:?}", redone.error);
+            assert_eq!(redone.state.project, event.state.project);
+            let (_, redo_metadata) = h.applied(undo_audio);
+            assert_eq!(redo_metadata.context.editor_revision, redone.state.revision);
+            assert_eq!(value(&mut h, &mut serial), 0.75);
+        }
         let path = files.0.join(if manual_base {
             "manual.hex"
         } else {
