@@ -162,7 +162,7 @@ impl Plugins {
                 false,
                 restore.map_or(Ok(()), |restore| restore.restore(control)),
             ),
-            RetiringEditorReplayDisposition::Published { receipt_accepted } => {
+            RetiringEditorReplayDisposition::Confirmed { receipt_accepted } => {
                 (receipt_accepted, Ok(()))
             }
         };
@@ -339,6 +339,9 @@ impl Plugins {
         })?
         .with_host_metadata_from(canonical)
         .map_err(|error| error.to_string())?;
+        if control.status.native_parameter_source(playing) != Some((source, transport_epoch)) {
+            return Err("vst3 replay applied source changed".into());
+        }
         self.retiring_replay_capture = Some(ReplayCapture {
             binding,
             publication,
