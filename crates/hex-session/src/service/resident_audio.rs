@@ -1336,6 +1336,50 @@ pub(super) fn prepare_document_replacement(
             resident: Some(resident),
         });
     }
+    let saved_effects = if candidate.audio_mode() == DocumentAudioMode::VerifiedStreaming
+        && audio_sink::requires_plugin_profile(candidate.project())
+        && let Some(sink) = events.resident_audio()
+    {
+        let media = candidate.media_bank();
+        let project = candidate.project();
+        let prepared = sink.prepare_saved_verified_effects(
+            ResidentEffectPreparation {
+                project,
+                context,
+                restoring_plugin_state: false,
+                preparing_edit: false,
+            },
+            &mut |effects| {
+                crate::prepare_with_waveforms_using(
+                    project,
+                    &media,
+                    &candidate.audio_transforms,
+                    &candidate.audio_clip_waveforms,
+                    || {
+                        if media.verified.is_empty() {
+                            effects.prepare_semantic_revision(
+                                project,
+                                &media.resident,
+                                candidate.sine_table(),
+                                None,
+                                &candidate.audio_transforms,
+                            )
+                        } else {
+                            media.prepare_with_effects(
+                                project,
+                                candidate.sine_table(),
+                                None,
+                                Some(effects),
+                            )
+                        }
+                    },
+                )
+            },
+        )?;
+        Some(Arc::new(prepared))
+    } else {
+        None
+    };
     let prepare =
         |admission: sampler_export::Admission<'_>| -> Result<PreparedDocumentReplacement, String> {
             let snapshot = if hex_engine::native_device_resources::requires_private_sampler_sources(
@@ -1346,7 +1390,10 @@ pub(super) fn prepare_document_replacement(
                     .map_err(|e| e.to_string())?
             } else {
                 sampler_export::ServiceExportSnapshot {
-                    prepared: compile(candidate, None)?,
+                    prepared: match saved_effects {
+                        Some(prepared) => prepared,
+                        None => compile(candidate, None)?,
+                    },
                     sources: None,
                 }
             };

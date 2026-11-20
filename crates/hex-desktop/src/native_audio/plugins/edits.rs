@@ -598,7 +598,7 @@ pub(super) fn requested_selection(
     .map_err(str::to_owned)
 }
 
-fn source_covers_selection(
+pub(super) fn source_covers_selection(
     armed: Option<&AuthoredSelection>,
     requested: Option<&AuthoredSelection>,
 ) -> bool {

@@ -6,6 +6,7 @@ use hex_session::service::NativeDeviceState;
 use std::sync::atomic::Ordering::Release;
 mod edits;
 mod save;
+mod verified;
 
 /// Tests that hold a fresh callback before its first graph use the real
 /// playing-output fallback, independently of the retained-output regressions.
