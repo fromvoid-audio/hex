@@ -3747,6 +3747,22 @@ fn run_worker(
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let opening_project = request.is_project_open();
+        let retiring_editor_replacement_failure = if opening_project {
+            events
+                .sampler_edit_audio()
+                .and_then(|sink| sink.retiring_editor_close_blocker())
+                .map(|blocker| match blocker {
+                    RetiringEditorCloseBlocker::Transferring => {
+                        "vst3 editor changes are still transferring · retry opening the project"
+                    }
+                    RetiringEditorCloseBlocker::Unresolved => {
+                        "resolve the retiring vst3 editor changes before replacing the project"
+                    }
+                })
+        } else {
+            None
+        };
         let mut device_insert_proposal = None;
         let mut repeated_device_insert = false;
         let mut device_insert_proposal_accepted = false;
@@ -3825,13 +3841,9 @@ fn run_worker(
         let mut plugin_parameters = None;
         let mut plugin_parameter_conversion = None;
         let mut sampler_edit_complete = None;
-        if matches!(
-            &request,
-            Request::NewWithAudioMode { .. }
-                | Request::Open(_)
-                | Request::OpenWith { .. }
-                | Request::OpenWithAudioMode { .. }
-        ) && recording_barrier::failure(recording_barrier_completion).is_none()
+        if opening_project
+            && retiring_editor_replacement_failure.is_none()
+            && recording_barrier::failure(recording_barrier_completion).is_none()
             && let Some(gain) = pending_sampler_parameter.take()
         {
             gain.cancel().store(true, Ordering::Release);
@@ -5406,6 +5418,7 @@ fn run_worker(
         if barrier_failure.is_none() {
             barrier_failure = publication_wait_failure
                 .or_else(|| recording_barrier::failure(recording_barrier_completion))
+                .or(retiring_editor_replacement_failure)
                 .map(str::to_owned);
         }
         if !recording_barrier::save_matches(

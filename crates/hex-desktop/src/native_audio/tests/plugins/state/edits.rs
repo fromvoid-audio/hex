@@ -610,6 +610,43 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     let media = files.0.join("mixed-rate.wav");
     let project_bytes = fs::read(&project).unwrap();
     let media_bytes = fs::read(&media).unwrap();
+    let output = h.audio.as_ref().unwrap().control.output_identity();
+    let requests = [
+        Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        },
+        Request::Open(project.clone()),
+        Request::OpenWith {
+            source: hex_session::service::ProjectSource::Saved(project.clone()),
+            relinks: Default::default(),
+        },
+        Request::OpenWithAudioMode {
+            source: hex_session::service::ProjectSource::Saved(project.clone()),
+            relinks: Default::default(),
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        },
+    ];
+    for request in requests {
+        h.service.submit(request).unwrap();
+        let refused = ordinary_terminal(&mut h);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("resolve the retiring vst3 editor changes before replacing the project")
+        );
+        assert!(refused.open_complete && !refused.project_replaced);
+        assert_eq!(refused.state.project, accepted.state.project);
+        assert_eq!(refused.state.revision, accepted.state.revision);
+        assert_eq!(h.audio.as_ref().unwrap().control.output_identity(), output);
+    }
+    let retained_after_refusal = super::super::editor_recording::probe(&h, |reply| {
+        EditorRecordingProbe::RetiringBatch(old_binding, reply)
+    })
+    .unwrap();
+    assert_eq!(retained_after_refusal.source, retained.source);
+    assert_eq!(retained_after_refusal.successor, retained.successor);
+    assert_eq!(retained_after_refusal.events(), retained.events());
     h.service.shutdown(Duration::from_secs(1)).unwrap();
     assert!(
         h.callback
