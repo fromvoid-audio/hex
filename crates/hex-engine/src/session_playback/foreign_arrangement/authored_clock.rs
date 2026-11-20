@@ -21,6 +21,23 @@ pub(super) struct Quantum {
 }
 
 impl Quantum {
+    /// A same-clock parameter edit keeps the opening program until the
+    /// committed SDK quantum closes. Compare ownership of every staged slice.
+    pub(super) fn retains_open_programs(
+        self,
+        offset: u16,
+        candidate: ForeignAutomation<'_>,
+        donor: ForeignAutomation<'_>,
+    ) -> bool {
+        offset == 0
+            || self.epoch.is_none()
+            || self
+                .programs
+                .iter()
+                .flatten()
+                .all(|&key| candidate.retains_program_from(donor, key))
+    }
+
     pub(super) fn preflight(
         self,
         offset: u16,
@@ -30,12 +47,9 @@ impl Quantum {
         if offset == 0 || self.epoch.is_none() {
             return Ok(());
         }
-        let mut previous = None;
-        for key in self.programs.iter().flatten().copied() {
-            if !candidate.retains_program_from(donor, key) {
-                return Err(INCOMPATIBLE_HANDOFF);
-            }
-            previous = Some(key);
+        let previous = self.programs.iter().flatten().next_back().copied();
+        if !self.retains_open_programs(offset, candidate, donor) {
+            return Err(INCOMPATIBLE_HANDOFF);
         }
         if previous.is_none_or(|key| candidate.revision <= key) {
             return Err(INCOMPATIBLE_HANDOFF);
@@ -173,5 +187,23 @@ mod tests {
             quantum.preflight(3, spoofed.borrow(), first.borrow()),
             Err(INCOMPATIBLE_HANDOFF),
         );
+    }
+
+    #[test]
+    fn same_clock_parameter_edit_preserves_the_exact_open_program() {
+        let opening = program(1, 64);
+        let mut edit = program(2, 80);
+        // The point budgets cannot share a quantum. The successor program
+        // waits for the next quantum while the original program finishes.
+        let mut quantum = Quantum::default();
+        quantum
+            .observe(0, true, Some(at_epoch(&opening, 1)))
+            .unwrap();
+        assert!(!quantum.retains_open_programs(4, edit.borrow(), opening.borrow()));
+        edit.retain_previous_on_control(&opening).unwrap();
+        assert!(quantum.retains_open_programs(4, edit.borrow(), opening.borrow()));
+        let unrelated_owner = program(1, 64);
+        assert!(!quantum.retains_open_programs(4, edit.borrow(), unrelated_owner.borrow()));
+        assert!(quantum.retains_open_programs(0, edit.borrow(), unrelated_owner.borrow()));
     }
 }

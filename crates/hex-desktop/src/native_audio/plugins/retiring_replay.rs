@@ -101,6 +101,46 @@ impl ReplayCapture {
         ))
     }
 
+    pub(super) fn retain_isolated_instrument_states(
+        &self,
+        successor: AudioSourceContext,
+        playback: &mut Playback,
+    ) -> Result<bool, String> {
+        if !self
+            .isolated_source(successor)
+            .is_some_and(|(_, _, playing)| playing)
+            || !playback.foreign_nodes_on_control().any(|node| {
+                node.owner == self.identity.owner()
+                    && node.device_id == self.identity.device_id()
+                    && node
+                        .foreign_processor()
+                        .is_some_and(|prepared| prepared.is_instrument_profile())
+            })
+        {
+            return Ok(false);
+        }
+        if playback.has_foreign_continuation_states() {
+            if !playback.foreign_continuation_states_match_on_control(
+                self.identity,
+                self.binding,
+                &self.before,
+                &self.after,
+            ) {
+                return Err("vst3 isolated replay continuation states differ".into());
+            }
+        } else {
+            playback
+                .retain_foreign_continuation_states_on_control(
+                    self.identity,
+                    self.binding,
+                    self.before.clone(),
+                    self.after.clone(),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(true)
+    }
+
     pub(super) fn publication_request<'a>(
         &'a self,
         control: Option<&PublicationControl>,
@@ -156,6 +196,18 @@ impl ReplayCapture {
 }
 
 impl Plugins {
+    pub(in crate::native_audio) fn retain_isolated_instrument_replay_states(
+        &self,
+        successor: AudioSourceContext,
+        playback: &mut Playback,
+    ) -> Result<bool, String> {
+        self.retiring_replay_capture
+            .as_ref()
+            .map_or(Ok(false), |replay| {
+                replay.retain_isolated_instrument_states(successor, playback)
+            })
+    }
+
     fn replay_index(&self) -> Option<usize> {
         self.sources.iter().position(|source| {
             source

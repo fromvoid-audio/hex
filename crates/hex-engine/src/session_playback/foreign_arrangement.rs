@@ -363,7 +363,7 @@ impl ForeignArrangement {
         fresh: Option<TrackId>,
         loops: [Option<hex_project::LoopRegion>; 2],
         tempo_cut: Option<(u64, u64)>,
-        parameter_continuation: bool,
+        parameter_continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<Handoff, SessionPlaybackError> {
         let [tracks, old_tracks] = tracks;
         let mut plan = Handoff {
@@ -427,11 +427,30 @@ impl ForeignArrangement {
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
                 && ledger.has_held_notes()
             {
-                if !parameter_continuation
-                    || candidate.has_authored_automation
-                    || donor.has_authored_automation
-                {
-                    return Err(INCOMPATIBLE_HANDOFF);
+                let proof = parameter_continuation.ok_or(INCOMPATIBLE_HANDOFF)?;
+                if candidate.has_authored_automation || donor.has_authored_automation {
+                    let next = tracks
+                        .get(index)
+                        .and_then(|track| track.foreign_instrument.as_ref());
+                    let old = old_tracks
+                        .get(old_index)
+                        .and_then(|track| track.foreign_instrument.as_ref());
+                    let (old, next) = old
+                        .zip(next)
+                        .filter(|(old, next)| proof.matches_instrument(old, next))
+                        .ok_or(INCOMPATIBLE_HANDOFF)?;
+                    let (old_program, next_program) = old
+                        .automation
+                        .foreign()
+                        .zip(next.automation.foreign())
+                        .ok_or(INCOMPATIBLE_HANDOFF)?;
+                    if !ledger.authored_quantum.retains_open_programs(
+                        ledger.quantum_offset,
+                        next_program.borrow(),
+                        old_program.borrow(),
+                    ) {
+                        return Err(INCOMPATIBLE_HANDOFF);
+                    }
                 }
                 plan.held_session_for_old[old_index] = true;
             }
