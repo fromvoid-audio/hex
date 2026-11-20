@@ -118,7 +118,8 @@ mod plugin_recording;
 mod plugin_state_save;
 mod retiring_plugin_editor;
 pub use retiring_plugin_editor::{
-    MAX_RETIRING_EDITOR_EVENTS, RetiringEditorBatch, RetiringEditorEvent, RetiringEditorEventKind,
+    MAX_RETIRING_EDITOR_EVENTS, PluginEditorCloseAdmission, PluginEditorCloseAttempt,
+    RetiringEditorBatch, RetiringEditorCloseBlocker, RetiringEditorEvent, RetiringEditorEventKind,
     RetiringEditorReplayDisposition,
 };
 mod project_save;
@@ -1045,6 +1046,13 @@ pub enum Request {
     QueryDeviceAutomationCloseSafety {
         request_id: u64,
     },
+    /// Hold the original native editor producers while this exact close
+    /// attempt is alive. A later poll must present the same attempt.
+    PreparePluginEditorClose {
+        request_id: u64,
+        context: hex_engine::AudioSourceContext,
+        attempt: std::sync::Weak<PluginEditorCloseAttempt>,
+    },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
     /// the immutable file. A selected verified copy is revalidated under
@@ -1385,6 +1393,7 @@ impl Request {
                 | Self::QueryFailedPluginAutomation { .. }
                 | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
+                | Self::PreparePluginEditorClose { .. }
                 | Self::PreparePausedInputMonitor { .. }
         )
     }
@@ -4444,15 +4453,47 @@ fn run_worker(
                         resolved
                     })
             }
-            Request::QueryDeviceAutomationCloseSafety { request_id } => {
-                let safe = native_automation_take.close_safe() && plugin_recording.close_safe();
+            Request::QueryDeviceAutomationCloseSafety { request_id }
+            | Request::PreparePluginEditorClose { request_id, .. } => {
+                let context = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                let attempt = match &request {
+                    Request::PreparePluginEditorClose {
+                        context: expected,
+                        attempt,
+                        ..
+                    } => Some((*expected, attempt)),
+                    _ => None,
+                };
+                let progress = if attempt.is_some_and(|(expected, attempt)| {
+                    expected != context || !attempt.upgrade().is_some_and(|owner| owner.is_valid())
+                }) {
+                    DeviceAutomationTakeProgress::ClosePluginEditor(
+                        PluginEditorCloseAdmission::Refused,
+                    )
+                } else if !native_automation_take.close_safe() || !plugin_recording.close_safe() {
+                    DeviceAutomationTakeProgress::CloseBlocked
+                } else if let Some(blocker) = events
+                    .resident_audio()
+                    .and_then(|sink| sink.retiring_editor_close_blocker())
+                {
+                    DeviceAutomationTakeProgress::CloseRetiringEditor(blocker)
+                } else if let Some((_, attempt)) = attempt {
+                    let admission = events.sampler_edit_audio().map_or(
+                        PluginEditorCloseAdmission::Held {
+                            admitted_edits: false,
+                        },
+                        |sink| sink.prepare_plugin_editor_close(context, attempt),
+                    );
+                    DeviceAutomationTakeProgress::ClosePluginEditor(admission)
+                } else {
+                    DeviceAutomationTakeProgress::CloseSafe
+                };
                 device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
                     request_id: *request_id,
-                    progress: if safe {
-                        DeviceAutomationTakeProgress::CloseSafe
-                    } else {
-                        DeviceAutomationTakeProgress::CloseBlocked
-                    },
+                    progress,
                 });
                 None
             }
@@ -5616,6 +5657,7 @@ fn run_worker(
                     | Request::QueryFailedPluginAutomation { .. }
                     | Request::InspectSealedAutomationRecovery { .. }
                     | Request::QueryDeviceAutomationCloseSafety { .. }
+                    | Request::PreparePluginEditorClose { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
@@ -8940,6 +8982,7 @@ fn run_worker(
                 | Request::QueryFailedPluginAutomation { .. }
                 | Request::InspectSealedAutomationRecovery { .. }
                 | Request::QueryDeviceAutomationCloseSafety { .. }
+                | Request::PreparePluginEditorClose { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,

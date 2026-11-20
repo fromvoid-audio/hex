@@ -712,6 +712,25 @@ pub trait WorkerAudioSink: Send {
     fn retiring_editor_replay_ready(&self) -> bool {
         false
     }
+    /// An orderly close must preserve the Session while this source still
+    /// needs replay or an explicit disposition.
+    fn retiring_editor_close_blocker(&self) -> Option<super::RetiringEditorCloseBlocker> {
+        None
+    }
+
+    /// Poll reversible admission holds for exact current editor producers.
+    /// Release an admitted hold after the caller's last strong owner drops,
+    /// including when it drops before the original query has replied.
+    fn prepare_plugin_editor_close(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _attempt: &std::sync::Weak<super::PluginEditorCloseAttempt>,
+    ) -> super::PluginEditorCloseAdmission {
+        super::PluginEditorCloseAdmission::Held {
+            admitted_edits: false,
+        }
+    }
+
     fn next_retiring_editor_replay(&mut self) -> Option<super::RetiringEditorBatch> {
         None
     }

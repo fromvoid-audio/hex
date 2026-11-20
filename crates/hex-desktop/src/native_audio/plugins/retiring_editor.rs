@@ -2,7 +2,9 @@
 use super::*;
 use hex_audio::plugin_worker::{ParameterEdit, ParameterEditKind};
 use hex_audio::{RetiringEditLease, RetiringEditProgress, RetiringEditReceipt};
-use hex_session::service::{RetiringEditorBatch, RetiringEditorEvent, RetiringEditorEventKind};
+use hex_session::service::{
+    RetiringEditorBatch, RetiringEditorCloseBlocker, RetiringEditorEvent, RetiringEditorEventKind,
+};
 use hex_ui::{EditorAudioEvent, PluginEditorRetirementIssue};
 
 const _: () = assert!(
@@ -75,6 +77,31 @@ impl Retirement {
 }
 
 impl Plugins {
+    pub(in crate::native_audio) fn retiring_editor_close_blocker(
+        &self,
+    ) -> Option<RetiringEditorCloseBlocker> {
+        let mut blocker = None;
+        for source in &self.sources {
+            let retirement = &source.editor_retirement;
+            if !source.retiring || !retirement.ever_accepted || retirement.lease.is_none() {
+                continue;
+            }
+            let unresolved = match retirement.stage {
+                Stage::Failed => true,
+                Stage::NeedsDisposition => retirement
+                    .batch
+                    .as_ref()
+                    .is_none_or(|pending| pending.replay_attempted),
+                _ => false,
+            };
+            if unresolved {
+                return Some(RetiringEditorCloseBlocker::Unresolved);
+            }
+            blocker = Some(RetiringEditorCloseBlocker::Transferring);
+        }
+        blocker
+    }
+
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(in crate::native_audio) fn retained_editor_batch(
         &self,
