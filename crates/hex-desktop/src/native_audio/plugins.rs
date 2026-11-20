@@ -557,6 +557,21 @@ impl Plugins {
         self.matches_capture_binding(context, target.device.value(), target.binding)
     }
 
+    /// Scope observation only; the actual stopped source/fence is checked separately.
+    pub(super) fn has_accepted_main_source(
+        &self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> bool {
+        self.sources.iter().any(|source| {
+            source.accepted
+                && !source.retiring
+                && source.project_generation == context.project_generation
+                && source.device == device
+                && source.owner == ProcessorChainOwner::Main
+        })
+    }
+
     pub(super) fn matches_capture_binding(
         &self,
         context: AudioSourceContext,
