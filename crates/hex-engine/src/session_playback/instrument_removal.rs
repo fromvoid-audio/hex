@@ -57,6 +57,7 @@ impl SessionPlayback {
                     != hex_project::DEFAULT_INSTRUMENT_TYPE_ID
                 || old.foreign_instrument.is_some()
                 || old.instrument_latency != Some(0)
+                // Authored MIDI templates remain after the canonical slot is removed.
                 || new.instrument_id.is_some()
                 || old.mix != new.mix
                 || !old.clips.is_empty()
@@ -76,6 +77,7 @@ impl SessionPlayback {
                     || track.has_gain_automation()
                     || !track.sends.is_empty()
                     || !track.device_chain.is_empty()
+                    || playback.source_effects.has_chain(index)
                     || playback.revision.gain_recording_track() == Some(route.id)
                 {
                     return None;
