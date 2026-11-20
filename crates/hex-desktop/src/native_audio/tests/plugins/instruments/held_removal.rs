@@ -36,7 +36,8 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
     );
     h.next();
     let (mut applied, _) = h.applied(0);
-    h.run(Request::Import(files.wav(48_000, 131_072)));
+    // The harness limits resident PCM to 8,192 frames.
+    h.run(Request::Import(files.wav(48_000, 8_192)));
     (applied, _) = h.applied(applied);
     let Created::Track(track) = h
         .run(Request::Edit(Command::AddMidiTrack {
