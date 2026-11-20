@@ -6640,6 +6640,7 @@ fn run_worker(
                                         Some(GraphEditOperation::RemoveDevice) => "stop playback to remove this device",
                                         Some(GraphEditOperation::MoveDevice) => "stop playback to move devices",
                                         Some(GraphEditOperation::MoveTrack) => "stop playback to move this track",
+                                        Some(GraphEditOperation::PowerDevice) => "stop playback to change device power",
                                         Some(GraphEditOperation::RemoveTrack) => "stop playback to remove this track",
                                         None => reason.message(),
                                     }.into());
@@ -7678,7 +7679,17 @@ fn run_worker(
                         .and_then(|sink| {
                             if resident_audio::device_insert::should_stage_resident_graph_edit(
                                 &command, sink,
-                            ) {
+                            ) || resident_audio::device_insert::stopped_hosted_power_fence(
+                                session.project(),
+                                &command,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                sink,
+                            )
+                            .is_some()
+                            {
                                 let staged = session.stage_resident_device_insert(
                                     command,
                                     hex_engine::AudioSourceContext {

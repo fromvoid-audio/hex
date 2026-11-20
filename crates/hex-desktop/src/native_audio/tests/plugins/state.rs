@@ -5,6 +5,7 @@ use super::*;
 use hex_session::service::NativeDeviceState;
 use std::sync::atomic::Ordering::Release;
 pub(super) mod edits;
+mod power_receipt;
 mod save;
 mod verified;
 
