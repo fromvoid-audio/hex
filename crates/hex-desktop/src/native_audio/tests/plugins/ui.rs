@@ -57,7 +57,15 @@ fn open_browser(
     location: u8,
     presentation: Option<EffectPresentation>,
 ) -> BrowserFixture {
-    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false, None)
+    open_browser_metadata(cx, location, presentation, "Fx", 0, None, false, None)
+}
+
+fn utility_anchor() -> hex_session::service::NativeDeviceState {
+    hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
 }
 
 pub(super) fn copy_original_module(source: &Path, target: &Path) {
@@ -83,7 +91,7 @@ fn open_browser_metadata(
     presentation: Option<EffectPresentation>,
     subcategories: &str,
     factory_flags: u32,
-    seed_anchor: bool,
+    anchor: Option<hex_session::service::NativeDeviceState>,
     seed_instrument: bool,
     configure: Option<&mut dyn FnMut(&ResidentHarness)>,
 ) -> BrowserFixture {
@@ -129,26 +137,21 @@ fn open_browser_metadata(
         1 => PluginEffectDestination::Return(state.project.return_tracks()[0].id()),
         _ => PluginEffectDestination::Main,
     };
-    if seed_anchor {
-        let utility = hex_engine::default_native_device_state_for_class(
-            hex_engine::NativeDeviceClass::Effect,
-            hex_engine::DeviceTypeId::from_static("hex.utility"),
-        )
-        .unwrap();
+    if let Some(anchor) = anchor {
         let command = match expected_owner {
             PluginEffectDestination::Track(track) => Command::InsertDevice {
                 track,
                 before: None,
-                state: utility,
+                state: anchor,
             },
             PluginEffectDestination::Return(return_track) => Command::InsertReturnDevice {
                 return_track,
                 before: None,
-                state: utility,
+                state: anchor,
             },
             PluginEffectDestination::Main => Command::InsertMainDevice {
                 before: None,
-                state: utility,
+                state: anchor,
             },
             _ => panic!("effect fixture destination"),
         };
@@ -282,6 +285,147 @@ impl BrowserFixture {
             self.visual.simulate_keystrokes("enter");
         }
     }
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_eq_drag_keeps_its_release_paint_while_vst3_prepares(cx: &mut TestAppContext) {
+    use hex_engine::eq::{EqState, Node, NodeId};
+
+    let _native = native_fixture();
+    let mut eq = EqState::default();
+    let node = NodeId::new(1).unwrap();
+    // The log-frequency midpoint at 48 kHz and the centre of the gain scale.
+    eq.add(Node::new(node, (20.0_f32 * 20_000.0).sqrt(), 0.0, 0).unwrap())
+        .unwrap();
+    let mut fixture = open_browser_metadata(
+        cx,
+        0,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Fx",
+        0,
+        Some(eq.encode().unwrap()),
+        false,
+        None,
+    );
+    fixture
+        .visual
+        .simulate_resize(gpui::size(gpui::px(1500.0), gpui::px(800.0)));
+    fixture.visual.run_until_parked();
+    let device = fixture
+        .state
+        .project
+        .track(fixture.track)
+        .unwrap()
+        .devices()[0]
+        .id();
+    let plot = Box::leak(format!("eq-response-{}-plot", device.value()).into_boxed_str());
+    let bounds = fixture.visual.debug_bounds(plot).unwrap();
+    let start = bounds.center();
+    let end = gpui::point(
+        bounds.origin.x + bounds.size.width * 0.62,
+        bounds.origin.y + bounds.size.height * 0.30,
+    );
+    let scale = fixture.visual.update(|window, _| window.scale_factor());
+    let selected_node_diameter = 8.0 * f64::from(scale);
+    let node_at = |visual: &mut VisualTestContext, point: gpui::Point<gpui::Pixels>| {
+        visual
+            .rendered_filled_quads(plot)
+            .into_iter()
+            .any(|(quad, _)| {
+                (f64::from(quad.size.width) - selected_node_diameter).abs() < 0.1
+                    && (f64::from(quad.size.height) - selected_node_diameter).abs() < 0.1
+                    && quad.contains(&point.scale(scale))
+            })
+    };
+    let current = |fixture: &BrowserFixture, cx: &mut TestAppContext| {
+        let view = fixture.view(cx);
+        let state = view.state.unwrap();
+        EqState::decode(state.project.device(device).unwrap().state()).unwrap()
+    };
+
+    fixture.visual.simulate_keystrokes("space");
+    until("resident output is playing", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .transport
+            .is_some_and(|(_, playing)| playing)
+    });
+    fixture.activate_to_facts(cx, true);
+    assert!(
+        fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .is_some()
+    );
+    assert!(node_at(&mut fixture.visual, start));
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    fixture
+        .visual
+        .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    fixture.step(cx);
+    assert_eq!(current(&fixture, cx), eq);
+    assert!(node_at(&mut fixture.visual, end));
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+
+    // Complete repaints while the callback and worker-event timer are held.
+    for _ in 0..3 {
+        fixture.visual.update(|window, _| window.refresh());
+        fixture.visual.run_until_parked();
+        assert_eq!(current(&fixture, cx), eq);
+        assert!(node_at(&mut fixture.visual, end));
+        assert!(
+            fixture
+                .visual
+                .debug_bounds("device-chain-loading-slot")
+                .is_some()
+        );
+    }
+    until(
+        "EQ reaches canonical state while hosted facts are held",
+        || {
+            fixture.step(cx);
+            current(&fixture, cx).node(node).unwrap().gain_db > 8.0
+        },
+    );
+    let edited = current(&fixture, cx);
+    assert!(node_at(&mut fixture.visual, end));
+    assert!(fixture.view(cx).pending);
+    assert!(
+        fixture
+            .view(cx)
+            .transport
+            .is_some_and(|(_, playing)| playing)
+    );
+
+    click(&mut fixture.visual, "device-chain-loading-cancel");
+    until("cancelled insertion retires from the UI", || {
+        fixture.step(cx);
+        !fixture.view(cx).pending && fixture.records.load(Acquire) == 0
+    });
+    assert_eq!(current(&fixture, cx), edited);
+    assert_eq!(
+        fixture
+            .view(cx)
+            .state
+            .unwrap()
+            .project
+            .track(fixture.track)
+            .unwrap()
+            .devices()
+            .len(),
+        1
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
 }
 
 #[gpui::test]
@@ -539,7 +683,7 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             }),
             "Fx",
             0,
-            true,
+            Some(utility_anchor()),
             false,
             None,
         );
@@ -715,7 +859,7 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             }),
             categories,
             flags,
-            false,
+            None,
             false,
             None,
         );
@@ -1496,7 +1640,7 @@ fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_to
             }),
             "Instrument|Synth",
             0,
-            true,
+            Some(utility_anchor()),
             drop == 1,
             None,
         );
@@ -2316,7 +2460,7 @@ fn rendered_staged_effect_saves_the_confirmed_chain_before_and_after_install(
         }),
         "Fx",
         0,
-        false,
+        None,
         false,
         Some(&mut |h| {
             gates = Some((
