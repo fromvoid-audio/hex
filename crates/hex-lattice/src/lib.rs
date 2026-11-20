@@ -2837,7 +2837,30 @@ impl NativeRuntimeChain {
                 None,
             ),
         };
-        if !self.is_empty()
+        // A genuine hosted Off keeps authored identity but owns no runtime.
+        // Its live-pass timing is the same separately copied passive delay as
+        // deletion; the old foreign processor remains only in the donor graph.
+        let off = match self.entries.as_slice() {
+            [off] => {
+                matches!(entry.runtime, RuntimeOwnership::Foreign(_))
+                    && off.powered_off
+                    && off.bypassed
+                    && off.owner == entry.owner
+                    && off.device_id == entry.device_id
+                    && off.device_type == entry.device_type
+                    && off.sample_rate == entry.sample_rate
+                    && off.algorithmic_latency_frames == Some(0)
+                    && off.input_gain == entry.input_gain
+                    && off.output_gain == entry.output_gain
+                    && off
+                        .configuration
+                        .as_deref()
+                        .zip(entry.configuration.as_deref())
+                        .is_some_and(|(new, old)| new.processing_eq_on_callback(old))
+            }
+            _ => false,
+        };
+        if !(self.is_empty() || off)
             || entry.owner != ProcessorChainOwner::Main
             || entry.algorithmic_latency_frames != Some(latency_frames)
             || entry.bypassed

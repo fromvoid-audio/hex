@@ -7698,6 +7698,10 @@ fn run_worker(
                         .and_then(|sink| {
                             if resident_audio::device_insert::should_stage_resident_graph_edit(
                                 &command, sink,
+                            ) || resident_audio::device_insert::stages_main_power_off(
+                                session.project(),
+                                &command,
+                                sink,
                             ) || resident_audio::device_insert::stopped_hosted_power_fence(
                                 session.project(),
                                 &command,

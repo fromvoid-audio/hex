@@ -102,6 +102,7 @@ pub(super) fn prepare_private_export(
         restoring_plugin_state: false,
         preparing_edit: false,
         stopped_main_power_on: None,
+        running_main_power_off: None,
     };
     let mut owner = sink
         .prepare_offline_bounce(input, control)?
@@ -174,6 +175,7 @@ struct Inputs<'a> {
     restoring_plugin_state: bool,
     preparing_edit: bool,
     stopped_main_power_on: Option<ResidentMainPowerOn>,
+    running_main_power_off: Option<ResidentMainPowerOff>,
     stopped_history: bool,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
@@ -629,6 +631,7 @@ impl Inputs<'_> {
                     restoring_plugin_state: self.restoring_plugin_state,
                     preparing_edit: self.preparing_edit,
                     stopped_main_power_on: self.stopped_main_power_on,
+                    running_main_power_off: self.running_main_power_off,
                 },
                 &mut compile,
             )
@@ -1377,6 +1380,7 @@ pub(super) fn prepare_document_replacement(
                 restoring_plugin_state: false,
                 preparing_edit: false,
                 stopped_main_power_on: None,
+                running_main_power_off: None,
             },
             &mut |effects| {
                 crate::prepare_with_waveforms_using(
@@ -1597,6 +1601,7 @@ pub(super) fn prepare_import_playback(
         restoring_plugin_state: false,
         preparing_edit: false,
         stopped_main_power_on: None,
+        running_main_power_off: None,
         stopped_history: false,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
@@ -1944,6 +1949,7 @@ impl Session {
                     restoring_plugin_state: false,
                     preparing_edit: false,
                     stopped_main_power_on: None,
+                    running_main_power_off: None,
                     stopped_history: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
@@ -1976,6 +1982,7 @@ impl Session {
                     restoring_plugin_state: false,
                     preparing_edit: false,
                     stopped_main_power_on: None,
+                    running_main_power_off: None,
                     stopped_history: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
@@ -2302,6 +2309,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_main_power_on: None,
+            running_main_power_off: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2382,6 +2390,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_main_power_on: None,
+            running_main_power_off: None,
             stopped_history: false,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -2415,6 +2424,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_main_power_on: None,
+            running_main_power_off: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2728,6 +2738,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_main_power_on: None,
+            running_main_power_off: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -2957,6 +2968,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: false,
             stopped_main_power_on: None,
+            running_main_power_off: None,
             stopped_history: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -3077,6 +3089,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
             stopped_main_power_on: None,
+            running_main_power_off: None,
             stopped_history: matches!(&transition, Transition::History { .. })
                 || matches!(&transition, Transition::Command(command)
                 if matches!(command.as_ref(), Command::ReplaceDeviceAutomationTarget {

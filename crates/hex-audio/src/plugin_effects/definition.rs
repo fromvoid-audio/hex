@@ -276,6 +276,28 @@ impl<'a> NativeEffectDefinition<'a> {
         Err(DeviceContractError::ForeignProcessingUnavailable)
     }
 
+    /// Pure exact-source eligibility for the existing Main 512-frame passive cut.
+    /// This borrows constructed metadata; it neither dispatches nor retires DSP.
+    pub fn matches_main_power_off_on_control(
+        &self,
+        binding: Binding,
+        device: u64,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<bool, DeviceContractError> {
+        let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, device)?;
+        Ok(self
+            .exact_configuration(identity, state, sample_rate)?
+            .is_some_and(|effect| {
+                let prepared = effect.prepared;
+                prepared.binding() == Some(binding)
+                    && !prepared.is_instrument_profile()
+                    && prepared.quantum_frames() == 256
+                    && prepared.bridge_latency_frames() == 512
+                    && prepared.processor_latency_frames() == 0
+            }))
+    }
+
     /// Copy the processing declaration from a real source that matches this
     /// exact authored state and rate. This does not loan or publish an endpoint.
     pub fn prepared_processor_on_control(

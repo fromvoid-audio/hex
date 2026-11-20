@@ -87,3 +87,52 @@ fn powered_off_rejects_active_wrong_owner_and_unknown_configuration() {
         assert!(NativeRuntimeChain::new_prepared(vec![value]).is_err());
     }
 }
+
+#[test]
+fn only_an_exact_off_placeholder_accepts_the_hosted_main_pass_cut() {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let configured = || {
+        let mut value = node();
+        value.configuration = Some(std::sync::Arc::new(
+            NativeDeviceState::new(value.device_type, 1, vec![7]).unwrap(),
+        ));
+        value
+    };
+    let mut active = configured();
+    active.bypassed = false;
+    active.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(256, 0, 512)
+            .unwrap()
+            .with_binding(binding)
+            .unwrap(),
+    ));
+    let before = NativeRuntimeChain::new_prepared(vec![active]).unwrap();
+    let after = NativeRuntimeChain::new_prepared(vec![configured()]).unwrap();
+    assert_eq!(
+        after
+            .main_pass_removal_from(&before)
+            .unwrap()
+            .foreign_main_pass_binding(),
+        Some(binding)
+    );
+    for mismatch in 0..4 {
+        let mut candidate = configured();
+        match mismatch {
+            0 => candidate.device_id += 1,
+            1 => candidate.sample_rate = 96_000,
+            2 => {
+                candidate.configuration = Some(std::sync::Arc::new(
+                    NativeDeviceState::new(candidate.device_type, 1, vec![8]).unwrap(),
+                ))
+            }
+            _ => candidate.definition = None,
+        }
+        let candidate = NativeRuntimeChain::new_prepared(vec![candidate]).unwrap();
+        assert!(candidate.main_pass_removal_from(&before).is_none());
+    }
+}

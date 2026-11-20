@@ -598,6 +598,19 @@ pub(in crate::service) fn should_stage_resident_graph_edit(
                 )))
 }
 
+pub(in crate::service) fn stages_main_power_off(
+    project: &Project,
+    command: &Command,
+    sink: &dyn WorkerAudioSink,
+) -> bool {
+    sink.confirms_device_inserts()
+        && stopped_power::eligible(project, command)
+        && project
+            .main_devices()
+            .first()
+            .is_some_and(|device| !device.bypassed())
+}
+
 pub(in crate::service) fn stopped_hosted_power_fence(
     project: &Project,
     command: &Command,
@@ -1000,6 +1013,7 @@ impl Session {
             restoring_plugin_state: false,
             preparing_edit: true,
             stopped_main_power_on: None,
+            running_main_power_off: None,
         };
         let prepared = if input.requires_plugin_profile() {
             sink.prepare_verified_effects(input, proposal, &mut |effects| {
@@ -1062,18 +1076,38 @@ impl Session {
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
         let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink)?;
+        let running_power_off =
+            if stopped_fence.is_none() && stages_main_power_off(self.project(), &command, sink) {
+                let device = self
+                    .project()
+                    .main_devices()
+                    .first()
+                    .ok_or(SessionError::Invalid("main power target changed"))?
+                    .id()
+                    .value();
+                Some(
+                    sink.running_resident_main_power_off(context, device)
+                        .map_err(SessionError::NativeAudio)?
+                        .ok_or(SessionError::Invalid(
+                            "running main power off is unavailable for this source",
+                        ))?,
+                )
+            } else {
+                None
+            };
         self.stage_resident_graph_change(
             context,
             sink,
             admission,
             current,
             stopped_fence,
+            running_power_off,
             plugin,
             proposal_control,
             document_intent,
             |session| {
                 crate::validate_command_media(&command)?;
-                let operation = if stopped_fence.is_some() {
+                let operation = if stopped_fence.is_some() || running_power_off.is_some() {
                     GraphEditOperation::PowerDevice
                 } else if plugin.is_some() {
                     match &command {
@@ -1131,6 +1165,7 @@ impl Session {
             None,
             None,
             None,
+            None,
             document_intent,
             |session| {
                 let hosted = match detached_history::stage(&mut session.editor, redo)? {
@@ -1157,6 +1192,7 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
         stopped_fence: Option<ResidentFreshRuntimeFence>,
+        running_power_off: Option<ResidentMainPowerOff>,
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
@@ -1215,6 +1251,7 @@ impl Session {
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
                 stopped_main_power_on,
+                running_main_power_off: running_power_off,
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };
