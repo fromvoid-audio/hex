@@ -207,8 +207,7 @@ impl Plugins {
         &mut self,
         control: &mut PublicationControl,
         batch: &RetiringEditorBatch,
-        points: &[(u32, f64)],
-        mode: RetiringEditorReplayMode,
+        mode: RetiringEditorReplayMode<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<PluginParameterCapture, String> {
@@ -270,27 +269,42 @@ impl Plugins {
                 source.context == successor.context && source.output_identity == binding.root
             })
             .ok_or("vst3 replay applied source changed")?;
-        let values = recovery_values(control, binding, points, cancellation)?;
+        let (expected, apply) = match mode {
+            RetiringEditorReplayMode::VerifyExisting { points } => (points, None),
+            RetiringEditorReplayMode::Apply {
+                verify_existing,
+                points,
+                publication,
+            } => (verify_existing, Some((publication, points))),
+        };
+        if !expected.is_empty()
+            && recovery_values(control, binding, expected, cancellation)?.as_slice() != expected
+        {
+            return Err("vst3 replacement does not already contain the retiring edit".into());
+        }
+        let values = apply
+            .map(|(_, points)| recovery_values(control, binding, points, cancellation))
+            .transpose()?
+            .unwrap_or_default();
         let before = capture(control, binding, cancellation)?;
-        let publication = match mode {
-            RetiringEditorReplayMode::VerifyExisting => {
-                if values.as_slice() != points {
-                    return Err(
-                        "vst3 replacement does not already contain the retiring edit".into(),
-                    );
-                }
-                confirm_unedited_successor(control, binding, cancellation)?;
-                if control.status.native_parameter_source(playing)
-                    != Some((source, transport_epoch))
-                {
-                    return Err("vst3 replay applied source changed".into());
-                }
-                return Ok(PluginParameterCapture {
-                    before: before.clone(),
-                    after: before,
-                });
+        if !expected.is_empty() {
+            let bound_before = before
+                .clone()
+                .with_host_metadata_from(canonical)
+                .map_err(|error| error.to_string())?;
+            if bound_before != *canonical {
+                return Err("vst3 replay confirmation differs from canonical state".into());
             }
-            RetiringEditorReplayMode::Apply { publication } => publication,
+            confirm_unedited_successor(control, binding, cancellation)?;
+            if control.status.native_parameter_source(playing) != Some((source, transport_epoch)) {
+                return Err("vst3 replay applied source changed".into());
+            }
+        }
+        let Some((publication, points)) = apply else {
+            return Ok(PluginParameterCapture {
+                before: before.clone(),
+                after: before,
+            });
         };
         let token = admit(control, cancellation, |control| {
             // A replacement helper is fresh. Its own editor input takes
