@@ -12,7 +12,13 @@ pub(super) struct NativeTrackMove {
 
 impl SessionPlayback {
     pub(super) fn direct_audio_track_move_from(&self, previous: &Self) -> Option<NativeTrackMove> {
-        if self.compensation.is_some() || previous.compensation.is_some() {
+        // The shared paged planner can reach this proof before page readiness
+        // or custody is established, including for unrelated streamed tracks.
+        if self.revision.contains_streamed_sources()
+            || previous.revision.contains_streamed_sources()
+            || self.compensation.is_some()
+            || previous.compensation.is_some()
+        {
             return None;
         }
         if self.main_chain.len() != previous.main_chain.len()
@@ -149,7 +155,8 @@ mod tests {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
         let mut media = BTreeMap::new();
         let mut tracks = Vec::new();
-        for index in 0..2 {
+        let mut assets = Vec::new();
+        for index in 0..3 {
             let Created::Imported { track, asset, .. } = editor
                 .execute(Command::ImportAudioTrack {
                     name: format!("track {index}"),
@@ -162,7 +169,9 @@ mod tests {
                 panic!("track")
             };
             tracks.push(track);
-            media.insert(asset, Audio::new(48_000, vec![[0.25; 2]; 2048]).unwrap());
+            assets.push(asset);
+            let frame = if index == 2 { [0.0; 2] } else { [0.25; 2] };
+            media.insert(asset, Audio::new(48_000, vec![frame; 2048]).unwrap());
         }
         let Created::Device(device) = editor
             .execute(Command::InsertDevice {
@@ -180,7 +189,8 @@ mod tests {
                     .unwrap(),
             )
         };
-        let before = prepare(editor.project());
+        let before_project = editor.project().clone();
+        let before = prepare(&before_project);
         editor
             .execute(Command::MoveTrackDevices {
                 source: tracks[0],
@@ -189,6 +199,60 @@ mod tests {
             })
             .unwrap();
         let after = prepare(editor.project());
+        // Only an unrelated third track is streamed. Both moved tracks retain
+        // their exact Resident PCM; the shared paged planner still must refuse.
+        let mut sources = media
+            .iter()
+            .map(|(&asset, audio)| {
+                (
+                    asset,
+                    crate::compile::PreparedAudioSource::Resident(audio.clone()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        sources.insert(
+            assets[2],
+            crate::compile::PreparedAudioSource::Streamed(Arc::new(
+                crate::StreamedSourceMetadata::new(
+                    crate::StreamSourceKey::new(9, assets[2]),
+                    48_000,
+                    48_000,
+                    2048,
+                    2048,
+                    hex_project::IDENTITY_CONVERSION,
+                    [19; 32],
+                )
+                .unwrap(),
+            )),
+        );
+        let prepare_mixed = |project: &Project| {
+            Arc::new(
+                PreparedRevision::prepare_with_prepared_audio_sources(
+                    project,
+                    &sources,
+                    9,
+                    Arc::new(crate::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let before_mixed = prepare_mixed(&before_project);
+        let after_mixed = prepare_mixed(editor.project());
+        for (old, next) in [
+            (&before_mixed, &after_mixed),
+            (&before, &after_mixed),
+            (&before_mixed, &after),
+        ] {
+            let mut old = SessionPlayback::new(Arc::clone(old)).unwrap();
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut next = SessionPlayback::new(Arc::clone(next)).unwrap();
+            next.require_continuous_insert = true;
+            assert!(next.direct_audio_track_move_from(&old).is_none());
+            assert!(!next.plan_native_removal_from(&old).unwrap());
+            assert!(!next.native_removal_pending());
+            assert!(old.track_faders.iter().all(|fader| !fader.active()));
+        }
         let mut old = SessionPlayback::new(before).unwrap();
         old.apply(SessionPlaybackCommand::Play).unwrap();
         old.render(&mut [[0.0; 2]; 32]).unwrap();
