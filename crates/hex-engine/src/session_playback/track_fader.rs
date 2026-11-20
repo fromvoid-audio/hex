@@ -6,6 +6,7 @@ pub(super) struct TrackFader {
     current: Frame,
     target: Frame,
     remaining: u32,
+    removing: bool,
 }
 
 impl TrackFader {
@@ -14,6 +15,7 @@ impl TrackFader {
             current: gain,
             target: gain,
             remaining: 0,
+            removing: false,
         }
     }
 
@@ -25,7 +27,24 @@ impl TrackFader {
     }
 
     pub(super) fn active(self) -> bool {
-        self.remaining != 0
+        self.removing || self.remaining != 0
+    }
+
+    /// Keep using this fader at silence while the old graph owns the track.
+    pub(super) fn begin_removal(&mut self, sample_rate: u32) {
+        self.removing = true;
+        self.retarget([0.0; 2], sample_rate);
+    }
+
+    pub(super) fn removal_ready(self) -> bool {
+        self.removing && self.remaining == 0
+    }
+
+    pub(super) fn cancel_removal(&mut self, gain: Frame, sample_rate: u32) {
+        if self.removing {
+            self.removing = false;
+            self.retarget(gain, sample_rate);
+        }
     }
 
     pub(super) fn current(self) -> Frame {

@@ -1213,7 +1213,7 @@ impl SessionPlayback {
             use hex_lattice::ProcessorChainOwner;
             let source_removal = self
                 .native_removal
-                .map(|removal| removal.transition)
+                .and_then(|removal| removal.device_transition())
                 .filter(|transition| {
                     matches!(
                         transition.identity().owner(),
@@ -1513,10 +1513,14 @@ impl SessionPlayback {
             if !continuous_insert || !removal.matches(previous) {
                 return Err(SessionPlaybackError::InvalidCommand);
             }
-            if demand.is_none() && !previous.native_removal_ready(removal.transition) {
+            if demand.is_none() && !removal.ready_on(previous) {
                 return Err(SessionPlaybackError::DeviceTransitionBusy);
             }
-            DeviceEditTailPolicy::FadedNative(removal.transition.identity())
+            removal
+                .device_transition()
+                .map_or(DeviceEditTailPolicy::RequireConfirmation, |transition| {
+                    DeviceEditTailPolicy::FadedNative(transition.identity())
+                })
         } else if continuous_insert {
             DeviceEditTailPolicy::RequireConfirmation
         } else if confirmed_insert

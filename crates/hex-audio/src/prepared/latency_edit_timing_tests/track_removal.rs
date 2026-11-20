@@ -110,19 +110,7 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
     let mut pcm = [[0.0; 2]; PREFIX + 256];
     let mut offset = 0;
     for count in [1, 31, 257, 256] {
-        let stats = allocation_counter::measure(|| {
-            callback.begin_block();
-            callback.render(&mut pcm[offset..offset + count]).unwrap();
-        });
-        assert_eq!(
-            (
-                stats.count_total,
-                stats.bytes_total,
-                stats.count_current,
-                stats.bytes_current
-            ),
-            (0, 0, 0, 0)
-        );
+        measured_render(&mut callback, &mut pcm[offset..offset + count]);
         offset += count;
         if offset <= PREFIX {
             assert_eq!(receipt.state(), PublicationReceiptState::Pending);
@@ -143,4 +131,56 @@ fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_histo
             "frame {frame}: {actual:?} vs {expected:?}"
         );
     }
+}
+
+#[test]
+fn an_aborted_track_removal_restores_its_running_fader() {
+    const FADE: usize = RATE.div_ceil(200) as usize;
+    let (mut editor, removed, prepare) = resident_input(vec![SIGNAL; 2048]);
+    let old = prepare(editor.project());
+    editor.execute(Command::RemoveTrack(removed)).unwrap();
+    let next = prepare(editor.project());
+    for stop in [false, true] {
+        let (control, mut callback, source, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, 384);
+        let mut prefix = [[0.0; 2]; 32];
+        measured_render(&mut callback, &mut prefix);
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        assert!(prefix[0][0] < SIGNAL[0] && prefix[31][0] < prefix[0][0]);
+        let mut resumed = [[0.0; 2]; FADE];
+        let expected = if stop {
+            control.stop();
+            measured_render(&mut callback, &mut resumed);
+            assert_eq!(resumed, [[0.0; 2]; FADE]);
+            assert_eq!(control.status.position.load(Acquire), 0);
+            let mut control = control;
+            control.command(PlaybackCommand::Play).unwrap();
+            measured_render(&mut callback, &mut resumed);
+            PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+        } else {
+            assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled);
+            measured_render(&mut callback, &mut resumed);
+            assert!(resumed[0][0] > prefix[31][0]);
+            assert_eq!(control.status.recording_source(), Some(source));
+            PublicationReceiptState::Cancelled
+        };
+        assert_eq!(resumed[FADE - 1], SIGNAL);
+        assert_eq!(receipt.state(), expected);
+    }
+}
+
+fn measured_render(callback: &mut Callback, output: &mut [Frame]) {
+    let stats = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(output).unwrap();
+    });
+    assert_eq!(
+        (
+            stats.count_total,
+            stats.bytes_total,
+            stats.count_current,
+            stats.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
 }

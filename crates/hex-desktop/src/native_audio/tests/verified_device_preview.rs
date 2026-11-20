@@ -6,6 +6,97 @@ use hex_session::device_gesture::{
 };
 
 #[test]
+fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
+    use hex_project::Command;
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let first = Files::new();
+    let second = Files::new();
+    let mut h = super::verified_gain::actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let first = h.run(Request::Import(first.wav(48_000, 32_768)));
+    let track = first.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let before = h.run(Request::Import(second.wav(48_000, 32_768)));
+    let source = h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[0.5; 2]; 64] {
+        assert!(Instant::now() < deadline, "both tracks must be playing");
+        std::thread::yield_now();
+    }
+    let pending = h.run(Request::Edit(Command::RemoveTrack(track)));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, before.state.project);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let deadline = Instant::now() + Duration::from_millis(350);
+    while !status.publication_in_flight() {
+        assert!(Instant::now() < deadline, "removal was not queued");
+        std::thread::yield_now();
+    }
+    let (clock, mut block) = loop {
+        let start = status.position.load(Acquire);
+        let block = h.render();
+        assert_eq!(status.applied_audio_source(), Some(source));
+        if block != [[0.5; 2]; 64] {
+            break (start, block);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the queued track fade did not begin"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    const FADE: usize = 240;
+    let mut elapsed = 0;
+    for part in 0..4 {
+        if part != 0 {
+            block = h.render();
+            assert_eq!(status.applied_audio_source(), Some(source));
+        }
+        for (index, frame) in block.iter().enumerate() {
+            let gain = FADE.saturating_sub(elapsed + index + 1) as f32 / FADE as f32;
+            let expected = 0.25 + 0.25 * gain;
+            assert!(
+                frame.iter().all(|sample| (*sample - expected).abs() < 1e-6),
+                "frame {}: {frame:?}, expected {expected}",
+                elapsed + index
+            );
+        }
+        elapsed += block.len();
+    }
+    assert_eq!(status.position.load(Acquire), clock + 256);
+    let removed = h.next_with_audio();
+    assert!(
+        removed.request_complete && removed.error.is_none(),
+        "{:?}",
+        removed.error
+    );
+    assert!(removed.device_insert_confirmation.is_none());
+    let receipt = removed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(removed.state.revision, before.state.revision + 1);
+    assert!(removed.state.project.track(track).is_none());
+    let active = h.applied(h.context.unwrap());
+    assert_eq!(active.audio_revision, receipt.submission.audio_revision);
+    assert_eq!(active.output_identity, source.output_identity);
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+}
+
+#[test]
 fn verified_native_removal_commits_the_normal_edit_without_consent() {
     use hex_project::{Command, Created};
     use hex_session::service::DeviceInsertOutcome;
