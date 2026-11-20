@@ -3,15 +3,20 @@ use super::*;
 
 #[test]
 fn native_track_reorder_fades_only_its_track_and_carries_delay_repeats_once() {
-    reorder_keeps_delay_history(false);
+    reorder_keeps_delay_history(false, false);
 }
 
 #[test]
 fn session_audio_reorder_keeps_its_launch_origin_and_delay_history() {
-    reorder_keeps_delay_history(true);
+    reorder_keeps_delay_history(true, false);
 }
 
-fn reorder_keeps_delay_history(session: bool) {
+#[test]
+fn grouped_native_reorder_keeps_both_groups_delay_history_and_clocks() {
+    reorder_keeps_delay_history(false, true);
+}
+
+fn reorder_keeps_delay_history(session: bool, grouped: bool) {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
 
     const FRAMES: usize = 4096;
@@ -39,7 +44,7 @@ fn reorder_keeps_delay_history(session: bool) {
     input[1700] = [0.5, -0.25];
     input[SWITCH + 64] = [0.375, -0.1875];
     let (track, asset) = add_audio("reordered", input.clone());
-    let independent: Vec<Frame> = (0..FRAMES)
+    let mut independent: Vec<Frame> = (0..FRAMES)
         .map(|index| [0.0625 + index as f32 / 131_072.0, 0.03125])
         .collect();
     let (unrelated, _) = add_audio("unrelated", independent.clone());
@@ -67,12 +72,44 @@ fn reorder_keeps_delay_history(session: bool) {
             state: feedback_delay(20.0),
         })
         .unwrap();
+    if grouped {
+        for (child, name) in [(track, "edited group"), (unrelated, "unrelated group")] {
+            let Created::Track(group) = editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[child]).unwrap(),
+                    name: name.into(),
+                })
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            if child == unrelated {
+                editor
+                    .execute(Command::InsertDevice {
+                        track: group,
+                        before: None,
+                        state: feedback_delay(11.0),
+                    })
+                    .unwrap();
+            }
+        }
+    }
     let table = Arc::new(hex_engine::SineTable::new());
     let prepare = |project: &Project, pcm: &BTreeMap<_, _>| {
         Arc::new(
             hex_engine::PreparedRevision::prepare(project, pcm, Arc::clone(&table), None).unwrap(),
         )
     };
+    if grouped {
+        // Independently render the unaffected Group's actual Delay, including
+        // its entire pre-cut history; it must never restart or share the fade.
+        let mut reference = Editor::new(editor.project().clone(), 8).unwrap();
+        reference.execute(Command::RemoveTrack(track)).unwrap();
+        let mut playback =
+            Playback::try_from_prepared_with_session(prepare(reference.project(), &media)).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        playback.render(&mut independent).unwrap();
+    }
     let mut reference_editor = Editor::new(editor.project().clone(), 8).unwrap();
     let session_clip = session.then(|| {
         let clip = editor.project().track(track).unwrap().clips()[0].id();
