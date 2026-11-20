@@ -47,7 +47,7 @@ pub(in crate::native_audio::tests::plugins) fn ordinary_terminal(h: &mut Residen
         std::thread::yield_now();
     }
 }
-fn workers_idle(h: &ResidentHarness) {
+pub(in crate::native_audio::tests::plugins) fn workers_idle(h: &ResidentHarness) {
     wait(|| {
         h.callback
             .lock()

@@ -277,6 +277,21 @@ impl Custody {
     ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
         self.stopped_edits_admission(binding, recovery, |_| {})
     }
+    pub(in crate::candidate_custody) fn native_joined_idle_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        self.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => owner.poll_joined_idle_edits(),
+                Owner::Loaned(owner) => owner.poll_joined_idle_edits(),
+                _ => Err("native stopped edit owner differs"),
+            },
+            || {},
+            "native stopped editor read was not admitted",
+        )
+    }
     fn stopped_edits_admission(
         &self,
         binding: Binding,
@@ -745,6 +760,13 @@ impl CandidateRoot {
     ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
         self.require_native_source_control_open()?;
         self.0.eligible.native_stopped_edits(binding, recovery)
+    }
+    pub(crate) fn native_source_joined_idle_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0.eligible.native_joined_idle_edits(binding)
     }
     pub(crate) fn native_source_parameter_values(
         &self,
