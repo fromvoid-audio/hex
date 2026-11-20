@@ -1575,6 +1575,14 @@ fn render_track(
                 visible_chain_bounds: visible_chain_bounds.clone(),
                 is_sampler: class == NativeDeviceClass::Instrument
                     && device.state().type_id().as_str() == Ok("hex.instrument.sampler"),
+                replace_vst3: class == NativeDeviceClass::Effect
+                    && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                    && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                    && view
+                        .active_native_device_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.source.is_catalog_vst3_effect())
+                    && is_track_vst3_replacement_leaf(track, device.id()),
             },
             rendered,
         )
@@ -1787,6 +1795,7 @@ struct DeviceCardDropGeometry {
     visible_chain_bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
     /// Accepts browser sample drops that load or replace its sample.
     is_sampler: bool,
+    replace_vst3: bool,
 }
 
 /// Keep only previews belonging to live effects of the matching registered type.
@@ -1863,6 +1872,73 @@ fn pointer_within_visible_device_drop_bounds(
     target.contains(pointer) && visible_chain.is_some_and(|bounds| bounds.contains(pointer))
 }
 
+const REPLACE_PAD_WIDTH: f32 = 64.0;
+const REPLACE_PAD_HEIGHT: f32 = 22.0;
+const REPLACE_PAD_TOP: f32 = 6.0;
+
+fn with_replace_pad(
+    card: Stateful<Div>,
+    selector: impl FnOnce() -> String + 'static,
+    selected: bool,
+) -> Stateful<Div> {
+    card.child(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(REPLACE_PAD_TOP))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .debug_selector(selector)
+                    .w(px(REPLACE_PAD_WIDTH))
+                    .h(px(REPLACE_PAD_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(rgb(theme::color(if selected {
+                        theme::PaletteRole::Secondary
+                    } else {
+                        theme::PaletteRole::Border
+                    })))
+                    .bg(rgb(theme::color(if selected {
+                        theme::PaletteRole::Hover
+                    } else {
+                        theme::PaletteRole::Surface
+                    })))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .child(theme::text("replace")),
+            ),
+    )
+}
+
+fn replace_pad_bounds(card: Bounds<Pixels>) -> Bounds<Pixels> {
+    Bounds {
+        origin: gpui::point(
+            card.center().x - px(REPLACE_PAD_WIDTH) / 2.0,
+            card.origin.y + px(REPLACE_PAD_TOP),
+        ),
+        size: gpui::size(px(REPLACE_PAD_WIDTH), px(REPLACE_PAD_HEIGHT)),
+    }
+}
+
+fn is_track_vst3_replacement_leaf(track: &hex_project::Track, id: DeviceId) -> bool {
+    if track.is_group() {
+        return false;
+    }
+    let devices = track.devices();
+    devices.iter().enumerate().any(|(index, device)| {
+        device.id() == id
+            && device.parent().is_none()
+            && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+            && devices
+                .get(index + 1)
+                .is_none_or(|next| next.parent() != Some(id))
+    })
+}
+
 fn render_device_card_target(
     view: &EditorView,
     cx: &mut Context<EditorView>,
@@ -1878,6 +1954,7 @@ fn render_device_card_target(
         first,
         visible_chain_bounds,
         is_sampler,
+        replace_vst3,
     } = geometry;
     let active = view
         .active_native_device_drag
@@ -1948,6 +2025,13 @@ fn render_device_card_target(
                     target_visible_bounds.borrow().as_ref(),
                 );
             let target = match payload.source {
+                _ if inside
+                    && replace_vst3
+                    && payload.source.is_catalog_vst3_effect()
+                    && replace_pad_bounds(target_bounds).contains(&event.event.position) =>
+                {
+                    Some(replacement_target)
+                }
                 drag::NativeDeviceDragSource::Browser {
                     class: NativeDeviceClass::Instrument,
                     ..
@@ -1985,6 +2069,12 @@ fn render_device_card_target(
                     left_target
                 };
                 let target = payload.destination.get().unwrap_or(fallback);
+                if payload.source.is_catalog_vst3_effect()
+                    && target.replace.is_some()
+                    && (!replace_vst3 || target != replacement_target)
+                {
+                    return;
+                }
                 view.drop_native_device(payload, target, window, cx);
             }),
         )
@@ -2006,6 +2096,7 @@ fn render_device_card_target(
     if active_left || view.device_panel.insertion_is(Some(device)) {
         wrapper = wrapper.child(
             div()
+                .debug_selector(move || format!("device-insertion-before-{}", device.value()))
                 .absolute()
                 .left_0()
                 .top_0()
@@ -2017,6 +2108,7 @@ fn render_device_card_target(
     if active_right {
         wrapper = wrapper.child(
             div()
+                .debug_selector(move || format!("device-insertion-after-{}", device.value()))
                 .absolute()
                 .right_0()
                 .top_0()
@@ -2025,7 +2117,13 @@ fn render_device_card_target(
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
         );
     }
-    if active_replace {
+    if replace_vst3 {
+        wrapper = with_replace_pad(
+            wrapper,
+            move || format!("vst3-replace-{}", device.value()),
+            active_replace,
+        );
+    } else if active_replace && class == NativeDeviceClass::Instrument {
         wrapper = wrapper.child(
             div()
                 .absolute()
@@ -3112,21 +3210,29 @@ impl EditorView {
             return;
         }
         if let Some(replacement) = drop_target.replace {
-            let source_is_browser_instrument = matches!(
-                drag.source,
-                drag::NativeDeviceDragSource::Browser {
-                    class: NativeDeviceClass::Instrument,
-                    ..
-                }
-            );
-            let target_is_current_instrument = target_track
-                .instrument()
-                .is_some_and(|instrument| instrument.id() == replacement);
-            if !source_is_browser_instrument
-                || !target_is_current_instrument
-                || drop_target.before.is_some()
-            {
-                self.error = Some("instrument replacement target changed; drag again".into());
+            let (valid_target, message) = if drag.source.is_catalog_vst3_effect() {
+                (
+                    track == drop_target.track
+                        && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && is_track_vst3_replacement_leaf(target_track, replacement),
+                    "effect replacement target changed · drag again",
+                )
+            } else {
+                (
+                    matches!(
+                        drag.source,
+                        drag::NativeDeviceDragSource::Browser {
+                            class: NativeDeviceClass::Instrument,
+                            ..
+                        }
+                    ) && target_track
+                        .instrument()
+                        .is_some_and(|instrument| instrument.id() == replacement),
+                    "instrument replacement target changed; drag again",
+                )
+            };
+            if !valid_target || drop_target.before.is_some() {
+                self.error = Some(message.into());
                 self.device_panel.message = self.error.as_ref().map(ToString::to_string);
                 self.clear_native_device_drag(drag);
                 cx.notify();
@@ -3173,13 +3279,16 @@ impl EditorView {
                 NativeDeviceDropSource::Browser { class, type_id }
             }
             drag::NativeDeviceDragSource::PluginEffect(ref selection) => {
+                use hex_session::service::PluginEffectDestination;
+                let destination = match drop_target.replace {
+                    Some(replacing) => PluginEffectDestination::ReplaceTrackEffect {
+                        track: drop_target.track,
+                        replacing,
+                    },
+                    None => PluginEffectDestination::Track(drop_target.track),
+                };
                 self.clear_native_device_drag(drag);
-                self.insert_plugin_effect(
-                    selection,
-                    hex_session::service::PluginEffectDestination::Track(drop_target.track),
-                    before,
-                    cx,
-                );
+                self.insert_plugin_effect(selection, destination, before, cx);
                 cx.notify();
                 return;
             }

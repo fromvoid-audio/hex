@@ -144,11 +144,14 @@ impl PluginProposal {
             (Destination::Instrument(track), Owner::Track(id)) if track == id => {
                 Some(SlotPosition::First)
             }
-            (Destination::ReplaceInstrument { track, instrument }, Owner::Track(id))
-                if track == id =>
-            {
-                Some(SlotPosition::Before(instrument))
-            }
+            (
+                Destination::ReplaceInstrument {
+                    track,
+                    instrument: replacing,
+                }
+                | Destination::ReplaceTrackEffect { track, replacing },
+                Owner::Track(id),
+            ) if track == id => Some(SlotPosition::Before(replacing)),
             (Destination::Return(target), Owner::Return(id)) if target == id => effect_position(),
             (Destination::Main, Owner::Main) => effect_position(),
             (Destination::ReplaceMainEffect { replacing }, Owner::Main) => {
@@ -837,7 +840,8 @@ impl EditorView {
             }
             let loading = if matches!(
                 destination,
-                PluginEffectDestination::ReplaceMainEffect { .. }
+                PluginEffectDestination::ReplaceTrackEffect { .. }
+                    | PluginEffectDestination::ReplaceMainEffect { .. }
                     | PluginEffectDestination::ReplaceReturnEffect { .. }
             ) {
                 "loading replacement"
