@@ -87,6 +87,14 @@ pub enum RetiringEditorReplayDisposition {
     Confirmed { receipt_accepted: bool },
 }
 
+/// New successor input is allowed only for edits admitted after preparation.
+/// Earlier input can be acknowledged after read-only successor verification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetiringEditorReplayMode {
+    VerifyExisting,
+    Apply { publication: AudioSourceContext },
+}
+
 /// Why the original retiring editor source still needs the Session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RetiringEditorCloseBlocker {
@@ -157,8 +165,13 @@ impl RetiringEditorBatch {
     }
 }
 
+struct ReplayPoints {
+    values: Vec<(u32, f64)>,
+    verify_existing: bool,
+}
+
 impl RetiringEditorBatch {
-    fn replay_points(&self) -> Result<Vec<(u32, f64)>, &'static str> {
+    fn replay_points(&self) -> Result<ReplayPoints, &'static str> {
         let cut = self
             .predecessor_admitted_through
             .ok_or("vst3 editor replacement order could not be established")?;
@@ -171,20 +184,26 @@ impl RetiringEditorBatch {
             self.validate_grouped_replay(cut)?;
         }
         let mut points: Vec<(u32, f64)> = Vec::new();
+        let mut verify_existing = None;
         for event in self.events().iter().filter(|event| event.kind == Perform) {
-            if event.sequence <= cut {
+            let before_cut = event.sequence <= cut;
+            if *verify_existing.get_or_insert(before_cut) != before_cut {
                 return Err("vst3 editor receipts need a separate ordered disposition");
             }
             if let Some(point) = points.iter_mut().find(|point| point.0 == event.parameter) {
+                if before_cut && point.1 != event.normalized {
+                    return Err("earlier vst3 editor values need a separate ordered disposition");
+                }
                 point.1 = event.normalized;
             } else {
                 points.push((event.parameter, event.normalized));
             }
         }
-        if points.is_empty() {
-            return Err("vst3 editor receipts have no replayable value");
-        }
-        Ok(points)
+        Ok(ReplayPoints {
+            values: points,
+            verify_existing: verify_existing
+                .ok_or("vst3 editor receipts have no replayable value")?,
+        })
     }
 
     /// The successor applies one guarded SDK flush. Values from multiple
@@ -255,49 +274,58 @@ pub(super) fn apply(
         let device = original.id();
         let state = original.state().clone();
         let points = batch.replay_points()?;
-        if points.iter().any(|&(parameter, _)| {
+        if points.values.iter().any(|&(parameter, _)| {
             let target = hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter };
             original.automation_target(target).is_some()
         }) {
             return Err("vst3 editor replay requires automation disposition".into());
         }
-        let publication = AudioSourceContext {
-            editor_revision: context
-                .editor_revision
-                .checked_add(1)
-                .ok_or("vst3 editor replay revision exhausted")?,
-            ..context
+        let mode = if points.verify_existing {
+            RetiringEditorReplayMode::VerifyExisting
+        } else {
+            RetiringEditorReplayMode::Apply {
+                publication: AudioSourceContext {
+                    editor_revision: context
+                        .editor_revision
+                        .checked_add(1)
+                        .ok_or("vst3 editor replay revision exhausted")?,
+                    ..context
+                },
+            }
         };
-        let mut capture = sink.capture_retiring_editor_replay(&batch, &points, publication)?;
+        let mut capture = sink.capture_retiring_editor_replay(&batch, &points.values, mode)?;
         capture.before =
             super::resident_preview::plugin_parameter::bind_capture(&state, capture.before)
                 .map_err(|error| error.to_string())?;
         capture.after =
             super::resident_preview::plugin_parameter::bind_capture(&state, capture.after)
                 .map_err(|error| error.to_string())?;
-        let prepared = if capture.before == capture.after {
-            // A no-op write only settles the receipt if the exact guarded
-            // successor capture also agrees with the canonical opaque state.
-            if capture.after != state {
-                return Err("unchanged vst3 replay capture differs from canonical state".into());
+        let prepared = match mode {
+            RetiringEditorReplayMode::Apply { publication } if capture.before != capture.after => {
+                let snapshot = session
+                    .plugin_parameter_resident_snapshot(
+                        PluginParameterCommit::Captured {
+                            device,
+                            capture: Box::new(capture),
+                        },
+                        publication,
+                        sink,
+                        admission,
+                        current.as_ref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let prepared = std::sync::Arc::clone(&snapshot.prepared);
+                *current = Some(snapshot);
+                Some(prepared)
             }
-            None
-        } else {
-            let snapshot = session
-                .plugin_parameter_resident_snapshot(
-                    PluginParameterCommit::Captured {
-                        device,
-                        capture: Box::new(capture),
-                    },
-                    publication,
-                    sink,
-                    admission,
-                    current.as_ref(),
-                )
-                .map_err(|error| error.to_string())?;
-            let prepared = std::sync::Arc::clone(&snapshot.prepared);
-            *current = Some(snapshot);
-            Some(prepared)
+            _ => {
+                // Confirmation settles the receipt only when both exact
+                // captures agree with the canonical opaque state.
+                if capture.before != state || capture.after != state {
+                    return Err("vst3 replay confirmation differs from canonical state".into());
+                }
+                None
+            }
         };
         // Canonical values are confirmed. An acknowledgement failure retains
         // the receipt and cannot undo an already-published revision.
@@ -371,6 +399,7 @@ mod tests {
             RetiringEditorBatch::new(binding(2), binding(3), context, device, Some(cut), events)
                 .unwrap()
                 .replay_points()
+                .map(|points| points.values)
         };
         let complete = vec![
             event(1, 1, GroupBegin),
@@ -401,6 +430,37 @@ mod tests {
             event(10, 6, GroupEnd),
         ]);
         assert!(project_values(several_values, 0).is_err());
+    }
+
+    #[test]
+    fn ordinary_values_before_the_cut_can_only_be_verified_as_existing() {
+        use RetiringEditorEventKind::{Begin, End, Perform};
+
+        let context = AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 4,
+        };
+        let plan = |events: Vec<RetiringEditorEvent>, cut| {
+            RetiringEditorBatch::new(binding(2), binding(3), context, 7, Some(cut), events)
+                .unwrap()
+                .replay_points()
+        };
+        let mut events = vec![
+            event(1, 1, Begin),
+            event(2, 1, Perform),
+            event(3, 1, Perform),
+            event(4, 1, End),
+        ];
+        let existing = plan(events.clone(), 4).unwrap();
+        assert!(existing.verify_existing);
+        assert_eq!(existing.values, vec![(0, 0.75)]);
+        assert!(plan(events.clone(), 2).is_err());
+
+        events[1].normalized = 0.5;
+        assert!(plan(events.clone(), 4).is_err());
+        let replay = plan(events, 0).unwrap();
+        assert!(!replay.verify_existing);
+        assert_eq!(replay.values, vec![(0, 0.75)]);
     }
 
     #[test]

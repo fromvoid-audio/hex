@@ -1650,11 +1650,11 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
         points: &[(u32, f64)],
-        publication: AudioSourceContext,
+        mode: hex_session::service::RetiringEditorReplayMode,
     ) -> Result<hex_session::service::PluginParameterCapture, String> {
         let captured = self
             .inner
-            .capture_retiring_editor_replay(batch, points, publication);
+            .capture_retiring_editor_replay(batch, points, mode);
         if captured.is_ok() && std::env::var_os("HEX_REPLAY_TEST_REFUSE").is_some() {
             let release = std::path::PathBuf::from(
                 std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap(),
