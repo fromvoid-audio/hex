@@ -70,6 +70,13 @@ impl Plugins {
         snapshot: &CanonicalAudioSourceSnapshot,
     ) {
         let input = snapshot.effect_preparation();
+        self.saved_off_document = input
+            .powered_off_main()
+            .map(|(device, _)| (input.context().project_generation, device));
+        if self.saved_off_document.is_some() {
+            self.reopen = None;
+            return;
+        }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = &self.progress
             && let Ok(mut observed) = observed.try_lock()

@@ -146,6 +146,12 @@ pub(super) struct Resident {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     last_paused_notes: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
+    // Nonowning identity beside each retained observation. Match the callback's
+    // actual source, never the newest queued publication, before using Off.
+    powered_off_sources: [Option<(hex_audio::prepared::AppliedAudioSource, u64)>; RUNTIME_CELLS],
+    // Only one exact applied Off fact survives after its projection is unshared.
+    // It owns no graph, configuration, meter, source, worker or native receipt.
+    active_powered_off: Option<(hex_audio::prepared::AppliedAudioSource, u64)>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(super) struct PendingPausedNotes {
@@ -154,6 +160,22 @@ pub(super) struct PendingPausedNotes {
     pub(super) effects: Option<plugins::PausedEffects>,
 }
 impl Resident {
+    pub(super) fn powered_off_main(
+        &self,
+        actual: hex_audio::prepared::AppliedAudioSource,
+    ) -> Option<u64> {
+        self.powered_off_sources
+            .iter()
+            .flatten()
+            .chain(self.active_powered_off.iter())
+            .find_map(|(source, device)| (*source == actual).then_some(*device))
+    }
+    fn retain_applied_off(&mut self, actual: Option<hex_audio::prepared::AppliedAudioSource>) {
+        if let Some(source) = actual {
+            self.active_powered_off = self.powered_off_main(source).map(|device| (source, device));
+        }
+    }
+
     pub(super) fn has_pending_document(&self, context: AudioSourceContext) -> bool {
         self.pending
             .as_ref()
@@ -197,12 +219,13 @@ impl Resident {
         {
             self.paused_monitor = None;
         }
-        for row in &mut self.observations {
+        for (index, row) in self.observations.iter_mut().enumerate() {
             if row
                 .as_ref()
                 .is_some_and(|view| Arc::strong_count(view) == 1)
             {
                 *row = None;
+                self.powered_off_sources[index] = None;
             }
         }
     }
@@ -216,12 +239,12 @@ impl Resident {
             .map_or(retired, |monitor| retired.with_paused_monitor(monitor))
     }
     fn observation_bytes(&self) -> Option<usize> {
-        self.observations
-            .iter()
-            .flatten()
-            .try_fold(std::mem::size_of_val(&self.observations), |bytes, view| {
-                bytes.checked_add(view.retained_bytes_on_control()?)
-            })
+        self.observations.iter().flatten().try_fold(
+            std::mem::size_of_val(&self.observations)
+                .checked_add(std::mem::size_of_val(&self.powered_off_sources))?
+                .checked_add(std::mem::size_of_val(&self.active_powered_off))?,
+            |bytes, view| bytes.checked_add(view.retained_bytes_on_control()?),
+        )
     }
 }
 /// Classify observations only when the submission belongs to this exact output.
@@ -273,6 +296,30 @@ pub(super) fn resident_insert_consent(
 }
 
 impl NativeAudioSink {
+    pub(super) fn reap_resident_control_owners(&mut self) {
+        let actual = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .and_then(|control| control.status.recording_source());
+        self.resident.retain_applied_off(actual);
+        self.resident.reap_control_owners();
+    }
+    pub(super) fn applied_powered_off_main(&mut self, context: AudioSourceContext) -> Option<u64> {
+        let actual = self
+            .output
+            .as_mut()?
+            .publication
+            .control()?
+            .status
+            .recording_source()?;
+        if actual.context != context {
+            return None;
+        }
+        self.resident.retain_applied_off(Some(actual));
+        self.resident.powered_off_main(actual)
+    }
+
     pub(super) fn offer_resident_device_insert_consent(
         &mut self,
         submission: ResidentGraphSubmission,
@@ -626,7 +673,7 @@ impl NativeAudioSink {
         resources: &PreparedDeviceResources,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<hex_engine::PausedTrackMonitor, String> {
-        self.resident.reap_control_owners();
+        self.reap_resident_control_owners();
         if self.resident.paused_monitor.is_some() {
             return Err("paused input monitor is still retained".into());
         }
@@ -1068,7 +1115,15 @@ impl NativeAudioSink {
         } else {
             None
         };
-        self.resident.reap_control_owners();
+        let powered_off = playback
+            .prepared_revision()
+            .and_then(|revision| revision.sole_powered_off_main_device_on_control())
+            .filter(|device| {
+                observation
+                    .processor_status(*device, hex_engine::DeviceTypeId::from_static("hex.vst3"))
+                    == Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
+            });
+        self.reap_resident_control_owners();
         let existing = self.resident.observations.iter().position(|row| {
             row.as_ref()
                 .is_some_and(|old| Arc::ptr_eq(old, &observation))
@@ -1576,6 +1631,17 @@ impl NativeAudioSink {
                     self.resident.capture_target = observation.native_parameter_input_target();
                     self.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
+                    self.resident.powered_off_sources[observation_slot] =
+                        powered_off.map(|device| {
+                            (
+                                hex_audio::prepared::AppliedAudioSource {
+                                    context: metadata.context,
+                                    audio_revision,
+                                    output_identity,
+                                },
+                                device,
+                            )
+                        });
                     self.observe(
                         metadata.context,
                         "submitted",
@@ -1662,6 +1728,7 @@ impl NativeAudioSink {
             });
         }
         self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
+        self.resident.powered_off_sources[observation_slot] = None;
         self.resident.pending = Some(Pending {
             playback,
             file_sources: file_sources.cloned(),
@@ -1824,5 +1891,59 @@ mod publication_readiness_tests {
                 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod powered_off_tests {
+    use super::*;
+    #[test]
+    fn queued_or_replaced_sources_cannot_borrow_an_older_off_identity() {
+        let source = hex_audio::prepared::AppliedAudioSource {
+            context: AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 3,
+            },
+            audio_revision: 4,
+            output_identity: 5,
+        };
+        let mut resident = Resident::default();
+        resident.powered_off_sources[0] = Some((source, 7));
+        // A queued/refused On does not alter the still-applied predecessor's fact.
+        assert_eq!(resident.powered_off_main(source), Some(7));
+        for replaced in [
+            hex_audio::prepared::AppliedAudioSource {
+                audio_revision: 6,
+                ..source
+            },
+            hex_audio::prepared::AppliedAudioSource {
+                output_identity: 8,
+                ..source
+            },
+            hex_audio::prepared::AppliedAudioSource {
+                context: AudioSourceContext {
+                    editor_revision: 9,
+                    ..source.context
+                },
+                ..source
+            },
+            hex_audio::prepared::AppliedAudioSource {
+                context: AudioSourceContext {
+                    project_generation: 10,
+                    ..source.context
+                },
+                ..source
+            },
+        ] {
+            assert_eq!(resident.powered_off_main(replaced), None);
+        }
+        resident.retain_applied_off(Some(source));
+        resident.powered_off_sources[0] = None;
+        assert_eq!(resident.powered_off_main(source), Some(7));
+        resident.retain_applied_off(Some(hex_audio::prepared::AppliedAudioSource {
+            audio_revision: 11,
+            ..source
+        }));
+        assert_eq!(resident.powered_off_main(source), None);
     }
 }

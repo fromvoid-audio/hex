@@ -407,6 +407,20 @@ impl Hosting {
         })
     }
 
+    /// Compile exact resource-free Off metadata without touching any SDK owner.
+    pub fn prepare_powered_off_on_control(
+        entry: super::PoweredOffEffect<'_>,
+        prepare: &mut dyn FnMut(
+            &AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        let definition =
+            NativeEffectDefinition::powered_off(&[entry]).map_err(|error| error.to_string())?;
+        AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+            .map_err(|error| error.to_string())
+    }
+
     /// Preserve validated opaque devices without claiming native processing.
     /// The prepared graph contains identity placeholders, not foreign factories.
     /// Callers must expose their absence through the applied graph observation.
