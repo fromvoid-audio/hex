@@ -2,20 +2,34 @@
 use super::*;
 use hex_lattice_contract::NativeDeviceState;
 
+#[derive(Clone, Copy)]
+enum ReceivingTrack {
+    WithClip,
+    Empty,
+    WithUtility,
+}
+
 #[test]
 fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocations() {
-    assert_running_effect_move(feedback_delay(20.0), Some([-0.125, 0.25]));
+    assert_running_effect_move(feedback_delay(20.0), ReceivingTrack::WithClip);
 }
 
 #[test]
 fn running_reverb_moves_its_decay_to_the_destination_track() {
-    assert_running_effect_move(full_wet_reverb(), Some([-0.125, 0.25]));
+    assert_running_effect_move(full_wet_reverb(), ReceivingTrack::WithClip);
 }
 
 #[test]
 fn running_effects_keep_sounding_when_moved_to_an_empty_track() {
     for state in [feedback_delay(20.0), full_wet_reverb()] {
-        assert_running_effect_move(state, None);
+        assert_running_effect_move(state, ReceivingTrack::Empty);
+    }
+}
+
+#[test]
+fn running_effects_move_after_the_receiving_tracks_utility() {
+    for state in [feedback_delay(20.0), full_wet_reverb()] {
+        assert_running_effect_move(state, ReceivingTrack::WithUtility);
     }
 }
 
@@ -31,7 +45,7 @@ fn full_wet_reverb() -> NativeDeviceState {
         .unwrap()
 }
 
-fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Option<Frame>) {
+fn assert_running_effect_move(state: NativeDeviceState, receiving_track: ReceivingTrack) {
     const FRAMES: usize = 4096;
     const CUT: usize = 2048;
     const FADE: usize = 240;
@@ -41,8 +55,8 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
     source[1600] = [0.5, -0.25];
     source[3000] = [0.25, 0.125];
     let mut destination = vec![[0.0; 2]; FRAMES];
-    if let Some(signal) = destination_signal {
-        destination[DESTINATION_ONSET..].fill(signal);
+    if !matches!(receiving_track, ReceivingTrack::Empty) {
+        destination[DESTINATION_ONSET..].fill([-0.125, 0.25]);
     }
     let unrelated = vec![[0.0625, -0.03125]; FRAMES];
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
@@ -53,7 +67,7 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         .into_iter()
         .enumerate()
     {
-        if index == 1 && destination_signal.is_none() {
+        if index == 1 && matches!(receiving_track, ReceivingTrack::Empty) {
             let Created::Track(track) = editor
                 .execute(Command::AddTrack {
                     name: "empty destination".into(),
@@ -79,6 +93,28 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         media.insert(asset, hex_engine::Audio::new(RATE, pcm).unwrap());
         tracks.push(track);
         assets.push(asset);
+    }
+    if matches!(receiving_track, ReceivingTrack::WithUtility) {
+        use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
+        let utility = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                INVERT_LEFT,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track: tracks[1],
+                before: None,
+                state: utility,
+            })
+            .unwrap();
+        // Apply Utility's polarity offline to the reference input, leaving the
+        // imported PCM untouched so incorrect chain order changes the result.
+        for frame in &mut destination {
+            frame[0] = -frame[0];
+        }
     }
     editor
         .execute(Command::SetTrackGains {
@@ -123,6 +159,28 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         })
         .unwrap();
     let after = prepare(editor.project(), &media);
+    if matches!(receiving_track, ReceivingTrack::WithUtility) {
+        let mut changed = Editor::new(editor.project().clone(), 4).unwrap();
+        let utility = changed.project().track(tracks[1]).unwrap().devices()[0].id();
+        changed
+            .execute(Command::SetDeviceBypass {
+                device: utility,
+                bypassed: true,
+            })
+            .unwrap();
+        let (control, mut callback, predecessor, receipt) = begin_insert_with_pending_track(
+            Arc::clone(&before),
+            prepare(changed.project(), &media),
+            None,
+            CUT,
+        );
+        render(&mut callback, &mut [[0.0; 2]; 64]);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        assert!(matches!(
+            receipt.state(),
+            PublicationReceiptState::Refused(_)
+        ));
+    }
     for partition in [1, 257] {
         let (control, mut callback, predecessor, receipt) =
             begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
