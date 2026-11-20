@@ -2497,6 +2497,12 @@ impl SessionPlayback {
         self.playing = playing;
     }
 
+    pub(crate) fn replaced_foreign_instrument(
+        &self,
+    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        self.foreign_arrangement.replaced_instrument()
+    }
+
     /// Scalar translation used by the effective performance clock. Observers
     /// must correlate it with this runtime's applied revision and route snapshot.
     pub fn clock_anchor(&self) -> Option<SessionClockAnchor> {

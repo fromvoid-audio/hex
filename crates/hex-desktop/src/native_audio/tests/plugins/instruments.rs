@@ -237,6 +237,311 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
+fn running_hosted_replacement_releases_only_the_original_worker_after_install() {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    const CHILD: &str = "HEX_TEST_HOSTED_TO_HOSTED_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let trace = Files::new();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", &trace.0)
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let catalog = Files::new();
+    let directory = catalog.0.canonicalize().unwrap();
+    let mut selected = selection();
+    let module = directory.join("original.vst3");
+    super::ui::copy_original_module(&selected.module, &module);
+    selected.module = module;
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selected, "Instrument|Synth", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        directory.join("plugin-catalog.json"),
+    );
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let trace_paths = || {
+        fs::read_dir(&trace)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "bin"))
+            .collect::<Vec<_>>()
+    };
+    let traces = |path: &std::path::Path| -> Option<(i32, i32, i32, i32)> {
+        let data: [u8; 20] = fs::read(path).ok()?.try_into().ok()?;
+        let word =
+            |index: usize| i32::from_ne_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
+        Some((word(1), word(2), word(3), word(4)))
+    };
+    let mut add_instrument = |h: &mut ResidentHarness, name: &str, velocity| {
+        let added = h.run(Request::Edit(Command::AddMidiTrack { name: name.into() }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("instrument track")
+        };
+        (applied, _) = h.applied(applied);
+        let length = BeatTime::from_quarters(16).unwrap();
+        let created = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        }));
+        let Some(Created::Clip(clip)) = created.created else {
+            panic!("held note clip")
+        };
+        (applied, _) = h.applied(applied);
+        let note = h.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 0,
+            velocity,
+        }));
+        (applied, _) = h.applied(applied);
+        let mut insertion = request(&note.state, PluginEffectDestination::Instrument(track));
+        insertion.selection = selected.clone();
+        h.run(Request::InsertPluginEffect(insertion));
+        let event = terminal(h);
+        assert!(
+            event.plugin_effect_complete[0].accepted,
+            "{:?}",
+            event.error
+        );
+        (applied, _) = h.applied(applied);
+        let device = event
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        (event, track, device)
+    };
+    let (_, track, original) = add_instrument(&mut h, "hosted replacement", 100);
+    let [original_trace]: [PathBuf; 1] = trace_paths().try_into().unwrap();
+    let (before, _, retained) = add_instrument(&mut h, "retained donor", 19);
+    let [retained_trace]: [PathBuf; 1] = trace_paths()
+        .into_iter()
+        .filter(|path| *path != original_trace)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .set_audio_diagnostics(hex_audio::audio_diagnostics::AudioDiagnosticsFlags::ALL);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 256];
+    for _ in 0..8 {
+        pcm = render_completed_block(&h);
+    }
+    // Each fixture emits its held gate velocity divided by 127.
+    let expect_both = |pcm: &[hex_engine::Frame; 256]| {
+        assert!(
+            pcm.iter()
+                .flatten()
+                .all(|&sample| (sample - 119.0 / 127.0).abs() < 1e-5)
+        );
+    };
+    expect_both(&pcm);
+    let source = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let predecessor = source(&h);
+    let worker = |h: &ResidentHarness, device: hex_project::DeviceId| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .iter()
+            .flatten()
+            .find_map(|&(id, binding, _)| (id == device.value()).then_some(binding))
+    };
+    let binding = worker(&h, original).unwrap();
+    let retained_binding = worker(&h, retained).unwrap();
+    h.enable_confirmed_device_inserts();
+    let replacement = || {
+        let mut insertion = request(
+            &before.state,
+            PluginEffectDestination::ReplaceInstrument {
+                track,
+                instrument: original,
+            },
+        );
+        insertion.selection = selected.clone();
+        Request::InsertPluginEffect(insertion)
+    };
+    let offer_replacement = |h: &mut ResidentHarness| {
+        h.run(replacement());
+        let mut offer = None;
+        wait(|| {
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                assert_eq!(event.state.project, before.state.project);
+                assert_eq!(event.state.revision, before.state.revision);
+                assert_eq!(event.state.can_undo, before.state.can_undo);
+                assert_eq!(event.state.can_redo, before.state.can_redo);
+                assert_eq!(source(h), predecessor);
+                assert_eq!(worker(h, original), Some(binding));
+                assert_eq!(worker(h, retained), Some(retained_binding));
+                if let Some(error) = event.error.as_deref() {
+                    let pcm = render_completed_block(h);
+                    assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+                    while let Some(row) = h.audio.as_mut().unwrap().control.take_audio_diagnostic()
+                    {
+                        eprintln!("hosted replacement diagnostic {row:?}");
+                    }
+                    panic!(
+                        "hosted replacement refused before consent: {error}; {:?}",
+                        event.device_insert_complete
+                    );
+                }
+                if let Some(received) = event.device_insert_confirmation {
+                    offer = Some(received);
+                    return true;
+                }
+            }
+            render_completed_block(h);
+            false
+        });
+        let offer = offer.unwrap();
+        assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+        offer
+    };
+    let cancelled_offer = offer_replacement(&mut h);
+    assert!(cancelled_offer.cancel());
+    let cancelled = terminal(&mut h);
+    assert!(!cancelled.plugin_effect_complete[0].accepted);
+    assert_eq!(cancelled.state.project, before.state.project);
+    assert_eq!(cancelled.state.revision, before.state.revision);
+    assert_eq!(cancelled.state.can_undo, before.state.can_undo);
+    assert_eq!(cancelled.state.can_redo, before.state.can_redo);
+    assert_eq!(source(&h), predecessor);
+    assert_eq!(worker(&h, original), Some(binding));
+    assert_eq!(worker(&h, retained), Some(retained_binding));
+    expect_both(&render_completed_block(&h));
+    let before_approval = trace_paths();
+    let offer = offer_replacement(&mut h);
+    let [fresh_trace]: [PathBuf; 1] = trace_paths()
+        .into_iter()
+        .filter(|path| !before_approval.contains(path))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let (submitted, resume) = h.probe_next_submitted_device_insert();
+    assert!(offer.proceed());
+    let queued = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(source(&h), predecessor);
+    assert_eq!(worker(&h, original), Some(binding));
+    assert_eq!(worker(&h, retained), Some(retained_binding));
+    resume.send(()).unwrap();
+    let mut installed = None;
+    wait(|| {
+        h.pump();
+        if let Ok(event) = h.service.try_event()
+            && !event.plugin_effect_complete.is_empty()
+        {
+            installed = Some(event);
+            return true;
+        }
+        let pcm = h.render_plugin_block();
+        assert!(
+            pcm.iter()
+                .flatten()
+                .all(|sample| sample.abs() <= 119.0 / 127.0 + 1e-5)
+        );
+        state::edits::workers_idle(&h);
+        false
+    });
+    let installed = installed.unwrap();
+    if installed.error.is_some() {
+        while let Some(row) = h.audio.as_mut().unwrap().control.take_audio_diagnostic() {
+            eprintln!("hosted replacement diagnostic {row:?}");
+        }
+    }
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.submission, queued);
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(source(&h).audio_revision, queued.audio_revision);
+    assert_eq!(source(&h).output_identity, predecessor.output_identity);
+    assert_eq!(installed.state.revision, before.state.revision + 1);
+    let new = installed
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    assert_ne!(new, original);
+    wait(|| {
+        h.pump();
+        render_completed_block(&h);
+        traces(&original_trace)
+            .is_some_and(|(ons, offs, on, off)| ons == 1 && offs == 1 && on == off)
+    });
+    wait(|| {
+        h.pump();
+        worker(&h, new).is_some_and(|fresh| fresh != binding)
+    });
+    assert_eq!(worker(&h, retained), Some(retained_binding));
+    for _ in 0..4 {
+        render_completed_block(&h);
+    }
+    expect_both(&render_completed_block(&h));
+    // Stop and renew the surviving endpoints so the original helpers publish
+    // their exact accepted ledgers. Each has one onset and one matching off.
+    h.audio.as_ref().unwrap().control.stop();
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+    let mut restored = h.run(Request::RestoreStoppedPlayback);
+    if !restored.stopped_playback_restore_complete {
+        restored = restored_terminal(&mut h);
+    }
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    let matching_gate = |path: &std::path::Path| {
+        traces(path)
+            .is_some_and(|(ons, offs, on, off)| ons == 1 && offs == 1 && on > 0 && on == off)
+    };
+    wait(|| {
+        h.pump();
+        matching_gate(&fresh_trace) && matching_gate(&retained_trace)
+    });
+}
+
+#[test]
+#[ignore = "requires explicit source-bound SDK receipts"]
 fn slow_native_instrument_exchange_reaches_the_session_log() {
     const CHILD: &str = "HEX_SLOW_EXCHANGE_LOG_CHILD";
     if std::env::var_os(CHILD).is_none() {

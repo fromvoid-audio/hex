@@ -2660,6 +2660,14 @@ impl PublicationControl {
                 }
                 ReturnedPublication::Legacy(mut publication) => {
                     publication.release_streams_on_control(&self.candidate_root);
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    if let Some((references, binding)) = publication
+                        .native_references
+                        .as_ref()
+                        .zip(publication.playback.replaced_foreign_instrument())
+                    {
+                        references.retire_replaced_instrument_on_control(binding);
+                    }
                     let frames = publication.pcm_frames;
                     let forwarded = publication.forwarded_pcm;
                     if let Some(resources) = self.device_resources.as_mut() {
