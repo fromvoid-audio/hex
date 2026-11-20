@@ -710,12 +710,12 @@ impl Playback {
     /// publication authority; the audio owner validates the actual source.
     /// A guarded instrument continuation still uses the normal same-worker
     /// instrument ledger and clock preflight during runtime handoff.
-    /// An isolated instrument comparison also requires the publisher's
+    /// An isolated comparison also requires the publisher's
     /// source and editor-admission fences.
     pub fn foreign_continuation_matches_predecessor_on_callback(
         &self,
         previous: &Self,
-        isolated_instrument: bool,
+        isolated: bool,
     ) -> bool {
         let Some(states) = self
             .session_runtime
@@ -727,7 +727,7 @@ impl Playback {
         fn matches<'a>(
             nodes: impl Iterator<Item = &'a hex_lattice::PreparedRuntimeInstance>,
             states: &StoredForeignContinuation,
-            isolated_instrument: bool,
+            isolated: bool,
         ) -> bool {
             let mut nodes = nodes.filter(|node| {
                 node.owner == states.identity.owner()
@@ -739,24 +739,18 @@ impl Playback {
             nodes.next().is_none()
                 && node.foreign_processor().is_some_and(|prepared| {
                     prepared.binding() == Some(states.binding)
-                        && if prepared.is_instrument_profile() {
-                            !node.bypassed
-                                && node.modulation.is_none()
-                                && (node.automation.is_empty() || isolated_instrument)
-                        } else {
-                            !isolated_instrument
-                        }
+                        && (!prepared.is_instrument_profile() || !node.bypassed)
+                        && node.modulation.is_none()
+                        && (node.automation.is_empty() || isolated)
                 })
                 && node.configuration.as_deref().is_some_and(|state| {
                     state.shares_payload_storage_with(&states.previous) && *state == states.previous
                 })
         }
         match states.identity.owner() {
-            hex_lattice::ProcessorChainOwner::Main => matches(
-                previous.project.main_device_chain.iter(),
-                states,
-                isolated_instrument,
-            ),
+            hex_lattice::ProcessorChainOwner::Main => {
+                matches(previous.project.main_device_chain.iter(), states, isolated)
+            }
             hex_lattice::ProcessorChainOwner::Track(owner) => previous
                 .project
                 .tracks
@@ -773,7 +767,7 @@ impl Playback {
                             .iter()
                             .chain(track.foreign_instrument.iter()),
                         states,
-                        isolated_instrument,
+                        isolated,
                     )
                 }),
             hex_lattice::ProcessorChainOwner::Return(owner) => previous
@@ -781,7 +775,7 @@ impl Playback {
                 .return_buses
                 .iter()
                 .find(|bus| bus.id.value() == owner)
-                .is_some_and(|bus| matches(bus.device_chain.iter(), states, isolated_instrument)),
+                .is_some_and(|bus| matches(bus.device_chain.iter(), states, isolated)),
             // Source effect stages reject foreign processors at preparation.
             hex_lattice::ProcessorChainOwner::Source(_) => false,
         }

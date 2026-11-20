@@ -883,7 +883,7 @@ impl NativeAudioSink {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut continuation_fence = None;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let mut isolated_instrument_replay = false;
+        let mut isolated_replay = false;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let control = self
@@ -953,11 +953,11 @@ impl NativeAudioSink {
                         ResidentPublicationPolicy::InheritRuntime
                             | ResidentPublicationPolicy::InheritRuntimeAt(_)
                     ) {
-                        match self.plugins.retain_isolated_instrument_replay_states(
-                            metadata.context,
-                            &mut playback,
-                        ) {
-                            Ok(retained) => isolated_instrument_replay = retained,
+                        match self
+                            .plugins
+                            .retain_isolated_replay_states(metadata.context, &mut playback)
+                        {
+                            Ok(retained) => isolated_replay = retained,
                             Err(error) => {
                                 return Err(ResidentPublicationRefusal {
                                     kind: hex_session::service::ResidentPublicationFailure::Other,
@@ -967,7 +967,7 @@ impl NativeAudioSink {
                             }
                         }
                     }
-                    if playback.has_foreign_continuation_states() && !isolated_instrument_replay {
+                    if playback.has_foreign_continuation_states() && !isolated_replay {
                         return Err(ResidentPublicationRefusal {
                             kind: hex_session::service::ResidentPublicationFailure::Other,
                             playback,
@@ -1459,7 +1459,7 @@ impl NativeAudioSink {
                     ),
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     _ if retained_playback.has_foreign_continuation_states()
-                        && !isolated_instrument_replay =>
+                        && !isolated_replay =>
                     {
                         match self.plugins.sequenced_publication_request(
                             Some(control),
