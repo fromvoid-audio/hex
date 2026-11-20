@@ -296,11 +296,12 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
                 "Undo ended before native publication"
             );
         }
-        render_completed_block(&h);
+        h.render_plugin_block();
         assert!(
             Instant::now() < deadline,
             "fresh native Undo did not prepare"
         );
+        std::thread::yield_now();
     }
     assert_eq!(source(&h), stopped_source);
     assert_eq!(h.plugin_records.load(Acquire), 1);
