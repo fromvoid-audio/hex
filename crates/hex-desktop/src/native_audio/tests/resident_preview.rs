@@ -1657,6 +1657,20 @@ impl WorkerAudioSink for ResidentSink {
                     && edit.normalized == 0.5
             }));
         }
+        if std::env::var_os("HEX_EXPECT_RETIRING_EARLIER_GROUP").is_some() {
+            use hex_session::service::RetiringEditorEventKind::{GroupEnd, Perform};
+            let cut = batch.predecessor_admitted_through.unwrap();
+            assert_eq!(cut, 12);
+            let terminal = batch.events().last().unwrap();
+            assert_eq!((terminal.sequence, terminal.kind), (cut, GroupEnd));
+            let values: Vec<_> = batch
+                .events()
+                .iter()
+                .filter(|edit| edit.kind == Perform)
+                .map(|edit| (edit.parameter, edit.normalized))
+                .collect();
+            assert_eq!(values, [(0, 0.75), (11, 0.5)]);
+        }
         Some(batch)
     }
 
