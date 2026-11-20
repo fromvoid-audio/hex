@@ -141,11 +141,15 @@ fn real_provider_reversals_rollback_and_unchanged_handoffs_match_wet_and_delayed
     ] {
         for rate in [8_000_u32, 44_100, 48_000, 192_000] {
             let ramp = rate.div_ceil(200) as usize;
+            let power_on = rate.div_ceil(2000) as usize;
             let settled = ramp + 60;
+            let restart = 18 + 2 * settled;
             let count = 18 + 3 * settled;
             let input: Vec<_> = (0..4096 + count).map(signal).collect();
             let mut reference = provider_chain(definition, false, rate, automated);
             let wet = process(&mut reference, &input, 0, 64);
+            let mut fresh = provider_chain(definition, false, rate, automated);
+            let restarted_wet = process(&mut fresh, &input[4096 + restart..], 4096 + restart, 64);
             for block in [1, 7, 64, 513] {
                 let mut old = provider_chain(definition, false, rate, automated);
                 process(&mut old, &input[..4096], 0, 64);
@@ -183,11 +187,17 @@ fn real_provider_reversals_rollback_and_unchanged_handoffs_match_wet_and_delayed
                         } else if i < 18 + 2 * settled {
                             1.0 - (i - 17 - settled).min(ramp) as f32 / ramp as f32
                         } else {
-                            (i - 17 - 2 * settled).min(ramp) as f32 / ramp as f32
+                            (i - restart + 1).saturating_sub(11).min(power_on) as f32
+                                / power_on as f32
                         };
                         let dry = input[4096 + i - 11];
+                        let processed = if i < restart {
+                            wet[4096 + i]
+                        } else {
+                            restarted_wet[i - restart]
+                        };
                         for lane in 0..2 {
-                            let expected = dry[lane] + (wet[4096 + i][lane] - dry[lane]) * mix;
+                            let expected = dry[lane] + (processed[lane] - dry[lane]) * mix;
                             assert!(
                                 (frame[lane] - expected).abs() < 2e-6,
                                 "{:?} automated={automated} rate={rate} block={block} frame={i} actual={frame:?} expected={expected}",
@@ -204,7 +214,7 @@ fn real_provider_reversals_rollback_and_unchanged_handoffs_match_wet_and_delayed
 }
 
 #[test]
-fn warm_bypass_keeps_real_release_history_and_silence_stays_exactly_silent() {
+fn power_off_finishes_release_then_on_uses_a_fresh_silent_runtime() {
     for definition in [
         &crate::rattle::RATTLE_DEFINITION as &'static dyn NativeDeviceDefinition,
         &crate::overdrive::OVERDRIVE_DEFINITION,
@@ -222,25 +232,37 @@ fn warm_bypass_keeps_real_release_history_and_silence_stays_exactly_silent() {
         process(&mut audible, &warm, 0, 64);
         let mut off = provider_chain(definition, true, 48_000, false);
         off.transfer_history_from(&mut audible);
-        let zeros = vec![[0.0; 2]; 192_512];
+        let zeros = vec![[0.0; 2]; 1024];
         let reference = process(&mut wet, &zeros, 1024, 256);
         assert!(reference[..240].iter().flatten().any(|v| v.abs() > 1e-5));
         let head = process(&mut off, &zeros[..300], 1024, 64);
+        for (i, frame) in head[..240].iter().enumerate() {
+            let mix = 1.0 - (i + 1) as f32 / 240.0;
+            let dry = if i < 11 {
+                warm[1024 + i - 11]
+            } else {
+                [0.0; 2]
+            };
+            for lane in 0..2 {
+                let expected = dry[lane] + (reference[i][lane] - dry[lane]) * mix;
+                assert!((frame[lane] - expected).abs() < 2e-6);
+            }
+        }
         assert!(head[240..].iter().all(|f| *f == [0.0; 2]));
         let mut on = provider_chain(definition, false, 48_000, false);
         on.transfer_history_from(&mut off);
         let actual = process(&mut on, &zeros[300..], 1324, 256);
-        for (i, (frame, expected)) in actual.iter().zip(&reference[300..]).enumerate() {
-            let mix = (i + 1).min(240) as f32 / 240.0;
-            for lane in 0..2 {
-                assert!((frame[lane] - expected[lane] * mix).abs() < 2e-6);
-            }
-        }
-        assert!(actual[192_000..].iter().all(|f| *f == [0.0; 2]));
+        assert!(actual.iter().all(|f| *f == [0.0; 2]));
         let wake: Vec<_> = (0..512).map(signal).collect();
+        let mut fresh = provider_chain(definition, false, 48_000, false);
+        assert!(
+            process(&mut fresh, &zeros[300..], 1324, 64)
+                .iter()
+                .all(|f| *f == [0.0; 2])
+        );
         assert_eq!(
-            process(&mut on, &wake, 193_536, 7),
-            process(&mut wet, &wake, 193_536, 64)
+            process(&mut on, &wake, 2048, 7),
+            process(&mut fresh, &wake, 2048, 64)
         );
         let different_rate = provider_chain(definition, false, 44_100, false);
         assert!(!different_rate.configuration_matches_range(&on, 0..1));
