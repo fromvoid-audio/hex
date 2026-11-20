@@ -1900,11 +1900,16 @@ impl SessionPlayback {
             }
         }
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
+            let staged_track = self
+                .native_removal
+                .and_then(|removal| removal.staged_track_id(previous));
             history_track
+                // A Session-only audio track has no Arrangement clips, but
+                // its staged fader still owns audible compensation history.
+                .filter(|history| {
+                    !matches!(history, FreshHistory::ColdTrack(id) if staged_track == Some(*id))
+                })
                 .or_else(|| {
-                    let staged_track = self
-                        .native_removal
-                        .and_then(|removal| removal.staged_track_id(previous));
                     if !previous.playing
                         || !same_base_timing
                         || self.revision.arrangement().tracks().len().checked_add(1)

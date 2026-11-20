@@ -3,15 +3,25 @@ use super::*;
 
 #[test]
 fn removing_plain_arrangement_track_fades_the_feed_and_keeps_shared_return_history() {
-    shared_return_survives_track_removal(false);
+    shared_return_survives_track_removal(false, false);
 }
 
 #[test]
 fn removing_compensated_arrangement_track_drains_the_feed_into_the_shared_return() {
-    shared_return_survives_track_removal(true);
+    shared_return_survives_track_removal(true, false);
 }
 
-fn shared_return_survives_track_removal(compensated: bool) {
+#[test]
+fn removing_session_audio_track_fades_the_feed_and_keeps_shared_return_history() {
+    shared_return_survives_track_removal(false, true);
+}
+
+#[test]
+fn removing_compensated_session_audio_track_drains_the_feed_into_the_shared_return() {
+    shared_return_survives_track_removal(true, true);
+}
+
+fn shared_return_survives_track_removal(compensated: bool, session: bool) {
     use hex_devices::delay::{
         DEFINITION, DRY_WET, FEEDBACK, FILTER, HIGH_QUALITY, LEFT_SYNC, TIME,
     };
@@ -76,6 +86,32 @@ fn shared_return_survives_track_removal(compensated: bool) {
     };
     let (removed, asset) = import("removed", feeds[0]);
     let (kept, _) = import("kept", feeds[1]);
+    let session_clip = session.then(|| {
+        let clip = editor.project().track(removed).unwrap().clips()[0].id();
+        editor.execute(Command::RemoveClip(clip)).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track: removed,
+                scene,
+                name: "removed".into(),
+                asset,
+                source_start: 0,
+                source_end: FRAMES as u64,
+            })
+            .unwrap()
+        else {
+            panic!("session clip");
+        };
+        clip
+    });
     let latency = if compensated {
         use hex_devices::limiter::{DEFINITION, parameter::LOOKAHEAD};
 
@@ -123,15 +159,27 @@ fn shared_return_survives_track_removal(compensated: bool) {
     editor.execute(Command::RemoveTrack(removed)).unwrap();
     let after = prepare(editor.project(), &media);
     assert_eq!(after.arrangement().main_latency_frames() as usize, latency);
-    let oracle = |revision| {
+    let oracle = |revision, launch| {
         let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        if let Some(clip) = session_clip.filter(|_| launch) {
+            // The successor has no departing clip. Only the independent old
+            // graph oracle launches it and retains its Return history.
+            playback
+                .try_apply_action(PlaybackAction::Session(
+                    SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                    },
+                ))
+                .unwrap();
+        }
         playback.apply(PlaybackCommand::Play);
         let mut pcm = vec![[0.0; 2]; FRAMES];
         playback.render(&mut pcm).unwrap();
         pcm
     };
-    let expected = oracle(reference);
-    let without_old_feed = oracle(Arc::clone(&after));
+    let expected = oracle(reference, true);
+    let without_old_feed = oracle(Arc::clone(&after), false);
     assert!(
         expected[CUT + prefix..CUT + prefix + BLOCK]
             .iter()
@@ -141,7 +189,7 @@ fn shared_return_survives_track_removal(compensated: bool) {
 
     for partition in [1, BLOCK] {
         let (control, mut callback, source, receipt) =
-            begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
+            begin_track_removal(Arc::clone(&before), Arc::clone(&after), session_clip, CUT);
         let mut pcm = vec![[0.0; 2]; prefix + ECHO_FRAMES + BLOCK];
         for chunk in pcm[..prefix].chunks_mut(partition) {
             measured_render(&mut callback, chunk);
@@ -168,16 +216,111 @@ fn shared_return_survives_track_removal(compensated: bool) {
     }
 }
 
+fn begin_track_removal(
+    old: Arc<hex_engine::PreparedRevision>,
+    next: Arc<hex_engine::PreparedRevision>,
+    session_clip: Option<hex_project::ClipId>,
+    position: usize,
+) -> (
+    Control,
+    Callback,
+    AppliedAudioSource,
+    CancellablePublicationReceipt,
+) {
+    let Some(clip) = session_clip else {
+        return begin_insert_with_pending_track(old, next, None, position);
+    };
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 5,
+        editor_revision: 7,
+    };
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    let mut playback = Playback::try_from_prepared_with_session(old).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Session(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    control
+        .publish_unaccounted_pcm_obligation(
+            playback,
+            PublicationPolicy::InstallFreshRuntime,
+            context.project_generation,
+            true,
+            false,
+            Some(context),
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    measured_render(&mut callback, &mut vec![[0.0; 2]; position]);
+    let predecessor = control.status.recording_source().unwrap();
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let revision = control
+        .publish_unaccounted_pcm_obligation(
+            Playback::try_from_prepared_with_session(next).unwrap(),
+            PublicationPolicy::DeviceInsert { predecessor, fence },
+            context.project_generation,
+            true,
+            false,
+            Some(hex_engine::AudioSourceContext {
+                editor_revision: 8,
+                ..context
+            }),
+        )
+        .unwrap();
+    let receipt = control.fresh_runtime_receipt(revision).unwrap();
+    (control, callback, predecessor, receipt)
+}
+
 #[test]
 fn an_aborted_track_removal_restores_its_running_fader() {
+    aborted_track_removal(false);
+}
+
+#[test]
+fn an_aborted_session_audio_track_removal_restores_its_running_fader() {
+    aborted_track_removal(true);
+}
+
+fn aborted_track_removal(session: bool) {
     const FADE: usize = RATE.div_ceil(200) as usize;
     let (mut editor, removed, prepare) = resident_input(vec![SIGNAL; 2048]);
+    let session_clip = session.then(|| {
+        let clip = editor.project().track(removed).unwrap().clips()[0].id();
+        let asset = editor.project().assets().next().unwrap().id();
+        editor.execute(Command::RemoveClip(clip)).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track: removed,
+                scene,
+                name: "removed".into(),
+                asset,
+                source_start: 0,
+                source_end: 2048,
+            })
+            .unwrap()
+        else {
+            panic!("session clip");
+        };
+        clip
+    });
     let old = prepare(editor.project());
     editor.execute(Command::RemoveTrack(removed)).unwrap();
     let next = prepare(editor.project());
     for stop in [false, true] {
         let (control, mut callback, source, receipt) =
-            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, 384);
+            begin_track_removal(Arc::clone(&old), Arc::clone(&next), session_clip, 384);
         let mut prefix = [[0.0; 2]; 32];
         measured_render(&mut callback, &mut prefix);
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
