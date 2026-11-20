@@ -32,7 +32,8 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     /// host resets the runtime and skips its transactions. Reserved dry
     /// history continues through Off and supplies output until fresh wet
     /// samples reach the same output clock. Reset must be bounded,
-    /// allocation-free and preserve parameter admissions.
+    /// allocation-free and preserve parameter admissions. Cold power-on adds
+    /// only a half-millisecond de-click after that dry lead.
     fn supports_power_off(&self) -> bool {
         false
     }

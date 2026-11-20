@@ -113,6 +113,7 @@ fn check_mix(rate: u32, lookahead: u32, routing: u32, mode: u32) {
         .unwrap() as usize;
     let warm = latency * 2 + 64;
     let ramp = rate.div_ceil(200) as usize;
+    let power_on = rate.div_ceil(2000) as usize;
     let settled = ramp + latency + 60;
     let restart = 18 + 2 * settled;
     let count = 18 + 3 * settled;
@@ -167,7 +168,7 @@ fn check_mix(rate: u32, lookahead: u32, routing: u32, mode: u32) {
                 } else if i < restart {
                     1.0 - (i - 17 - settled).min(ramp) as f32 / ramp as f32
                 } else {
-                    (i - restart + 1).saturating_sub(latency).min(ramp) as f32 / ramp as f32
+                    (i - restart + 1).saturating_sub(latency).min(power_on) as f32 / power_on as f32
                 };
                 let dry = input[warm + i - latency];
                 let processed = if i < restart {
