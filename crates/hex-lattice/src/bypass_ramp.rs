@@ -77,6 +77,12 @@ impl AlignedDry {
             storage: DryStorage::Reserved { frames, next: 0 },
         })
     }
+    pub(crate) fn reserved_storage(&self) -> Option<&Vec<[f32; 2]>> {
+        match &self.storage {
+            DryStorage::Reserved { frames, .. } => Some(frames),
+            DryStorage::Inline(_) => None,
+        }
+    }
     fn parts(&self) -> (&[[f32; 2]], usize) {
         match &self.storage {
             DryStorage::Inline(dry) => (&dry.frames[..dry.len], dry.next),
