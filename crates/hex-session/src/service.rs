@@ -7620,8 +7620,9 @@ fn run_worker(
                 }
                 Request::Edit(command)
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                        && resident_audio::device_insert::graph_edit_operation(&command)
-                            .is_some()
+                        && (matches!(&command, Command::PasteDevices { .. })
+                            || resident_audio::device_insert::graph_edit_operation(&command)
+                                .is_some())
                         && events
                             .resident_audio()
                             .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>

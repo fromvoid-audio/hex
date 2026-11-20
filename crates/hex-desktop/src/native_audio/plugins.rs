@@ -745,15 +745,15 @@ impl Plugins {
     }
 
     /// Select installed sources and workers prepared for this exact proposal
-    /// or staged history edge. Root still validates the actual state.
+    /// or private verified graph edit. Root still validates the actual state.
     pub(super) fn verified_effect_bindings(
         &self,
         input: ResidentEffectPreparation<'_>,
         proposal: Option<&Arc<PluginEffectControl>>,
-        staged_history: bool,
+        staged_sources: bool,
     ) -> Result<Vec<Binding>, String> {
         let context = input.context();
-        let history = staged_history && self.edit == Some(context);
+        let staged = staged_sources && self.edit == Some(context);
         let pending = self.pending.as_ref().filter(|pending| {
             proposal.is_some_and(|proposal| Arc::ptr_eq(proposal, &pending.operation))
                 && pending.canonical_context.project_generation
@@ -777,7 +777,7 @@ impl Plugins {
                         && !source.retiring
                         && (source.accepted
                             || pending.is_some_and(|pending| source.binding == pending.binding)
-                            || (history && source.operation.edit_context() == Some(context)))
+                            || (staged && source.operation.edit_context() == Some(context)))
                         && edits::source_covers_selection(
                             source.authored.as_ref(),
                             authored.as_ref(),
@@ -1177,15 +1177,15 @@ impl Plugins {
         input: &ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
-        hosted_history: bool,
+        fresh_hosted_sources: bool,
     ) -> Result<(), String> {
         let previous = desired
-            .filter(|_| hosted_history)
+            .filter(|_| fresh_hosted_sources)
             .map(CanonicalAudioSourceSnapshot::effect_preparation);
         input.visit_plugin_devices(|destination, device, state| {
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let fresh_history_source = previous
+            let fresh_source = previous
                 .as_ref()
                 .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
             self.prepare_edit_source(
@@ -1196,7 +1196,7 @@ impl Plugins {
                 state,
                 desired,
                 cancellation,
-                fresh_history_source,
+                fresh_source,
             )
             .map_err(bounded_error)
         })
