@@ -41,8 +41,13 @@ pub(crate) enum FreshHistory {
     /// An inserted or removed track with no source or devices. Its group
     /// output and Return sends may be excluded only when their rings are silent.
     ColdTrack(TrackId),
-    /// A removed isolated source; its pre-Main PCM is cut at handoff.
-    RemovedTrack(TrackId),
+    /// An isolated source can cut its direct pre-Main PCM at handoff.
+    /// A staged removal can also retire ordinary sends after the callback
+    /// has faded the track and proved its outgoing rings silent.
+    RemovedTrack {
+        track: TrackId,
+        staged: bool,
+    },
     /// An existing leaf track with a stable output and unchanged Return sends.
     /// Only a confirmed fade at the cut may retire its buffered PCM.
     ChangedTrack {
@@ -56,7 +61,7 @@ pub(crate) enum FreshHistory {
 impl FreshHistory {
     fn contains(self, node: NodeId) -> bool {
         match self {
-            Self::Track(id) | Self::ColdTrack(id) | Self::RemovedTrack(id) => {
+            Self::Track(id) | Self::ColdTrack(id) | Self::RemovedTrack { track: id, .. } => {
                 node.belongs_to_track(id)
             }
             Self::ChangedTrack { track, device, .. } => {
@@ -1382,10 +1387,12 @@ impl SignalGraph {
             .is_some_and(|(from, to)| owner.contains(from) || owner.contains(to))
     }
 
-    /// A cold track can leave silent history at its declared group output
-    /// and Return sends. Incoming routes, authored feeds and keys still need
-    /// their own proof.
-    fn is_independent_track(&self, id: TrackId, cold: bool) -> bool {
+    /// Cold tracks may have a Group output. Cold tracks and staged removals
+    /// may have ordinary Return sends. Incoming routes, authored feeds and
+    /// keys still need their own proof.
+    fn is_independent_track(&self, id: TrackId, owner: FreshHistory) -> bool {
+        let cold = matches!(owner, FreshHistory::ColdTrack(_));
+        let allow_sends = cold || matches!(owner, FreshHistory::RemovedTrack { staged: true, .. });
         let group_edge = if let Some(track) = self.tracks.iter().find(|track| track.id == Some(id))
         {
             if !track.devices.is_empty() {
@@ -1410,7 +1417,7 @@ impl SignalGraph {
                     (true, false) => {
                         from == NodeId::Fader(id.value())
                             && (to == NodeId::Main
-                                || (cold && matches!(to, NodeId::ReturnInput(_)))
+                                || (allow_sends && matches!(to, NodeId::ReturnInput(_)))
                                 || (group_edge == Some(edge)
                                     && matches!(to, NodeId::TrackInput(_))))
                     }
@@ -1518,7 +1525,7 @@ impl SignalGraph {
                     key != Some(match owner {
                         FreshHistory::Track(id)
                         | FreshHistory::ColdTrack(id)
-                        | FreshHistory::RemovedTrack(id)
+                        | FreshHistory::RemovedTrack { track: id, .. }
                         | FreshHistory::ChangedTrack { track: id, .. } => (false, id.value()),
                         FreshHistory::Return(id) => (true, id.value()),
                     })
@@ -1536,7 +1543,7 @@ impl SignalGraph {
                 Some(
                     FreshHistory::Track(_)
                     | FreshHistory::ColdTrack(_)
-                    | FreshHistory::RemovedTrack(_)
+                    | FreshHistory::RemovedTrack { .. }
                     | FreshHistory::ChangedTrack { .. },
                 )
                 | None => self.returns.len() != other.returns.len(),
@@ -1549,15 +1556,13 @@ impl SignalGraph {
                 self.main_latency() != other.main_latency()
                     || match owner {
                         FreshHistory::Track(track) | FreshHistory::ColdTrack(track) => {
-                            let cold = matches!(owner, FreshHistory::ColdTrack(_));
-                            !self.is_independent_track(track, cold)
-                                || !other.is_independent_track(track, cold)
+                            !self.is_independent_track(track, owner)
+                                || !other.is_independent_track(track, owner)
                         }
-                        FreshHistory::RemovedTrack(track) => {
+                        FreshHistory::RemovedTrack { track, .. } => {
                             self.tracks.iter().any(|entry| entry.id == Some(track))
                                 || !other.tracks.iter().any(|entry| entry.id == Some(track))
-                                || !self.is_independent_track(track, false)
-                                || !other.is_independent_track(track, false)
+                                || !other.is_independent_track(track, owner)
                         }
                         FreshHistory::ChangedTrack { track, .. } => {
                             // Shared Group and Return inputs and their downstream nodes
@@ -1626,7 +1631,7 @@ impl SignalGraph {
         };
         // The existing edited track keeps its typed output and sends even though
         // its local history is excluded.
-        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack(id)) if track.id == Some(id));
+        let retained = |track: &&TrackPlan| !matches!(fresh, Some(FreshHistory::Track(id) | FreshHistory::ColdTrack(id) | FreshHistory::RemovedTrack { track: id, .. }) if track.id == Some(id));
         let retained_return =
             |bus: &&ReturnPlan| !matches!(fresh, Some(FreshHistory::Return(id)) if bus.id == id);
         if !self
@@ -2081,7 +2086,7 @@ impl SignalRuntime {
                 && self.owner_history_is_silent(owner)
                 && (matches!(
                     owner,
-                    FreshHistory::RemovedTrack(_)
+                    FreshHistory::RemovedTrack { .. }
                         | FreshHistory::ChangedTrack {
                             cut_predecessor_pcm: true,
                             ..

@@ -19,6 +19,7 @@ fn shared_return_survives_track_removal(compensated: bool) {
     const FRAMES: usize = 2_048;
     const CUT: usize = 512;
     const FADE: usize = RATE.div_ceil(200) as usize;
+    const ECHO_FRAMES: usize = (RATE / 100) as usize;
     let feeds = [[0.25, -0.125], [0.125, -0.25]];
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
     let Created::ReturnTrack(bus) = editor
@@ -96,7 +97,9 @@ fn shared_return_survives_track_removal(compensated: bool) {
     } else {
         0
     };
-    let prefix = FADE + latency - 1;
+    // The fader must complete its last (zero) frame, and the ring must emit
+    // the previous (nonzero) frame before the successor can take over.
+    let prefix = FADE + latency.saturating_sub(1);
     let table = Arc::new(hex_engine::SineTable::new());
     let prepare = |project: &Project, media: &BTreeMap<_, _>| {
         Arc::new(
@@ -139,14 +142,16 @@ fn shared_return_survives_track_removal(compensated: bool) {
     for partition in [1, BLOCK] {
         let (control, mut callback, source, receipt) =
             begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
-        let mut pcm = vec![[0.0; 2]; prefix + BLOCK];
+        let mut pcm = vec![[0.0; 2]; prefix + ECHO_FRAMES + BLOCK];
         for chunk in pcm[..prefix].chunks_mut(partition) {
             measured_render(&mut callback, chunk);
             assert_eq!(receipt.state(), PublicationReceiptState::Pending);
             assert_eq!(control.status.recording_source(), Some(source));
         }
-        measured_render(&mut callback, &mut pcm[prefix..]);
-        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        for chunk in pcm[prefix..].chunks_mut(BLOCK) {
+            measured_render(&mut callback, chunk);
+            assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        }
         let active = control.status.recording_source().unwrap();
         assert_eq!(active.audio_revision, receipt.revision());
         assert_eq!(active.output_identity, source.output_identity);

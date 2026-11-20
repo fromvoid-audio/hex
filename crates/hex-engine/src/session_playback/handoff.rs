@@ -1935,7 +1935,14 @@ impl SessionPlayback {
                         None,
                         true,
                     )
-                    .map(FreshHistory::RemovedTrack)
+                    .map(|track| FreshHistory::RemovedTrack {
+                        track,
+                        // The staged path above gates actual copying on both
+                        // the fader and the departing rings being silent.
+                        staged: self
+                            .native_removal
+                            .is_some_and(|removal| removal.stages_track(previous, track)),
+                    })
                 })
                 .or_else(|| {
                     let approved_cut = confirmed_insert && !force_restart;
