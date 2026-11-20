@@ -9,6 +9,7 @@ use hex_plugin_host::{
 /// owns no live Root slot and cannot publish a graph or callback endpoint. The
 /// compiler borrows only its validated source-derived configuration; completion
 /// resumes this same lease before creating the final paired worker/callback.
+/// Quiescence must preserve its declared latency and tail before graph planning.
 pub struct OfflineEffectPreparation {
     source: Quiescent,
     renewal: NativeEffectRenewal,
@@ -33,10 +34,19 @@ impl OfflineEffectPreparation {
         let (source, renewal) = effect
             .into_quiescent_on_control()
             .map_err(|e| e.finish_on_control().to_string())?;
+        let facts = source.facts();
+        let output_tail = if facts.tail_frames == u32::MAX {
+            hex_lattice::OutputTail::Unbounded
+        } else {
+            hex_lattice::OutputTail::Finite {
+                max_tail_frames: u64::from(facts.tail_frames)
+                    + u64::from(configuration.prepared.bridge_latency_frames()),
+            }
+        };
         if source.completed_blocks() != 0
             || source.configuration().binding.root != u64::MAX
-            || source.facts().algorithmic_latency_frames
-                != configuration.prepared.processor_latency_frames()
+            || facts.algorithmic_latency_frames != configuration.prepared.processor_latency_frames()
+            || output_tail != configuration.prepared.output_tail()
         {
             let reason = "offline vst3 preparation changed before graph planning";
             return Err(match source.cancel_and_reap_on_control() {
@@ -201,6 +211,73 @@ mod tests {
     use hex_lattice::ProcessorChainOwner;
     use hex_project::{Command, Created, Editor, Project};
     use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+
+    #[test]
+    #[ignore = "explicit source-bound original SDK helpers required"]
+    fn actual_offline_source_refuses_changed_tail_before_graph_planning() {
+        const CHILD: &str = "HEX_AUDIO_OFFLINE_TAIL_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            for (before, after) in [(3_u32, 3_u32), (3, 19), (3, u32::MAX), (u32::MAX, 3)] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        std::thread::current().name().unwrap(),
+                        "--ignored",
+                    ])
+                    .env(CHILD, if before == after { "stable" } else { "changed" })
+                    .env("HEX_ORIGINAL_TAIL_FRAMES", before.to_string())
+                    .env("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT", after.to_string())
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "tail {before} -> {after}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+        let binding = Binding {
+            root: u64::MAX,
+            instance: 2,
+            graph: 1,
+            epoch: 1,
+        };
+        let instance = crate::plugin_worker::native_tests::original_instance_for_binding(binding);
+        let effect = NativeEffect::prepare_on_control(
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap(),
+            instance,
+        )
+        .unwrap();
+        let expected = effect.finite_tail_frames();
+        let stage =
+            OfflineEffectPreparation::from_effect_on_control(effect, usize::MAX, None, false);
+        match stage {
+            Ok(stage) => {
+                assert_eq!(stage.finite_tail_frames(), expected);
+                assert_eq!(
+                    stage.source.facts().tail_frames,
+                    std::env::var("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT")
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap()
+                );
+                assert_eq!(stage.source.completed_blocks(), 0);
+                let terminal = stage.source.retire_on_control().unwrap();
+                assert!(terminal.status.success());
+                assert_eq!(terminal.terminal.unwrap().blocks, 0);
+                assert_eq!(std::env::var(CHILD).as_deref(), Ok("stable"));
+            }
+            Err(reason) => {
+                assert_eq!(std::env::var(CHILD).as_deref(), Ok("changed"));
+                assert_eq!(
+                    reason,
+                    "offline vst3 preparation changed before graph planning"
+                );
+            }
+        }
+    }
 
     #[test]
     #[ignore = "explicit source-bound original SDK helpers required"]
