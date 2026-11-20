@@ -4146,14 +4146,14 @@ impl SessionPlayback {
                 .unwrap_or(contributor);
             powered_off_receivers[receiver]
         };
-        let faded_analytic_track = self
+        let faded_instrument_track = self
             .native_removal
-            .and_then(|pending| pending.faded_analytic_track(previous));
+            .and_then(|pending| pending.faded_instrument_track(previous));
         let analytic_move =
             instrument_move.filter(|movement| movement.kind == InstrumentMoveKind::AnalyticSine);
         for (old_index, _) in previous.routes.iter().enumerate() {
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
-            if faded_analytic_track == Some(old_route.id)
+            if faded_instrument_track == Some(old_route.id)
                 || !arrangement_instrument_changed
                     .get(old_index)
                     .copied()
@@ -4692,7 +4692,7 @@ impl SessionPlayback {
         for entry in &previous.releases {
             // Only the already-faded current route is cut. Detached suffixes
             // and every unrelated release retain their ordinary lifecycle.
-            if (faded_analytic_track == Some(entry.track_id)
+            if (faded_instrument_track == Some(entry.track_id)
                 && entry.location.tail_group().is_none())
                 || entry.end_frame() <= previous.performance_frame
             {
@@ -5553,6 +5553,11 @@ impl SessionPlayback {
                 .routes
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if faded_instrument_track == Some(old_route.id) {
+                // The faded direct route ends at this cut. Its mutable owner
+                // belongs to the returned predecessor, outside the tail bank.
+                continue;
+            }
             let Some(runtime) = previous
                 .mutable_instruments
                 .get(old_index)
