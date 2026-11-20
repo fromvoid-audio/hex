@@ -261,11 +261,69 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
     assert!(installed);
     assert_ne!(fresh, original_binding);
 
-    let device = new.devices()[0].id();
+    assert_stopped_hosted_removal_history(&mut h, &accepted.state, new.devices()[0].id(), applied);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn stopped_return_vst3_undo_redo_wait_for_the_callback_receipt() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        directory.join("plugin-catalog.json"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 8192)));
+    let track = imported.state.project.tracks()[0].id();
+    let (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddReturnTrack {
+        name: "hosted return".into(),
+    }));
+    let Some(Created::ReturnTrack(return_track)) = added.created else {
+        panic!("return");
+    };
+    let (applied, _) = h.applied(applied);
+    let sent = h.run(Request::Edit(Command::SetReturnSend {
+        track,
+        return_track,
+        gain: 0.5,
+    }));
+    let (applied, _) = h.applied(applied);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &sent.state,
+            PluginEffectDestination::Return(return_track),
+        )))
+        .unwrap();
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    let Some(Created::Device(device)) = accepted.created else {
+        panic!("return effect");
+    };
+    let (applied, _) = h.applied(applied);
+    assert_stopped_hosted_removal_history(&mut h, &accepted.state, device, applied);
+}
+
+fn assert_stopped_hosted_removal_history(
+    h: &mut ResidentHarness,
+    inserted: &hex_session::service::ViewState,
+    device: hex_project::DeviceId,
+    applied: u64,
+) {
+    let fresh = h.plugin_progress.lock().unwrap().newest_source.unwrap().1;
     h.service
         .submit(Request::Edit(Command::RemoveDevice(device)))
         .unwrap();
-    let deleted = state::edits::ordinary_terminal(&mut h);
+    let deleted = state::edits::ordinary_terminal(h);
     assert!(deleted.error.is_none(), "{:?}", deleted.error);
     assert!(deleted.state.project.device(device).is_none());
     let (applied, _) = h.applied(applied);
@@ -284,7 +342,7 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
             .recording_source()
             .unwrap()
     };
-    let predecessor = source(&h);
+    let predecessor = source(h);
     assert_eq!(predecessor.context.editor_revision, deleted.state.revision);
     let pending_history = |h: &mut ResidentHarness, before: &hex_session::service::ViewState| {
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -304,7 +362,7 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
             }
             assert!(
                 Instant::now() < deadline,
-                "Track VST3 history did not go pending"
+                "hosted history did not go pending"
             );
             std::thread::yield_now();
         }
@@ -322,25 +380,25 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
             );
         }
         h.render_plugin_block();
-        assert!(Instant::now() < deadline, "Track VST3 Undo did not prepare");
+        assert!(Instant::now() < deadline, "hosted Undo did not prepare");
         std::thread::yield_now();
     }
     let fresh_undo = h.plugin_progress.lock().unwrap().newest_source.unwrap().1;
     assert_ne!(fresh_undo, fresh);
-    assert_eq!(source(&h), predecessor);
+    assert_eq!(source(h), predecessor);
     resume.send(()).unwrap();
-    pending_history(&mut h, &deleted.state);
-    assert_eq!(source(&h), predecessor);
-    let restored = state::edits::ordinary_terminal(&mut h);
+    pending_history(h, &deleted.state);
+    assert_eq!(source(h), predecessor);
+    let restored = state::edits::ordinary_terminal(h);
     assert!(restored.error.is_none(), "{:?}", restored.error);
-    assert_eq!(restored.state.project, accepted.state.project);
+    assert_eq!(restored.state.project, inserted.project);
     let receipt = restored.device_insert_complete.unwrap();
     assert_eq!(
         receipt.outcome,
         hex_session::service::DeviceInsertOutcome::Installed
     );
-    assert_eq!(receipt.submission.audio_revision, source(&h).audio_revision);
-    assert_eq!(receipt.submission.context, source(&h).context);
+    assert_eq!(receipt.submission.audio_revision, source(h).audio_revision);
+    assert_eq!(receipt.submission.context, source(h).context);
     assert_eq!(
         receipt.submission.output_identity,
         predecessor.output_identity
@@ -350,15 +408,15 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
     assert!(installed);
     assert_ne!(restored_binding, fresh);
     assert_eq!(restored_binding, fresh_undo);
-    let restored_source = source(&h);
+    let restored_source = source(h);
     let (submitted, resume) = h.probe_next_submitted_device_insert();
     h.service.submit(Request::Redo).unwrap();
     let queued = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(source(&h), restored_source);
+    assert_eq!(source(h), restored_source);
     resume.send(()).unwrap();
-    pending_history(&mut h, &restored.state);
-    assert_eq!(source(&h), restored_source);
-    let deleted_again = state::edits::ordinary_terminal(&mut h);
+    pending_history(h, &restored.state);
+    assert_eq!(source(h), restored_source);
+    let deleted_again = state::edits::ordinary_terminal(h);
     assert!(deleted_again.error.is_none(), "{:?}", deleted_again.error);
     assert_eq!(deleted_again.state.project, deleted.state.project);
     let receipt = deleted_again.device_insert_complete.unwrap();
@@ -367,8 +425,8 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
         hex_session::service::DeviceInsertOutcome::Installed
     );
     assert_eq!(receipt.submission, queued);
-    assert_eq!(receipt.submission.audio_revision, source(&h).audio_revision);
-    assert_eq!(receipt.submission.context, source(&h).context);
+    assert_eq!(receipt.submission.audio_revision, source(h).audio_revision);
+    assert_eq!(receipt.submission.context, source(h).context);
     assert_eq!(
         receipt.submission.output_identity,
         restored_source.output_identity

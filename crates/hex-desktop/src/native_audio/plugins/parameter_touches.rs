@@ -337,6 +337,17 @@ impl Plugins {
                 if let Some(progress) = &self.progress
                     && let Ok(mut progress) = progress.lock()
                 {
+                    // Request admission and first PCM do not acknowledge the
+                    // helper's latency opt-in. Only its returned recovery batch
+                    // can qualify this exact accepted source for the fixture.
+                    if requested_recovery
+                        && live
+                        && source.accepted
+                        && !source.retiring
+                        && source.binding.root == active.output_identity
+                    {
+                        progress.recovery_read_binding = Some(source.binding);
+                    }
                     for edit in batch.edits.as_slice() {
                         let index = progress.editor_receipt_count;
                         if let Some(slot) = progress.editor_receipts.get_mut(index) {

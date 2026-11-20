@@ -629,7 +629,9 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 @@ -1 +1 @@
 -use crate::{Bounds, Half};
 +use crate::{Bounds, Half, Point};
-@@ -36,11 +36,111 @@
+@@ -3 +2,0 @@
+-    cmp,
+@@ -36,11 +35,111 @@
 -        // If the tree is empty, make the root the new leaf.
 -        if self.root.is_none() {
 -            let new_node = self.push_leaf(new_bounds, 1);
@@ -752,7 +754,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        let a = &self.nodes[left];
 +        let b = &self.nodes[right];
 +        Node::Internal {
-@@ -49,60 +149,48 @@
+@@ -49,60 +148,48 @@
 -            bounds: node_bounds,
 -            ..
 -        } = &mut self.nodes[index]
@@ -861,7 +863,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                self.rotate_left(left);
 +            }
 +            self.rotate_right(index);
-@@ -110,72 +198,2 @@
+@@ -110,72 +197,2 @@
 -            // If the old parent was the root, the new parent is the new root.
 -            self.root = Some(new_parent);
 -        }
@@ -936,7 +938,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 -        self.nodes.len() - 1
 +            self.set_internal(index, left, right);
 +        }
-@@ -197,0 +216,33 @@
+@@ -197,0 +215,33 @@
 +// Stored corners keep child coverage exact across rotations.
 +#[derive(Debug, Clone, PartialEq)]
 +struct TreeBounds<U: Clone + Debug + Default + PartialEq> {
@@ -970,18 +972,18 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    }
 +}
 +
-@@ -204 +255 @@
+@@ -204 +254 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -210 +261 @@
+@@ -210 +260 @@
 -        bounds: Bounds<U>,
 +        bounds: TreeBounds<U>,
-@@ -211,0 +263 @@
+@@ -211,0 +262 @@
 +        height: usize,
-@@ -219 +271 @@
+@@ -219 +270 @@
 -    fn bounds(&self) -> &Bounds<U> {
 +    fn bounds(&self) -> &TreeBounds<U> {
-@@ -222,0 +275,7 @@
+@@ -222,0 +274,7 @@
 +        }
 +    }
 +
@@ -989,7 +991,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        match self {
 +            Self::Leaf { .. } => 0,
 +            Self::Internal { height, .. } => *height,
-@@ -235,0 +295,200 @@
+@@ -235,0 +294,201 @@
 +    }
 +}
 +
@@ -1003,6 +1005,7 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +mod ordering_verification {
 +    use super::*;
 +    use crate::Size;
++    use std::cmp;
 +
 +    fn require(value: bool, message: &str) -> Result<(), String> {
 +        if value {
