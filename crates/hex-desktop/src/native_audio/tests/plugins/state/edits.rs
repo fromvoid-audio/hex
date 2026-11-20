@@ -259,6 +259,12 @@ fn late_editor_already_in_canonical_successor_releases_original_receipt() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_group_replays_both_values_and_reopens_on_the_same_successor() {
+    retiring_editor_replay_roundtrip(ReplayCase::Grouped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_preserves_playing_transport() {
     retiring_editor_replay_roundtrip(ReplayCase::Playing);
 }
@@ -280,6 +286,7 @@ enum ReplayCase {
     Conflict,
     Publish,
     AlreadyCanonical,
+    Grouped,
     Playing,
     Refuse,
     RefuseAfterNewer,
@@ -287,6 +294,7 @@ enum ReplayCase {
 
 fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
+    let grouped = case == ReplayCase::Grouped;
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
         let release = files.0.join("release");
@@ -305,7 +313,12 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 matches!(case, ReplayCase::Refuse | ReplayCase::RefuseAfterNewer)
                     .then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
             )
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if grouped { "148" } else { "116" },
+            )
+            .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", "split")
+            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
             .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
             .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
             .output()
@@ -322,11 +335,16 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
 
     let _native = native_fixture();
     let playing = case == ReplayCase::Playing;
-    let (mut h, files, saved) = if playing {
-        fixture_with_frames(Start::Saved, 48_000 * 20)
-    } else {
-        fixture(Start::Saved)
+    let effect_host = || {
+        let host = host();
+        if grouped {
+            host.with_grouped_editor_callbacks()
+        } else {
+            host
+        }
     };
+    let frames = if playing { 48_000 * 20 } else { 2048 };
+    let (mut h, files, saved) = fixture_with_host(Start::Saved, frames, effect_host());
     let (applied, _) = h.applied(0);
     let original = &saved.project.main_devices()[0];
     let device = original.id();
@@ -372,6 +390,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         });
     };
     emit(&old_trace);
+    if grouped {
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
+            b"end group",
+        )
+        .unwrap();
+    }
     if matches!(case, ReplayCase::Conflict | ReplayCase::RefuseAfterNewer) {
         let successor_trace = fs::read_dir(&traces_dir)
             .unwrap()
@@ -475,7 +500,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         return;
     }
 
-    if matches!(case, ReplayCase::Publish | ReplayCase::Playing) {
+    if matches!(
+        case,
+        ReplayCase::Publish | ReplayCase::Playing | ReplayCase::Grouped
+    ) {
         let event = loop {
             h.pump();
             h.render_worker_step();
@@ -494,6 +522,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         };
         let (_, publication) = h.applied(replacement_audio);
         assert_eq!(publication.context.editor_revision, event.state.revision);
+        assert_eq!(event.state.revision, accepted.state.revision + 1);
         assert_eq!(installed(&h), Some(successor));
         assert_eq!(
             h.audio
@@ -525,6 +554,14 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
             3.0
         );
+        if grouped {
+            for capture in [captured, state] {
+                assert_eq!(
+                    f64::from_le_bytes(capture.component.unwrap()[32..40].try_into().unwrap()),
+                    2.0
+                );
+            }
+        }
         let previous_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         h.service.shutdown(Duration::from_secs(1)).unwrap();
         assert!(
@@ -544,7 +581,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         selected.module = module;
         hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Fx", 0).unwrap();
         let mut h = ResidentHarness::with_plugins_and_catalog(
-            host(),
+            effect_host(),
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: 512,
@@ -565,10 +602,20 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         let rows = super::super::installed_edits::query(&mut h, device, None, &mut serial)
             .rows
             .unwrap();
+        let gain_id = if grouped { 0 } else { 7 };
         assert_eq!(
-            rows.iter().find(|row| row.id == 7).unwrap().normalized,
+            rows.iter()
+                .find(|row| row.id == gain_id)
+                .unwrap()
+                .normalized,
             0.75
         );
+        if grouped {
+            assert_eq!(
+                rows.iter().find(|row| row.id == 11).unwrap().normalized,
+                0.5
+            );
+        }
         assert_eq!(hex_audio::audio_lifecycle_failure(), None);
         return;
     }
