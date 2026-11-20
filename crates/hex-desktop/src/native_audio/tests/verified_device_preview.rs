@@ -7,7 +7,16 @@ use hex_session::device_gesture::{
 
 #[test]
 fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
-    use hex_project::Command;
+    verified_arrangement_track_removal(false);
+}
+
+#[test]
+fn verified_compensated_track_removal_drains_a_shared_return_feed() {
+    verified_arrangement_track_removal(true);
+}
+
+fn verified_arrangement_track_removal(compensated: bool) {
+    use hex_project::{Command, Created};
     use hex_session::service::DeviceInsertOutcome;
 
     let _native = native_fixture();
@@ -25,7 +34,51 @@ fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
     let first = h.run(Request::Import(first.wav(48_000, 32_768)));
     let track = first.state.project.tracks()[0].id();
     h.applied(h.context.unwrap());
-    let before = h.run(Request::Import(second.wav(48_000, 32_768)));
+    let mut before = h.run(Request::Import(second.wav(48_000, 32_768)));
+    let level = if compensated {
+        h.applied(h.context.unwrap());
+        let binding = before.state.canonical_audio_source.as_ref().unwrap();
+        assert_eq!(
+            binding
+                .required_sources()
+                .filter(|(_, source)| matches!(
+                    source,
+                    hex_session::AudioSourceBinding::VerifiedFile(_)
+                ))
+                .count(),
+            2
+        );
+        let kept = before.state.project.tracks()[1].id();
+        let bus = h.run(Request::Edit(Command::AddReturnTrack {
+            name: "shared".into(),
+        }));
+        let Some(Created::ReturnTrack(bus)) = bus.created else {
+            panic!("shared Return");
+        };
+        h.applied(h.context.unwrap());
+        for source in [track, kept] {
+            let sent = h.run(Request::Edit(Command::SetReturnSend {
+                track: source,
+                return_track: bus,
+                gain: 0.5,
+            }));
+            assert!(sent.error.is_none(), "{:?}", sent.error);
+            h.applied(h.context.unwrap());
+        }
+        let limiter = hex_engine::default_native_device_state(
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        before = h.run_verified_device_insert(Command::InsertDevice {
+            track: kept,
+            before: None,
+            state: limiter,
+        });
+        assert!(before.error.is_none(), "{:?}", before.error);
+        0.375
+    } else {
+        0.25
+    };
     let source = h.applied(h.context.unwrap());
     h.audio
         .as_mut()
@@ -34,7 +87,7 @@ fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
         .command(PlaybackCommand::Play)
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
-    while h.render() != [[0.5; 2]; 64] {
+    while h.render() != [[2.0 * level; 2]; 64] {
         assert!(Instant::now() < deadline, "both tracks must be playing");
         std::thread::yield_now();
     }
@@ -51,7 +104,7 @@ fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
         let start = status.position.load(Acquire);
         let block = h.render();
         assert_eq!(status.applied_audio_source(), Some(source));
-        if block != [[0.5; 2]; 64] {
+        if block != [[2.0 * level; 2]; 64] {
             break (start, block);
         }
         assert!(
@@ -62,22 +115,25 @@ fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
     };
     const FADE: usize = 240;
     let mut elapsed = 0;
+    let mut fading = false;
     for part in 0..4 {
         if part != 0 {
             block = h.render();
             assert_eq!(status.applied_audio_source(), Some(source));
         }
         for (index, frame) in block.iter().enumerate() {
-            let gain = FADE.saturating_sub(elapsed + index + 1) as f32 / FADE as f32;
-            let expected = 0.25 + 0.25 * gain;
+            fading |= *frame != [2.0 * level; 2];
+            elapsed += usize::from(fading);
+            let gain = FADE.saturating_sub(elapsed) as f32 / FADE as f32;
+            let expected = level + level * gain;
             assert!(
                 frame.iter().all(|sample| (*sample - expected).abs() < 1e-6),
                 "frame {}: {frame:?}, expected {expected}",
-                elapsed + index
+                part * block.len() + index
             );
         }
-        elapsed += block.len();
     }
+    assert!(elapsed >= FADE);
     assert_eq!(status.position.load(Acquire), clock + 256);
     let removed = h.next_with_audio();
     assert!(
@@ -93,7 +149,7 @@ fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
     let active = h.applied(h.context.unwrap());
     assert_eq!(active.audio_revision, receipt.submission.audio_revision);
     assert_eq!(active.output_identity, source.output_identity);
-    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    assert_eq!(h.render(), [[level; 2]; 64]);
 }
 
 #[test]

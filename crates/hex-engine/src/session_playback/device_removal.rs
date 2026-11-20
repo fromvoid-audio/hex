@@ -39,13 +39,14 @@ impl PendingNativeRemoval {
         }
     }
 
-    pub(super) fn stages_track(
+    pub(super) fn staged_track_id(
         self,
         previous: &SessionPlayback,
-        track: hex_project::TrackId,
-    ) -> bool {
-        matches!(self.transition, RemovalTransition::Track(index)
-            if previous.routes.get(index).is_some_and(|route| route.id == track))
+    ) -> Option<hex_project::TrackId> {
+        match self.transition {
+            RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
+            RemovalTransition::Device(_) => None,
+        }
     }
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
@@ -318,17 +319,13 @@ impl SessionPlayback {
     fn direct_track_removal_keeps_timing(&self, previous: &Self, id: hex_project::TrackId) -> bool {
         match (&self.compensation, &previous.compensation) {
             (None, None) => true,
-            (Some(next), Some(old)) => {
-                !self.revision.contains_streamed_sources()
-                    && !previous.revision.contains_streamed_sources()
-                    && next.can_copy_from(
-                        old,
-                        Some(FreshHistory::RemovedTrack {
-                            track: id,
-                            staged: true,
-                        }),
-                    )
-            }
+            (Some(next), Some(old)) => next.can_copy_from(
+                old,
+                Some(FreshHistory::RemovedTrack {
+                    track: id,
+                    staged: true,
+                }),
+            ),
             _ => false,
         }
     }
