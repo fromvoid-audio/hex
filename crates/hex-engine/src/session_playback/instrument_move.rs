@@ -162,9 +162,11 @@ impl SessionPlayback {
                         .instrument_automation(tracks[1], device)
                         .is_none()
             })
+            // An inverse finds the original contributor's dispatched gates
+            // in the current donor's kernel, alongside gates it added there.
             && proofs
                 .iter()
-                .all(|proof| proof.signature.key().track == tracks[0])
+                .all(|proof| tracks.contains(&proof.signature.key().track))
             && tracks.into_iter().all(|track| {
                 previous.revision.bounded_mutable_arrangement_sources_match(
                     &self.revision,
