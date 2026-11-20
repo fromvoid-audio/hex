@@ -859,6 +859,7 @@ fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel()
         NativeMoveLayout::Delay,
         NativeMoveLayout::UtilityDelay,
         NativeMoveLayout::Sine,
+        NativeMoveLayout::Vector,
     ] {
         assert_native_move_history(layout);
     }
@@ -868,6 +869,7 @@ enum NativeMoveLayout {
     Delay,
     UtilityDelay,
     Sine,
+    Vector,
 }
 
 fn assert_native_move_history(layout: NativeMoveLayout) {
@@ -901,13 +903,18 @@ fn assert_native_move_history(layout: NativeMoveLayout) {
         );
         install_candidate(&service, &fixture);
     }
-    let (class, type_id) = if matches!(layout, NativeMoveLayout::Sine) {
-        (
+    let (class, type_id) = match layout {
+        NativeMoveLayout::Sine => (
             hex_engine::NativeDeviceClass::Instrument,
             "hex.instrument.sine",
-        )
-    } else {
-        (hex_engine::NativeDeviceClass::Effect, "hex.delay")
+        ),
+        NativeMoveLayout::Vector => (
+            hex_engine::NativeDeviceClass::Instrument,
+            "hex.instrument.operator",
+        ),
+        NativeMoveLayout::Delay | NativeMoveLayout::UtilityDelay => {
+            (hex_engine::NativeDeviceClass::Effect, "hex.delay")
+        }
     };
     assert!(
         !run(Request::AddNativeDevice {
@@ -921,7 +928,7 @@ fn assert_native_move_history(layout: NativeMoveLayout) {
     let original = install_candidate(&service, &fixture).state;
     let moved_device = |project: &hex_project::Project, track| {
         let track = project.track(track).unwrap();
-        if matches!(layout, NativeMoveLayout::Sine) {
+        if class == hex_engine::NativeDeviceClass::Instrument {
             track.instrument().unwrap().id()
         } else {
             track.devices().last().unwrap().id()

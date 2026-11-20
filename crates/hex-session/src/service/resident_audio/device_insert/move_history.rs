@@ -1,6 +1,6 @@
 //! Prove that a history target is exactly one direct native device move.
 //! Match a Delay or Reverb with an optional retained Utility on one side, or
-//! an unchanged, single-contributor Sine. Audio still proves the actual cut.
+//! an unchanged, single-contributor Sine or Vector. Audio proves the cut.
 use hex_project::{
     Command, Device, DeviceSelectionIds, Editor, Invalid, Project, SourceId, StagedProjectHistory,
     Track,
@@ -50,7 +50,7 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
                 (None, Some(_)) => (&mut destination, new, old, after),
                 _ => return None,
             };
-            let (device, native_source) = solitary_sine(project, attached)?;
+            let (device, native_source) = solitary_move_instrument(project, attached)?;
             if detached.source_id().is_some()
                 || slot
                     .replace((old.id(), device, Some(native_source)))
@@ -107,11 +107,19 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
     })
 }
 
-fn solitary_sine<'a>(project: &Project, track: &'a Track) -> Option<(&'a Device, SourceId)> {
+fn solitary_move_instrument<'a>(
+    project: &Project,
+    track: &'a Track,
+) -> Option<(&'a Device, SourceId)> {
     let device = track.instrument()?;
     let id = track.source_id()?;
     let source = project.native_source(id)?;
-    (device.state().type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+    let type_id = device.state().type_id();
+    let supported = type_id == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+        || (matches!(type_id.as_str(), Ok("hex.instrument.operator"))
+            && device.automation().is_empty()
+            && device.modulation().is_empty());
+    (supported
         && source.receiver() == Some(track.id())
         && source.devices().count() == 1
         && project.source_contributors(id).count() == 1)
