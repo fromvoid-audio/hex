@@ -1203,9 +1203,11 @@ mod reserved_dry_tests {
             let journal_pointer = journal.as_ptr();
             let mut runtime_bytes = crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES - required + extra;
             let original_bytes = runtime_bytes;
-            let mut plan =
-                Transfer::new(&mut target, &mut previous, &mut journal, &mut runtime_bytes);
-            let result = plan.plan(Location::MainChain, Location::TailChain(0), chain);
+            let result = {
+                let mut plan =
+                    Transfer::new(&mut target, &mut previous, &mut journal, &mut runtime_bytes);
+                plan.plan(Location::MainChain, Location::TailChain(0), chain)
+            };
             assert_eq!(
                 result,
                 if extra == 0 {
@@ -1214,7 +1216,6 @@ mod reserved_dry_tests {
                     Err(crate::SessionPlaybackError::ReleaseBankFull)
                 }
             );
-            drop(plan);
             assert_eq!(
                 runtime_bytes, original_bytes,
                 "preflight cannot commit byte ownership"
