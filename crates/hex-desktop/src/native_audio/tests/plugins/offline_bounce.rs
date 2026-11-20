@@ -169,7 +169,7 @@ fn bounced_pcm(
 fn native_vst3_streamed_main_export_uses_private_worker() {
     let _native = native_fixture();
     for limit in [8_192, 32_768] {
-        native_effect_export_case(limit, false);
+        native_effect_export_case(limit, None);
     }
 }
 
@@ -199,10 +199,43 @@ fn native_vst3_export_refuses_changed_final_latency_without_publishing() {
         return;
     }
     let _native = native_fixture();
-    native_effect_export_case(8_192, true);
+    native_effect_export_case(8_192, Some("presentation latency refused (worker code 5)"));
 }
 
-fn native_effect_export_case(limit: u64, refuse_final_latency: bool) {
+#[test]
+#[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
+fn native_vst3_export_refuses_changed_quiescent_tail_without_publishing() {
+    const CHILD: &str = "HEX_OFFLINE_TAIL_REFUSAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_TAIL_FRAMES", "3")
+            .env("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT", "19")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let _native = native_fixture();
+    native_effect_export_case(
+        8_192,
+        Some("offline vst3 preparation changed before graph planning"),
+    );
+}
+
+fn native_effect_export_case(limit: u64, refusal: Option<&str>) {
     use hex_session::service::{ExportControl, ExportSignal};
     let files = Files::new();
     let mut selected = selection();
@@ -254,7 +287,7 @@ fn native_effect_export_case(limit: u64, refuse_final_latency: bool) {
     let live = h.plugin_progress.lock().unwrap().binding;
     let path = files.0.join("private-export.wav");
     let existing = b"previous completed export";
-    if refuse_final_latency {
+    if refusal.is_some() {
         fs::write(&path, existing).unwrap();
     }
     let queued = super::super::resident_sections::run_callback(
@@ -266,7 +299,7 @@ fn native_effect_export_case(limit: u64, refuse_final_latency: bool) {
             signal: ExportSignal::Main,
             control: ExportControl::default(),
             format: hex_export::ExportFormat::Pcm16,
-            overwrite: refuse_final_latency,
+            overwrite: refusal.is_some(),
         },
     );
     assert!(queued.error.is_none(), "{:?}", queued.error);
@@ -280,16 +313,11 @@ fn native_effect_export_case(limit: u64, refuse_final_latency: bool) {
         assert!(Instant::now() < deadline, "private export timed out");
         std::thread::yield_now();
     };
-    if refuse_final_latency {
+    if let Some(reason) = refusal {
         let error = completed
             .result
             .expect_err("final presentation must refuse");
-        assert!(
-            error
-                .message()
-                .contains("presentation latency refused (worker code 5)"),
-            "{error}"
-        );
+        assert!(error.message().contains(reason), "{error}");
         assert_eq!(fs::read(path).unwrap(), existing);
         assert_eq!(h.plugin_progress.lock().unwrap().binding, live);
         assert_eq!(queued.state.project, before);
