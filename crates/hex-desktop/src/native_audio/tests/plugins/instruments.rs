@@ -4,6 +4,7 @@ use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
 mod automation_start;
+mod held_removal;
 mod section_edit;
 mod section_recovery;
 mod track_duplicate;
