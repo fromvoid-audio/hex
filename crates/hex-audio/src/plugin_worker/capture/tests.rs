@@ -229,6 +229,58 @@ fn stopped_worker_reports_failed_admitted_edit_read() {
     if fixture_child(140, NAME) {
         return;
     }
+    let (mut owner, _callback) = stop_with_pending_edit_read();
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure before editor read",
+    ));
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native stopped edit worker failed")
+    ));
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true),
+        Err("native stopped edit read was not admitted")
+    ));
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_capture_finishes_the_admitted_read_without_consuming_its_receipt() {
+    const NAME: &str = "plugin_worker::capture::tests::stopped_capture_finishes_the_admitted_read_without_consuming_its_receipt";
+    if fixture_child(140, NAME) {
+        return;
+    }
+    let (mut owner, callback) = stop_with_pending_edit_read();
+    let blocks = owner.published_blocks_on_control();
+    let storage = owner.constructor_storage_on_control(&callback).unwrap();
+    let request = begin(&mut owner);
+    complete(&mut owner, &request);
+    {
+        let slot = owner.reaper.completed.capture.lock().unwrap();
+        assert!(
+            !slot.edits_pending,
+            "capture left the earlier read in flight"
+        );
+        assert!(
+            slot.edits_result.is_some(),
+            "capture consumed the earlier receipt"
+        );
+    }
+    assert!(matches!(
+        owner.poll_stopped_edits_on_control(true).unwrap(),
+        crate::plugin_worker::StoppedEditProgress::Completed(_)
+    ));
+    assert!(!owner.transport_is_live_on_control());
+    assert_eq!(owner.published_blocks_on_control(), blocks);
+    assert_eq!(
+        owner.constructor_storage_on_control(&callback),
+        Some(storage)
+    );
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+}
+
+fn stop_with_pending_edit_read() -> (NativeWorker, Callback) {
     let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
     let mut output = [[0.0; 2]; 8];
     callback
@@ -263,19 +315,8 @@ fn stopped_worker_reports_failed_admitted_edit_read() {
     }
     owner.reaper.join_on_control().unwrap();
     assert!(mailbox.edits_pending && mailbox.edits_result.is_none());
-    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
-        "injected failure before editor read",
-    ));
     drop(mailbox);
-    assert!(matches!(
-        owner.poll_stopped_edits_on_control(true),
-        Err("native stopped edit worker failed")
-    ));
-    assert!(matches!(
-        owner.poll_stopped_edits_on_control(true),
-        Err("native stopped edit read was not admitted")
-    ));
-    assert!(owner.retire_on_control().unwrap().failure.is_some());
+    (owner, callback)
 }
 
 #[test]
