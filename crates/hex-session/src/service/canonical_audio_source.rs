@@ -310,6 +310,7 @@ impl CanonicalAudioSourceSnapshot {
             context: self.context,
             restoring_plugin_state: false,
             preparing_edit: false,
+            stopped_main_power_on: None,
         }
     }
     /// Prepare inside the native host's reserved cell without extracting its

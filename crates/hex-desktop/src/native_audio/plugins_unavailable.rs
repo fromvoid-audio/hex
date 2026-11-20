@@ -132,6 +132,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         _: Option<&CanonicalAudioSourceSnapshot>,
         _: Option<&RequestCancellation>,
+        _: Option<u64>,
         _: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,

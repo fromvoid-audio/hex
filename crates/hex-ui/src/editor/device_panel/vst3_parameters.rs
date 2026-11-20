@@ -356,7 +356,8 @@ fn refreshable_device(view: &EditorView, device: DeviceId, source: AppliedAudioS
         && view.audible_playback.as_ref().is_some_and(|audible| {
             audible.audio_revision == source.audio_revision
                 && audible.project_generation == source.context.project_generation
-                && super::audible_vst3_processor(view, device) == Ok(true)
+                && super::audible_vst3_processor(view, device)
+                    == Ok(hex_engine::PreparedDeviceProcessing::Foreign)
         })
 }
 
