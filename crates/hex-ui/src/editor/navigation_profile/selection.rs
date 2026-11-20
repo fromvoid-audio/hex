@@ -4,6 +4,8 @@ pub(super) enum Selection {
     All,
     Audio100Dense,
     ProjectDense,
+    ProjectFitPan,
+    ProjectFitZoom,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +21,11 @@ impl Selection {
             None | Some("all") => Ok(Self::All),
             Some("audio-100-dense") => Ok(Self::Audio100Dense),
             Some("project-dense") => Ok(Self::ProjectDense),
-            _ => Err("navigation scope must be all, audio-100-dense or project-dense"),
+            Some("project-fit-pan") => Ok(Self::ProjectFitPan),
+            Some("project-fit-zoom") => Ok(Self::ProjectFitZoom),
+            _ => Err(
+                "navigation scope must be all, audio-100-dense, project-dense, project-fit-pan or project-fit-zoom",
+            ),
         }
     }
 
@@ -28,6 +34,8 @@ impl Selection {
             Self::All => "all",
             Self::Audio100Dense => "audio-100-dense",
             Self::ProjectDense => "project-dense",
+            Self::ProjectFitPan => "project-fit-pan",
+            Self::ProjectFitZoom => "project-fit-zoom",
         }
     }
 
@@ -40,9 +48,13 @@ impl Selection {
         match self {
             Self::All if project || mixed => Ok(()),
             Self::Audio100Dense if audio => Ok(()),
-            Self::ProjectDense if project => Ok(()),
+            Self::ProjectDense | Self::ProjectFitPan | Self::ProjectFitZoom if project => Ok(()),
             _ => Err("selected navigation scope requires its project or fixture path"),
         }
+    }
+
+    pub(super) fn fits_project_rows(self) -> bool {
+        matches!(self, Self::ProjectFitPan | Self::ProjectFitZoom)
     }
 
     pub(super) fn cases(self, content: &str, tracks: usize, single_row: bool) -> Vec<Case> {
@@ -52,7 +64,11 @@ impl Selection {
         let dense_only = match self {
             Self::All => false,
             Self::Audio100Dense if content == "audio" && tracks == 100 && !single_row => true,
-            Self::ProjectDense if content == "project" && !single_row => true,
+            Self::ProjectDense | Self::ProjectFitPan | Self::ProjectFitZoom
+                if content == "project" && !single_row =>
+            {
+                true
+            }
             _ => return Vec::new(),
         };
         [("dense", 1), ("zoomed", 16)]
@@ -64,6 +80,11 @@ impl Selection {
                     divisor,
                     action,
                 })
+            })
+            .filter(|case| match self {
+                Self::ProjectFitPan => case.action == "pan",
+                Self::ProjectFitZoom => case.action == "zoom",
+                _ => true,
             })
             .collect()
     }

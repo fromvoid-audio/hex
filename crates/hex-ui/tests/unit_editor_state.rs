@@ -734,7 +734,7 @@ mod editor {
                         }
 
                         #[test]
-                        fn bounded_scopes_select_only_their_normal_dense_pan_and_zoom() {
+                        fn bounded_scopes_select_only_their_dense_pan_and_zoom() {
                             for (scope, content, tracks) in [
                                 ("audio-100-dense", "audio", 100),
                                 ("project-dense", "project", 71),
@@ -770,6 +770,29 @@ mod editor {
                                     .cases("audio", 100, false)
                                     .is_empty()
                             );
+                        }
+
+                        #[test]
+                        fn fitted_scopes_select_one_action_for_a_saved_project() {
+                            for (scope, action) in
+                                [("project-fit-pan", "pan"), ("project-fit-zoom", "zoom")]
+                            {
+                                let selection = Selection::parse(Some(scope)).unwrap();
+                                assert_eq!(selection.label(), scope);
+                                assert!(selection.fits_project_rows());
+                                assert!(selection.validate_inputs(true, false, false).is_ok());
+                                assert!(selection.validate_inputs(false, true, true).is_err());
+                                assert_eq!(
+                                    selection.cases("project", 32, false),
+                                    [Case {
+                                        density: "dense",
+                                        divisor: 1,
+                                        action
+                                    }]
+                                );
+                                assert!(selection.cases("project", 32, true).is_empty());
+                                assert!(selection.cases("audio", 100, false).is_empty());
+                            }
                         }
 
                         #[test]
