@@ -669,6 +669,8 @@ pub struct SessionPlayback {
     // than carry voices or detached tails the candidate already represents.
     live_restart: bool,
     native_removal: Option<device_removal::PendingNativeRemoval>,
+    return_fade: Option<device_removal::ReturnFade>,
+    return_fade_scratch: Option<device_removal::ReturnFade>,
 }
 
 impl fmt::Debug for SessionPlayback {
@@ -1098,6 +1100,8 @@ impl SessionPlayback {
             foreign_continuation,
             live_restart: _,
             native_removal: _,
+            return_fade: _,
+            return_fade_scratch: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
         // A real owning transfer can later leave an allocation-free empty
@@ -2398,6 +2402,8 @@ impl SessionPlayback {
             foreign_continuation: None,
             live_restart: false,
             native_removal: None,
+            return_fade: None,
+            return_fade_scratch: None,
         })
     }
 

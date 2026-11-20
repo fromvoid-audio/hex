@@ -936,6 +936,7 @@ impl SessionPlayback {
         let audition_before = self.browser_audition.voices;
         let track_count = self.routes.len();
         self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
+        self.return_fade_scratch = self.return_fade;
         self.live_gain_scratch = self.live_gain;
         let result = if self.playing {
             self.render_playing(
@@ -1017,6 +1018,7 @@ impl SessionPlayback {
             self.foreign_arrangement.commit();
             self.track_faders[..track_count]
                 .copy_from_slice(&self.track_fader_scratch[..track_count]);
+            self.return_fade = self.return_fade_scratch.filter(|fade| fade.fader.active());
             self.live_gain = self.live_gain_scratch;
             if ordinary_monitor {
                 // Main-only draining never staged these source/tail buffers.
@@ -2617,6 +2619,17 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             if let Some(matrix) = bus.matrix {
                 matrix.apply_block(frames);
+            }
+            if let Some(fade) = self
+                .return_fade_scratch
+                .as_mut()
+                .filter(|fade| fade.id == bus.id)
+            {
+                for frame in frames.iter_mut() {
+                    let gain = fade.fader.next();
+                    frame[0] *= gain[0];
+                    frame[1] *= gain[1];
+                }
             }
             if !bus.muted {
                 for (destination, source) in output.iter_mut().zip(frames.iter()) {
