@@ -196,22 +196,44 @@ fn has_generator(track: &Track) -> bool {
         .is_some_and(|node| !node.bypassed)
 }
 
-fn replaces_native_sine(old: &Track, next: &Track) -> bool {
+fn replaces_direct_native_sine(
+    track: TrackId,
+    index: usize,
+    tracks: &[Track],
+    old_tracks: &[Track],
+) -> bool {
+    let Some((next, old)) = tracks.get(index).zip(
+        old_tracks
+            .iter()
+            .find(|old| old.canonical_track_id() == Some(track)),
+    ) else {
+        return false;
+    };
+    let Some(source) = old.source_id() else {
+        return false;
+    };
     old.instrument_enabled()
         && !old.has_mutable_instrument()
         && old.foreign_instrument.is_none()
-        && old.instrument_state.as_ref().is_some_and(|state| {
-            state.type_id()
-                == hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine")
-        })
+        && old
+            .instrument_state
+            .as_ref()
+            .is_some_and(|state| state.type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID)
         && next.instrument_id.is_some()
         && next.instrument_id != old.instrument_id
         && old.midi_source_index.is_none()
         && next.midi_source_index.is_none()
-        && old.source_id().is_some()
-        && next.source_id() == old.source_id()
+        && next.source_id() == Some(source)
         && old.receives_source_audio()
         && next.receives_source_audio()
+        && [old_tracks, tracks].into_iter().all(|members| {
+            members
+                .iter()
+                .filter(|member| member.source_id() == Some(source))
+                .take(2)
+                .count()
+                == 1
+        })
 }
 
 impl ForeignArrangement {
@@ -408,12 +430,7 @@ impl ForeignArrangement {
                         || replacement_needs_cut
                         || fresh.is_some()
                         || tempo_cut.is_some()
-                        || !tracks.get(index).is_some_and(|next| {
-                            old_tracks
-                                .iter()
-                                .find(|track| track.canonical_track_id() == Some(candidate.track))
-                                .is_some_and(|old| replaces_native_sine(old, next))
-                        })
+                        || !replaces_direct_native_sine(candidate.track, index, tracks, old_tracks)
                     {
                         return Err(INCOMPATIBLE_HANDOFF);
                     }
