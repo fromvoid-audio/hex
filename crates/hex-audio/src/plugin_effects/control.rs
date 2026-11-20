@@ -4,7 +4,8 @@ use super::*;
 use crate::plugin_worker::{
     NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
     NativeWorkerControllerProgress, NativeWorkerControllerQuery,
-    NativeWorkerGuardedEditorWriteProgress, NativeWorkerParameterChange,
+    NativeWorkerGuardedCaptureProgress, NativeWorkerGuardedEditorWriteProgress,
+    NativeWorkerParameterChange, NativeWorkerStateAfterGuardedWrite,
 };
 
 fn arm_editor(
@@ -156,6 +157,26 @@ impl NativeEffect {
         token: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerGuardedEditorWriteProgress, &'static str> {
         self.worker.poll_guarded_editor_write_on_control(token)
+    }
+    pub(crate) fn begin_capture_after_guarded_write(
+        &mut self,
+        input: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_guarded_write_on_control(input)
+    }
+    pub(crate) fn poll_capture_after_guarded_write(
+        &mut self,
+        input: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerGuardedCaptureProgress, &'static str> {
+        self.worker
+            .poll_state_capture_after_guarded_write_on_control(input)
+    }
+    pub(crate) fn observe_guarded_capture_input(
+        &self,
+        fact: &NativeWorkerStateAfterGuardedWrite,
+    ) -> Option<hex_plugin_host::transport::ParameterInputSource> {
+        self.worker.observe_guarded_capture_input_on_control(fact)
     }
     pub(crate) fn begin_controller_query(
         &mut self,
@@ -345,6 +366,26 @@ impl NativeEffectControl {
         token: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerGuardedEditorWriteProgress, &'static str> {
         self.worker.poll_guarded_editor_write_on_control(token)
+    }
+    pub(crate) fn begin_capture_after_guarded_write(
+        &mut self,
+        input: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker
+            .begin_state_capture_after_guarded_write_on_control(input)
+    }
+    pub(crate) fn poll_capture_after_guarded_write(
+        &mut self,
+        input: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerGuardedCaptureProgress, &'static str> {
+        self.worker
+            .poll_state_capture_after_guarded_write_on_control(input)
+    }
+    pub(crate) fn observe_guarded_capture_input(
+        &self,
+        fact: &NativeWorkerStateAfterGuardedWrite,
+    ) -> Option<hex_plugin_host::transport::ParameterInputSource> {
+        self.worker.observe_guarded_capture_input_on_control(fact)
     }
     pub(crate) fn begin_controller_query(
         &mut self,

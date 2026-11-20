@@ -189,9 +189,11 @@ impl Plugins {
                 identity,
                 binding: gesture.binding,
                 previous_state: previous,
-                capture: fact,
-                parameter: gesture.origin.parameter,
-                normalized: gesture.sdk_value(gesture.last),
+                capture: hex_audio::prepared::NativeParameterContinuationCapture::Point {
+                    fact,
+                    parameter: gesture.origin.parameter,
+                    normalized: gesture.sdk_value(gesture.last),
+                },
             },
         ))
     }

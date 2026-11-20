@@ -2,6 +2,10 @@
 use super::*;
 use crate::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+    plugin_worker::{
+        NativeWorkerCapture, NativeWorkerControllerQuery, NativeWorkerGuardedCaptureProgress,
+        NativeWorkerStateAfterGuardedWrite, NativeWorkerStateAfterParameter,
+    },
 };
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
@@ -38,9 +42,47 @@ pub struct NativeParameterContinuationRequest<'a> {
     pub identity: ProcessorInstanceIdentity,
     pub binding: Binding,
     pub previous_state: &'a NativeDeviceState,
-    pub capture: &'a crate::plugin_worker::NativeWorkerStateAfterParameter,
-    pub parameter: u32,
-    pub normalized: f64,
+    pub capture: NativeParameterContinuationCapture<'a>,
+}
+
+/// Exact worker input and its captured state for an ordinary continuation.
+#[derive(Clone, Copy)]
+pub enum NativeParameterContinuationCapture<'a> {
+    Point {
+        fact: &'a NativeWorkerStateAfterParameter,
+        parameter: u32,
+        normalized: f64,
+    },
+    Guarded {
+        fact: &'a NativeWorkerStateAfterGuardedWrite,
+        /// The same opaque capture with canonical host metadata.
+        state: &'a NativeDeviceState,
+    },
+}
+
+impl<'a> NativeParameterContinuationCapture<'a> {
+    pub fn state(self) -> &'a NativeDeviceState {
+        match self {
+            Self::Point { fact, .. } => fact.state(),
+            Self::Guarded { state, .. } => state,
+        }
+    }
+
+    fn matches_input(self) -> bool {
+        match self {
+            Self::Point {
+                fact,
+                parameter,
+                normalized,
+            } => {
+                fact.parameter() == parameter
+                    && fact.normalized_input().to_bits() == normalized.to_bits()
+            }
+            Self::Guarded { fact, state } => {
+                state.shares_payload_storage_with(fact.state()) && state.processing_eq(fact.state())
+            }
+        }
+    }
 }
 
 fn stopped_program_frontier(
@@ -164,8 +206,7 @@ impl PublicationControl {
                 != Some(request.successor.editor_revision)
             || self.status.native_parameter_source(request.playing)
                 != Some((request.source, request.transport_epoch))
-            || request.capture.parameter() != request.parameter
-            || request.capture.normalized_input().to_bits() != request.normalized.to_bits()
+            || !request.capture.matches_input()
         {
             return Err(failure(
                 "native continuation source or input differs",
@@ -180,9 +221,15 @@ impl PublicationControl {
         if matching != 1 {
             return Err(failure("native continuation candidate differs", playback));
         }
-        let observation = match self
-            .observe_native_sequenced_capture_input_on_control(request.binding, request.capture)
-        {
+        let observed = match request.capture {
+            NativeParameterContinuationCapture::Point { fact, .. } => {
+                self.observe_native_sequenced_capture_input_on_control(request.binding, fact)
+            }
+            NativeParameterContinuationCapture::Guarded { fact, .. } => self
+                .candidate_root
+                .observe_guarded_capture_input(request.binding, fact),
+        };
+        let observation = match observed {
             Ok(Some(observation)) => observation,
             Ok(None) => {
                 return Err(failure(
@@ -260,6 +307,25 @@ impl PublicationControl {
         let state = self
             .candidate_root
             .approve_native_sequenced_capture(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        Ok(state)
+    }
+
+    /// Mark the exact guarded capture as source-corresponding. Processing
+    /// approval remains separate, and publication rechecks the input generation.
+    pub fn approve_native_guarded_capture_on_control(
+        &self,
+        binding: Binding,
+        fact: &NativeWorkerStateAfterGuardedWrite,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_guarded_capture(binding, fact)?;
         if self.status.closing.load(Acquire) {
             return Err("native captured-state output is closing");
         }
@@ -998,6 +1064,36 @@ impl PublicationControl {
         }
         self.candidate_root
             .begin_capture_after_parameter(binding, input)
+    }
+    /// Capture on the exact installed worker after its guarded write completed.
+    pub fn begin_native_capture_after_guarded_write_on_control(
+        &mut self,
+        binding: Binding,
+        input: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_guarded_write(binding, input)
+    }
+
+    /// Read the exact guarded capture terminal while its binding remains live.
+    pub fn poll_native_capture_after_guarded_write_on_control(
+        &mut self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerGuardedCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_capture_after_guarded_write(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
     }
     /// Admit capture after an idle flush on the exact live worker. This does
     /// not assert PCM processing, output delivery, or publication authority.

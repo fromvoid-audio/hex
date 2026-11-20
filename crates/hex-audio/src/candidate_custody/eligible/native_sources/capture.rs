@@ -4,7 +4,8 @@ use super::*;
 use crate::plugin_worker::{
     NativeParameterHold, NativeWorkerCapture, NativeWorkerCaptureProgress,
     NativeWorkerControllerProgress, NativeWorkerControllerQuery,
-    NativeWorkerGuardedEditorWriteProgress, NativeWorkerParameterChange,
+    NativeWorkerGuardedCaptureProgress, NativeWorkerGuardedEditorWriteProgress,
+    NativeWorkerParameterChange, NativeWorkerStateAfterGuardedWrite,
 };
 #[cfg(test)]
 mod tests;
@@ -845,6 +846,57 @@ impl CandidateRoot {
     ) -> Result<NativeWorkerCapture, &'static str> {
         self.require_native_source_control_open()?;
         self.0.eligible.begin_live_native_capture(binding)
+    }
+    pub(crate) fn begin_capture_after_guarded_write(
+        &self,
+        binding: Binding,
+        input: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0.eligible.admit_live_operation(
+            binding,
+            |owner| match owner {
+                Owner::Effect(owner) => owner.begin_capture_after_guarded_write(input),
+                Owner::Loaned(owner) => owner.begin_capture_after_guarded_write(input),
+                _ => Err("native guarded capture owner differs"),
+            },
+            || {},
+            "native guarded capture was not admitted",
+        )
+    }
+    pub(crate) fn poll_capture_after_guarded_write(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerGuardedCaptureProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .with_live_capture(binding, |owner| match owner {
+                Owner::Effect(owner) => owner.poll_capture_after_guarded_write(request),
+                Owner::Loaned(owner) => owner.poll_capture_after_guarded_write(request),
+                _ => Err("native guarded capture owner differs"),
+            })?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn observe_guarded_capture_input(
+        &self,
+        binding: Binding,
+        fact: &NativeWorkerStateAfterGuardedWrite,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .with_live_capture(binding, |owner| match owner {
+                Owner::Effect(owner) => Ok(owner.observe_guarded_capture_input(fact)),
+                Owner::Loaned(owner) => Ok(owner.observe_guarded_capture_input(fact)),
+                _ => Err("native guarded capture owner differs"),
+            })?;
+        self.require_native_source_control_open()?;
+        Ok(result)
     }
     pub(crate) fn poll_live_native_capture(
         &self,
