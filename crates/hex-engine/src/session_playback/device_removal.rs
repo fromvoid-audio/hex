@@ -39,6 +39,15 @@ impl PendingNativeRemoval {
         }
     }
 
+    pub(super) fn stages_track(
+        self,
+        previous: &SessionPlayback,
+        track: hex_project::TrackId,
+    ) -> bool {
+        matches!(self.transition, RemovalTransition::Track(index)
+            if previous.routes.get(index).is_some_and(|route| route.id == track))
+    }
+
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
             RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
@@ -51,8 +60,10 @@ impl PendingNativeRemoval {
                         // A zero fader can still have its last audible samples
                         // waiting in the old route's alignment ring.
                         previous.routes.get(index).is_some_and(|route| {
-                            compensation
-                                .owner_history_is_silent(FreshHistory::RemovedTrack(route.id))
+                            compensation.owner_history_is_silent(FreshHistory::RemovedTrack {
+                                track: route.id,
+                                staged: true,
+                            })
                         })
                     })
             }
@@ -310,7 +321,13 @@ impl SessionPlayback {
             (Some(next), Some(old)) => {
                 !self.revision.contains_streamed_sources()
                     && !previous.revision.contains_streamed_sources()
-                    && next.can_copy_from(old, Some(FreshHistory::RemovedTrack(id)))
+                    && next.can_copy_from(
+                        old,
+                        Some(FreshHistory::RemovedTrack {
+                            track: id,
+                            staged: true,
+                        }),
+                    )
             }
             _ => false,
         }
