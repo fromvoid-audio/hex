@@ -497,6 +497,7 @@ fn approved_hosted_effect_removal_reaps_the_worker_during_playback() {
             .publish_confirmed_device_insert_with_receipt_on_control(
                 successor,
                 consent,
+                Instant::now() + std::time::Duration::from_secs(10),
                 |receipt| confirmed = Some(receipt.clone()),
                 |_| Ok::<_, ()>(()),
             )
@@ -711,6 +712,7 @@ fn verify_effect_cut_with_hosted_successor(location: usize, change: EffectChange
             .publish_confirmed_device_insert_with_receipt_on_control(
                 replacement,
                 consent,
+                Instant::now() + std::time::Duration::from_secs(10),
                 |receipt| approved = Some(receipt.clone()),
                 |_| Ok::<_, ()>(()),
             )

@@ -1250,6 +1250,13 @@ impl NativeAudioSink {
             } else {
                 None
             };
+            let resident_device_deadline = match policy {
+                ResidentPublicationPolicy::DeviceInsert {
+                    preparation_deadline,
+                    ..
+                } => Some(preparation_deadline),
+                _ => None,
+            };
             let policy = match policy {
                 ResidentPublicationPolicy::DeviceInsert {
                     predecessor: expected,
@@ -1423,8 +1430,8 @@ impl NativeAudioSink {
                             }));
                         }
                     };
-                let published = match (policy, cut) {
-                    (hex_audio::prepared::PublicationPolicy::DeviceInsert { .. }, _) => {
+                let published = match (resident_device_deadline, cut) {
+                    (Some(deadline), _) => {
                         let admit_resources = |prospective: DeviceResourceAdmission<'_>| {
                             admit(&[prospective, retired, pending])
                         };
@@ -1432,6 +1439,7 @@ impl NativeAudioSink {
                             control.publish_confirmed_device_insert_with_receipt_on_control(
                                 retained_playback,
                                 consent,
+                                deadline,
                                 bind_insert_receipt,
                                 admit_resources,
                             )
@@ -1440,18 +1448,19 @@ impl NativeAudioSink {
                                 retained_playback,
                                 policy,
                                 metadata.context,
+                                deadline,
                                 bind_insert_receipt,
                                 admit_resources,
                             )
                         }
                     }
-                    (_, None) if tempo_edit.is_some_and(|edit| edit.retry_of.is_some()) => {
+                    (None, None) if tempo_edit.is_some_and(|edit| edit.retry_of.is_some()) => {
                         Err(hex_audio::prepared::AdmittedPublishError::Admission {
                             reason: "tempo retry lost its original running source".into(),
                             playback: retained_playback,
                         })
                     }
-                    (_, Some(cut)) => control.publish_tempo_cut_with_admission_on_control(
+                    (None, Some(cut)) => control.publish_tempo_cut_with_admission_on_control(
                         retained_playback,
                         cut,
                         metadata.context,
