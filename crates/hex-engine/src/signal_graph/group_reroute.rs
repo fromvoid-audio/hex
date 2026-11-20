@@ -1,7 +1,7 @@
 //! Compensation history at the staged cut of one Resident audio leaf.
 //! SessionPlayback proves the exact authored route and unchanged DSP owners.
-//! This module matches retained histories by typed edges, with the departing
-//! leaf's one changed edge excluded only after its committed PCM drains.
+//! This module matches retained histories by typed edges. The departing edge
+//! must drain and the replacement edge must start with empty PCM history.
 
 use super::{NodeId, SignalGraph, SignalRuntime, TrackOutput, error};
 use crate::Invalid;
@@ -9,8 +9,8 @@ use hex_project::TrackId;
 use std::sync::Arc;
 
 impl SignalGraph {
-    /// The initial upstream-aligned cut replaces a delayed direct-to-Main
-    /// edge with an unbuffered input to an existing Group.
+    /// An upstream-aligned cut swaps a delayed direct-to-Main edge and an
+    /// unbuffered input to an existing Group, in either direction.
     pub(crate) fn aligned_group_reroute_edges_from(
         &self,
         previous: &Self,
@@ -18,18 +18,26 @@ impl SignalGraph {
     ) -> Option<(usize, usize)> {
         let next = self.tracks.get(self.track_index(track)?)?;
         let old = previous.tracks.get(previous.track_index(track)?)?;
-        let TrackOutput::Group { edge: next, .. } = next.output else {
-            return None;
-        };
-        let TrackOutput::Main { edge: old } = old.output else {
-            return None;
+        let (next, old, next_is_direct) = match (next.output, old.output) {
+            (TrackOutput::Group { edge: next, .. }, TrackOutput::Main { edge: old }) => {
+                (next, old, false)
+            }
+            (TrackOutput::Main { edge: next }, TrackOutput::Group { edge: old, .. }) => {
+                (next, old, true)
+            }
+            _ => return None,
         };
         let next_delay = self.plan.edges().get(*self.pre_main_edges.get(next)?)?;
         let old_delay = previous
             .plan
             .edges()
             .get(*previous.pre_main_edges.get(old)?)?;
-        (next_delay.delay_frames == 0 && old_delay.delay_frames != 0).then_some((next, old))
+        let (main, group) = if next_is_direct {
+            (next_delay, old_delay)
+        } else {
+            (old_delay, next_delay)
+        };
+        (main.delay_frames != 0 && group.delay_frames == 0).then_some((next, old))
     }
 
     fn retained_group_route_edges(
@@ -126,6 +134,14 @@ impl SignalRuntime {
         let (next_output, old_output) = self
             .graph
             .aligned_group_reroute_edges_from(&previous.graph, track)?;
+        // A new direct edge may introduce an alignment ring. Only the
+        // successor's post-cut frames belong in that ring.
+        if !self
+            .delays
+            .edge_history_is_silent(self.graph.pre_main_edges[next_output])
+        {
+            return None;
+        }
         self.graph
             .retained_group_route_edges(next_output)
             .zip(previous.graph.retained_group_route_edges(old_output))

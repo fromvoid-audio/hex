@@ -157,6 +157,7 @@ enum Reroute {
     BetweenGroups,
     EnterWithMainDelay,
     EnterWithUpstreamDelay,
+    ExitWithUpstreamDelay,
 }
 
 #[test]
@@ -315,6 +316,19 @@ fn group_reparent_drains_its_old_aligned_edge_before_installing() -> Result {
     Ok(())
 }
 
+#[test]
+fn group_exit_preserves_pending_group_alignment_while_the_direct_edge_starts_empty() -> Result {
+    for partition in [1, 257] {
+        route_cut(
+            partition,
+            Terminal::Install,
+            true,
+            Reroute::ExitWithUpstreamDelay,
+        )?;
+    }
+    Ok(())
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
     let exiting = matches!(
         reroute,
@@ -323,12 +337,16 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             | Reroute::ExitSoleGroup
             | Reroute::ExitNested
             | Reroute::ExitAbove
+            | Reroute::ExitWithUpstreamDelay
     );
     let moves_from_above = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
     let between_groups = matches!(reroute, Reroute::BetweenGroups);
     let changes_row_order = moves_from_above || between_groups;
     let has_main_delay = matches!(reroute, Reroute::EnterWithMainDelay);
-    let has_upstream_delay = matches!(reroute, Reroute::EnterWithUpstreamDelay);
+    let has_upstream_delay = matches!(
+        reroute,
+        Reroute::EnterWithUpstreamDelay | Reroute::ExitWithUpstreamDelay
+    );
     let nested = matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
     let has_other_group = !matches!(reroute, Reroute::EnterSoleGroup | Reroute::ExitSoleGroup);
     let has_sibling = changes_row_order
@@ -468,9 +486,11 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     } else {
         32
     };
-    // The final nonzero fade frame precedes the first zero by one sample.
-    // The old leaf's direct alignment ring must deliver it before the cut.
-    let drain = if matches!(terminal, Terminal::Install) {
+    // On entry the outgoing direct ring must deliver the last nonzero
+    // fade frame. On exit the old leaf-to-Group edge has no ring. The
+    // independently rendered Group keeps emitting its delayed sum after
+    // installation, while the new direct edge only sees post-cut frames.
+    let drain = if matches!(terminal, Terminal::Install) && !exiting {
         pre_main_delay.saturating_sub(1)
     } else {
         0
