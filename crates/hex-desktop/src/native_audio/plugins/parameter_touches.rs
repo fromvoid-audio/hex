@@ -72,8 +72,15 @@ fn continue_stopped_read(
 
 enum ReceiptProgress {
     Waiting,
+    QueueDrained,
     ReadyBacklog,
     Recover(AppliedAudioSource),
+}
+
+#[derive(Clone, Copy)]
+enum EditorRead {
+    Observe { recover_latency: bool },
+    IdleSave { epoch: u64 },
 }
 
 fn poll_source_turn(
@@ -84,9 +91,13 @@ fn poll_source_turn(
         ReceiptProgress::Recover(source) => Some(source),
         ReceiptProgress::ReadyBacklog if allow_followup => match poll() {
             ReceiptProgress::Recover(source) => Some(source),
-            ReceiptProgress::Waiting | ReceiptProgress::ReadyBacklog => None,
+            ReceiptProgress::Waiting
+            | ReceiptProgress::QueueDrained
+            | ReceiptProgress::ReadyBacklog => None,
         },
-        ReceiptProgress::Waiting | ReceiptProgress::ReadyBacklog => None,
+        ReceiptProgress::Waiting
+        | ReceiptProgress::QueueDrained
+        | ReceiptProgress::ReadyBacklog => None,
     }
 }
 
@@ -199,7 +210,9 @@ impl Plugins {
                 self.poll_parameter_source(
                     control,
                     active,
-                    recovery && recording.is_none(),
+                    EditorRead::Observe {
+                        recover_latency: recovery && recording.is_none(),
+                    },
                     index,
                     now,
                 )
@@ -214,7 +227,7 @@ impl Plugins {
         &mut self,
         control: &mut PublicationControl,
         active: AppliedAudioSource,
-        recovery: bool,
+        read: EditorRead,
         index: usize,
         now: Instant,
     ) -> ReceiptProgress {
@@ -230,7 +243,13 @@ impl Plugins {
             progress.held_pending_read = Some(source.binding);
             return ReceiptProgress::Waiting;
         }
-        let requested_recovery = pending_read.map(|read| read.recovery).unwrap_or(recovery);
+        let recover_latency = match read {
+            EditorRead::Observe { recover_latency } => recover_latency,
+            EditorRead::IdleSave { .. } => true,
+        };
+        let requested_recovery = pending_read
+            .map(|read| read.recovery)
+            .unwrap_or(recover_latency);
         let receipt_source = pending_read.map_or(active, |read| read.source);
         source.observes_latency |= requested_recovery;
         let result = if requested_recovery {
@@ -249,6 +268,17 @@ impl Plugins {
         let result = continue_stopped_read(result, pending_read, |mode| {
             control.poll_native_source_stopped_edits_on_control(source.binding, mode)
         });
+        let result = match (result, pending_read, read) {
+            (Err("native edit source is not live"), None, EditorRead::IdleSave { epoch }) => {
+                control
+                    .poll_native_source_joined_idle_edits_on_control(
+                        source.binding,
+                        (active, epoch),
+                    )
+                    .map(Some)
+            }
+            (result, _, _) => result,
+        };
         let batch = match result {
             Ok(batch) => {
                 source.edit_recovery = batch.is_none().then_some(PendingRead {
@@ -321,8 +351,38 @@ impl Plugins {
             if live && batch.edits.ready != 0 && !batch.edits.as_slice().is_empty() {
                 return ReceiptProgress::ReadyBacklog;
             }
+            if batch.edits.pending == 0 {
+                return ReceiptProgress::QueueDrained;
+            }
         }
         ReceiptProgress::Waiting
+    }
+
+    /// Drive the same ordered reader while Save synchronously owns the Session
+    /// worker. Keep normal touch and recovery delivery under their usual owners.
+    pub(super) fn poll_idle_save_editor_input(
+        &mut self,
+        control: &mut PublicationControl,
+        (active, epoch): (AppliedAudioSource, u64),
+        index: usize,
+    ) -> Result<bool, &'static str> {
+        let previous_notice = self.latency_notice;
+        let progress = self.poll_parameter_source(
+            control,
+            active,
+            EditorRead::IdleSave { epoch },
+            index,
+            Instant::now(),
+        );
+        match progress {
+            ReceiptProgress::QueueDrained => Ok(true),
+            ReceiptProgress::Waiting | ReceiptProgress::ReadyBacklog => Ok(false),
+            ReceiptProgress::Recover(_) => {
+                // The normal worker loop owns the transport notification.
+                self.latency_notice = previous_notice;
+                Err("vst3 timing changed while preparing save · retry after audio recovers")
+            }
+        }
     }
 
     pub fn take_parameter_touch(&mut self) -> Option<EditorAudioEvent> {

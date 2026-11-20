@@ -1054,6 +1054,21 @@ impl PublicationControl {
         self.candidate_root
             .native_source_stopped_edits(binding, recovery)
     }
+    /// Apply at most one original editor batch after the healthy worker's
+    /// transport returned. The exact idle fence must still match. Once read,
+    /// the receipt belongs to the caller even if that fence changes.
+    pub fn poll_native_source_joined_idle_edits_on_control(
+        &mut self,
+        binding: Binding,
+        witness: (AppliedAudioSource, u64),
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        if binding.root != witness.0.output_identity
+            || !self.canonical_source_matches_on_control((witness.0, witness.1, false), None)
+        {
+            return Err("native stopped edit source changed");
+        }
+        self.candidate_root.native_source_joined_idle_edits(binding)
+    }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
     /// refuse; busy is a read refusal, not consumption or transport cancellation.
