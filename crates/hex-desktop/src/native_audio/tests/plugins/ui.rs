@@ -1484,11 +1484,36 @@ fn rendered_native_effect_allows_unknown_presentation_at_its_exact_install(
 #[gpui::test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAppContext) {
+    assert_rendered_vst3_effect_replacement(cx, 2);
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_return_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAppContext) {
+    assert_rendered_vst3_effect_replacement(cx, 1);
+}
+
+fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8) {
+    fn effect_chain(
+        project: &hex_project::Project,
+        return_track: Option<hex_project::ReturnId>,
+    ) -> &[hex_project::Device] {
+        match return_track {
+            Some(id) => project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .unwrap()
+                .devices(),
+            None => project.main_devices(),
+        }
+    }
+
     let _native = native_fixture();
     let mut submission_probe = None;
     let mut fixture = open_browser_metadata(
         cx,
-        2,
+        location,
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
@@ -1503,8 +1528,13 @@ fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAp
         }),
     );
     fixture.activate_to_facts(cx, false);
+    let (prefix, return_track) = match fixture.expected_owner {
+        PluginEffectDestination::Main => ("main", None),
+        PluginEffectDestination::Return(id) => ("return", Some(id)),
+        _ => panic!("expected an effect bus"),
+    };
     fixture.resume.send(()).unwrap();
-    until("original Main VST3 installs", || {
+    until("original VST3 effect installs", || {
         fixture.step(cx);
         let view = fixture.view(cx);
         assert!(view.error.is_none(), "{:?}", view.error);
@@ -1514,7 +1544,9 @@ fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAp
                 .is_some_and(|source| source.context.editor_revision == fixture.state.revision + 1)
     });
     let original = fixture.view(cx).state.unwrap();
-    let old = original.project.main_devices()[0].id().value();
+    let old = effect_chain(&original.project, return_track)[0]
+        .id()
+        .value();
     let new = original.project.next_identity();
     let selector = |name: &str, device| -> &'static str {
         Box::leak(format!("{name}-{device}").into_boxed_str())
@@ -1523,11 +1555,11 @@ fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAp
     let new_shell = selector("device-shell", new);
     let original_active = selector("device-vst3-active", old);
     let new_active = selector("device-vst3-active", new);
-    let replace_pad = selector("main-vst3-replace", old);
+    let replace_pad = selector(&format!("{prefix}-vst3-replace"), old);
     assert!(fixture.visual.debug_bounds(replace_pad).is_none());
     let card = fixture
         .visual
-        .debug_bounds(selector("main-device-drop-card", old))
+        .debug_bounds(selector(&format!("{prefix}-device-drop-card"), old))
         .unwrap();
     let row = fixture
         .visual
@@ -1556,7 +1588,7 @@ fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAp
         assert!(
             fixture
                 .visual
-                .debug_bounds(selector(&format!("main-device-insertion-{edge}"), old))
+                .debug_bounds(selector(&format!("{prefix}-device-insertion-{edge}"), old))
                 .is_some(),
             "catalog drag still offers adjacent {edge} insertion"
         );
@@ -1571,7 +1603,7 @@ fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAp
         assert!(
             fixture
                 .visual
-                .debug_bounds(selector(&format!("main-device-insertion-{edge}"), old))
+                .debug_bounds(selector(&format!("{prefix}-device-insertion-{edge}"), old))
                 .is_none(),
             "the replace target has its own captured intent"
         );
@@ -1620,10 +1652,14 @@ fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAp
                     && source.context == exact.context
             })
     });
-    let accepted = fixture.view(cx).state.unwrap();
+    let applied = fixture.view(cx);
+    assert_eq!(applied.selected_owner, Some(fixture.expected_owner));
+    let accepted = applied.state.unwrap();
     assert_eq!(accepted.revision, original.revision + 1);
-    assert_eq!(accepted.project.main_devices().len(), 1);
-    assert_eq!(accepted.project.main_devices()[0].id().value(), new);
+    let [device] = effect_chain(&accepted.project, return_track) else {
+        panic!("the exact replacement must keep one effect in the occupied bus");
+    };
+    assert_eq!(device.id().value(), new);
     assert!(fixture.visual.debug_bounds(original_shell).is_none());
     assert!(fixture.visual.debug_bounds(new_shell).is_some());
     assert!(fixture.visual.debug_bounds(new_active).is_some());

@@ -2852,9 +2852,7 @@ impl EditorView {
                                 devices.iter().any(|device| device.id() == anchor)
                             }),
                             EffectBusDropSlot::Replace(replacing) => {
-                                owner == EffectBusOwner::Main
-                                    && self.document_audio_mode
-                                        == hex_session::DocumentAudioMode::Resident
+                                self.document_audio_mode == hex_session::DocumentAudioMode::Resident
                                     && drag.source.is_catalog_vst3_effect()
                                     && devices.iter().any(|device| {
                                         device.id() == replacing
@@ -2931,6 +2929,13 @@ impl EditorView {
                     (EffectBusOwner::Main, EffectBusDropSlot::Replace(replacing)) => {
                         PluginEffectDestination::ReplaceMainEffect { replacing }
                     }
+                    (
+                        EffectBusOwner::Return(return_track),
+                        EffectBusDropSlot::Replace(replacing),
+                    ) => PluginEffectDestination::ReplaceReturnEffect {
+                        return_track,
+                        replacing,
+                    },
                     (EffectBusOwner::Main, _) => PluginEffectDestination::Main,
                     (EffectBusOwner::Return(id), _) => PluginEffectDestination::Return(id),
                 };
