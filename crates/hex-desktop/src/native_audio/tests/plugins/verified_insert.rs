@@ -116,38 +116,109 @@ fn verified_hosted_insert_installs_original_worker_and_retains_it_for_eq_edit() 
         hex_session::service::DeviceInsertOutcome::Installed
     );
     let started = h.applied(h.context.unwrap());
+    wait(|| progress.lock().unwrap().source_bindings[0].is_some());
+    let (device, binding, _) = progress.lock().unwrap().source_bindings[0].unwrap();
+    assert_eq!(device, vst.value());
     h.audio
         .as_mut()
         .unwrap()
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    let mut original = None;
-    wait(|| {
-        let sample = h.render()[63][0];
-        std::thread::sleep(Duration::from_millis(1));
-        if sample != 0.0 {
-            original = Some(sample);
-        }
-        original.is_some()
-            && progress.lock().unwrap().source_bindings[0]
-                .is_some_and(|(_, _, n)| n.unwrap_or(0) > 2)
-    });
-    let (device, binding, completed) = progress.lock().unwrap().source_bindings[0].unwrap();
-    assert_eq!(device, vst.value());
+    let render = |h: &Harness, block: u64| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let start = block * 256;
+        assert_eq!(status.performance_frame.load(Acquire), start);
+        let mut sample = 0.0;
+        wait(|| {
+            sample = render_hosted_quantum(h);
+            let position = status.performance_frame.load(Acquire);
+            assert!(position <= start + 256);
+            if position == start {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            position == start + 256
+        });
+        wait(|| {
+            progress.lock().unwrap().source_bindings[0].is_some_and(
+                |(actual_device, actual_binding, count)| {
+                    assert_eq!((actual_device, actual_binding), (device, binding));
+                    count.is_some_and(|count| count > block)
+                },
+            )
+        });
+        sample
+    };
+    let original = |block: u64| {
+        // The verified WAV is 0.25. The original SDK fixture increases gain
+        // by 0.125 per block, delivered two physical quanta after input.
+        block
+            .checked_sub(2)
+            .map_or(0.0, |input| 0.25 * (0.5 + input as f32 * 0.125))
+    };
+    for block in 0..4 {
+        let sample = render(&h, block);
+        assert!(
+            (sample - original(block)).abs() < 1e-5,
+            "block {block}: {sample}"
+        );
+    }
 
     h.run(Request::SetDeviceParameter {
         device: eq,
         parameter: hex_engine::eq::OUTPUT_GAIN,
         value: ParameterValue::Float(0.5),
     });
-    let applied = h.applied(h.context.unwrap());
-    assert!(applied.audio_revision > started.audio_revision);
-    wait(|| {
-        let sample = h.render()[63][0];
+    let target = h.context.unwrap();
+    let mut first = None;
+    for block in 4..32 {
+        let sample = render(&h, block);
+        let applied = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+            .unwrap();
+        if applied.context == target {
+            assert!(applied.audio_revision > started.audio_revision);
+            let first = *first.get_or_insert(block);
+            // Allow the EQ handoff ramp and the bridge's two queued quanta
+            // to finish before comparing steady-state output.
+            if block >= first + 5 {
+                assert!(
+                    (sample - 0.5 * original(block)).abs() < 1e-5,
+                    "block {block}: {sample}"
+                );
+                if block > first + 5 {
+                    return;
+                }
+            }
+        }
+        // Let the Session publisher prepare and queue the exact successor
+        // between deterministic synthetic host callbacks.
         std::thread::sleep(Duration::from_millis(1));
-        (sample - 0.5 * original.unwrap()).abs() < 1e-5
-            && progress.lock().unwrap().source_bindings[0]
-                .is_some_and(|(_, original, n)| original == binding && n > completed)
+    }
+    panic!("verified eq successor did not render");
+}
+
+fn render_hosted_quantum(h: &Harness) -> f32 {
+    let mut block = [[0.0; 2]; 256];
+    let mut host = [0.0; 512];
+    let mut slot = h.backend.lock().unwrap();
+    let backend = slot.as_mut().unwrap();
+    let counts = allocation_counter::measure(|| {
+        backend.render_native_direct(&mut block, &mut host).unwrap();
     });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0),
+    );
+    host[510]
 }
