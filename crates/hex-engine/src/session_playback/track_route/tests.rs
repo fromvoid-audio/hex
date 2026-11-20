@@ -4,7 +4,7 @@ use hex_project::{Command, Created, Editor, Project, TrackDestination, TrackSele
 use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
-fn one_resident_leaf_enters_existing_group_and_other_edits_refuse() {
+fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
     let (editor, media, leaf, group) = fixture();
     let prepare = |project: &Project| {
         Arc::new(
@@ -26,15 +26,16 @@ fn one_resident_leaf_enters_existing_group_and_other_edits_refuse() {
     let after = prepare(next_editor.project());
     let old = SessionPlayback::new(Arc::clone(&before)).unwrap();
     let next = SessionPlayback::new(Arc::clone(&after)).unwrap();
-    assert_eq!(next.resident_group_entry_from(&old), Some(2));
+    assert_eq!(next.resident_group_reroute_from(&old), Some(2));
     assert_eq!(
-        old.resident_group_entry_from(&next),
-        None,
-        "Group exit is a separate proof"
+        old.resident_group_reroute_from(&next),
+        Some(2),
+        "the exact inverse keeps the Group and its other child"
     );
+    assert_eq!(old.exact_resident_group_entry_from(&next), None);
     let mut changed = next;
     changed.routes[0].owner = RouteOwner::Silence;
-    assert_eq!(changed.resident_group_entry_from(&old), None);
+    assert_eq!(changed.resident_group_reroute_from(&old), None);
     let device = next_editor.project().track(leaf).unwrap().devices()[0].id();
     for command in [
         Command::SetDeviceBypass {
@@ -69,7 +70,7 @@ fn one_resident_leaf_enters_existing_group_and_other_edits_refuse() {
         assert_eq!(
             SessionPlayback::new(prepare(changed.project()))
                 .unwrap()
-                .resident_group_entry_from(&old),
+                .resident_group_reroute_from(&old),
             None
         );
     }
@@ -89,7 +90,7 @@ fn one_resident_leaf_enters_existing_group_and_other_edits_refuse() {
     assert_eq!(
         SessionPlayback::new(changed)
             .unwrap()
-            .resident_group_entry_from(&old),
+            .resident_group_reroute_from(&old),
         None
     );
 
@@ -135,7 +136,8 @@ fn one_resident_leaf_enters_existing_group_and_other_edits_refuse() {
         let old = SessionPlayback::new(Arc::clone(old)).unwrap();
         let mut next = SessionPlayback::new(Arc::clone(next)).unwrap();
         next.require_continuous_insert = true;
-        assert_eq!(next.resident_group_entry_from(&old), None);
+        assert_eq!(next.resident_group_reroute_from(&old), None);
+        assert_eq!(old.resident_group_reroute_from(&next), None);
         assert!(!next.plan_native_removal_from(&old).unwrap());
         assert!(old.track_faders.iter().all(|fader| !fader.active()));
     }

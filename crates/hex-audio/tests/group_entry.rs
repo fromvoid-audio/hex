@@ -1,4 +1,4 @@
-//! A single Resident Group-entry cut with independent continuous Delay oracles.
+//! Resident Group route cuts with independent continuous Delay oracles.
 #![cfg(feature = "allocation-probe")]
 use hex_audio::prepared::{self, PublicationPolicy, PublicationReceiptState};
 use hex_engine::{
@@ -148,7 +148,7 @@ fn group_entry_cancel_and_stop_preserve_the_old_route_before_and_during_fade() -
     for partition in [1, 257] {
         for terminal in [Terminal::Cancel, Terminal::Stop] {
             for fade in [false, true] {
-                route_cut(partition, terminal, fade)?;
+                route_cut(partition, terminal, fade, false)?;
             }
         }
     }
@@ -156,13 +156,33 @@ fn group_entry_cancel_and_stop_preserve_the_old_route_before_and_during_fade() -
 }
 #[test]
 fn group_entry_fades_only_leaf_at_single_frame_partitions() -> Result {
-    route_cut(1, Terminal::Install, true)
+    route_cut(1, Terminal::Install, true, false)
 }
 #[test]
 fn group_entry_fades_only_leaf_at_257_frame_partitions() -> Result {
-    route_cut(257, Terminal::Install, true)
+    route_cut(257, Terminal::Install, true, false)
 }
-fn route_cut(partition: usize, terminal: Terminal, fade: bool) -> Result {
+#[test]
+fn group_exit_cancel_and_stop_preserve_the_old_group_before_and_during_fade() -> Result {
+    for partition in [1, 257] {
+        for terminal in [Terminal::Cancel, Terminal::Stop] {
+            for fade in [false, true] {
+                route_cut(partition, terminal, fade, true)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn group_exit_fades_only_leaf_at_single_frame_partitions() -> Result {
+    route_cut(1, Terminal::Install, true, true)
+}
+#[test]
+fn group_exit_fades_only_leaf_at_257_frame_partitions() -> Result {
+    route_cut(257, Terminal::Install, true, true)
+}
+fn route_cut(partition: usize, terminal: Terminal, fade: bool, exiting: bool) -> Result {
     let mut a = vec![[0.125, -0.0625]; FRAMES];
     a[1700] = [0.5, -0.25];
     a[CUT + 53] = [-0.375, 0.1875];
@@ -206,6 +226,27 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool) -> Result {
         inventory
     );
     let after = prepare(&editor, &media)?;
+    let (before, after) = if exiting {
+        editor.execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[moved])?,
+            destination: TrackDestination {
+                parent_group: None,
+                before: Some(other_group),
+            },
+        })?;
+        assert_eq!(
+            editor
+                .project()
+                .tracks()
+                .iter()
+                .map(|track| track.id())
+                .collect::<Vec<_>>(),
+            inventory
+        );
+        (after, prepare(&editor, &media)?)
+    } else {
+        (before, after)
+    };
     assert_eq!(before.arrangement().main_latency_frames(), 0);
     assert_eq!(after.arrangement().main_latency_frames(), 0);
 
@@ -232,9 +273,15 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool) -> Result {
         }
     }
     let unrelated = standalone(c, &[delay(13.0)])?;
+    // On exit, G retains history already fed by A; only new child input
+    // leaves G at the cut. No second A chain or detached child tail is run.
+    let grouped_at = |i| {
+        let installed = matches!(terminal, Terminal::Install) && i >= switch;
+        if exiting { !installed } else { installed }
+    };
     let mut destination_input = b;
-    if matches!(terminal, Terminal::Install) {
-        for i in switch..FRAMES {
+    for i in 0..FRAMES {
+        if grouped_at(i) {
             for channel in 0..2 {
                 destination_input[i][channel] += leaf[i][channel];
             }
@@ -245,7 +292,7 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool) -> Result {
     for i in 0..FRAMES {
         for channel in 0..2 {
             mixed[i][channel] = destination_pcm[i][channel] + unrelated[i][channel];
-            if i < switch || !matches!(terminal, Terminal::Install) {
+            if !grouped_at(i) {
                 mixed[i][channel] += leaf[i][channel];
             }
         }
