@@ -4,7 +4,7 @@
 use super::*;
 use hex_session::service::NativeDeviceState;
 use std::sync::atomic::Ordering::Release;
-mod edits;
+pub(super) mod edits;
 mod save;
 mod verified;
 

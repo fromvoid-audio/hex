@@ -228,6 +228,7 @@ pub(super) struct Plugins {
     confirmed_parameters:
         std::collections::VecDeque<hex_session::service::PluginParameterObservation>,
     editor_checked: Option<AudioSourceContext>,
+    stopped_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
@@ -847,6 +848,9 @@ impl Plugins {
             self.output_closed();
             return;
         };
+        if let Some(desired) = desired {
+            self.retire_stopped_removals(control, desired);
+        }
         self.poll_editor_close(control, context.map(|context| context.project_generation));
         self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
@@ -1033,10 +1037,9 @@ impl Plugins {
                 pending.result = Some(Err("original vst3 source unavailable".into()));
             }
         }
-        // Refused operations retain their original binding until actual report
-        // recovery. Latest accepted sources stay warm for canonical Undo/Redo;
-        // a restored successor retires superseded versions through Root's
-        // original graph/tail/endpoint return checks, keeping the pool bounded.
+        // Refused operations, deleted sources and superseded versions retain
+        // their original bindings until Root's graph and endpoint returns and
+        // the editor receipt owner have released them.
         let mut index = 0;
         // Renewal's bounded indices refer to this original record set. Leave
         // refused records in control custody until the epoch operation retires;
@@ -1118,6 +1121,35 @@ impl Plugins {
                 records.store(self.sources.len(), std::sync::atomic::Ordering::Release);
             }
         }
+    }
+
+    fn retire_stopped_removals(
+        &mut self,
+        control: &hex_audio::prepared::PublicationControl,
+        desired: &CanonicalAudioSourceSnapshot,
+    ) {
+        let context = desired.context();
+        if self.catalog.is_none()
+            || desired.audio_mode() != DocumentAudioMode::Resident
+            || self.stopped_removals_checked == Some(context)
+            || control
+                .status
+                .paused_input_interval()
+                .is_none_or(|(installed, _)| installed.context != context)
+        {
+            return;
+        }
+        let resident = desired.effect_preparation();
+        for source in &mut self.sources {
+            if source.accepted
+                && source.project_generation == context.project_generation
+                && resident.plugin_device_bypassed(source.device).is_none()
+            {
+                source.accepted = false;
+                source.retiring = true;
+            }
+        }
+        self.stopped_removals_checked = Some(context);
     }
     pub fn compile(
         &mut self,
