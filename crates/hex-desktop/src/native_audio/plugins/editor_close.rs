@@ -8,7 +8,9 @@ use hex_audio::{
     },
     prepared::PublicationControl,
 };
-use hex_session::service::{PluginEditorCloseAdmission as Admission, PluginEditorCloseAttempt};
+use hex_session::service::{
+    PluginEditorCloseAdmission as Admission, PluginEditorCloseAttempt, RequestCancellation,
+};
 use std::{num::NonZeroU64, sync::Weak};
 
 pub(super) struct EditorClose {
@@ -22,6 +24,14 @@ pub(super) struct EditorClose {
 pub(super) struct Worker {
     binding: Binding,
     stage: Stage,
+}
+
+/// The exact successor's temporary producer hold during replay. The release
+/// continues on the usual control poll even when capture or publication fails.
+pub(super) struct ReplayEditorHold {
+    worker: Worker,
+    ordinal: NonZeroU64,
+    releasing: bool,
 }
 
 enum Stage {
@@ -134,6 +144,90 @@ fn current_source(source: &Source, output: u64, generation: u64) -> bool {
 }
 
 impl Plugins {
+    pub(super) fn hold_editor_for_replay(
+        &mut self,
+        control: &mut PublicationControl,
+        binding: Binding,
+        cancellation: Option<&RequestCancellation>,
+    ) -> Result<(), String> {
+        self.poll_replay_editor_hold(control);
+        if self.replay_editor_hold.is_some() || self.editor_close.is_some() {
+            return Err("vst3 replacement editor admission is busy".into());
+        }
+        let ordinal = self
+            .next_editor_hold_ordinal()
+            .ok_or("vst3 replacement editor hold identity exhausted")?;
+        let hold = self.replay_editor_hold.insert(ReplayEditorHold {
+            worker: Worker {
+                binding,
+                stage: Stage::Pending,
+            },
+            ordinal,
+            releasing: false,
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        loop {
+            edits::check_cancel(cancellation)?;
+            if !hold.worker.poll(control, ordinal, false) {
+                return Err("vst3 replacement editor hold was refused".into());
+            }
+            match hold.worker.stage {
+                Stage::Held(0) => return Ok(()),
+                Stage::Held(_) => {
+                    return Err("vst3 replacement accepted a newer editor edit".into());
+                }
+                _ if std::time::Instant::now() >= deadline => {
+                    return Err("vst3 replacement editor is still active".into());
+                }
+                _ => edits::poll_control(control),
+            }
+        }
+    }
+
+    pub(super) fn replay_editor_is_held(&self, binding: Binding) -> bool {
+        self.replay_editor_hold.as_ref().is_some_and(|hold| {
+            hold.worker.binding == binding
+                && matches!(hold.worker.stage, Stage::Held(0))
+                && !hold.releasing
+        })
+    }
+
+    pub(super) fn release_replay_editor_hold(&mut self, control: Option<&mut PublicationControl>) {
+        if let Some(hold) = self.replay_editor_hold.as_mut() {
+            hold.releasing = true;
+        }
+        if let Some(control) = control {
+            self.poll_replay_editor_hold(control);
+        }
+    }
+
+    fn poll_replay_editor_hold(&mut self, control: &mut PublicationControl) {
+        let Some(hold) = &mut self.replay_editor_hold else {
+            return;
+        };
+        let binding = hold.worker.binding;
+        if control.output_identity() != Some(binding.root)
+            || !self
+                .sources
+                .iter()
+                .any(|source| source.binding == binding && !source.retiring)
+        {
+            // Exact endpoint custody has returned to Root retirement.
+            self.replay_editor_hold = None;
+        } else if hold.releasing {
+            hold.worker.poll(control, hold.ordinal, true);
+            if matches!(hold.worker.stage, Stage::Finished) {
+                self.replay_editor_hold = None;
+            }
+        }
+    }
+
+    fn next_editor_hold_ordinal(&mut self) -> Option<NonZeroU64> {
+        let ordinal = NonZeroU64::new(self.editor_close_ordinal.checked_add(1)?)?;
+        self.editor_close_ordinal = ordinal.get();
+        Some(ordinal)
+    }
+
     pub(in crate::native_audio) fn prepare_editor_close(
         &mut self,
         control: Option<&mut PublicationControl>,
@@ -160,6 +254,9 @@ impl Plugins {
             };
         };
         self.poll_editor_close(control, Some(generation));
+        if self.replay_editor_hold.is_some() {
+            return Admission::Pending;
+        }
         if let Some(attempt) = &self.editor_close {
             return if Weak::ptr_eq(&attempt.owner, owner) {
                 attempt.admission()
@@ -176,13 +273,6 @@ impl Plugins {
             .iter()
             .filter(|source| current_source(source, output, generation));
         let count = accepted.clone().count();
-        let Some(ordinal) = self
-            .editor_close_ordinal
-            .checked_add(1)
-            .and_then(NonZeroU64::new)
-        else {
-            return Admission::Refused;
-        };
         let mut workers = Vec::new();
         if workers.try_reserve_exact(count).is_err() {
             return Admission::Refused;
@@ -191,7 +281,9 @@ impl Plugins {
             binding: source.binding,
             stage: Stage::Pending,
         }));
-        self.editor_close_ordinal = ordinal.get();
+        let Some(ordinal) = self.next_editor_hold_ordinal() else {
+            return Admission::Refused;
+        };
         self.editor_close = Some(EditorClose {
             owner: owner.clone(),
             generation,
@@ -214,6 +306,7 @@ impl Plugins {
         control: &mut PublicationControl,
         generation: Option<u64>,
     ) {
+        self.poll_replay_editor_hold(control);
         let Some(attempt) = &mut self.editor_close else {
             return;
         };
@@ -268,6 +361,7 @@ impl Plugins {
     }
 
     pub(super) fn editor_close_output_closed(&mut self) {
+        self.replay_editor_hold = None;
         if let Some(attempt) = self.editor_close.take() {
             attempt.invalidate();
         }

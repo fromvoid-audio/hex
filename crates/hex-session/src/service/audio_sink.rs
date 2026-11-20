@@ -746,8 +746,8 @@ pub trait WorkerAudioSink: Send {
     }
 
     /// VerifyExisting must inspect the unchanged successor without admitting
-    /// any new parameter input. Apply verifies any earlier values before
-    /// admitting a guarded successor write for its later values.
+    /// any new parameter input. Apply verifies earlier values before its later
+    /// guarded write or isolated manual-base capture.
     fn capture_retiring_editor_replay(
         &mut self,
         _batch: &super::RetiringEditorBatch,

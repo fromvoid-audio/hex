@@ -128,6 +128,11 @@ impl Plugins {
         playback: &hex_engine::playback::Playback,
     ) -> Result<Option<hex_audio::prepared::NativeParameterContinuationRequest<'a>>, String> {
         if let Some(replay) = self.retiring_replay_capture.as_ref() {
+            if replay.isolated_source(successor).is_some()
+                && !self.replay_editor_is_held(replay.binding)
+            {
+                return Err("vst3 isolated replay lost its successor editor hold".into());
+            }
             return replay.publication_request(control, desired, successor, playback);
         }
         let Some(gesture) = self.parameter_gesture.as_ref() else {

@@ -214,6 +214,7 @@ pub(super) struct Plugins {
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
     editor_close: Option<editor_close::EditorClose>,
+    replay_editor_hold: Option<editor_close::ReplayEditorHold>,
     editor_close_ordinal: u64,
     queued_editor_toggle: Option<(Binding, u64)>,
     editor_visibility_cursor: usize,

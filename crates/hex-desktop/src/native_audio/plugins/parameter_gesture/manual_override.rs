@@ -77,6 +77,11 @@ impl Plugins {
         &self,
         successor: AudioSourceContext,
     ) -> Option<(AppliedAudioSource, u64, bool)> {
+        if let Some(replay) = &self.retiring_replay_capture
+            && let Some(source) = replay.isolated_source(successor)
+        {
+            return Some(source);
+        }
         let gesture = self.parameter_gesture.as_ref()?;
         let (predecessor, _) = gesture.commit?;
         let live = gesture.live.as_ref()?;

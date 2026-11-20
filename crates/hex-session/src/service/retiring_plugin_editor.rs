@@ -105,6 +105,9 @@ pub enum RetiringEditorReplayMode<'a> {
         verify_existing: &'a [(u32, f64)],
         cohorts: &'a [Vec<(u32, f64)>],
         publication: AudioSourceContext,
+        /// Replay into the canonical base in isolation, then apply the same
+        /// lane read-selection rules as an ordinary manual edit.
+        manual_base: bool,
     },
 }
 
@@ -289,6 +292,7 @@ pub(super) fn apply(
     admission: super::sampler_export::Admission<'_>,
 ) -> Result<Option<ReplayOutcome>, String> {
     use super::resident_audio::PluginParameterCommit;
+    use hex_lattice_contract::DeviceAutomationTarget;
     let Some(batch) = sink.next_retiring_editor_replay() else {
         return Ok(None);
     };
@@ -304,17 +308,27 @@ pub(super) fn apply(
         let device = original.id();
         let state = original.state().clone();
         let points = batch.replay_points()?;
-        if points
-            .earlier
+        let manual_base = original
+            .automation()
             .iter()
-            .chain(points.later.iter().flatten())
-            .any(|&(parameter, _)| {
-                let target = hex_lattice_contract::DeviceAutomationTarget::Vst3 { parameter };
-                original.automation_target(target).is_some()
-            })
-        {
-            return Err("vst3 editor replay requires automation disposition".into());
+            .any(|lane| matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }));
+        let mut manual_targets = Vec::new();
+        if manual_base {
+            manual_targets.extend(
+                points
+                    .later
+                    .iter()
+                    .flatten()
+                    .map(|&(parameter, _)| DeviceAutomationTarget::Vst3 { parameter }),
+            );
+            manual_targets.sort_unstable();
+            manual_targets.dedup();
         }
+        let changes_read_selection = manual_targets.iter().any(|&target| {
+            original
+                .automation_target(target)
+                .is_some_and(|lane| lane.is_reading())
+        });
         let mode = if points.later.is_empty() {
             RetiringEditorReplayMode::VerifyExisting {
                 points: &points.earlier,
@@ -323,6 +337,7 @@ pub(super) fn apply(
             RetiringEditorReplayMode::Apply {
                 verify_existing: &points.earlier,
                 cohorts: &points.later,
+                manual_base,
                 publication: AudioSourceContext {
                     editor_revision: context
                         .editor_revision
@@ -341,14 +356,28 @@ pub(super) fn apply(
                 .map_err(|error| error.to_string())?;
         let prepared = match mode {
             RetiringEditorReplayMode::Apply { publication, .. }
-                if capture.before != capture.after =>
+                if capture.before != capture.after || changes_read_selection =>
             {
+                let commit = if manual_base {
+                    if capture.before != state {
+                        return Err("vst3 editor replay base differs from canonical state".into());
+                    }
+                    PluginParameterCommit::Override(Box::new(
+                        hex_project::Command::ManualDeviceEdit {
+                            device,
+                            state: capture.after,
+                            targets: manual_targets,
+                        },
+                    ))
+                } else {
+                    PluginParameterCommit::Captured {
+                        device,
+                        capture: Box::new(capture),
+                    }
+                };
                 let snapshot = session
                     .plugin_parameter_resident_snapshot(
-                        PluginParameterCommit::Captured {
-                            device,
-                            capture: Box::new(capture),
-                        },
+                        commit,
                         publication,
                         sink,
                         admission,
