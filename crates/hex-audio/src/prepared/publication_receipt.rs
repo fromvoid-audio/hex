@@ -214,7 +214,7 @@ impl PublicationReceiptOwner {
             .store(generation, Release);
     }
 
-    pub(super) fn fenced_before_admission(&self) -> bool {
+    pub(crate) fn fenced_before_admission(&self) -> bool {
         self.0.expire_if_due();
         matches!(
             self.phase().load(Acquire),

@@ -6,6 +6,77 @@ use hex_session::device_gesture::{
 };
 
 #[test]
+fn verified_native_removal_commits_the_normal_edit_without_consent() {
+    use hex_project::{Command, Created};
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = super::verified_gain::actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    h.run(Request::Import(files.wav(48_000, 32_768)));
+    h.applied(h.context.unwrap());
+    let utility = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.utility",
+    ))
+    .unwrap();
+    let state = hex_engine::patch_native_device_parameter(
+        &utility,
+        ParameterId::from_static(5), // Utility left polarity.
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    let inserted = h.run_verified_device_insert(Command::InsertMainDevice {
+        before: None,
+        state,
+    });
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("utility");
+    };
+    let old = h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[-0.25, 0.25]; 64] {
+        assert!(
+            Instant::now() < deadline,
+            "the verified file did not play through Utility"
+        );
+        std::thread::yield_now();
+    }
+
+    let pending = h.run(Request::Edit(Command::RemoveDevice(device)));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, inserted.state.project);
+    assert_eq!(pending.state.revision, inserted.state.revision);
+    let removed = h.next_with_audio();
+    assert!(removed.request_complete);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    assert!(removed.device_insert_confirmation.is_none());
+    assert_eq!(
+        removed.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    assert!(removed.state.project.device(device).is_none());
+    assert_eq!(removed.state.revision, inserted.state.revision + 1);
+    let new = h.applied(h.context.unwrap());
+    assert_eq!(new.output_identity, old.output_identity);
+    assert!(new.audio_revision > old.audio_revision);
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+}
+
+#[test]
 fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm() {
     width_preview(false, false);
 }

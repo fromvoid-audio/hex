@@ -660,6 +660,7 @@ impl Callback {
             return;
         };
         let insert = next.device_insert().is_some();
+        let local_removal_started = next.native_removal_started();
         let confirmed_insert = next
             .device_insert()
             .and_then(|receipt| receipt.0.device_insert_basis())
@@ -682,9 +683,11 @@ impl Callback {
         }
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {
-            if confirmed_insert && let Some(next) = self.deferred_eligible.take() {
+            if (confirmed_insert || local_removal_started)
+                && let Some(mut next) = self.deferred_eligible.take()
+            {
                 self.return_verified_receipt(
-                    &next,
+                    &mut next,
                     Some(PlaybackHandoffRejection::RuntimeFenceChanged),
                 );
                 self.deferred_eligible = Some(next);
@@ -750,6 +753,10 @@ impl Callback {
                             self.reject_pending_eligible_successor(
                                 PlaybackHandoffRejection::TempoCutMissed,
                             );
+                        } else if local_removal_started {
+                            self.reject_pending_eligible_successor(
+                                PlaybackHandoffRejection::StreamedPagesNotReady,
+                            );
                         } else if let Some(next) = self.deferred_eligible.as_mut() {
                             next.cancel_stream_readiness(&mut self.domain_pages);
                         }
@@ -762,11 +769,15 @@ impl Callback {
                         self.reject_pending_eligible_successor(
                             PlaybackHandoffRejection::TempoCutMissed,
                         );
+                    } else if local_removal_started {
+                        self.reject_pending_eligible_successor(
+                            PlaybackHandoffRejection::RuntimeFenceChanged,
+                        );
                     }
                     return;
                 }
                 Err(crate::candidate_custody::QuantumFailure::Capacity) => {
-                    if !self.retry_pending_eligible_capacity() {
+                    if local_removal_started || !self.retry_pending_eligible_capacity() {
                         self.reject_pending_eligible_successor(
                             PlaybackHandoffRejection::StreamedPageCapacity,
                         );
@@ -853,6 +864,24 @@ impl Callback {
             // The old output is already at the held cut. Refuse on a miss so
             // it can resume in this callback, with a bounded interruption.
             decision = InstallDecision::Refused(PlaybackHandoffRejection::StreamedPagesNotReady);
+        } else if local_removal_started
+            && let InstallDecision::Retry(reason) = decision
+            && reason != PublicationWaitReason::NativeRemovalFade
+        {
+            // Do not leave a partially attenuated stage waiting on cold pages
+            // or a changed handoff. Return the candidate and restore its donor.
+            decision = InstallDecision::Refused(match reason {
+                PublicationWaitReason::PredecessorWindow => {
+                    PlaybackHandoffRejection::RuntimeFenceChanged
+                }
+                PublicationWaitReason::StreamPageCapacity => {
+                    PlaybackHandoffRejection::StreamedPageCapacity
+                }
+                PublicationWaitReason::RuntimeHandoff(error) => {
+                    PlaybackHandoffRejection::from_error(error)
+                }
+                _ => PlaybackHandoffRejection::StreamedPagesNotReady,
+            });
         }
         if let Some(handoff) = self
             .deferred_eligible
@@ -894,7 +923,7 @@ impl Callback {
                     value.cancel_stream_readiness(&mut self.domain_pages);
                     self.reject_publication(value.revision(), reason);
                     self.status.publication_pending.store(false, Release);
-                    self.return_verified_receipt(&value, Some(reason));
+                    self.return_verified_receipt(&mut value, Some(reason));
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
