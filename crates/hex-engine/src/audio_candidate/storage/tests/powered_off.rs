@@ -194,3 +194,93 @@ fn typed_main_off_seals_actual_data_and_reports_its_distinct_status() {
             .is_err()
     );
 }
+
+#[test]
+fn ordinary_main_off_does_not_consume_the_full_stateful_budget() {
+    let definition = Definition(true);
+    let native = &hex_devices::overdrive::OVERDRIVE_DEFINITION;
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, native];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    let state = native.default_state().unwrap();
+    for _ in 0..hex_lattice::MAX_STATEFUL_PROCESSORS / hex_project::MAX_DEVICES_PER_TRACK {
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "budget".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state.clone(),
+                })
+                .unwrap();
+        }
+    }
+    let compile = |project: &Project| {
+        crate::compile::project_with_registry(
+            project,
+            &std::collections::BTreeMap::new(),
+            &registry,
+        )
+    };
+    let before = compile(editor.project()).unwrap();
+    assert_eq!(
+        before
+            .tracks
+            .iter()
+            .map(|track| track.device_chain.len())
+            .sum::<usize>(),
+        hex_lattice::MAX_STATEFUL_PROCESSORS
+    );
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: definition.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main")
+    };
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let off = compile(editor.project()).unwrap();
+    assert!(
+        off.main_device_chain[0]
+            .definition
+            .as_ref()
+            .unwrap()
+            .is_powered_off()
+    );
+    // A genuine additional runtime still exceeds the same global limit.
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "overflow".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    assert_eq!(
+        compile(editor.project()).err(),
+        Some(crate::Invalid(
+            "stateful device runtime exceeds its bounded budget"
+        ))
+    );
+}
