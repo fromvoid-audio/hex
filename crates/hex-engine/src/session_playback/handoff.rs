@@ -7,7 +7,7 @@ use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
-const GROUP_ROUTE_STAMP_TRANSFER: u8 = 4;
+const GROUP_ROUTE_HISTORY_TRANSFER: u8 = 4;
 
 // This comparison does not authenticate publication or transfer custody.
 pub(super) fn configuration_matches_continuation(
@@ -2041,16 +2041,22 @@ impl SessionPlayback {
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
-        let group_route_stamps = continuous_insert
+        let group_route_track = if continuous_insert
             && !force_restart
             && mapped_main_clock
             && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame)
             && donor_epoch_matches
-            && self
-                .native_removal
-                .is_some_and(|pending| pending.matches_group_reroute(previous))
-            && compensation_pair
-                .is_some_and(|(candidate, old)| candidate.can_copy_group_route_stamps_from(old));
+        {
+            self.native_removal
+                .and_then(|pending| pending.group_reroute_track(previous))
+                .filter(|&track| {
+                    compensation_pair.is_some_and(|(candidate, old)| {
+                        candidate.can_copy_group_route_history_from(old, track)
+                    })
+                })
+        } else {
+            None
+        };
         let removed_send_clock = !force_restart
             && previous.playing
             && mapped_main_clock
@@ -2073,7 +2079,7 @@ impl SessionPlayback {
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (None, Some(_)) if main_pass_cut.is_some() => Some(0),
-            (Some(_), Some(_)) if group_route_stamps => Some(GROUP_ROUTE_STAMP_TRANSFER),
+            (Some(_), Some(_)) if group_route_track.is_some() => Some(GROUP_ROUTE_HISTORY_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
@@ -6771,14 +6777,17 @@ impl SessionPlayback {
         } else {
             previous.route_state_generation
         };
-        if clock_transfer == GROUP_ROUTE_STAMP_TRANSFER {
+        if clock_transfer == GROUP_ROUTE_HISTORY_TRANSFER {
             let (candidate, old) = self
                 .compensation
                 .as_mut()
                 .zip(previous.compensation.as_ref())
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             candidate
-                .copy_group_route_stamps_from(old)
+                .copy_group_route_history_from(
+                    old,
+                    group_route_track.ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         } else if clock_transfer == 3 {
             if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
