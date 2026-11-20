@@ -3,14 +3,17 @@ use crate::{NativeRuntimeChain, ProcessorChainOwner, ProcessorInstanceIdentity, 
 use hex_lattice_contract::DeviceContractError;
 
 impl NativeRuntimeChain {
-    /// Match the sole zero-latency donor to the receiver's final stage.
+    /// Match the zero-latency donor stage to the receiver's final stage, with
+    /// at most one retained prefix stage across the two chains.
     /// The host must independently approve the provider's owner change, any
     /// unchanged prefix, both route cuts and exclusive donor retirement.
     pub fn cross_track_native_identity_from(
         &self,
         old: &Self,
     ) -> Option<ProcessorInstanceIdentity> {
-        let ([next] | [_, next], [old]) = (self.entries.as_slice(), old.entries.as_slice()) else {
+        let (([next] | [_, next], [old]) | ([next], [_, old])) =
+            (self.entries.as_slice(), old.entries.as_slice())
+        else {
             return None;
         };
         let (ProcessorChainOwner::Track(to), ProcessorChainOwner::Track(from)) =
@@ -68,7 +71,7 @@ impl NativeRuntimeChain {
         if self.cross_track_native_identity_from(old).is_none() {
             return Err(DeviceContractError::InvalidDescriptor);
         }
-        let (Some(next), Some(old)) = (self.entries.last_mut(), old.entries.first_mut()) else {
+        let (Some(next), Some(old)) = (self.entries.last_mut(), old.entries.last_mut()) else {
             return Err(DeviceContractError::InvalidDescriptor);
         };
         if matches!(next.runtime, RuntimeOwnership::Legacy { .. }) {
@@ -145,5 +148,10 @@ mod tests {
         assert_eq!(pair(&next.entries[0]), prefix);
         assert_eq!(pair(&next.entries[1]), running);
         assert_eq!(pair(&old.entries[0]), fresh);
+
+        old.transfer_cross_track_native_from(&mut next).unwrap();
+        assert_eq!(pair(&next.entries[0]), prefix);
+        assert_eq!(pair(&next.entries[1]), fresh);
+        assert_eq!(pair(&old.entries[0]), running);
     }
 }
