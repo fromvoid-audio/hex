@@ -72,9 +72,16 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
         assert_eq!(sample, 0.25);
     }
     let approved = std::cell::Cell::new(false);
+    let phase = std::cell::Cell::new("provider substitution");
     let next_event = |h: &Harness| {
         let mut event = None;
+        let deadline = Instant::now() + Duration::from_secs(2);
         wait(|| {
+            assert!(
+                Instant::now() < deadline,
+                "history event timed out: {}",
+                phase.get()
+            );
             if let Ok(next) = h.service.as_ref().unwrap().try_event() {
                 event = Some(next);
                 return true;
@@ -84,8 +91,14 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
             if !approved.get() && status(h).performance_frame.load(Acquire) == frame + 256 {
                 assert_eq!(status(h).applied_audio_source(), Some(predecessor));
                 assert_eq!(
-                    sample, 0.25,
-                    "history preparation or consent changed incumbent PCM"
+                    sample,
+                    0.25,
+                    "phase={} position={} performance={} playing={} paused={:?}",
+                    phase.get(),
+                    status(h).position.load(Acquire),
+                    status(h).performance_frame.load(Acquire),
+                    status(h).playing.load(Acquire),
+                    status(h).paused_input_interval()
                 );
             }
             wait(|| {
@@ -129,10 +142,35 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
             &selection.info_sha256
         )
     );
+    // The fixture writer updates individual module records. Replace the owned
+    // catalog so the original exact provider is absent, rather than adding an
+    // unrelated available provider beside it.
+    fs::remove_file(directory.join("plugin-catalog.json")).unwrap();
     hex_ui::write_plugin_effect_test_catalog(&directory, &wrong, "Fx", 0).unwrap();
+    let saved =
+        Hosting::saved_identity_on_control(inserted.state.project.device(vst).unwrap().state())
+            .unwrap();
+    let catalog =
+        hex_plugin_catalog::Catalog::load(&directory.join("plugin-catalog.json")).unwrap();
+    assert_eq!(catalog.entries.len(), 1);
+    assert_eq!(
+        catalog
+            .resolve_effect(
+                saved.class.bytes(),
+                saved.binary.executable_sha256,
+                saved.binary.info_sha256,
+            )
+            .err()
+            .as_deref(),
+        Some("saved vst3 binary or class is unavailable")
+    );
     submit(&h, Request::Undo);
     let unavailable = loop {
         let event = next_event(&h);
+        assert!(
+            event.device_insert_confirmation.is_none(),
+            "unavailable provider unexpectedly offered for installation"
+        );
         if event.request_complete {
             break event;
         }
@@ -154,8 +192,10 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
     assert!(progress.lock().unwrap().newest_source.is_none());
     hex_ui::write_plugin_effect_test_catalog(&directory, &selection, "Fx", 0).unwrap();
 
+    phase.set("cancel preparation");
     submit(&h, Request::Undo);
     assert!(offer(&h).cancel());
+    phase.set("cancel completion");
     let cancelled = loop {
         let event = next_event(&h);
         if event.request_complete {
@@ -174,8 +214,10 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
     assert!(status(&h).playing.load(Acquire));
     // A newer command invalidates the offered cut, even if it leaves the
     // canonical source and audible playback otherwise unchanged.
+    phase.set("stale preparation");
     submit(&h, Request::Undo);
     let stale = offer(&h);
+    phase.set("stale completion");
     h.audio
         .as_mut()
         .unwrap()
@@ -201,6 +243,7 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
     assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
     assert!(status(&h).playing.load(Acquire));
 
+    phase.set("success preparation");
     submit(&h, Request::Undo);
     let consent = offer(&h);
     assert!(consent.proceed());
