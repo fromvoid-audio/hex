@@ -13,6 +13,7 @@ impl Render for Host {
 #[test]
 fn circular_markers_fill_for_hover_or_selection_and_keep_square_pixel_bounds() {
     let mut node = ResponseGraphNode {
+        accent: None,
         id: 7,
         position: [0.2, 0.8],
         enabled: true,
@@ -37,6 +38,38 @@ fn circular_markers_fill_for_hover_or_selection_and_keep_square_pixel_bounds() {
     }
 }
 
+#[test]
+fn node_accent_colors_the_outline_and_selected_fill() {
+    let style = crate::tests::STYLE;
+    let accent = 0xce7967;
+    let center = point(px(15.0), px(15.0));
+    let mut node = ResponseGraphNode {
+        accent: Some(accent),
+        id: 1,
+        position: [0.5, 0.5],
+        enabled: true,
+        selected: false,
+    };
+    let normal = circular_node_quad(center, px(3.0), node, None, style);
+    assert_eq!(normal.border_color, rgb(accent).into());
+    assert!(normal.background.is_transparent());
+
+    node.selected = true;
+    let selected = circular_node_quad(center, px(4.0), node, None, style);
+    assert_eq!(selected.border_color, normal.border_color);
+    assert_eq!(
+        selected.background,
+        gpui::solid_background(normal.border_color)
+    );
+
+    node.enabled = false;
+    let disabled = circular_node_quad(center, px(4.0), node, None, style);
+    assert_eq!(disabled.border_color, normal.border_color.opacity(0.55));
+    node.accent = None;
+    let neutral = circular_node_quad(center, px(4.0), node, None, style);
+    assert_eq!(neutral.border_color, rgb(style.muted).into());
+}
+
 #[gpui::test]
 fn hover_tracks_existing_node_hits_and_selection_survives_pointer_leave(cx: &mut TestAppContext) {
     let handle = cx.add_window(|_, cx| Host {
@@ -46,6 +79,7 @@ fn hover_tracks_existing_node_hits_and_selection_survives_pointer_leave(cx: &mut
             graph.set_editable(true, cx);
             let mut model = graph.model.clone();
             model.nodes = vec![ResponseGraphNode {
+                accent: None,
                 id: 7,
                 position: [0.5, 0.5],
                 enabled: true,

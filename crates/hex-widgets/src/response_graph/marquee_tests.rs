@@ -43,6 +43,7 @@ fn fixture(cx: &mut TestAppContext, creation: bool, selected: &[u32]) -> Fixture
             model.nodes = NODES
                 .iter()
                 .map(|(id, position)| ResponseGraphNode {
+                    accent: None,
                     id: *id,
                     position: *position,
                     enabled: true,

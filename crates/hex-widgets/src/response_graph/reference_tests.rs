@@ -17,6 +17,7 @@ fn passive_references_validate_atomically_and_leave_editable_model_untouched(
     graph.update(cx, |graph, cx| {
         let mut model = graph.model.clone();
         model.nodes.push(ResponseGraphNode {
+            accent: None,
             id: 7,
             position: [0.5, 0.5],
             enabled: true,

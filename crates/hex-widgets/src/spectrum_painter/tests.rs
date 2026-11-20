@@ -196,6 +196,7 @@ fn production_eq_and_global_submit_the_same_clipped_fill_and_trace_system(cx: &m
                             input_analyzer: Some(points()),
                             analyzer_peak: Some(peak_points()),
                             nodes: vec![ResponseGraphNode {
+                                accent: None,
                                 id: 1,
                                 position: [0.6, 0.5],
                                 enabled: true,

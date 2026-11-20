@@ -509,6 +509,16 @@ pub(super) fn graph_model(
         })
         .collect();
     let sample_rate_max = (sample_rate as f32 * 0.49).min(MAX_HZ);
+    let accents: [_; BAND_COUNT] = {
+        let canonical =
+            super::super::automation_tint::native_device(view, device, NativeDeviceClass::Effect);
+        std::array::from_fn(|band| {
+            super::super::automation_tint::graph_accent(
+                canonical,
+                (0..5).map(|field| band_id(bank, band, field)),
+            )
+        })
+    };
     let nodes = (0..BAND_COUNT)
         .map(|band| {
             let frequency = value(view, device, device_view, band_id(bank, band, 2))
@@ -532,6 +542,7 @@ pub(super) fn graph_model(
                 ((gain - MIN_GAIN_DB) / (MAX_GAIN_DB - MIN_GAIN_DB)).clamp(0.0, 1.0)
             };
             ResponseGraphNode {
+                accent: accents[band],
                 id: band as u32,
                 position: [log_position(frequency, MIN_HZ, sample_rate_max), y],
                 enabled,

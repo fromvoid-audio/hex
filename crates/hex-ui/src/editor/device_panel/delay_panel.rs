@@ -14,7 +14,7 @@ pub(super) struct Panel {
     generation: u64,
     expanded: bool,
     gesture: Option<GestureKey>,
-    preview: Option<(NativeDeviceState, u32, DelayFilterPreview)>,
+    preview: Option<(NativeDeviceState, u32, Option<u32>)>,
 }
 fn row() -> Div {
     div()
@@ -213,6 +213,10 @@ pub(super) fn render_body(
             draft = next;
         }
     }
+    let accent = automation_tint::graph_accent(
+        automation_tint::native_device(view, device, NativeDeviceClass::Effect),
+        [FREQUENCY, WIDTH],
+    );
     let client_key = view.device_gesture.snapshot().map(|s| s.key);
     let Some(panel) = view.device_panel.delay_panels.get_mut(&device) else {
         return div().id("delay-unavailable");
@@ -224,7 +228,7 @@ pub(super) fn render_body(
     if panel
         .preview
         .as_ref()
-        .is_none_or(|(state, r, _)| state != &draft || *r != rate)
+        .is_none_or(|(state, r, color)| state != &draft || *r != rate || *color != accent)
         && let Ok(preview) = filter_preview(&draft, rate)
     {
         let points = if preview.enabled {
@@ -239,6 +243,7 @@ pub(super) fn render_body(
             input_analyzer: None,
             analyzer_peak: None,
             nodes: vec![ResponseGraphNode {
+                accent,
                 id: 1,
                 position: preview.position,
                 enabled: true,
@@ -255,7 +260,7 @@ pub(super) fn render_body(
         if let Err(error) = result {
             view.device_panel.message = Some(error.into());
         }
-        panel.preview = Some((draft, rate, preview));
+        panel.preview = Some((draft, rate, accent));
     }
     let graph = panel.graph.clone();
     let expanded = panel.expanded;

@@ -5,7 +5,7 @@
 //! own interpolation; this panel neither schedules audio nor reads processor state.
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, numeric_display::NumericDisplayCodec,
+    automation_tint, effective_parameter_value, numeric_display::NumericDisplayCodec,
     parameter_control_with_presentation,
 };
 use crate::theme;
@@ -102,7 +102,8 @@ pub(super) fn render_body(
         .gap(px(3.0))
         .p(px(4.0));
     if let (Some(parameter), Some(preview)) = (parameter, preview) {
-        let color = theme::color(theme::PaletteRole::WarmAccent);
+        let color = automation_tint::graph_accent(Some(device), [DRIVE])
+            .unwrap_or_else(|| theme::color(theme::PaletteRole::WarmAccent));
         let display = div()
             .debug_selector(move || format!("rattle-diamonds-{}", id.value()))
             .w_full()

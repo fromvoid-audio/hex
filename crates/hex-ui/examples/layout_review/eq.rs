@@ -1239,6 +1239,7 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
             .iter()
             .filter(|node| usize::from(node.bank) == bank)
             .map(|node| hex_widgets::ResponseGraphNode {
+                accent: None,
                 id: node.id.value(),
                 position: node_geometry::node_position(node, 48_000),
                 enabled: node.enabled,
