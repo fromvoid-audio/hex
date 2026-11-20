@@ -201,6 +201,7 @@ impl Plugins {
             match result {
                 Ok(Some(restored)) if restored.processing_eq(state) => {
                     source.accepted = true;
+                    source.editor_retirement.ever_accepted = true;
                     restore.current = None;
                     restore.next += 1;
                 }
@@ -292,6 +293,7 @@ impl Plugins {
                     editor_open_on_insert: false,
                     edit_backlog: false,
                     edit_recovery: None,
+                    editor_retirement: Default::default(),
                     pending_touch: None,
                     #[cfg(all(test, feature = "allocation-probe"))]
                     observed_latency_receipt: false,

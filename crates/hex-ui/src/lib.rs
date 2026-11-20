@@ -32,7 +32,10 @@ mod editor;
 mod editor_backend;
 #[cfg(feature = "ui-test-support")]
 mod test_wait;
-pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
+pub use editor_backend::{
+    EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState,
+    PluginEditorRetirementIssue,
+};
 mod layout;
 mod log_viewer;
 mod section_appearance;

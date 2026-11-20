@@ -184,9 +184,13 @@ impl Plugins {
                 Stage::Renew(index) => {
                     if let Some(source) = self.sources.get_mut(index) {
                         if source.accepted && !source.retiring {
-                            match control.quiesce_native_source_preparation(
+                            let lease = source.editor_retirement.lease.as_mut().ok_or(
+                                "stopped vst3 restore lost its editor receipt reservation",
+                            )?;
+                            match control.quiesce_native_source_with_editor_reservation(
                                 source.binding,
                                 source.binding.graph,
+                                lease,
                             ) {
                                 Ok(binding) => {
                                     source.binding = binding;

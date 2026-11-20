@@ -32,6 +32,14 @@ pub struct EditorBackend {
     pub source_reservation: SourcePlanReservation,
 }
 
+/// Bounded status of an outgoing plugin source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginEditorRetirementIssue {
+    NeedsDisposition,
+    Failure(&'static str),
+    TailLatencyPending,
+}
+
 /// Readiness and publication observations delivered to the UI.
 pub enum EditorAudioEvent {
     /// Close only the named old UI endpoint for a preflighted fresh-output
@@ -86,6 +94,12 @@ pub enum EditorAudioEvent {
         project_generation: u64,
         output_identity: u64,
         devices: Vec<u64>,
+    },
+    /// An outgoing editor source needs attention while it is retained.
+    PluginEditorRetirementIssue {
+        project_generation: u64,
+        device: u64,
+        issue: PluginEditorRetirementIssue,
     },
     /// Latest native editor touch observed on an exact retained source. This
     /// carries an optional SDK-confirmed Perform value for immediate display.
