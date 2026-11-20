@@ -53,6 +53,11 @@ impl PluginEffectSelection {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PluginEffectDestination {
     Track(hex_project::TrackId),
+    /// The captured direct hosted leaf on one ordinary Resident track.
+    ReplaceTrackEffect {
+        track: hex_project::TrackId,
+        replacing: hex_project::DeviceId,
+    },
     Instrument(hex_project::TrackId),
     ReplaceInstrument {
         track: hex_project::TrackId,
@@ -82,6 +87,11 @@ impl PluginEffectDestination {
                 .track(id)
                 .map(|track| track.devices())
                 .ok_or_else(|| "effect destination no longer exists".into()),
+            Self::ReplaceTrackEffect { track, .. } => project
+                .track(track)
+                .filter(|target| !target.is_group())
+                .map(hex_project::Track::devices)
+                .ok_or_else(|| "effect replacement requires an ordinary track".into()),
             Self::Return(id)
             | Self::ReplaceReturnEffect {
                 return_track: id, ..
@@ -100,9 +110,9 @@ impl PluginEffectDestination {
 
     fn replaced_effect(self) -> Option<hex_project::DeviceId> {
         match self {
-            Self::ReplaceMainEffect { replacing } | Self::ReplaceReturnEffect { replacing, .. } => {
-                Some(replacing)
-            }
+            Self::ReplaceTrackEffect { replacing, .. }
+            | Self::ReplaceMainEffect { replacing }
+            | Self::ReplaceReturnEffect { replacing, .. } => Some(replacing),
             _ => None,
         }
     }
@@ -120,7 +130,10 @@ impl PluginEffectDestination {
     }
     pub fn owner(self) -> hex_engine::ProcessorChainOwner {
         match self {
-            Self::Track(id) | Self::Instrument(id) | Self::ReplaceInstrument { track: id, .. } => {
+            Self::Track(id)
+            | Self::ReplaceTrackEffect { track: id, .. }
+            | Self::Instrument(id)
+            | Self::ReplaceInstrument { track: id, .. } => {
                 hex_engine::ProcessorChainOwner::Track(id.value())
             }
             Self::NewTrack { track_identity, .. } => {
@@ -329,6 +342,13 @@ impl PluginEffectInsertion {
         {
             return Err("vst3 effect replacement target changed".into());
         }
+        if let PluginEffectDestination::ReplaceTrackEffect { replacing, .. } = self.destination
+            && devices
+                .iter()
+                .any(|device| device.parent() == Some(replacing))
+        {
+            return Err("vst3 effect replacement requires a single effect".into());
+        }
         if self
             .before
             .is_some_and(|id| !devices.iter().any(|device| device.id() == id))
@@ -350,6 +370,13 @@ impl PluginEffectInsertion {
                 before: self.before,
                 state,
             },
+            PluginEffectDestination::ReplaceTrackEffect { track, replacing } => {
+                Command::ReplaceTrackDevice {
+                    track,
+                    replacing,
+                    state,
+                }
+            }
             PluginEffectDestination::Instrument(track) => {
                 Command::InsertInstrument { track, state }
             }
@@ -651,6 +678,75 @@ mod tests {
         request.before = Some(replacing);
         assert!(request.validate(context, editor.project()).is_err());
         request.before = None;
+        editor.execute(command).unwrap();
+        assert!(request.validate(context, editor.project()).is_err());
+    }
+
+    #[test]
+    fn track_effect_replacement_requires_the_exact_direct_hosted_leaf() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 12).unwrap();
+        let mut add_track = |name: &str| {
+            let hex_project::Created::Track(id) = editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            id
+        };
+        let target = add_track("target");
+        let other = add_track("other");
+        let state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
+        let insert = |editor: &mut hex_project::Editor, state| {
+            let hex_project::Created::Device(id) = editor
+                .execute(Command::InsertDevice {
+                    track: target,
+                    before: None,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("track effect");
+            };
+            id
+        };
+        let replacing = insert(&mut editor, state.clone());
+        let parent = insert(&mut editor, state.clone());
+        let hex_project::Created::Device(child) = editor
+            .execute(Command::InsertNestedDevice {
+                parent,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("nested track effect");
+        };
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 2,
+        };
+        let destination =
+            |track, replacing| PluginEffectDestination::ReplaceTrackEffect { track, replacing };
+        let mut request = replacement_request(context, destination(target, replacing));
+        for invalid in [
+            destination(other, replacing),
+            destination(target, parent),
+            destination(target, child),
+        ] {
+            request.destination = invalid;
+            assert!(request.validate(context, editor.project()).is_err());
+        }
+        request.destination = destination(target, replacing);
+        request.validate(context, editor.project()).unwrap();
+        assert_eq!(
+            request.destination.owner(),
+            hex_engine::ProcessorChainOwner::Track(target.value())
+        );
+        let command = request.command(state).unwrap();
+        assert!(
+            matches!(command, Command::ReplaceTrackDevice { track, replacing: id, .. }
+            if track == target && id == replacing)
+        );
         editor.execute(command).unwrap();
         assert!(request.validate(context, editor.project()).is_err());
     }

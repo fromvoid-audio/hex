@@ -1195,7 +1195,10 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
     let old_source = source(&h);
     let replacement = || {
         let target = match destination {
-            PluginEffectDestination::Track(track) => PluginEffectDestination::Track(track),
+            PluginEffectDestination::Track(track) => PluginEffectDestination::ReplaceTrackEffect {
+                track,
+                replacing: old,
+            },
             PluginEffectDestination::Return(return_track) => {
                 PluginEffectDestination::ReplaceReturnEffect {
                     return_track,
@@ -1207,12 +1210,7 @@ fn assert_running_vst3_effect_replacement(bus: ReplacementBus) {
             }
             _ => panic!("serial effect replacement fixture"),
         };
-        let mut input = request(&original.state, target);
-        if matches!(target, PluginEffectDestination::Track(_)) {
-            // Model the only available occupied Track drop before replacement exists.
-            input.before = Some(old);
-        }
-        input
+        request(&original.state, target)
     };
     h.enable_confirmed_device_inserts();
     h.audio

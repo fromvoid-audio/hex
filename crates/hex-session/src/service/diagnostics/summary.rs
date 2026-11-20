@@ -522,6 +522,13 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_device"; ["track" => track.value(), "before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
+        Command::ReplaceTrackDevice {
+            track,
+            replacing,
+            state,
+        } => {
+            describe!("replace_track_device"; ["track" => track.value(), "replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::LoadInstrument {
             track,
             replacing,
