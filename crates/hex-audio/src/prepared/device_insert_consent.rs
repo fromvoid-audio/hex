@@ -584,24 +584,26 @@ mod tests {
         let predecessor = control.status.recording_source().unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
         let mut publish = |playback, deadline| {
-            control.publish_unaccounted_with_native_continuation(
-                playback,
-                PublicationPolicy::DeviceInsert { predecessor, fence },
-                initial.project_generation,
-                true,
-                false,
-                Some(candidate),
-                Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
-                    preparation_deadline: deadline,
-                    approved: None,
-                    bind: &mut |_| {},
-                })),
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                None,
-            )
+            control
+                .publish_unaccounted_with_native_continuation(
+                    playback,
+                    PublicationPolicy::DeviceInsert { predecessor, fence },
+                    initial.project_generation,
+                    true,
+                    false,
+                    Some(candidate),
+                    Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
+                        preparation_deadline: deadline,
+                        approved: None,
+                        bind: &mut |_| {},
+                    })),
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    None,
+                )
+                .map_err(Box::new)
         };
         let pending = Playback::try_from_prepared_with_session(next).unwrap();
-        let refused = publish(pending, Instant::now()).unwrap_err();
+        let refused = *publish(pending, Instant::now()).unwrap_err();
         assert_eq!(refused.reason, "resident graph edit preparation timed out");
         let deadline = Instant::now() + Duration::from_millis(100);
         let revision = publish(refused.playback, deadline).unwrap();
