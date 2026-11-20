@@ -430,7 +430,7 @@ pub struct ResidentPublicationMetadata {
     pub gain_recording_track: Option<hex_project::TrackId>,
     pub requires_preroll: bool,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResidentFreshRuntimeFence {
     pub output_identity: u64,
     pub active_audio_revision: u64,
@@ -520,6 +520,8 @@ pub enum ResidentPublicationPolicy {
     DeviceInsert {
         predecessor: ResidentRuntimeLoop,
         hosted: bool,
+        /// A power receipt is restricted to this original settled Stop interval.
+        stopped_fence: Option<ResidentFreshRuntimeFence>,
         /// Exact seamless refusal whose interruption the user approved.
         confirmation: Option<ResidentGraphSubmission>,
         /// This attempt expires at the callback, even if preparation queued in time.
@@ -1149,6 +1151,16 @@ pub trait WorkerAudioSink: Send {
     fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
         ResidentPublicationReadiness::NoOutput
     }
+    /// Observe the exact installed source only in a settled Stop interval.
+    /// This grants no custody; publication must revalidate the complete witness.
+    fn stopped_resident_power_fence(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _device: u64,
+    ) -> Option<ResidentFreshRuntimeFence> {
+        None
+    }
+
     /// Actual output/source/revision-bound loop, never the saved loop marker.
     /// None means no active ordinary output; offline edits remain available.
     /// A witness may become stale during preparation and must be revalidated by

@@ -1,6 +1,7 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
 mod main_history;
+mod stopped_power;
 
 mod move_history;
 
@@ -17,6 +18,8 @@ pub enum GraphEditOperation {
     MoveDevice,
     /// A single Resident track reparent, confirmed by its exact graph receipt.
     MoveTrack,
+    /// One hosted Main power edit admitted from its original settled Stop interval.
+    PowerDevice,
     RemoveTrack,
 }
 
@@ -100,6 +103,7 @@ impl Operation {
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::MoveTrack) => "track moved",
+            Self::Device(GraphEditOperation::PowerDevice) => "device power changed",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
             Self::HostedHistory(_) | Self::ResidentMoveHistory => "history committed",
             Self::Tempo => "tempo applied",
@@ -148,6 +152,7 @@ struct Resident {
     snapshot: Snapshot,
     receipt: Receipt,
     predecessor: ResidentRuntimeLoop,
+    stopped_fence: Option<ResidentFreshRuntimeFence>,
 }
 
 enum Prepared {
@@ -485,6 +490,7 @@ impl Pending {
             ResidentPublicationPolicy::DeviceInsert {
                 predecessor: resident.predecessor,
                 hosted: self.plugin.is_some(),
+                stopped_fence: resident.stopped_fence,
                 confirmation: Some(refused),
                 preparation_deadline,
             },
@@ -588,6 +594,19 @@ pub(in crate::service) fn should_stage_resident_graph_edit(
                     sink.resident_publication_readiness(),
                     ResidentPublicationReadiness::NoOutput
                 )))
+}
+
+pub(in crate::service) fn stopped_hosted_power_fence(
+    project: &Project,
+    command: &Command,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+) -> Option<ResidentFreshRuntimeFence> {
+    if !sink.confirms_device_inserts() || !stopped_power::eligible(project, command) {
+        return None;
+    }
+    let device = project.main_devices().first()?;
+    sink.stopped_resident_power_fence(context, device.id().value())
 }
 
 fn resident_graph_edit_operation(
@@ -1032,17 +1051,21 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
+        let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink);
         self.stage_resident_graph_change(
             context,
             sink,
             admission,
             current,
+            stopped_fence,
             plugin,
             proposal_control,
             document_intent,
             |session| {
                 crate::validate_command_media(&command)?;
-                let operation = if plugin.is_some() {
+                let operation = if stopped_fence.is_some() {
+                    GraphEditOperation::PowerDevice
+                } else if plugin.is_some() {
                     match &command {
                         Command::ReplaceTrackInstrument { .. }
                         | Command::ReplaceMainDevice { .. } => GraphEditOperation::ReplaceDevice,
@@ -1055,7 +1078,9 @@ impl Session {
                 let edit = session.editor.stage_edit(command)?;
                 if (matches!(
                     operation,
-                    GraphEditOperation::MoveDevice | GraphEditOperation::MoveTrack
+                    GraphEditOperation::MoveDevice
+                        | GraphEditOperation::MoveTrack
+                        | GraphEditOperation::PowerDevice
                 ) || proposal_control.is_some())
                     && edit.project() == session.project()
                 {
@@ -1093,6 +1118,7 @@ impl Session {
             current,
             None,
             None,
+            None,
             document_intent,
             |session| {
                 Ok(move_history::stage(&mut session.editor, redo)?
@@ -1108,6 +1134,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
+        stopped_fence: Option<ResidentFreshRuntimeFence>,
         plugin: Option<&PluginEffectControl>,
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
@@ -1178,6 +1205,7 @@ impl Session {
                 ResidentPublicationPolicy::DeviceInsert {
                     predecessor: installed,
                     hosted: plugin.is_some(),
+                    stopped_fence,
                     confirmation: None,
                     preparation_deadline,
                 },
@@ -1190,6 +1218,7 @@ impl Session {
                     snapshot,
                     receipt: Receipt(receipt),
                     predecessor: installed,
+                    stopped_fence,
                 })),
                 confirmation: None,
                 operation,

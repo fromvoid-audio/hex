@@ -1582,11 +1582,31 @@ struct ResidentSink {
     device_insert_probe: Arc<DeviceInsertProbe>,
 }
 #[derive(Default)]
-struct DeviceInsertProbe {
+pub(super) struct DeviceInsertProbe {
     // Keep older fixtures on their submission-only contract. The insertion
     // fixture opts into and retains the exact production callback receipt.
     enabled: AtomicBool,
     submitted: Mutex<Option<DeviceInsertGate>>,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl DeviceInsertProbe {
+    pub(super) fn next_submitted(
+        &self,
+    ) -> (
+        mpsc::Receiver<hex_session::service::ResidentGraphSubmission>,
+        SyncSender<()>,
+    ) {
+        self.enabled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let (ready, submitted) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        let previous = self.submitted.lock().unwrap().replace(DeviceInsertGate {
+            ready,
+            resume: resumed,
+        });
+        assert!(previous.is_none());
+        (submitted, resume)
+    }
 }
 struct DeviceInsertGate {
     ready: SyncSender<hex_session::service::ResidentGraphSubmission>,
@@ -2220,6 +2240,14 @@ impl WorkerAudioSink for ResidentSink {
     ) -> Result<usize, String> {
         self.inner
             .resident_file_seek_storage_bytes(prepared, sources)
+    }
+
+    fn stopped_resident_power_fence(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        self.inner.stopped_resident_power_fence(context, device)
     }
 
     fn resident_runtime_loop(
@@ -3170,26 +3198,18 @@ impl ResidentHarness {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn device_insert_probe(&self) -> Arc<DeviceInsertProbe> {
+        Arc::clone(&self.device_insert_probe)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn probe_next_submitted_device_insert(
         &self,
     ) -> (
         mpsc::Receiver<hex_session::service::ResidentGraphSubmission>,
         SyncSender<()>,
     ) {
-        self.enable_confirmed_device_inserts();
-        let (ready, submitted) = mpsc::sync_channel(1);
-        let (resume, resumed) = mpsc::sync_channel(1);
-        let previous =
-            self.device_insert_probe
-                .submitted
-                .lock()
-                .unwrap()
-                .replace(DeviceInsertGate {
-                    ready,
-                    resume: resumed,
-                });
-        assert!(previous.is_none());
-        (submitted, resume)
+        self.device_insert_probe.next_submitted()
     }
 
     pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
