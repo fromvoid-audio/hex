@@ -248,7 +248,8 @@ pub trait PreparedNativeProcessor: Send + Sync {
     /// commits, the host resets both runtime twins in place and skips their
     /// block transactions until the stage turns on. The aligned dry delay
     /// remains active. Reset must be bounded, allocation-free, and restore
-    /// fresh DSP and control history.
+    /// fresh DSP and control history. Cold power-on keeps the aligned dry
+    /// lead, then uses a half-millisecond de-click into fresh wet output.
     fn supports_power_off(&self) -> bool {
         false
     }
@@ -2986,7 +2987,10 @@ impl NativeRuntimeChain {
                         && !entry.bypassed
                         && old.powered_off(old.committed_bypass_ramp)
                     {
-                        ramp.with_dry_lead(entry.algorithmic_latency_frames.unwrap_or(0))
+                        bypass_ramp::BypassRamp::fresh_power_on(
+                            entry.algorithmic_latency_frames.unwrap_or(0),
+                            entry.sample_rate,
+                        )
                     } else {
                         ramp
                     }
