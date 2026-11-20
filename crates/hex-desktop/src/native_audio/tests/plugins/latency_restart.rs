@@ -263,7 +263,24 @@ fn run_latency_change(streamed: bool, route: Route, decrease: bool) {
         assert!(Instant::now() < deadline, "initial stream did not advance");
     }
     assert_eq!(h.plugin_completed.load(Acquire), 1);
-    if !decrease {
+    if decrease {
+        let binding = bindings[0].1;
+        let observed_until = Instant::now() + Duration::from_secs(2);
+        wait(|| {
+            h.pump();
+            let progress = h.plugin_progress.lock().unwrap();
+            assert!(
+                Instant::now() < observed_until,
+                "recovery read did not acknowledge accepted source {binding:?}: {progress:?}"
+            );
+            progress.recovery_read_binding == Some(binding)
+                && progress
+                    .source_bindings
+                    .iter()
+                    .flatten()
+                    .any(|(_, current, _)| *current == binding)
+        });
+    } else {
         wait(|| h.plugin_progress.lock().unwrap().observed_latency_receipt);
     }
     // source_bindings selects accepted, nonretiring sources. A replacement

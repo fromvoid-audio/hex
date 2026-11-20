@@ -184,6 +184,9 @@ pub(super) struct PreparationObservation {
     pub(super) facts_ready_for_session: bool,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
+    /// Last accepted binding whose live recovery batch returned. This copied
+    /// receipt may outlive its source; readers must match the current binding.
+    pub(super) recovery_read_binding: Option<Binding>,
     pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
     pub(super) editor_receipt_count: usize,
     pub(super) hold_pending_read: Option<Binding>,
@@ -195,6 +198,8 @@ impl std::fmt::Debug for PreparationObservation {
         f.debug_struct("preparation")
             .field("output", &self.output)
             .field("binding", &self.binding)
+            .field("source_bindings", &self.source_bindings)
+            .field("recovery_read_binding", &self.recovery_read_binding)
             .field("pending", &self.pending)
             .field("accepted", &self.accepted)
             .field("retiring", &self.retiring)
@@ -1129,6 +1134,7 @@ impl Plugins {
                     restore_refused,
                     observed_latency_receipt: source
                         .is_some_and(|source| source.observed_latency_receipt),
+                    recovery_read_binding: observed.recovery_read_binding,
                     editor_receipts,
                     editor_receipt_count,
                     hold_pending_read: observed.hold_pending_read,
