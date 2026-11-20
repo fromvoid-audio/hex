@@ -853,6 +853,12 @@ fn late_editor_replay_preserves_playing_authored_effect_and_saves_manual_base() 
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_saves_and_reopens_stopped_authored_effect() {
+    retiring_editor_replay_roundtrip(ReplayCase::AuthoredStopped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_refusal_restores_confirmed_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Refuse);
 }
@@ -881,13 +887,17 @@ enum ReplayCase {
     SeveralGroupsRefuse,
     Playing,
     AuthoredPlaying,
+    AuthoredStopped,
     Refuse,
     RefuseAfterNewer,
 }
 
 fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
-    let authored = case == ReplayCase::AuthoredPlaying;
+    let authored = matches!(
+        case,
+        ReplayCase::AuthoredPlaying | ReplayCase::AuthoredStopped
+    );
     let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
     let spanning = matches!(
         case,
@@ -969,7 +979,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     }
 
     let _native = native_fixture();
-    let playing = authored || case == ReplayCase::Playing;
+    let playing = matches!(case, ReplayCase::Playing | ReplayCase::AuthoredPlaying);
     let pre_cut = matches!(
         case,
         ReplayCase::PreCutAlreadyCanonical | ReplayCase::PreCutConflict
@@ -989,7 +999,11 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             host
         }
     };
-    let frames = if playing { 48_000 * 20 } else { 2048 };
+    let frames = if playing || authored {
+        48_000 * 20
+    } else {
+        2048
+    };
     let (mut h, files, mut saved) = fixture_with_host(Start::Saved, frames, effect_host());
     let (mut applied, _) = h.applied(0);
     let automation_target = hex_project::DeviceAutomationTarget::Vst3 { parameter: 0 };
@@ -1191,7 +1205,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         h.pump();
         std::thread::yield_now();
     };
-    if authored {
+    if case == ReplayCase::AuthoredPlaying {
         h.audio
             .as_mut()
             .unwrap()
@@ -1207,6 +1221,8 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             "authored output {:?}",
             block[255]
         );
+    }
+    if authored {
         finish_group();
     }
 
@@ -1267,13 +1283,14 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         ReplayCase::Publish
             | ReplayCase::Playing
             | ReplayCase::AuthoredPlaying
+            | ReplayCase::AuthoredStopped
             | ReplayCase::Grouped
             | ReplayCase::Mixed
             | ReplayCase::SeveralGroups
     ) {
         let event = loop {
             h.pump();
-            if authored {
+            if case == ReplayCase::AuthoredPlaying {
                 let block = h.render();
                 assert!(
                     block.iter().all(|frame| frame[0] > 0.1),
@@ -1348,6 +1365,17 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 );
             }
         }
+        let assert_manual_output = |h: &ResidentHarness| {
+            let mut block = [[0.0; 2]; 256];
+            for _ in 0..8 {
+                block = super::super::instruments::render_completed_block(h);
+            }
+            assert!(
+                (block[255][0] - 0.25).abs() < 1.0e-6,
+                "manual base output {:?}",
+                block[255]
+            );
+        };
         if authored {
             let lane = saved_project
                 .device(device)
@@ -1356,16 +1384,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 .unwrap();
             assert!(!lane.is_reading());
             assert_eq!(lane.points.as_slice(), &lane_points);
-            let mut block = [[0.0; 2]; 256];
-            for _ in 0..8 {
-                block = super::super::instruments::render_completed_block(&h);
+            if playing {
+                assert_manual_output(&h);
+                return;
             }
-            assert!(
-                (block[255][0] - 0.25).abs() < 1.0e-6,
-                "manual base output {:?}",
-                block[255]
-            );
-            return;
         }
         let previous_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         h.service.shutdown(Duration::from_secs(1)).unwrap();
@@ -1420,6 +1442,15 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 rows.iter().find(|row| row.id == 11).unwrap().normalized,
                 if several_groups { 0.25 } else { 0.5 }
             );
+        }
+        if case == ReplayCase::AuthoredStopped {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            assert_manual_output(&h);
         }
         assert_eq!(hex_audio::audio_lifecycle_failure(), None);
         return;
