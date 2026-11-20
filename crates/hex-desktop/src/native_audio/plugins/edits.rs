@@ -182,6 +182,12 @@ impl Plugins {
                     device,
                     control.plugin_callback_quantum_on_control(),
                 );
+            changed_state |= self.catalog.is_some()
+                && !control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+                && previous.plugin_device_bypassed(device).is_none();
             previous.visit_plugin_devices(|old_owner, old_device, old| {
                 if old_device == device {
                     let same_processor = old_owner.owner() == owner && old.processing_eq(state);
@@ -309,25 +315,60 @@ impl Plugins {
                 break;
             }
         }
-        let Some(original) = original else {
-            // Duplicating an existing unavailable device preserves its exact
-            // opaque state, without inventing an empty/default processor.
-            let mut preserved = false;
-            if let Some(desired) = desired
-                .filter(|source| source.context().project_generation == context.project_generation)
-            {
-                desired
-                    .effect_preparation()
-                    .visit_plugin_devices(|_, _, old| {
-                        preserved |= old.processing_eq(state);
-                        Ok(())
-                    })?;
-            }
-            return if preserved {
-                Ok(())
-            } else {
-                Err("original vst3 source unavailable for the changed state".into())
+        let metadata;
+        let catalog;
+        let selection = if let Some(original) = original {
+            metadata = loop {
+                check_cancel(cancellation)?;
+                match control.native_source_metadata(original) {
+                    Ok(metadata) => break metadata,
+                    Err(error)
+                        if matches!(
+                            error.as_str(),
+                            "native preparation is busy" | "native source is busy"
+                        ) =>
+                    {
+                        poll_control(control);
+                    }
+                    Err(error) => return Err(error),
+                }
             };
+            metadata.selection()
+        } else {
+            // History can reintroduce the last device from a provider whose
+            // worker has already retired. Use the same exact lookup as Open.
+            let previous = desired
+                .filter(|source| source.context().project_generation == context.project_generation)
+                .map(CanonicalAudioSourceSnapshot::effect_preparation);
+            let reintroduced = previous
+                .as_ref()
+                .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
+            let selected = if reintroduced {
+                self.saved_catalog_selection(state, destination)
+            } else {
+                Err("existing vst3 source unavailable".into())
+            };
+            catalog = match selected {
+                Ok(selected) => selected,
+                Err(reason) => {
+                    let mut preserved = false;
+                    if let Some(previous) = previous {
+                        previous.visit_plugin_devices(|_, _, old| {
+                            preserved |= old.processing_eq(state);
+                            Ok(())
+                        })?;
+                    }
+                    return if preserved {
+                        // Unavailable devices still duplicate their authored state.
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "original vst3 source unavailable for the changed state · {reason}"
+                        ))
+                    };
+                }
+            };
+            reopen::catalog_selection(&catalog)
         };
         if self.pending.is_some() || self.restore.is_some() || self.reopen.is_some() {
             return Err("another vst3 source operation is pending".into());
@@ -339,21 +380,6 @@ impl Plugins {
             return Err("vst3 edit source changed".into());
         }
         self.edit = Some(context);
-        let metadata = loop {
-            check_cancel(cancellation)?;
-            match control.native_source_metadata(original) {
-                Ok(metadata) => break metadata,
-                Err(error)
-                    if matches!(
-                        error.as_str(),
-                        "native preparation is busy" | "native source is busy"
-                    ) =>
-                {
-                    poll_control(control);
-                }
-                Err(error) => return Err(error),
-            }
-        };
         let provider = provider_identity(state)?;
         let predecessor = self
             .sources
@@ -381,7 +407,7 @@ impl Plugins {
                 .ok_or("qualified vst3 helper unavailable")?
                 .begin_on_control(
                     control,
-                    metadata.selection(),
+                    EffectSelection { ..selection },
                     owner,
                     device,
                     context.editor_revision.max(1),
@@ -395,7 +421,6 @@ impl Plugins {
                 Err(error) => return Err(error),
             }
         };
-        drop(metadata);
         self.sources.push(Source {
             binding,
             owner,
