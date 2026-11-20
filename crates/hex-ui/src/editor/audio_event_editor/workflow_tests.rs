@@ -7,9 +7,7 @@ use hex_session::service::Request;
 use std::sync::Arc;
 
 #[gpui::test]
-fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
-    cx: &mut TestAppContext,
-) {
+fn oversized_event_edits_keep_canonical_data_and_retire_refused_previews(cx: &mut TestAppContext) {
     let (files, mut visual, editor, clip) = open(cx);
     // A legacy looping placement plays from its short original without a large
     // derived buffer. An inner edit must refuse the over-budget materialization
@@ -102,20 +100,7 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         v.state.as_ref().unwrap().project.snapshot()
     });
     visual.simulate_keystrokes("cmd-x");
-    let deadline = crate::test_wait::hang_deadline();
-    let terminal = loop {
-        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
-            if event.request_complete {
-                break event;
-            }
-            editor.update(&mut visual, |v, cx| {
-                v.receive(event);
-                cx.notify();
-            });
-        }
-        assert!(std::time::Instant::now() < deadline, "real cut terminal");
-        std::thread::yield_now();
-    };
+    let terminal = take_event_terminal(&mut visual, &editor, "cut");
     assert!(
         terminal.error.is_some(),
         "derived root must exceed its budget"
@@ -176,23 +161,7 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
     );
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-    let deadline = crate::test_wait::hang_deadline();
-    let terminal = loop {
-        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
-            if event.request_complete {
-                break event;
-            }
-            editor.update(&mut visual, |v, cx| {
-                v.receive(event);
-                cx.notify();
-            });
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "real event gain terminal"
-        );
-        std::thread::yield_now();
-    };
+    let terminal = take_event_terminal(&mut visual, &editor, "gain");
     assert!(terminal.error.is_some());
     for _ in 0..3 {
         repaint(&mut visual, &editor);
@@ -213,7 +182,110 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         assert!(!v.state.as_ref().unwrap().can_undo);
         assert!(v.error.is_some());
     });
+
+    // The preview can read this viewport from the original source, while
+    // canonical preparation must refuse materializing the entire edited root.
+    editor.update(&mut visual, |v, _| {
+        v.viewport = Some(Viewport::fit(96_000));
+        v.error = None;
+    });
+    let canonical = repaint_fade_outlines(&mut visual, &editor, clip);
+    focus_events(&mut visual);
+    fade_key(&mut visual, true);
+    let down = visual
+        .debug_bounds("audio-event-fade-in-top-1")
+        .unwrap()
+        .center();
+    let target = point(down.x + px(64.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    let held = repaint_fade_outlines(&mut visual, &editor, clip);
+    assert_ne!(
+        held.0, canonical.0,
+        "held fade changes the Arrangement waveform"
+    );
+    assert_ne!(held.1, canonical.1, "held fade changes the event waveform");
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    fade_key(&mut visual, false);
+    let terminal = take_event_terminal(&mut visual, &editor, "fade");
+    assert!(
+        format!("{:?}", terminal.error).contains("trim or split the clip first"),
+        "expected the canonical preparation refusal"
+    );
+    for _ in 0..2 {
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_some())
+        });
+        assert_eq!(repaint_fade_outlines(&mut visual, &editor, clip), held);
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    assert_eq!(repaint_fade_outlines(&mut visual, &editor, clip), canonical);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!v.state.as_ref().unwrap().can_undo);
+    });
     assert_eq!(std::fs::read(original_path).unwrap(), original_bytes);
+}
+
+fn take_event_terminal(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    operation: &str,
+) -> hex_session::service::Event {
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        if let Ok(event) = editor.read_with(visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                return event;
+            }
+            editor.update(visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real {operation} terminal"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn repaint_fade_outlines(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    clip: ClipId,
+) -> ([u64; 2], [u64; 2]) {
+    // Read newly painted outlines even when either view can reuse its geometry.
+    editor.update(visual, |view, cx| {
+        view.waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
+        view.clip_waveform_geometry_cache
+            .borrow_mut()
+            .clear_paint_samples();
+        cx.notify();
+    });
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    let thumbnail =
+        crate::editor::waveform_geometry::painted_clip_waveform_outline(editor, visual, clip);
+    let bounds = visual.debug_bounds("audio-event-waveform-1").unwrap();
+    let event = editor.read_with(visual, |view, _| {
+        view.clip_waveform_geometry_cache
+            .borrow()
+            .painted_waveforms()
+            .iter()
+            .rev()
+            .find(|paint| paint.bounds == bounds)
+            .expect("completed event waveform paint")
+            .outline_fingerprint
+    });
+    (thumbnail, event)
 }
 
 pub(super) fn open(
@@ -1733,7 +1805,8 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
 #[gpui::test]
 fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut TestAppContext) {
     for cancel in 0..4 {
-        let (_files, mut visual, editor, _) = open(cx);
+        let (_files, mut visual, editor, clip) = open(cx);
+        let original = repaint_fade_outlines(&mut visual, &editor, clip);
         focus_events(&mut visual);
         fade_key(&mut visual, true);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
@@ -1744,7 +1817,9 @@ fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut Test
         let target = point(down.x - px(64.0), down.y);
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
+        let held = repaint_fade_outlines(&mut visual, &editor, clip);
+        assert_ne!(held.0, original.0);
+        assert_ne!(held.1, original.1);
         editor.read_with(&visual, |v, _| {
             assert!(
                 v.audio_event_editor
@@ -1775,7 +1850,7 @@ fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut Test
         }
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         fade_key(&mut visual, false);
-        repaint(&mut visual, &editor);
+        assert_eq!(repaint_fade_outlines(&mut visual, &editor, clip), original);
         editor.read_with(&visual, |v, _| {
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
