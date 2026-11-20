@@ -1328,6 +1328,40 @@ impl<'a> AudioViewProjection<'a> {
             destination_end,
         })
     }
+
+    /// Bind a legacy fade to the processing clock of a forward occurrence.
+    /// The fade accepts root-relative frames within the returned occurrence.
+    pub fn legacy_fade_occurrence(
+        &self,
+        index: u64,
+    ) -> Result<(AudioViewOccurrence, ProjectedAudioFade<'a>), Invalid> {
+        let edit = self
+            .clip
+            .audio_edit()
+            .filter(|edit| {
+                edit.domain.fade_clock == AudioClipFadeClock::LegacyRoot
+                    && edit.content_view.is_none()
+            })
+            .ok_or(Invalid("audio occurrence has no forward legacy fade"))?;
+        let occurrence = self.occurrence(index)?;
+        let tempo = edit.processing_tempo(self.tempo);
+        let (first, origin) = if self.beat_clock {
+            let origin = occurrence.root_origin;
+            (audio_projection_frame(tempo, origin)?, origin)
+        } else {
+            (0, 0)
+        };
+        Ok((
+            occurrence,
+            ProjectedAudioFade {
+                edit,
+                tempo,
+                first,
+                origin,
+                length: occurrence.root_frame_length,
+            },
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

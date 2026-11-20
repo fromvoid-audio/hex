@@ -142,6 +142,15 @@ fn detail_fade_length_control_creates_an_s_curve(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mut TestAppContext) {
+    musical_repeat_fade_workflow(cx, false);
+}
+
+#[gpui::test]
+fn legacy_musical_repeat_adopts_outer_fade_without_a_waveform_flash(cx: &mut TestAppContext) {
+    musical_repeat_fade_workflow(cx, true);
+}
+
+fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
     use crate::editor::{
         clip_drag_ui_test::editor_window, drag::group_drag_ui_test::pump,
         external_audio_drop_ui_test::BatchFiles, viewport::Viewport,
@@ -222,11 +231,55 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
             assert!(Arc::ptr_eq(&neutral.waveform, &basis));
         });
     };
+    let initial = if legacy {
+        Command::SetClipFades {
+            clip,
+            fade_in: 13_184,
+            fade_out: 23_254,
+        }
+    } else {
+        Command::SetClipFadeEnvelope { clip, fade }
+    };
     editor.update(&mut visual, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope { clip, fade })));
+        assert!(view.enqueue(Request::Edit(initial)));
     });
     pump(&editor, &mut visual);
-    assert_shared_basis(&visual);
+    let before = editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        let clip = project.clip(clip).unwrap();
+        if legacy {
+            assert_eq!(
+                clip.audio_edit().unwrap().domain.fade_clock,
+                hex_project::AudioClipFadeClock::LegacyRoot
+            );
+            assert!(clip.retained_fade().fade_in() > 0);
+            let tempo = project.tempo_map();
+            let projected = hex_project::AudioViewProjection::new(clip, tempo).unwrap();
+            assert!(projected.occurrence_count() > 1);
+            for index in 0..projected.occurrence_count() {
+                let occurrence = projected.occurrence(index).unwrap();
+                let samples = crate::editor::waveform::projected_fade_envelope_samples(
+                    clip,
+                    tempo,
+                    occurrence.destination_start,
+                    (occurrence.destination_start + 2).min(occurrence.destination_end),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(samples.first(), Some(&(0.0, 0.0)));
+            }
+        } else {
+            assert_eq!(clip.retained_fade(), fade);
+        }
+        (
+            clip.audio_edit().unwrap().domain.fade_clock,
+            clip.retained_fade(),
+        )
+    });
+    if !legacy {
+        assert_shared_basis(&visual);
+    }
 
     let selector: &'static str =
         Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
@@ -242,10 +295,14 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
     let original = mesh(&mut visual);
     let original_waveform = painted_clip_waveform_outline(&editor, &mut visual, clip);
     assert_ne!(original_waveform, neutral_waveform);
-    assert!(
-        !original.is_empty(),
-        "musical Repeat lost its committed fade shade"
-    );
+    if legacy {
+        assert!(visual.debug_bounds(selector).is_some());
+    } else {
+        assert!(
+            !original.is_empty(),
+            "musical Repeat lost its committed fade shade"
+        );
+    }
     let selector: &'static str =
         Box::leak(format!("fade-in-curve-{}", clip.value()).into_boxed_str());
     let from = visual.debug_bounds(selector).unwrap().center();
@@ -301,13 +358,26 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
     editor.update(&mut visual, |view, cx| {
         view.receive(terminal);
         assert!(view.pending_fade.is_none());
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .fade_clock,
+            hex_project::AudioClipFadeClock::Outer,
+        );
         view.waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
         cx.notify();
     });
     visual.run_until_parked();
-    assert_shared_basis(&visual);
+    if !legacy {
+        assert_shared_basis(&visual);
+    }
     assert_eq!(mesh(&mut visual), held, "installed canonical repaint");
     assert_eq!(
         painted_clip_waveform_outline(&editor, &mut visual, clip),
@@ -323,7 +393,14 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
-        assert_eq!(project.clip(clip).unwrap().retained_fade(), fade);
+        let clip = project.clip(clip).unwrap();
+        assert_eq!(
+            (
+                clip.audio_edit().unwrap().domain.fade_clock,
+                clip.retained_fade()
+            ),
+            before,
+        );
     });
     assert_eq!(
         painted_clip_waveform_outline(&editor, &mut visual, clip),
@@ -339,7 +416,9 @@ fn musical_repeat_shade_keeps_the_held_mesh_through_a_delayed_worker_ack(cx: &mu
         })));
     });
     pump(&editor, &mut visual);
-    assert_shared_basis(&visual);
+    if !legacy {
+        assert_shared_basis(&visual);
+    }
     assert_eq!(
         painted_clip_waveform_outline(&editor, &mut visual, clip),
         neutral_waveform
