@@ -452,6 +452,13 @@ fn running_hosted_replacement_releases_only_the_original_worker_after_install() 
     assert_eq!(worker(&h, original), Some(binding));
     assert_eq!(worker(&h, retained), Some(retained_binding));
     expect_both(&render_completed_block(&h));
+    // Start the next preparation after the cancelled private worker has been
+    // reaped. The running originals remain precisely the same two sources.
+    wait(|| {
+        h.pump();
+        render_completed_block(&h);
+        h.plugin_records.load(Acquire) == 2
+    });
     let before_approval = trace_paths();
     let offer = offer_replacement(&mut h);
     let [fresh_trace]: [PathBuf; 1] = trace_paths()
