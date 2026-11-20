@@ -163,5 +163,26 @@ fn saved_vst3_reopens_and_renders_through_the_verified_output() {
     assert!(empty.state.project.main_devices().is_empty());
     h.open();
     assert_ne!(h.applied(h.context.unwrap()).output_identity, cancelled);
+
+    h.run(open_saved());
+    h.open();
+    let faulted = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let context = h.context.unwrap();
+    wait(|| queued.load(Acquire) && progress.lock().unwrap().output == Some(faulted));
+    h.backend
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .report_device_error()
+        .unwrap();
+    wait(|| {
+        h.events.try_iter().any(|event| {
+            matches!(event, EditorAudioEvent::Publication {
+                context: actual, output_identity,
+                state: EditorPublicationState::Fault(reason), ..
+            } if actual == context && output_identity == faulted && reason.contains("restart audio"))
+        })
+    });
     assert_eq!(fs::read(path).unwrap(), original);
 }

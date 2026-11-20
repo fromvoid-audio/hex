@@ -136,7 +136,7 @@ impl Plugins {
         let Some(restore) = self
             .reopen
             .as_mut()
-            .filter(|restore| restore.context == context && restore.ready)
+            .filter(|restore| restore.context == context && (!accepted || restore.ready))
         else {
             return false;
         };

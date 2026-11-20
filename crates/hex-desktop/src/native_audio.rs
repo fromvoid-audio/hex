@@ -760,9 +760,6 @@ impl NativeAudioSink {
         };
         let context = snapshot.context();
         let key = snapshot.key();
-        if self.plugins.hold_reopen(context) && self.plugins.reopen_ready() != Some(context) {
-            return;
-        }
         if !control.audio_candidate_claims_available() {
             if let Some(edit) = edit.as_ref() {
                 edit.attempt.refused(
@@ -770,6 +767,7 @@ impl NativeAudioSink {
                 );
                 return;
             }
+            self.plugins.finish_reopen(context, false);
             self.observe(
                 context,
                 "incomplete",
@@ -785,11 +783,17 @@ impl NativeAudioSink {
                     .refused("audio output closed · restart audio to recover".into());
                 return;
             }
+            self.plugins.finish_reopen(context, false);
             self.observe(
                 context,
                 "fault",
                 EditorPublicationState::Fault("audio unavailable; restart audio to retry".into()),
             );
+            return;
+        }
+        // An output fault must be visible even while a fresh VST3 endpoint
+        // is waiting for its callback loan.
+        if self.plugins.hold_reopen(context) && self.plugins.reopen_ready() != Some(context) {
             return;
         }
         // A queued, uninstalled older canonical request is obsolete. TooLate
