@@ -79,11 +79,12 @@ pub struct RetiringEditorBatch {
     events: Vec<RetiringEditorEvent>,
 }
 
-/// Whether the successor revision reached the actual audio owner. Receipt
-/// acknowledgement can still fail after that revision becomes canonical.
+/// Whether the exact successor values were established. This can be a newly
+/// published revision or a guarded capture matching the installed canonical
+/// state. Receipt acknowledgement can fail after either confirmation.
 pub enum RetiringEditorReplayDisposition {
     Refused,
-    Published { receipt_accepted: bool },
+    Confirmed { receipt_accepted: bool },
 }
 
 /// Why the original retiring editor source still needs the Session.
@@ -189,7 +190,7 @@ impl RetiringEditorBatch {
 }
 
 pub(super) struct ReplayOutcome {
-    pub(super) prepared: std::sync::Arc<hex_engine::PreparedRevision>,
+    pub(super) prepared: Option<std::sync::Arc<hex_engine::PreparedRevision>>,
     pub(super) receipt_failure: Option<String>,
 }
 
@@ -236,25 +237,32 @@ pub(super) fn apply(
         capture.after =
             super::resident_preview::plugin_parameter::bind_capture(&state, capture.after)
                 .map_err(|error| error.to_string())?;
-        if capture.before == capture.after {
-            return Err("vst3 editor replay did not change captured state".into());
-        }
-        let snapshot = session
-            .plugin_parameter_resident_snapshot(
-                PluginParameterCommit::Captured {
-                    device,
-                    capture: Box::new(capture),
-                },
-                publication,
-                sink,
-                admission,
-                current.as_ref(),
-            )
-            .map_err(|error| error.to_string())?;
-        let prepared = std::sync::Arc::clone(&snapshot.prepared);
-        *current = Some(snapshot);
-        // Publication is already canonical. Failure here retains the receipt
-        // and cannot undo that acknowledged project transition.
+        let prepared = if capture.before == capture.after {
+            // A no-op write only settles the receipt if the exact guarded
+            // successor capture also agrees with the canonical opaque state.
+            if capture.after != state {
+                return Err("unchanged vst3 replay capture differs from canonical state".into());
+            }
+            None
+        } else {
+            let snapshot = session
+                .plugin_parameter_resident_snapshot(
+                    PluginParameterCommit::Captured {
+                        device,
+                        capture: Box::new(capture),
+                    },
+                    publication,
+                    sink,
+                    admission,
+                    current.as_ref(),
+                )
+                .map_err(|error| error.to_string())?;
+            let prepared = std::sync::Arc::clone(&snapshot.prepared);
+            *current = Some(snapshot);
+            Some(prepared)
+        };
+        // Canonical values are confirmed. An acknowledgement failure retains
+        // the receipt and cannot undo an already-published revision.
         let receipt_failure = sink.accept_retiring_editor_batch(&batch).err();
         Ok(ReplayOutcome {
             prepared,
@@ -265,7 +273,7 @@ pub(super) fn apply(
         Ok(mut outcome) => {
             if let Err(error) = sink.finish_retiring_editor_replay(
                 &batch,
-                RetiringEditorReplayDisposition::Published {
+                RetiringEditorReplayDisposition::Confirmed {
                     receipt_accepted: outcome.receipt_failure.is_none(),
                 },
             ) {
