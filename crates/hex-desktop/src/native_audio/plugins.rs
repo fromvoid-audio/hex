@@ -239,6 +239,8 @@ pub(super) struct Plugins {
     retiring_poll: usize,
     retiring_replay_capture: Option<retiring_replay::ReplayCapture>,
     retiring_replay_restore: Option<retiring_replay::ReplayRestore>,
+    // Each Session replay attempt consumes this witness at its terminal.
+    retiring_replay_stopped: bool,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -250,6 +252,8 @@ pub(super) struct Plugins {
     pub(super) records: Option<Arc<std::sync::atomic::AtomicUsize>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) facts_gate: Option<FactsGate>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) replay_capture_gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
     #[cfg(all(test, feature = "allocation-probe"))]
