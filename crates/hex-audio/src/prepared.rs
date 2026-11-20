@@ -4072,7 +4072,7 @@ impl Callback {
                     transport_epoch,
                     playing,
                 } => {
-                    let predecessor_matches = next.native_continuation.is_none()
+                    let predecessor_matches = !next.playback.has_foreign_continuation_states()
                         || self
                             .active
                             .as_ref()
@@ -4081,6 +4081,7 @@ impl Callback {
                                 next.playback
                                     .foreign_continuation_matches_predecessor_on_callback(
                                         &active.playback,
+                                        next.native_continuation.is_none(),
                                     )
                             });
                     (!predecessor_matches
@@ -4335,7 +4336,10 @@ impl Callback {
                     }
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                let foreign_continuation = next.native_continuation.is_some();
+                let foreign_continuation = matches!(
+                    next.policy,
+                    PublicationPolicy::InheritUnderNativeParameter { .. }
+                ) && next.playback.has_foreign_continuation_states();
                 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 let foreign_continuation = false;
                 let (prepared, preview_refused) = {
@@ -4353,8 +4357,8 @@ impl Callback {
                             })
                     });
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    let preview_refused =
-                        foreign_continuation && guard.as_ref().is_none_or(|guard| !guard.is_live());
+                    let preview_refused = next.native_continuation.is_some()
+                        && guard.as_ref().is_none_or(|guard| !guard.is_live());
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                     let preview_refused = false;
                     if preview_refused {
@@ -4670,7 +4674,10 @@ impl Callback {
                 None
             } else {
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                let foreign_continuation = next.native_continuation.is_some();
+                let foreign_continuation = matches!(
+                    next.policy,
+                    PublicationPolicy::InheritUnderNativeParameter { .. }
+                ) && next.playback.has_foreign_continuation_states();
                 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 let foreign_continuation = false;
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -4687,32 +4694,53 @@ impl Callback {
                         })
                 });
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                let refused = foreign_continuation
-                    && guard.as_mut().is_none_or(|guard| {
-                        !guard.try_order_before_revocation()
-                            || self
-                                .status
-                                .device_fault
-                                .compare_exchange(false, false, AcqRel, Acquire)
-                                .is_err()
-                            || self
-                                .status
-                                .render_fault
-                                .compare_exchange(false, false, AcqRel, Acquire)
-                                .is_err()
-                            || self
-                                .status
-                                .pending_stop_marker
-                                .compare_exchange(0, 0, AcqRel, Acquire)
-                                .is_err()
-                            || {
-                                let consumed = self.status.consumed_command.load(Acquire);
-                                self.status
-                                    .admitted_ticket
-                                    .compare_exchange(consumed, consumed, AcqRel, Acquire)
+                let isolated_fence_changed = foreign_continuation
+                    && next.native_continuation.is_none()
+                    && match next.policy {
+                        PublicationPolicy::InheritUnderNativeParameter {
+                            source,
+                            transport_epoch,
+                            playing,
+                        } => {
+                            // The graph pair was already compared. Recheck
+                            // the concurrently changing source and transport.
+                            self.status.native_parameter_source(playing)
+                                != Some((source, transport_epoch))
+                                || self.status.device_fault.load(Acquire)
+                                || self.status.render_fault.load(Acquire)
+                                || self.status.admitted_ticket.load(Acquire)
+                                    != self.status.consumed_command.load(Acquire)
+                        }
+                        _ => true,
+                    };
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                let refused = isolated_fence_changed
+                    || next.native_continuation.is_some()
+                        && guard.as_mut().is_none_or(|guard| {
+                            !guard.try_order_before_revocation()
+                                || self
+                                    .status
+                                    .device_fault
+                                    .compare_exchange(false, false, AcqRel, Acquire)
                                     .is_err()
-                            }
-                    });
+                                || self
+                                    .status
+                                    .render_fault
+                                    .compare_exchange(false, false, AcqRel, Acquire)
+                                    .is_err()
+                                || self
+                                    .status
+                                    .pending_stop_marker
+                                    .compare_exchange(0, 0, AcqRel, Acquire)
+                                    .is_err()
+                                || {
+                                    let consumed = self.status.consumed_command.load(Acquire);
+                                    self.status
+                                        .admitted_ticket
+                                        .compare_exchange(consumed, consumed, AcqRel, Acquire)
+                                        .is_err()
+                                }
+                        });
                 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
                 let refused = false;
                 if refused {

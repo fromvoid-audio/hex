@@ -312,6 +312,12 @@ fn retiring_instrument_replays_late_authored_receipt_as_manual_base() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_authored_receipt_with_a_held_session_note() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthoredSession);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn retiring_instrument_keeps_authored_lane_and_releases_editor_hold_on_refusal() {
     retiring_instrument_receipt(InstrumentReceipt::LateAuthoredRefused);
 }
@@ -335,6 +341,7 @@ enum InstrumentReceipt {
     Late,
     LateSession,
     LateAuthored,
+    LateAuthoredSession,
     LateAuthoredRefused,
     LateAuthoredConflict,
     LateRefused,
@@ -404,7 +411,10 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     };
     applied = h.applied(applied).0;
     let length = BeatTime::from_quarters(64).unwrap();
-    let session_note = case == InstrumentReceipt::LateSession;
+    let session_note = matches!(
+        case,
+        InstrumentReceipt::LateSession | InstrumentReceipt::LateAuthoredSession
+    );
     let clip = if session_note {
         let scene = h.run(Request::Edit(Command::AddScene {
             name: "console".into(),
@@ -465,6 +475,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     let authored = matches!(
         case,
         InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredSession
             | InstrumentReceipt::LateAuthoredRefused
             | InstrumentReceipt::LateAuthoredConflict
     );
@@ -515,6 +526,7 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
             | InstrumentReceipt::LateRefused
             | InstrumentReceipt::LateSession
             | InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredSession
             | InstrumentReceipt::LateAuthoredRefused
             | InstrumentReceipt::LateAuthoredConflict
     );
@@ -644,7 +656,10 @@ fn retiring_instrument_receipt(case: InstrumentReceipt) {
     };
     let replayed = matches!(
         case,
-        InstrumentReceipt::Late | InstrumentReceipt::LateSession | InstrumentReceipt::LateAuthored
+        InstrumentReceipt::Late
+            | InstrumentReceipt::LateSession
+            | InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredSession
     );
     if replayed {
         assert_eq!(settled.0, Progress::CloseSafe);

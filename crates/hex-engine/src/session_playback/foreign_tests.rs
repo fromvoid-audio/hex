@@ -2961,11 +2961,11 @@ fn foreign_continuation_matches_only_the_original_predecessor_state() {
             state(20).unwrap(),
         )
         .unwrap();
-        assert!(next.foreign_continuation_matches_predecessor_on_callback(&old));
+        assert!(next.foreign_continuation_matches_predecessor_on_callback(&old, false));
         let (other_revision, _, _) = prepared_with_latency(location, false, 0, Some(1));
         let other =
             crate::playback::Playback::try_from_prepared_with_session(other_revision).unwrap();
-        assert!(!next.foreign_continuation_matches_predecessor_on_callback(&other));
+        assert!(!next.foreign_continuation_matches_predecessor_on_callback(&other, false));
     }
 }
 

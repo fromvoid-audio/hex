@@ -1580,7 +1580,7 @@ impl SessionPlayback {
             fresh,
             [old_loop_region, new_loop_region],
             tempo_cut,
-            continuation.is_some(),
+            continuation,
         )?;
         if self.analytic_continuations.len() != MAX_TRACKS
             || self.analytic_continuation_scratch.len() != MAX_TRACKS

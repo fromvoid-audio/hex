@@ -799,11 +799,11 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
     }
 }
 
-/// Borrowed exact old/new state identities for a possible foreign effect continuation.
-/// The comparison allows only the same unautomated, unmodulated effect with
-/// unchanged host gains, bypass and prepared endpoint. This matcher owns no
-/// source, endpoint, graph, or publication authority. The
-/// host must independently authenticate and fence its particular candidate and
+/// Borrowed exact old/new state identities for a foreign parameter continuation.
+/// Effect history requires an unchanged profile and bypass state, with no
+/// automation or modulation. The engine owns instrument note and program
+/// continuity. This matcher owns no source, endpoint, graph, or publication
+/// authority. The host must independently authenticate and fence its candidate and
 /// predecessor before passing it to a handoff; it must retain both states and
 /// all associated resources until the callback returns the graph on control.
 pub struct ForeignConfigurationContinuation<'a> {
@@ -867,6 +867,33 @@ impl<'a> ForeignConfigurationContinuation<'a> {
             && candidate_state.shares_payload_storage_with(self.candidate)
             && previous_state == self.previous
             && candidate_state == self.candidate
+    }
+
+    /// Compare both enabled instrument slots against the exact state and
+    /// worker identities. Automation history is checked by the gate owner.
+    pub fn matches_instrument(
+        &self,
+        previous: &PreparedRuntimeInstance,
+        candidate: &PreparedRuntimeInstance,
+    ) -> bool {
+        let matches_slot = |node: &PreparedRuntimeInstance, expected: &NativeDeviceState| {
+            node.owner == self.identity.owner()
+                && node.device_id == self.identity.device_id()
+                && !node.bypassed
+                && node.modulation.is_none()
+                && node.configuration.as_deref().is_some_and(|state| {
+                    state.shares_payload_storage_with(expected) && state == expected
+                })
+        };
+        matches_slot(previous, self.previous)
+            && matches_slot(candidate, self.candidate)
+            && previous.sample_rate == candidate.sample_rate
+            && previous
+                .foreign_processor()
+                .zip(candidate.foreign_processor())
+                .is_some_and(|(old, new)| {
+                    old == new && old.is_instrument_profile() && old.binding() == Some(self.binding)
+                })
     }
 }
 
