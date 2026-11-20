@@ -151,6 +151,9 @@ impl PluginProposal {
             }
             (Destination::Return(target), Owner::Return(id)) if target == id => effect_position(),
             (Destination::Main, Owner::Main) => effect_position(),
+            (Destination::ReplaceMainEffect { replacing }, Owner::Main) => {
+                Some(SlotPosition::Before(replacing))
+            }
             _ => None,
         }
     }
@@ -824,7 +827,15 @@ impl EditorView {
             if let Some(trace) = &trace {
                 trace.submitted();
             }
-            let status = format!("loading vst3 · {}", selection.class_name);
+            let loading = if matches!(
+                destination,
+                PluginEffectDestination::ReplaceMainEffect { .. }
+            ) {
+                "loading replacement"
+            } else {
+                "loading vst3"
+            };
+            let status = format!("{loading} · {}", selection.class_name);
             self.status.clone_from(&status);
             self.pending_plugin_effect = Some(PendingPluginEffect {
                 control,
@@ -834,7 +845,7 @@ impl EditorView {
                     destination,
                     before,
                     name: selection.class_name.clone(),
-                    loading: "loading vst3",
+                    loading,
                     before_empty: self.next_empty_track_id,
                 },
             });
