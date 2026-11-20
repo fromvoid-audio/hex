@@ -139,6 +139,13 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
     assert_eq!(cancelled.state.can_redo, before.state.can_redo);
     assert_eq!(source(&h), predecessor);
     audible(&h);
+    // Wait for Root to finish the cancelled device's private preparation.
+    // The native Sine needs no worker and remains audible during the return.
+    wait(|| {
+        h.pump();
+        audible(&h);
+        h.plugin_records.load(Acquire) == 0
+    });
 
     h.run(Request::InsertPluginEffect(replacement()));
     let mut installed = None;
