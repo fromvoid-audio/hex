@@ -9,40 +9,56 @@ use hex_session::{
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn pause_before_publication_preserves_previous_graph() {
-    pause_guard_case(false, true, false, false);
+    pause_guard_case(false, true, LateEdit::None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn pause_after_install_keeps_canonical_commit() {
-    pause_guard_case(true, true, false, false);
+    pause_guard_case(true, true, LateEdit::None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn unlaned_pause_before_publication_preserves_previous_graph() {
-    pause_guard_case(false, false, false, false);
+    pause_guard_case(false, false, LateEdit::None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn unlaned_pause_after_install_keeps_canonical_commit() {
-    pause_guard_case(true, false, false, false);
+    pause_guard_case(true, false, LateEdit::None);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn late_editor_value_remains_on_original_worker_after_unlaned_publication() {
-    pause_guard_case(false, false, true, false);
+    pause_guard_case(false, false, LateEdit::Playing);
 }
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
 fn late_editor_value_survives_a_later_track_addition() {
-    pause_guard_case(false, false, true, true);
+    pause_guard_case(false, false, LateEdit::PlayingAndAddTrack);
 }
 
-fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add_track: bool) {
+#[test]
+#[ignore = "explicit source-bound signed SDK receipts required"]
+fn late_editor_value_after_idle_flush_saves_and_reopens() {
+    pause_guard_case(false, false, LateEdit::Idle);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LateEdit {
+    None,
+    Playing,
+    PlayingAndAddTrack,
+    Idle,
+}
+
+fn pause_guard_case(after_install: bool, with_lane: bool, late: LateEdit) {
+    let late_editor = late != LateEdit::None;
+    let idle = late == LateEdit::Idle;
     const CHILD: &str = "HEX_DESKTOP_TEST_UNLANED_EFFECT_COMMIT";
     if std::env::var_os(CHILD).is_none() {
         let gates = Files::new();
@@ -74,7 +90,13 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
     let _native = native_fixture();
     let files = Files::new();
     let directory = files.0.canonicalize().unwrap();
-    let wave = files.wav(48_000, 524_288);
+    let wave = files.wav(48_000, if idle { 8192 } else { 524_288 });
+    let catalog = if idle {
+        hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+        directory.join("plugin-catalog.json")
+    } else {
+        directory.join("unused-catalog.json")
+    };
     let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
         host(),
         Some(EffectPresentation {
@@ -83,7 +105,7 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
         }),
         48_000,
         524_288,
-        directory.join("unused-catalog.json"),
+        catalog,
         directory.join("effect.hex-journal"),
     );
     assert!(h.next().error.is_none());
@@ -160,12 +182,14 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
         initial: PluginParameterValue::new(row.normalized).unwrap(),
     };
     assert_eq!(origin.initial.normalized(), 0.25);
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
+    if !idle {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
     let slope = |h: &ResidentHarness| {
         // Variant 92 scales each successful SDK block by 0.5 + block/8.
         // Once the pipeline is settled, consecutive PCM peaks isolate the
@@ -188,8 +212,8 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
         );
         after - before
     };
-    let base = slope(&h);
-    assert!(base > 0.001);
+    let base = if idle { 0.0 } else { slope(&h) };
+    assert!(idle || base > 0.001);
     let send = |h: &mut ResidentHarness, client: &mut GestureClient| {
         let request = client.next_request().unwrap();
         client.mark_submitted();
@@ -210,10 +234,8 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
                 Instant::now() < deadline,
                 "timed out waiting for {request:?}"
             );
-            // A gesture waits on the original SDK reply on the Session
-            // thread. Pace these 64-frame callbacks by their SDK completion
-            // and give that thread time to poll; do not wait for its outer
-            // control tick before sending the next physical block.
+            // Pump the actual callback so live points reach their worker and
+            // an idle candidate can install with no native PCM.
             h.render_worker_step();
             std::thread::sleep(Duration::from_millis(1));
         };
@@ -241,7 +263,11 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
         .change_plugin(PluginParameterValue::new(0.5).unwrap())
         .unwrap();
     send(&mut h, &mut client);
-    assert!((slope(&h) - base * 2.0).abs() < 1.0e-6);
+    if idle {
+        assert_eq!(h.plugin_completed.load(Acquire), 0);
+    } else {
+        assert!((slope(&h) - base * 2.0).abs() < 1.0e-6);
+    }
     client
         .finish_plugin(PluginParameterValue::new(0.5).unwrap())
         .unwrap();
@@ -353,6 +379,45 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
         std::thread::yield_now();
     };
     let ack = event.gesture_ack.unwrap();
+    if idle {
+        assert!(ack.accepted, "{ack:?}");
+        assert_eq!(event.state.revision, metadata.context.editor_revision + 1);
+        let committed = event.state.project.device(device).unwrap().state();
+        let authored = hex_plugin_state::decode(committed).unwrap();
+        assert_eq!(&authored.component.unwrap()[8..12], &2.0_f32.to_le_bytes());
+        h.applied(before_revision);
+        let path = directory.join("late-idle-editor.hex");
+        let saved = h.run(Request::SaveNew(path.clone()));
+        assert!(saved.save_complete);
+        let stored = hex_storage::load(&path).unwrap();
+        let state = hex_plugin_state::decode(stored.device(device).unwrap().state()).unwrap();
+        assert_eq!(&state.component.unwrap()[8..12], &3.0_f32.to_le_bytes());
+        assert_eq!(h.plugin_completed.load(Acquire), 0);
+        let mut serial = 1;
+        let readback = |h: &mut ResidentHarness, serial: &mut u64| {
+            let result = installed_edits::query(h, device, None, serial);
+            let value = result
+                .rows
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == parameter)
+                .unwrap()
+                .normalized;
+            assert_eq!(value, 0.75);
+            result.source.unwrap()
+        };
+        assert_eq!(readback(&mut h, &mut serial), original_source);
+        // Only the original worker can emit the test gesture. The reopened
+        // controller must obtain 0.75 from the saved opaque state.
+        fs::remove_file(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()).unwrap();
+        let output = old_output.unwrap();
+        let reopened = h.run(Request::Open(path));
+        assert!(reopened.open_complete && reopened.project_replaced);
+        assert_eq!(*reopened.state.project, stored);
+        super::super::resident_lifecycle::finish_replacement(&mut h, &reopened, output);
+        assert_ne!(readback(&mut h, &mut serial), original_source);
+        return;
+    }
     if late_editor {
         assert!(ack.accepted, "{ack:?}");
         let deadline = Instant::now() + Duration::from_millis(250);
@@ -405,7 +470,7 @@ fn pause_guard_case(after_install: bool, with_lane: bool, late_editor: bool, add
             (slope(&h) - base * 3.0).abs() < 1.0e-6,
             "the late editor value must also reach the running processor"
         );
-        if add_track {
+        if late == LateEdit::PlayingAndAddTrack {
             let previous_revision = h.submitted.unwrap().0;
             h.service
                 .submit(Request::Edit(Command::AddTrack {
