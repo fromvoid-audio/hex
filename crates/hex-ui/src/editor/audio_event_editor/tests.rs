@@ -2098,6 +2098,7 @@ fn event_fade_shading_survives_idle_selection_and_viewport_repaints(cx: &mut Tes
                 v.clip_view_open = true;
                 v.device_panel_active = false;
                 v.audio_event_editor.source_view = false;
+                v.sync_audio_navigation();
                 v.audio_event_editor.selected = selected.then_some(1);
                 v.audio_event_editor.fade_hover = None;
                 v.audio_event_editor.fade_key_held = false;
@@ -2109,7 +2110,14 @@ fn event_fade_shading_survives_idle_selection_and_viewport_repaints(cx: &mut Tes
             });
             visual.run_until_parked();
             let paths = visual.rendered_path_triangles("audio-event-fade-shade-1");
-            assert!(visual.debug_bounds("audio-event-fade-shade-1").is_some());
+            editor.read_with(&visual, |view, _| {
+                let (_, root, _) = view.event_context().unwrap();
+                assert_eq!(view.event_frame_window(&root).start, i128::from(start));
+            });
+            assert!(
+                visual.debug_bounds("audio-event-fade-shade-1").is_some(),
+                "missing event fade shade at start={start}, selected={selected}"
+            );
             assert!(
                 start != 0 || paths.iter().any(|path| path.color == shade),
                 "event fade shade missing at start={start}, selected={selected}"
