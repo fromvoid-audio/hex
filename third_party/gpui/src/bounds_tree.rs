@@ -215,7 +215,7 @@ where
 
 // Stored corners keep child coverage exact across rotations.
 #[derive(Debug, Clone, PartialEq)]
-struct TreeBounds<U> {
+struct TreeBounds<U: Clone + Debug + Default + PartialEq> {
     min: Point<U>,
     max: Point<U>,
 }
