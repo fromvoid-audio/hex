@@ -60,13 +60,14 @@ fn prepare_on_before_ack(
                 .recording_source(),
             Some(source)
         );
-        assert!(
-            Instant::now() < until,
-            "On private stage: loaded={} completed={} binding={:?}",
-            h.plugin_records.load(Acquire),
-            h.plugin_completed.load(Acquire),
-            h.plugin_progress.lock().unwrap().binding
-        );
+        if Instant::now() >= until {
+            let progress = format!("{:?}", h.plugin_progress.lock().unwrap());
+            panic!(
+                "On private stage: loaded={} completed={} {progress}",
+                h.plugin_records.load(Acquire),
+                h.plugin_completed.load(Acquire)
+            );
+        }
         std::thread::yield_now();
     }
     assert_eq!(h.plugin_completed.load(Acquire), 0);
