@@ -81,6 +81,7 @@ impl DeviceInsertBasis {
 pub(super) struct DeviceInsertAdmission<'a> {
     pub(super) bind: &'a mut dyn FnMut(&CancellablePublicationReceipt),
     pub(super) approved: Option<DeviceInsertConsent>,
+    pub(super) preparation_deadline: Instant,
 }
 
 /// The evidence for one deliberate interruption. It owns no graph, resources,
@@ -162,6 +163,7 @@ impl PublicationControl {
         &mut self,
         playback: Playback,
         consent: DeviceInsertConsent,
+        preparation_deadline: Instant,
         mut bind_receipt: impl FnMut(&CancellablePublicationReceipt),
         admit: impl FnOnce(
             hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
@@ -178,6 +180,7 @@ impl PublicationControl {
             Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                 bind: &mut bind_receipt,
                 approved: Some(consent),
+                preparation_deadline,
             })),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
@@ -554,6 +557,89 @@ mod tests {
     };
 
     #[test]
+    fn resident_preparation_deadline_guards_admission_and_callback_install() {
+        let ([old, next], _) = revisions();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let initial = hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 7,
+        };
+        let candidate = hex_engine::AudioSourceContext {
+            editor_revision: 8,
+            ..initial
+        };
+        let old_revision = control
+            .publish_unaccounted_pcm_obligation(
+                Playback::try_from_prepared_with_session(old).unwrap(),
+                PublicationPolicy::InstallFreshRuntime,
+                initial.project_generation,
+                true,
+                false,
+                Some(initial),
+            )
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 32]).unwrap();
+        let predecessor = control.status.recording_source().unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let mut publish = |playback, deadline| {
+            control.publish_unaccounted_with_native_continuation(
+                playback,
+                PublicationPolicy::DeviceInsert { predecessor, fence },
+                initial.project_generation,
+                true,
+                false,
+                Some(candidate),
+                Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
+                    preparation_deadline: deadline,
+                    approved: None,
+                    bind: &mut |_| {},
+                })),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                None,
+            )
+        };
+        let pending = Playback::try_from_prepared_with_session(next).unwrap();
+        let refused = publish(pending, Instant::now()).unwrap_err();
+        assert_eq!(refused.reason, "resident graph edit preparation timed out");
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let revision = publish(refused.playback, deadline).unwrap();
+        assert_eq!(revision, old_revision + 1);
+        let receipt = control.fresh_runtime_receipt(revision).unwrap();
+        assert_eq!(
+            receipt.device_insert_basis().unwrap().install_deadline,
+            deadline
+        );
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let mut pcm = [[0.0; 2]; 257];
+        let mut render = || {
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let counts = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current,
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        assert_eq!(receipt.state(), PublicationReceiptState::Expired);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        assert_eq!(control.status.performance_frame.load(Acquire), 289);
+        assert_eq!(pcm, [[0.25; 2]; 257]);
+    }
+
+    #[test]
     fn confirmed_insert_preserves_a_launched_session_clips_exact_source_position() {
         use hex_engine::{LaunchQuantization, SessionPlaybackCommand};
         use hex_project::{Command, Created, Editor, Project};
@@ -687,6 +773,7 @@ mod tests {
                         FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                             bind: &mut bind_receipt,
                             approved: Some(approved),
+                            preparation_deadline: Instant::now() + Duration::from_secs(10),
                         })
                     }),
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -772,6 +859,7 @@ mod tests {
                     Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                         approved: Some(consent),
                         bind: &mut |_| {},
+                        preparation_deadline: Instant::now() + Duration::from_secs(10),
                     })),
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     None,
