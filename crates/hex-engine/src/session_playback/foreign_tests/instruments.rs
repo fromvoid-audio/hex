@@ -329,6 +329,7 @@ fn staged_native_to_hosted_replacement_refuses_a_shared_predecessor() {
             },
             None,
             true,
+            crate::session_playback::foreign_arrangement::HostedReplacementCut::Unsupported,
             [None, None],
             None,
             None,
