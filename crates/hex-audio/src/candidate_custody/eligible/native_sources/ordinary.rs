@@ -32,6 +32,27 @@ pub(crate) struct OrdinaryNativeReferences {
     root: CandidateRoot,
     references: References,
 }
+impl OrdinaryNativeReferences {
+    /// The returned playback marks an instrument displaced by an approved cut.
+    /// Retain the exact source until every graph, endpoint and editor claim
+    /// returns. Only the original worker may release that instrument's gates.
+    pub(crate) fn retire_replaced_instrument_on_control(&self, binding: Binding) {
+        let mut bank = lock(&self.root.0.eligible.bank);
+        if let Some(index) = bank.sources.index(binding)
+            && self.references.contains(index)
+        {
+            let slot = &mut bank.sources.slots[index];
+            if slot.phase == Phase::Accepted
+                && slot
+                    .processor
+                    .is_some_and(|processor| processor.is_instrument_profile())
+            {
+                slot.release_instrument_gates = true;
+                slot.retiring = true;
+            }
+        }
+    }
+}
 impl Drop for OrdinaryNativeReferences {
     fn drop(&mut self) {
         let mut bank = lock(&self.root.0.eligible.bank);

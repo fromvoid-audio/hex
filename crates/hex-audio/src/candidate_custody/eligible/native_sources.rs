@@ -188,6 +188,7 @@ struct Slot {
     phase: Phase,
     starting: bool,
     retiring: bool,
+    release_instrument_gates: bool,
     retiring_edit_reserved: bool,
     retiring_edit_shutdown: Option<retiring_edits::Shutdown>,
     facts: Option<hex_plugin_host::protocol::Facts>,
@@ -209,6 +210,7 @@ impl Slot {
             phase: Phase::Vacant,
             starting: false,
             retiring: false,
+            release_instrument_gates: false,
             retiring_edit_reserved: false,
             retiring_edit_shutdown: None,
             facts: None,
@@ -728,21 +730,39 @@ impl Custody {
                 self.fail_native_source(index);
                 continue;
             }
-            let eligible = {
+            let (eligible, release_instrument_gates) = {
                 let bank = lock(&self.bank);
                 let slot = &bank.sources.slots[index];
-                !slot.starting
-                    && !bank.publication.references_native_source(index)
-                    && !slot.endpoint_loaned
-                    && !slot.retiring_edit_reserved
-                    && slot.retiring
-                    && slot.phase != Phase::Vacant
-                    && slot.phase != Phase::Complete
-                    && slot.phase != Phase::Failed
+                (
+                    !slot.starting
+                        && !bank.publication.references_native_source(index)
+                        && !slot.endpoint_loaned
+                        && !slot.retiring_edit_reserved
+                        && slot.retiring
+                        && slot.phase != Phase::Vacant
+                        && slot.phase != Phase::Complete
+                        && slot.phase != Phase::Failed,
+                    slot.release_instrument_gates,
+                )
             };
             if eligible && !cell.pending && cell.first_panic.is_none() {
                 cell.pending = true;
                 let result = catch_unwind(AssertUnwindSafe(|| {
+                    // The approved cut has returned this exact graph and its
+                    // endpoint. The original helper releases its accepted
+                    // note ledger off callback before its lease is reaped.
+                    if release_instrument_gates
+                        && let Some(Owner::Effect(_)) = cell.owner.as_ref()
+                        && let Some(Owner::Effect(owner)) = cell.owner.take()
+                    {
+                        cell.owner = Some(match owner.into_quiescent_on_control() {
+                            Ok((owner, _)) => Owner::Quiescent(owner),
+                            Err(owner) => {
+                                cell.constructor_refused = true;
+                                Owner::WorkerRefused(owner)
+                            }
+                        });
+                    }
                     if let Some(Owner::Pending(_)) = cell.owner.as_ref()
                         && let Some(Owner::Pending(owner)) = cell.owner.take()
                     {
