@@ -147,6 +147,10 @@ fn retained_output_restores_saved_vst3_before_retiring_the_previous_generation()
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let mut previous = None;
     for _ in 0..2 {
+        if let Some(binding) = previous {
+            h.plugin_progress.lock().unwrap().hold_pending_read = Some(binding);
+            wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(binding));
+        }
         let opened = h.run(Request::Open(saved.path.clone()));
         assert_eq!(opened.state.project.as_ref(), &saved.project);
         assert_eq!(
