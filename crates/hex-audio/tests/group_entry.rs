@@ -97,12 +97,22 @@ fn prepare(
 }
 /// Each oracle is one uninterrupted, independently prepared single-chain run.
 /// It never inherits an edited graph or uses the route-transfer implementation.
-fn standalone(pcm: Vec<Frame>, chain: &[NativeDeviceState]) -> Result<Vec<Frame>> {
+fn standalone(
+    pcm: Vec<Frame>,
+    track_chain: &[NativeDeviceState],
+    main_chain: &[NativeDeviceState],
+) -> Result<Vec<Frame>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
     let mut media = BTreeMap::new();
     let track = import(&mut editor, &mut media, "oracle", pcm)?;
-    for state in chain {
+    for state in track_chain {
         effect(&mut editor, track, state.clone())?;
+    }
+    for state in main_chain {
+        editor.execute(Command::InsertMainDevice {
+            before: None,
+            state: state.clone(),
+        })?;
     }
     let mut playback = Playback::try_from_prepared_with_session(prepare(&editor, &media)?)?;
     playback.apply(PlaybackCommand::Play);
@@ -145,6 +155,7 @@ enum Reroute {
     EnterFromAbove,
     ExitAbove,
     BetweenGroups,
+    EnterWithMainDelay,
 }
 
 #[test]
@@ -274,6 +285,22 @@ fn moving_between_groups_keeps_both_groups_running() -> Result {
     route_cut(257, Terminal::Cancel, true, Reroute::BetweenGroups)
 }
 
+#[test]
+fn group_reparent_preserves_the_existing_main_delay() -> Result {
+    for partition in [1, 257] {
+        route_cut(
+            partition,
+            Terminal::Install,
+            true,
+            Reroute::EnterWithMainDelay,
+        )?;
+    }
+    for terminal in [Terminal::Cancel, Terminal::Stop] {
+        route_cut(257, terminal, true, Reroute::EnterWithMainDelay)?;
+    }
+    Ok(())
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
     let exiting = matches!(
         reroute,
@@ -286,11 +313,19 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     let moves_from_above = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
     let between_groups = matches!(reroute, Reroute::BetweenGroups);
     let changes_row_order = moves_from_above || between_groups;
+    let has_main_delay = matches!(reroute, Reroute::EnterWithMainDelay);
     let nested = matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
     let has_other_group = !matches!(reroute, Reroute::EnterSoleGroup | Reroute::ExitSoleGroup);
-    let has_sibling =
-        changes_row_order || nested || matches!(reroute, Reroute::Enter | Reroute::Exit);
-    let mut a = vec![[0.125, -0.0625]; FRAMES];
+    let has_sibling = changes_row_order
+        || nested
+        || has_main_delay
+        || matches!(reroute, Reroute::Enter | Reroute::Exit);
+    let leaf_background = if has_main_delay {
+        [0.0; 2]
+    } else {
+        [0.125, -0.0625]
+    };
+    let mut a = vec![leaf_background; FRAMES];
     a[1700] = [0.5, -0.25];
     a[CUT + 53] = [-0.375, 0.1875];
     let b: Vec<Frame> = if has_sibling {
@@ -334,10 +369,17 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         unrelated
     };
     effect(&mut editor, unrelated_root, delay(13.0))?;
-    editor.execute(Command::InsertMainDevice {
-        before: None,
-        state: delay(5.0),
-    })?;
+    let mut main_chain = vec![delay(5.0)];
+    if has_main_delay {
+        // This is the only positive-delay stage and exists before either cut.
+        main_chain.push(hex_devices::limiter::DEFINITION.default_state().unwrap());
+    }
+    for state in &main_chain {
+        editor.execute(Command::InsertMainDevice {
+            before: None,
+            state: state.clone(),
+        })?;
+    }
     if between_groups {
         editor.execute(Command::ReparentTracks {
             tracks: TrackSelectionIds::new(&[moved])?,
@@ -389,10 +431,11 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     } else {
         (before, after)
     };
-    assert_eq!(before.arrangement().main_latency_frames(), 0);
-    assert_eq!(after.arrangement().main_latency_frames(), 0);
+    let main_latency = before.arrangement().main_latency_frames();
+    assert_eq!(main_latency > 0, has_main_delay);
+    assert_eq!(after.arrangement().main_latency_frames(), main_latency);
 
-    let mut leaf = standalone(a, &[delay(7.0)])?;
+    let mut leaf = standalone(a, &[delay(7.0)], &[])?;
     let fade_frames = if matches!(terminal, Terminal::Install) {
         FADE
     } else {
@@ -433,10 +476,10 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             }
         }
     }
-    let other_pcm = standalone(other_group_input, &[delay(13.0)])?;
-    let destination_pcm = standalone(destination_input, &[delay(11.0), invert()])?;
+    let other_pcm = standalone(other_group_input, &[delay(13.0)], &[])?;
+    let destination_pcm = standalone(destination_input, &[delay(11.0), invert()], &[])?;
     let destination_pcm = if nested {
-        standalone(destination_pcm, &[delay(3.0)])?
+        standalone(destination_pcm, &[delay(3.0)], &[])?
     } else {
         destination_pcm
     };
@@ -449,7 +492,11 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             }
         }
     }
-    let expected = standalone(mixed, &[delay(5.0)])?;
+    let expected = if has_main_delay {
+        standalone(mixed, &[], &main_chain)?
+    } else {
+        standalone(mixed, &main_chain, &[])?
+    };
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control.configure_device_resource_publication_on_control(
         hex_engine::AudioStorageLedgerReservation {

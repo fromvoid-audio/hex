@@ -6,7 +6,7 @@ use hex_lattice_contract::NativeDeviceState;
 #[test]
 fn removing_a_flat_return_cuts_its_delay_after_its_own_fade() {
     assert_flat_return_removal(
-        feedback_delay(10.0),
+        [feedback_delay(10.0)],
         None,
         vec![[0.25, -0.125]; 2048],
         600,
@@ -16,20 +16,49 @@ fn removing_a_flat_return_cuts_its_delay_after_its_own_fade() {
 
 #[test]
 fn removing_a_flat_return_cuts_its_reverb_after_its_own_fade() {
-    let reverb = REVERB_DEFINITION
+    assert_flat_return_removal(
+        [full_wet_reverb()],
+        Some(feedback_delay(17.0)),
+        reverb_input(),
+        2048,
+        1e-5,
+    );
+}
+
+#[test]
+fn removing_a_flat_return_cuts_its_serial_delay_and_reverb_after_its_own_fade() {
+    for chain in [
+        [feedback_delay(10.0), full_wet_reverb()],
+        [full_wet_reverb(), feedback_delay(10.0)],
+    ] {
+        assert_flat_return_removal(
+            chain,
+            Some(feedback_delay(17.0)),
+            reverb_input(),
+            2048,
+            1e-5,
+        );
+    }
+}
+
+fn full_wet_reverb() -> NativeDeviceState {
+    REVERB_DEFINITION
         .patch_parameter(
             &REVERB_DEFINITION.default_state().unwrap(),
             DRY_WET,
             ParameterValue::Float(100.0),
         )
-        .unwrap();
+        .unwrap()
+}
+
+fn reverb_input() -> Vec<Frame> {
     let mut pcm = vec![[0.015625, -0.03125]; 4096];
     pcm[512..1536].fill([0.25, -0.125]);
-    assert_flat_return_removal(reverb, Some(feedback_delay(17.0)), pcm, 2048, 1e-5);
+    pcm
 }
 
 fn assert_flat_return_removal(
-    departing: NativeDeviceState,
+    departing: impl IntoIterator<Item = NativeDeviceState>,
     surviving: Option<NativeDeviceState>,
     dry_pcm: Vec<Frame>,
     cut: usize,
@@ -64,13 +93,15 @@ fn assert_flat_return_removal(
             })
             .unwrap();
     }
-    editor
-        .execute(Command::InsertReturnDevice {
-            return_track: removed,
-            before: None,
-            state: departing,
-        })
-        .unwrap();
+    for state in departing {
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: removed,
+                before: None,
+                state,
+            })
+            .unwrap();
+    }
     let before = prepare(editor.project());
     editor.execute(Command::RemoveReturnTrack(removed)).unwrap();
     let after = prepare(editor.project());

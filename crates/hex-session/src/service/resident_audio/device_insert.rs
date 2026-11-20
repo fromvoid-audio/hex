@@ -3,6 +3,7 @@ use super::*;
 mod detached_history;
 mod main_history;
 mod stopped_power;
+mod track_effect_history;
 
 mod move_history;
 
@@ -1128,8 +1129,11 @@ impl Session {
             None,
             document_intent,
             |session| {
-                if let Some((edge, operation)) = detached_history::stage(&mut session.editor, redo)?
-                {
+                let hosted = match detached_history::stage(&mut session.editor, redo)? {
+                    Some(edge) => Some(edge),
+                    None => track_effect_history::stage(&mut session.editor, redo)?,
+                };
+                if let Some((edge, operation)) = hosted {
                     return Ok(Some((
                         StagedChange::History(edge),
                         Operation::HostedHistory(operation),

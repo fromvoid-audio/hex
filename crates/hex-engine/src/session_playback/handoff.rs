@@ -7,6 +7,8 @@ use std::sync::Weak;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
+const GROUP_ROUTE_STAMP_TRANSFER: u8 = 4;
+
 // This comparison does not authenticate publication or transfer custody.
 pub(super) fn configuration_matches_continuation(
     old: &hex_lattice::NativeRuntimeChain,
@@ -2039,6 +2041,16 @@ impl SessionPlayback {
                 })
                 .filter(|_| !candidate.can_copy_from(old, None))
         });
+        let group_route_stamps = continuous_insert
+            && !force_restart
+            && mapped_main_clock
+            && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame)
+            && donor_epoch_matches
+            && self
+                .native_removal
+                .is_some_and(|pending| pending.matches_group_reroute(previous))
+            && compensation_pair
+                .is_some_and(|(candidate, old)| candidate.can_copy_group_route_stamps_from(old));
         let removed_send_clock = !force_restart
             && previous.playing
             && mapped_main_clock
@@ -2061,6 +2073,7 @@ impl SessionPlayback {
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
             (None, Some(_)) if main_pass_cut.is_some() => Some(0),
+            (Some(_), Some(_)) if group_route_stamps => Some(GROUP_ROUTE_STAMP_TRANSFER),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
@@ -4146,14 +4159,14 @@ impl SessionPlayback {
                 .unwrap_or(contributor);
             powered_off_receivers[receiver]
         };
-        let faded_analytic_track = self
+        let faded_instrument_track = self
             .native_removal
-            .and_then(|pending| pending.faded_analytic_track(previous));
+            .and_then(|pending| pending.faded_instrument_track(previous));
         let analytic_move =
             instrument_move.filter(|movement| movement.kind == InstrumentMoveKind::AnalyticSine);
         for (old_index, _) in previous.routes.iter().enumerate() {
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
-            if faded_analytic_track == Some(old_route.id)
+            if faded_instrument_track == Some(old_route.id)
                 || !arrangement_instrument_changed
                     .get(old_index)
                     .copied()
@@ -4692,7 +4705,7 @@ impl SessionPlayback {
         for entry in &previous.releases {
             // Only the already-faded current route is cut. Detached suffixes
             // and every unrelated release retain their ordinary lifecycle.
-            if (faded_analytic_track == Some(entry.track_id)
+            if (faded_instrument_track == Some(entry.track_id)
                 && entry.location.tail_group().is_none())
                 || entry.end_frame() <= previous.performance_frame
             {
@@ -5553,6 +5566,11 @@ impl SessionPlayback {
                 .routes
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if faded_instrument_track == Some(old_route.id) {
+                // The faded direct route ends at this cut. Its mutable owner
+                // belongs to the returned predecessor, outside the tail bank.
+                continue;
+            }
             let Some(runtime) = previous
                 .mutable_instruments
                 .get(old_index)
@@ -6753,7 +6771,16 @@ impl SessionPlayback {
         } else {
             previous.route_state_generation
         };
-        if clock_transfer == 3 {
+        if clock_transfer == GROUP_ROUTE_STAMP_TRANSFER {
+            let (candidate, old) = self
+                .compensation
+                .as_mut()
+                .zip(previous.compensation.as_ref())
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            candidate
+                .copy_group_route_stamps_from(old)
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        } else if clock_transfer == 3 {
             if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
                 candidate
                     .copy_removed_send_clock_from(old)
