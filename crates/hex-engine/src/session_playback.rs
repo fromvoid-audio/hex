@@ -27,6 +27,7 @@ use std::{fmt, num::NonZeroU64, sync::Arc};
 
 mod browser_audition;
 mod candidate_storage;
+mod device_reorder;
 mod foreign_arrangement;
 mod midi_capture;
 mod mutable_checkpoint;
