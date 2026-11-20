@@ -6569,7 +6569,10 @@ fn run_worker(
                             break 'device_insert;
                         }
                         let operation = pending.operation;
-                        let edit_name = if operation.device().is_some() {
+                        let edit_name = if operation.device() == Some(GraphEditOperation::MoveTrack)
+                        {
+                            "track move"
+                        } else if operation.device().is_some() {
                             "device edit"
                         } else {
                             "tempo edit"
@@ -6636,6 +6639,7 @@ fn run_worker(
                                         Some(GraphEditOperation::ReplaceDevice) => "stop playback to replace this device",
                                         Some(GraphEditOperation::RemoveDevice) => "stop playback to remove this device",
                                         Some(GraphEditOperation::MoveDevice) => "stop playback to move devices",
+                                        Some(GraphEditOperation::MoveTrack) => "stop playback to move this track",
                                         Some(GraphEditOperation::RemoveTrack) => "stop playback to remove this track",
                                         None => reason.message(),
                                     }.into());
@@ -6656,7 +6660,9 @@ fn run_worker(
                                 if was_offered
                                     || device_insert_proposal.as_ref().is_some_and(|control| control.is_cancelled())
                                 {
-                                    status = Some("device edit cancelled".into());
+                                    status = Some(if operation.device() == Some(GraphEditOperation::MoveTrack) {
+                                        "track move cancelled"
+                                    } else { "device edit cancelled" }.into());
                                 } else {
                                     error = Some(
                                         format!("{edit_name} cancelled before installation"),
@@ -6666,7 +6672,9 @@ fn run_worker(
                             }
                             DeviceInsertAudioState::Expired => {
                                 error =
-                                    Some("device edit timed out before installation".into());
+                                    Some(if operation.device() == Some(GraphEditOperation::MoveTrack) {
+                                        "track move timed out before installation"
+                                    } else { "device edit timed out before installation" }.into());
                                 DeviceInsertOutcome::Expired
                             }
                             DeviceInsertAudioState::Pending | DeviceInsertAudioState::Applying => {
@@ -7613,8 +7621,9 @@ fn run_worker(
                 }
                 Request::Edit(command)
                     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                        && resident_audio::device_insert::graph_edit_operation(&command)
-                            .is_some()
+                        && (matches!(&command, Command::PasteDevices { .. })
+                            || resident_audio::device_insert::graph_edit_operation(&command)
+                                .is_some())
                         && events
                             .resident_audio()
                             .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
@@ -7713,7 +7722,17 @@ fn run_worker(
                     match result {
                         Ok(None) if pending_device_insert.is_some() => {
                             request_complete = false;
-                            status = Some("device edit pending · waiting for audio".into());
+                            status = Some(
+                                if pending_device_insert.as_ref().is_some_and(|pending| {
+                                    pending.operation.device()
+                                        == Some(GraphEditOperation::MoveTrack)
+                                }) {
+                                    "track move pending · waiting for audio"
+                                } else {
+                                    "device edit pending · waiting for audio"
+                                }
+                                .into(),
+                            );
                         }
                         Ok(None) => status = Some("no change".into()),
                         Ok(Some((new, snapshot))) => {

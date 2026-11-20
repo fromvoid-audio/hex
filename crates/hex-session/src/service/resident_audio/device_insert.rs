@@ -12,6 +12,8 @@ pub enum GraphEditOperation {
     ReplaceDevice,
     RemoveDevice,
     MoveDevice,
+    /// A single Resident track reparent, confirmed by its exact graph receipt.
+    MoveTrack,
     RemoveTrack,
 }
 
@@ -80,16 +82,20 @@ impl DeviceInsertConfirmation {
 pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
     HostedHistory(GraphEditOperation),
+    HostedClipboard,
     Tempo,
 }
 
 impl Operation {
     pub(in crate::service) fn installed_status(self) -> &'static str {
         match self {
-            Self::Device(GraphEditOperation::InsertDevice) => "device inserted",
+            Self::Device(GraphEditOperation::InsertDevice) | Self::HostedClipboard => {
+                "device inserted"
+            }
             Self::Device(GraphEditOperation::ReplaceDevice) => "device replaced",
             Self::Device(GraphEditOperation::RemoveDevice) => "device removed",
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
+            Self::Device(GraphEditOperation::MoveTrack) => "track moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
             Self::HostedHistory(_) => "history committed",
             Self::Tempo => "tempo applied",
@@ -99,6 +105,7 @@ impl Operation {
     pub(in crate::service) fn device(self) -> Option<GraphEditOperation> {
         match self {
             Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
+            Self::HostedClipboard => Some(GraphEditOperation::InsertDevice),
             Self::Tempo => None,
         }
     }
@@ -157,10 +164,17 @@ struct VerifiedAttempt {
     retiring_gain: Option<DevicePreviewIdentity>,
     confirmation: Option<ResidentGraphSubmission>,
     tempo_cut: bool,
-    hosted_history: bool,
+    hosted_sources: HostedSources,
     proposal_control: Option<Arc<PluginEffectControl>>,
     prepare_until: Instant,
     state: std::sync::Mutex<VerifiedState>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum HostedSources {
+    InstalledOnly,
+    Clipboard,
+    PausedHistory,
 }
 
 enum VerifiedState {
@@ -177,7 +191,7 @@ impl VerifiedGraphEditAttempt {
         retiring_gain: Option<DevicePreviewIdentity>,
         confirmation: Option<ResidentGraphSubmission>,
         tempo_cut: bool,
-        hosted_history: bool,
+        hosted_sources: HostedSources,
         proposal_control: Option<Arc<PluginEffectControl>>,
     ) -> Self {
         Self(Arc::new(VerifiedAttempt {
@@ -186,7 +200,7 @@ impl VerifiedGraphEditAttempt {
             retiring_gain,
             confirmation,
             tempo_cut,
-            hosted_history,
+            hosted_sources,
             proposal_control,
             prepare_until: device_edit_preparation_deadline(),
             state: std::sync::Mutex::new(VerifiedState::Preparing),
@@ -210,10 +224,14 @@ impl VerifiedGraphEditAttempt {
         self.0.tempo_cut
     }
 
-    /// Session owns the hosted membership edge; Desktop may prepare private
-    /// source bindings for the exact candidate context until its terminal.
     pub fn stages_hosted_history(&self) -> bool {
-        self.0.hosted_history
+        self.0.hosted_sources == HostedSources::PausedHistory
+    }
+
+    /// This staged candidate may own fresh private bindings until its exact
+    /// verified graph terminal. Other edits use installed or explicit proposal sources.
+    pub fn prepares_hosted_sources(&self) -> bool {
+        self.0.hosted_sources != HostedSources::InstalledOnly
     }
 
     /// Borrow the caller's exact proposal identity without granting native custody.
@@ -433,7 +451,7 @@ impl Pending {
                     attempt.retiring_gain(),
                     Some(refused),
                     false,
-                    attempt.stages_hosted_history(),
+                    attempt.0.hosted_sources,
                     attempt
                         .proposal_control()
                         .cloned()
@@ -509,12 +527,10 @@ fn insert_receipt(
         .submission
         .and_then(|submission| sink.device_insert_receipt(submission))
         .filter(|receipt| Some(receipt.submission()) == snapshot.submission)
-        .ok_or(SessionError::Invalid(
-            "device insertion receipt unavailable",
-        ))
+        .ok_or(SessionError::Invalid("audio edit receipt unavailable"))
 }
 
-fn hosted_history_operation(before: &Project, after: &Project) -> Option<GraphEditOperation> {
+fn hosted_membership_operation(before: &Project, after: &Project) -> Option<GraphEditOperation> {
     fn adds_hosted_effect(before: &Project, after: &Project) -> bool {
         let vst3 = hex_lattice_contract::DeviceTypeId::from_static("hex.vst3");
         after
@@ -571,7 +587,13 @@ fn resident_graph_edit_operation(
     controlled: bool,
 ) -> Option<GraphEditOperation> {
     match command {
+        Command::RemoveReturnTrack(_) => Some(GraphEditOperation::RemoveTrack),
         Command::PasteDevices { .. } => Some(GraphEditOperation::InsertDevice),
+        // Resident route edits share exact receipt custody; the catalog/Verified
+        // dispatcher keeps its existing route publication path.
+        Command::ReparentTracks { tracks, .. } if tracks.ids().len() == 1 => {
+            Some(GraphEditOperation::MoveTrack)
+        }
         _ => catalog_graph_edit_operation(command, controlled),
     }
 }
@@ -727,7 +749,7 @@ impl Session {
 
     pub(in crate::service) fn has_verified_hosted_history(&self, redo: bool) -> bool {
         self.editor
-            .inspect_history(redo, hosted_history_operation)
+            .inspect_history(redo, hosted_membership_operation)
             .flatten()
             .is_some()
     }
@@ -747,7 +769,7 @@ impl Session {
             .ok_or(SessionError::Invalid(
                 "verified device history target changed",
             ))?;
-        let operation = hosted_history_operation(self.project(), edge.project()).ok_or(
+        let operation = hosted_membership_operation(self.project(), edge.project()).ok_or(
             SessionError::Invalid("verified device history target changed"),
         )?;
         self.start_verified_graph_edit(
@@ -776,8 +798,11 @@ impl Session {
     ) -> Result<Option<Pending>, SessionError> {
         crate::validate_command_media(&command)?;
         let predecessor = self.verified_graph_predecessor(state)?;
+        let clipboard = matches!(&command, Command::PasteDevices { .. });
         let operation = if is_tempo_edit(&command) {
             Operation::Tempo
+        } else if clipboard {
+            Operation::Device(GraphEditOperation::InsertDevice)
         } else {
             Operation::Device(
                 catalog_graph_edit_operation(&command, proposal_control.is_some())
@@ -785,6 +810,14 @@ impl Session {
             )
         };
         let edit = self.editor.stage_edit(command)?;
+        let operation = if clipboard
+            && hosted_membership_operation(self.project(), edit.project())
+                == Some(GraphEditOperation::InsertDevice)
+        {
+            Operation::HostedClipboard
+        } else {
+            operation
+        };
         let tempo_cut = matches!(operation, Operation::Tempo);
         if (tempo_cut
             || operation.device() == Some(GraphEditOperation::MoveDevice)
@@ -848,15 +881,19 @@ impl Session {
             self,
         ));
         let tempo_cut = matches!(operation, Operation::Tempo);
-        let hosted_history = matches!(operation, Operation::HostedHistory(_));
-        let begin_before_projection = tempo_cut || hosted_history;
+        let hosted_sources = match operation {
+            Operation::HostedHistory(_) => HostedSources::PausedHistory,
+            Operation::HostedClipboard => HostedSources::Clipboard,
+            _ => HostedSources::InstalledOnly,
+        };
+        let begin_before_projection = tempo_cut || hosted_sources != HostedSources::InstalledOnly;
         let attempt = VerifiedGraphEditAttempt::new(
             source,
             predecessor,
             retiring_gain,
             None,
             tempo_cut,
-            hosted_history,
+            hosted_sources,
             proposal_control,
         );
         if begin_before_projection {
@@ -897,7 +934,7 @@ impl Session {
             document_intent,
             plugin: None,
             proposal_control: None,
-            publish_created: !hosted_history,
+            publish_created: hosted_sources != HostedSources::PausedHistory,
         })
     }
 
@@ -988,7 +1025,10 @@ impl Session {
                     .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
             };
             let edit = self.editor.stage_edit(command)?;
-            if (operation == GraphEditOperation::MoveDevice || proposal_control.is_some())
+            if (matches!(
+                operation,
+                GraphEditOperation::MoveDevice | GraphEditOperation::MoveTrack
+            ) || proposal_control.is_some())
                 && edit.project() == self.project()
             {
                 return Ok(None);
@@ -1011,7 +1051,11 @@ impl Session {
                     })
                 })
                 .ok_or(SessionError::Invalid(
-                    "device edit needs the current installed audio graph",
+                    if operation == GraphEditOperation::MoveTrack {
+                        "track move needs the current installed audio graph"
+                    } else {
+                        "device edit needs the current installed audio graph"
+                    },
                 ))?;
             let context = hex_engine::AudioSourceContext {
                 editor_revision: context.editor_revision.saturating_add(1),

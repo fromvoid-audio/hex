@@ -272,6 +272,10 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
+        self.inner.begin_request(cancellation);
+    }
+
     fn prepare_plugin_effect(
         &mut self,
         input: hex_session::service::PluginEffectPreparation<'_>,
