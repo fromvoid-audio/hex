@@ -194,6 +194,9 @@ impl PublicationControl {
     /// owns both states, and the publication owns the source observation and
     /// matching native references until returned on control. The callback still
     /// revalidates the source, endpoint and transport before preview and commit.
+    /// An enabled instrument without authored input or modulation may keep its
+    /// worker for a guarded editor capture. Point captures continue to use the
+    /// separate instrument gesture protocol.
     #[allow(clippy::result_large_err)] // Refusal returns the actual unpublished graph to control.
     pub fn publish_native_parameter_continuation_on_control<E>(
         &mut self,
@@ -226,11 +229,29 @@ impl PublicationControl {
                 playback,
             ));
         }
-        let matching = playback.foreign_nodes_on_control().filter(|node| {
-            node.owner == request.identity.owner() && node.device_id == request.identity.device_id()
-                && node.configuration.as_ref().is_some_and(|state| state.shares_payload_storage_with(request.capture.state()) && **state == *request.capture.state())
-                && matches!(&node.definition, Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if prepared.binding() == Some(request.binding) && !prepared.is_instrument_profile())
-        }).count();
+        let guarded = matches!(
+            request.capture,
+            NativeParameterContinuationCapture::Guarded { .. }
+        );
+        let captured = request.capture.state();
+        let matching = playback
+            .foreign_nodes_on_control()
+            .filter(|node| {
+                node.owner == request.identity.owner()
+                    && node.device_id == request.identity.device_id()
+                    && node.configuration.as_ref().is_some_and(|state| {
+                        state.shares_payload_storage_with(captured) && **state == *captured
+                    })
+                    && node.foreign_processor().is_some_and(|prepared| {
+                        prepared.binding() == Some(request.binding)
+                            && (!prepared.is_instrument_profile()
+                                || (guarded
+                                    && !node.bypassed
+                                    && node.automation.is_empty()
+                                    && node.modulation.is_none()))
+                    })
+            })
+            .count();
         if matching != 1 {
             return Err(failure("native continuation candidate differs", playback));
         }

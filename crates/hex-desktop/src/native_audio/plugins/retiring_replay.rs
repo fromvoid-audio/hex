@@ -243,9 +243,6 @@ impl Plugins {
                 Ok(())
             })?;
         let (destination, canonical) = target.ok_or("vst3 replay canonical target changed")?;
-        if destination.is_instrument() && matches!(mode, RetiringEditorReplayMode::Apply { .. }) {
-            return Err("vst3 instrument replay requires a separate continuation".into());
-        }
         let owner = destination.owner();
         let native = self
             .sources
