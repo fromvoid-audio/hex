@@ -2055,10 +2055,10 @@ impl Playback {
 
     /// The exact held instrument displaced by a successful approved cut.
     /// Read on control from the returned old graph, before releasing it.
-    pub fn replaced_foreign_instrument(
+    pub fn retired_foreign_instrument(
         &self,
     ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        self.session_runtime.as_ref()?.replaced_foreign_instrument()
+        self.session_runtime.as_ref()?.retired_foreign_instrument()
     }
 
     /// Restore the predecessor after a refusal, or resume the successor after

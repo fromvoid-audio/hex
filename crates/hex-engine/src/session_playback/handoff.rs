@@ -1574,6 +1574,22 @@ impl SessionPlayback {
             } else {
                 None
             };
+        // Ordinary Resident publication returns the exact old graph and
+        // its native-source attachment after the confirmed cut.
+        let hosted_cut = match (
+            groups.is_none() && demand.as_ref().is_none_or(|d| d.ordinary),
+            continuous_insert,
+            confirmed_insert,
+        ) {
+            (true, _, true) => foreign_arrangement::HeldInstrumentCut::Confirmed,
+            (true, true, false) => foreign_arrangement::HeldInstrumentCut::Offer,
+            _ => foreign_arrangement::HeldInstrumentCut::Unsupported,
+        };
+        let held_removal = if hosted_cut == foreign_arrangement::HeldInstrumentCut::Unsupported {
+            None
+        } else {
+            foreign_arrangement::held_removal::candidate(self, previous)
+        };
         let foreign_handoff = self.foreign_arrangement.plan_handoff(
             &previous.foreign_arrangement,
             [
@@ -1590,17 +1606,8 @@ impl SessionPlayback {
             },
             fresh,
             continuous_insert,
-            // Ordinary Resident publication returns the exact old graph and
-            // its native-source attachment after this confirmed cut.
-            match (
-                groups.is_none() && demand.as_ref().is_none_or(|d| d.ordinary),
-                continuous_insert,
-                confirmed_insert,
-            ) {
-                (true, _, true) => foreign_arrangement::HostedReplacementCut::Confirmed,
-                (true, true, false) => foreign_arrangement::HostedReplacementCut::Offer,
-                _ => foreign_arrangement::HostedReplacementCut::Unsupported,
-            },
+            hosted_cut,
+            held_removal,
             [old_loop_region, new_loop_region],
             tempo_cut,
             continuation,

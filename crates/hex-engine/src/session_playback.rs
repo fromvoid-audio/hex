@@ -2498,10 +2498,10 @@ impl SessionPlayback {
         self.playing = playing;
     }
 
-    pub(crate) fn replaced_foreign_instrument(
+    pub(crate) fn retired_foreign_instrument(
         &self,
     ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        self.foreign_arrangement.replaced_instrument()
+        self.foreign_arrangement.retired_instrument()
     }
 
     /// Scalar translation used by the effective performance clock. Observers
