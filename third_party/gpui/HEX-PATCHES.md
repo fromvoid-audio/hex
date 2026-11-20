@@ -114,6 +114,12 @@ and propagate the maximum along the usual ancestor path. Every primitive
 keeps its own assigned order and every future overlap has the same maximum.
 The locked verifier covers repeated overlap, reservation and disjoint reuse.
 
+Consecutive identical nonempty bounds reuse the last leaf and its ancestor
+path. The previous draw order already exceeds every intersecting order, so
+the next draw advances that leaf and propagates the new maximum without a
+second placement or overlap query. Other bounds use the ordinary search.
+Scene clear resets the remembered path with the tree.
+
 Mac display requests still service dirty frames and explicit presentation.
 The optional recent-input replay of an unchanged scene skips drawable
 acquisition during a GPUI pointer drag. Release or cancellation restores the

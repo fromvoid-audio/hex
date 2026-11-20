@@ -11,7 +11,9 @@ where
     U: Clone + Debug + Default + PartialEq,
 {
     root: Option<usize>,
+    last_leaf: Option<usize>,
     nodes: Vec<Node<U>>,
+    // Retains the last leaf's ancestors between insertions.
     stack: Vec<usize>,
 }
 
@@ -28,6 +30,7 @@ where
 {
     pub fn clear(&mut self) {
         self.root = None;
+        self.last_leaf = None;
         self.nodes.clear();
         self.stack.clear();
     }
@@ -48,11 +51,24 @@ where
     }
 
     fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
-        // If the tree is empty, make the root the new leaf.
+        // An identical consecutive nonempty insertion intersects exactly the
+        // same leaves. Its predecessor already exceeds their previous orders.
+        if let Some(last) = self.last_leaf
+            && let Node::Leaf { bounds, order } = &mut self.nodes[last]
+            && *bounds == new_bounds
+            && bounds.intersects(bounds)
+        {
+            let next = reserved.unwrap_or_else(|| *order + 1);
+            *order = next;
+            self.propagate_order(next);
+            return next;
+        }
+        self.stack.clear();
         let Some(root) = self.root else {
             let order = reserved.unwrap_or(1);
             let new_node = self.push_leaf(new_bounds, order);
             self.root = Some(new_node);
+            self.last_leaf = Some(new_node);
             return order;
         };
 
@@ -109,10 +125,12 @@ where
         let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
         // Equal rectangles intersect exactly the same future queries. Keep
         // their maximum order in one leaf without removing any scene primitive.
-        if let Node::Leaf { bounds, order } = &mut self.nodes[sibling]
+        let new_parent = if let Node::Leaf { bounds, order } = &mut self.nodes[sibling]
             && *bounds == new_bounds
         {
             *order = (*order).max(ordering);
+            self.last_leaf = Some(sibling);
+            None
         } else {
             let new_node = self.push_leaf(new_bounds, ordering);
             let new_parent = self.push_internal(sibling, new_node);
@@ -132,9 +150,17 @@ where
                 // If the old parent was the root, the new parent is the new root.
                 self.root = Some(new_parent);
             }
-        }
+            self.last_leaf = Some(new_node);
+            Some(new_parent)
+        };
 
-        for node_index in self.stack.drain(..).rev() {
+        self.propagate_order(ordering);
+        self.stack.extend(new_parent);
+        ordering
+    }
+
+    fn propagate_order(&mut self, ordering: u32) {
+        for &node_index in self.stack.iter().rev() {
             let Node::Internal {
                 max_order: max_ordering,
                 ..
@@ -147,8 +173,6 @@ where
             }
             *max_ordering = ordering;
         }
-
-        ordering
     }
 
     fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
@@ -218,6 +242,7 @@ where
     fn default() -> Self {
         BoundsTree {
             root: None,
+            last_leaf: None,
             nodes: Vec::new(),
             stack: Vec::new(),
         }

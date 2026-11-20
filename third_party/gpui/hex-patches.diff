@@ -626,7 +626,16 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
-@@ -35,0 +36,15 @@
+@@ -13,0 +14 @@
++    last_leaf: Option<usize>,
+@@ -14,0 +16 @@
++    // Retains the last leaf's ancestors between insertions.
+@@ -30,0 +33 @@
++        self.last_leaf = None;
+@@ -36,3 +39,31 @@
+-        // If the tree is empty, make the root the new leaf.
+-        if self.root.is_none() {
+-            let new_node = self.push_leaf(new_bounds, 1);
 +        self.insert_with_order(new_bounds, None)
 +    }
 +
@@ -642,32 +651,43 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +    }
 +
 +    fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
-@@ -37,2 +52,3 @@
--        if self.root.is_none() {
--            let new_node = self.push_leaf(new_bounds, 1);
++        // An identical consecutive nonempty insertion intersects exactly the
++        // same leaves. Its predecessor already exceeds their previous orders.
++        if let Some(last) = self.last_leaf
++            && let Node::Leaf { bounds, order } = &mut self.nodes[last]
++            && *bounds == new_bounds
++            && bounds.intersects(bounds)
++        {
++            let next = reserved.unwrap_or_else(|| *order + 1);
++            *order = next;
++            self.propagate_order(next);
++            return next;
++        }
++        self.stack.clear();
 +        let Some(root) = self.root else {
 +            let order = reserved.unwrap_or(1);
 +            let new_node = self.push_leaf(new_bounds, order);
-@@ -40,2 +56,2 @@
+@@ -40,2 +71,3 @@
 -            return 1;
 -        }
++            self.last_leaf = Some(new_node);
 +            return order;
 +        };
-@@ -44,2 +60 @@
+@@ -44,2 +76 @@
 -        let mut max_intersecting_ordering = 0;
 -        let mut index = self.root.unwrap();
 +        let mut index = root;
-@@ -60,2 +75 @@
+@@ -60,2 +91 @@
 -            // in terms of surface area. If there is an intersection with the other child,
 -            // add its keys to the intersections vector.
 +            // in terms of surface area. Draw order is resolved after descent.
-@@ -67,2 +80,0 @@
+@@ -67,2 +96,0 @@
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
-@@ -71,2 +82,0 @@
+@@ -71,2 +98,0 @@
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
-@@ -81,25 +91,40 @@
+@@ -81,25 +107,42 @@
 -        // Check for collision with the located leaf node
 -        let Node::Leaf {
 -            bounds: sibling_bounds,
@@ -714,10 +734,12 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
 +        // Equal rectangles intersect exactly the same future queries. Keep
 +        // their maximum order in one leaf without removing any scene primitive.
-+        if let Node::Leaf { bounds, order } = &mut self.nodes[sibling]
++        let new_parent = if let Node::Leaf { bounds, order } = &mut self.nodes[sibling]
 +            && *bounds == new_bounds
 +        {
 +            *order = (*order).max(ordering);
++            self.last_leaf = Some(sibling);
++            None
 +        } else {
 +            let new_node = self.push_leaf(new_bounds, ordering);
 +            let new_parent = self.push_internal(sibling, new_node);
@@ -733,29 +755,48 @@ diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 +                } else {
 +                    *right = new_parent;
 +                }
-@@ -107,5 +132,3 @@
+@@ -107,8 +150,14 @@
 -                *right = new_parent;
 -            }
 -        } else {
 -            // If the old parent was the root, the new parent is the new root.
 -            self.root = Some(new_parent);
+-        }
+-
+-        for node_index in self.stack.drain(..).rev() {
 +                // If the old parent was the root, the new parent is the new root.
 +                self.root = Some(new_parent);
 +            }
-@@ -151,0 +175,2 @@
++            self.last_leaf = Some(new_node);
++            Some(new_parent)
++        };
++
++        self.propagate_order(ordering);
++        self.stack.extend(new_parent);
++        ordering
++    }
++
++    fn propagate_order(&mut self, ordering: u32) {
++        for &node_index in self.stack.iter().rev() {
+@@ -127,2 +175,0 @@
+-
+-        ordering
+@@ -151,0 +199,2 @@
 +                    // The first result can satisfy the other child's already
 +                    // loaded upper bound, avoiding another recursive query.
-@@ -154 +179,3 @@
+@@ -154 +203,3 @@
 -                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
 +                        if max_ordering < right_max_ordering {
 +                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
 +                        }
-@@ -157 +184,3 @@
+@@ -157 +208,3 @@
 -                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
 +                        if max_ordering < left_max_ordering {
 +                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
 +                        }
-@@ -238,0 +268,166 @@
+@@ -191,0 +245 @@
++            last_leaf: None,
+@@ -238,0 +293,166 @@
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_ordering() -> Result<(), String> {
 +    ordering_verification::verify()
