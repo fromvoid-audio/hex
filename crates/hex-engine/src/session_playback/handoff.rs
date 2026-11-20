@@ -1,5 +1,5 @@
-use super::return_effect_tails::DeviceEditTailPolicy;
 use super::*;
+use super::{instrument_move::InstrumentMoveKind, return_effect_tails::DeviceEditTailPolicy};
 use crate::session_inventory::EffectiveSessionMidi;
 use crate::signal_graph::{FreshHistory, TrackOutput};
 use crate::{Invalid, MidiTiming, Track};
@@ -2792,6 +2792,16 @@ impl SessionPlayback {
             arrangement_loop_continuity,
             &mut self.spans,
         )?;
+        let instrument_move = self
+            .native_removal
+            .and_then(|pending| pending.instrument_track_move());
+        let mutable_move =
+            instrument_move.filter(|movement| movement.kind == InstrumentMoveKind::MutableVector);
+        if let Some(movement) = mutable_move
+            && source_handoff.new_for_old.get(movement.source) != Some(&movement.destination)
+        {
+            return Err(SessionPlaybackError::SourceHistoryUnavailable);
+        }
         let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
         let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
         // An edited base map keeps only Arrangement mutable runtimes: their
@@ -4139,9 +4149,8 @@ impl SessionPlayback {
         let faded_analytic_track = self
             .native_removal
             .and_then(|pending| pending.faded_analytic_track(previous));
-        let analytic_move = self
-            .native_removal
-            .and_then(|pending| pending.analytic_track_move());
+        let analytic_move =
+            instrument_move.filter(|movement| movement.kind == InstrumentMoveKind::AnalyticSine);
         for (old_index, _) in previous.routes.iter().enumerate() {
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
             if faded_analytic_track == Some(old_route.id)
@@ -5815,8 +5824,8 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        if let Some(movement) = analytic_move
-            && self.direct_analytic_instrument_move_from(previous) != Some(movement)
+        if let Some(movement) = instrument_move
+            && self.direct_instrument_move_from(previous) != Some(movement)
         {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -6782,13 +6791,25 @@ impl SessionPlayback {
                 });
                 (!preserved).then(|| old.source_input_id()).flatten()
             });
-        for runtime in self.mutable_instruments.iter_mut().flatten().chain(
-            self.tail_mutable_instruments
-                .iter_mut()
-                .flatten()
-                .filter(|tail| !tail.is_powering_off())
-                .map(|tail| &mut tail.runtime),
-        ) {
+        let moved_authored = mutable_move.and_then(|movement| {
+            previous
+                .routes
+                .get(movement.source)
+                .map(|route| (movement.destination, route.id))
+        });
+        for (receiver, runtime) in self
+            .mutable_instruments
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, runtime)| runtime.as_mut().map(|runtime| (Some(index), runtime)))
+            .chain(
+                self.tail_mutable_instruments
+                    .iter_mut()
+                    .flatten()
+                    .filter(|tail| !tail.is_powering_off())
+                    .map(|tail| (None, &mut tail.runtime)),
+            )
+        {
             if let Some(input) = release_live_input {
                 runtime.request_live_input_release(input);
             }
@@ -6822,6 +6843,9 @@ impl SessionPlayback {
                 &disconnected,
                 &retained,
                 &retained_live,
+                moved_authored
+                    .filter(|(index, _)| Some(*index) == receiver)
+                    .map(|(_, donor)| donor),
                 previous.performance_frame,
             );
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {

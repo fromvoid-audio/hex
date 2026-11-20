@@ -627,12 +627,15 @@ pub(super) fn release_disconnected_contributors(
     disconnected: &[Option<TrackId>; MAX_TRACKS],
     retained: &[Option<TrackId>; MAX_TRACKS],
     retained_live: &[Option<TrackId>; MAX_TRACKS],
+    moved_authored: Option<TrackId>,
     frame: u64,
 ) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
-        (disconnected.contains(&Some(signature.key().track))
-            && !retained.contains(&Some(signature.key().track)))
-        .then_some(frame)
+        let track = Some(signature.key().track);
+        // A proved direct move changes the sole MIDI contributor. The copied
+        // kernel still owes the old authored gates their original releases.
+        (track != moved_authored && disconnected.contains(&track) && !retained.contains(&track))
+            .then_some(frame)
     });
     for &track in disconnected.iter().flatten() {
         if !retained_live.contains(&Some(track)) {
