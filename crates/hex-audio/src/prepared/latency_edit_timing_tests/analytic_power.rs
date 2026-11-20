@@ -1,6 +1,154 @@
 use super::*;
 use hex_project::{BeatTime, TrackDeviceSlot};
 
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn deleting_a_releasing_analytic_instrument_cuts_its_voice_without_cutting_another_track() {
+    const CUT: usize = 256;
+    const FADE: usize = 240;
+    const DRY: Frame = [0.125, -0.0625];
+    let (mut editor, _, prepare) = resident_input(vec![DRY; 1024]);
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "sine".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument track");
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    let duration = editor.project().tempo_map().frame_to_beat(120).unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let old = prepare(editor.project());
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    let next = prepare(editor.project());
+    let mut reference = Playback::try_from_prepared_with_session(Arc::clone(&old)).unwrap();
+    reference.apply(PlaybackCommand::Play);
+    let mut old_pcm = [[0.0; 2]; 1024];
+    reference.render(&mut old_pcm).unwrap();
+    assert!(old_pcm[CUT + FADE..].iter().any(|&frame| frame != DRY));
+    for partition in [1, BLOCK] {
+        let (control, mut callback, original, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, CUT);
+        let mut pcm = [[0.0; 2]; FADE + 100];
+        for chunk in pcm[..FADE].chunks_mut(partition) {
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+            assert_eq!(control.status.recording_source(), Some(original));
+        }
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut pcm[FADE..]).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+        assert!(pcm[FADE..].iter().all(|&frame| frame == DRY));
+        for (offset, frame) in pcm[..FADE].iter().enumerate() {
+            let gain = 1.0 - (offset + 1) as f32 / FADE as f32;
+            for lane in 0..2 {
+                let expected = DRY[lane] + (old_pcm[CUT + offset][lane] - DRY[lane]) * gain;
+                assert!((frame[lane] - expected).abs() < 1e-6);
+            }
+        }
+    }
+    for action in 0..3 {
+        let (mut control, mut callback, original, receipt) =
+            begin_insert_with_pending_track(Arc::clone(&old), Arc::clone(&next), None, CUT);
+        let mut prefix = [[0.0; 2]; 64];
+        callback.begin_block();
+        callback.render(&mut prefix).unwrap();
+        assert_eq!(receipt.state(), PublicationReceiptState::Pending);
+        match action {
+            0 => assert_eq!(receipt.cancel(), FreshRuntimeCancellationResult::Cancelled),
+            1 => control.command(PlaybackCommand::Play).unwrap(),
+            _ => control.stop(),
+        }
+        let mut pcm = [[0.0; 2]; FADE + 100];
+        let counts = allocation_counter::measure(|| {
+            for block in pcm.chunks_mut(BLOCK) {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.recording_source(), Some(original));
+        assert_eq!(
+            receipt.state(),
+            if action == 0 {
+                PublicationReceiptState::Cancelled
+            } else {
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::RuntimeFenceChanged)
+            }
+        );
+        if action == 2 {
+            assert!(pcm.iter().all(|frame| *frame == [0.0; 2]));
+        } else {
+            let start_gain = 1.0 - prefix.len() as f32 / FADE as f32;
+            for (offset, frame) in pcm.iter().enumerate() {
+                let gain =
+                    start_gain + (1.0 - start_gain) * (offset + 1).min(FADE) as f32 / FADE as f32;
+                for lane in 0..2 {
+                    let expected =
+                        DRY[lane] + (old_pcm[CUT + prefix.len() + offset][lane] - DRY[lane]) * gain;
+                    assert!(
+                        (frame[lane] - expected).abs() < 1e-6,
+                        "cancel/stale action {action}, frame {offset}, lane {lane}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn analytic_instrument_power_off_fades_an_already_releasing_note_without_allocations() {
     const FADE: usize = 240;
