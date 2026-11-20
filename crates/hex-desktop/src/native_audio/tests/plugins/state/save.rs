@@ -206,6 +206,104 @@ fn native_effect_save_after_stop_preserves_original_source_for_later_playback() 
 
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_save_includes_vst3_editor_input_admitted_during_save() {
+    const CHILD: &str = "HEX_DESKTOP_STOPPED_SAVE_EDITOR_CHILD";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        for mode in ["stopped", "play_and_retry"] {
+            let files = Files::new();
+            let test = std::thread::current().name().unwrap().to_owned();
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test, "--ignored", "--nocapture"])
+                .env(CHILD, mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", files.0.join("trace"))
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", files.0.join("release"))
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+        }
+        return;
+    };
+    let revocation = mode == "play_and_retry";
+
+    let _native = native_fixture();
+    let (mut h, files, before) = fixture(Start::Saved);
+    let original = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let path = files.0.join("idle-editor.hex");
+    let (ready, resume) = h.probe_next_save_capture();
+    h.service.submit(Request::SaveNew(path.clone())).unwrap();
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"edit",
+    )
+    .unwrap();
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    wait(|| fs::read(&trace).is_ok_and(|data| data.starts_with(&25_i32.to_le_bytes())));
+    if revocation {
+        h.plugin_progress.lock().unwrap().hold_pending_read = Some(original);
+    }
+    resume.send(()).unwrap();
+    if revocation {
+        wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(original));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render_plugin_block();
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let refused = h.next();
+        assert!(refused.save_complete);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("transport changed while preparing vst3 save · retry save")
+        );
+        assert_eq!(refused.state.project, before.project);
+        assert!(!path.exists());
+
+        h.audio.as_ref().unwrap().control.stop();
+        h.render_plugin_block();
+        h.plugin_progress.lock().unwrap().hold_pending_read = None;
+        h.service.submit(Request::SaveNew(path.clone())).unwrap();
+    }
+    let saved = h.next();
+    assert!(
+        saved.save_complete && saved.error.is_none(),
+        "{:?}",
+        saved.error
+    );
+    assert_eq!(saved.state.revision, before.revision);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(original));
+    let loaded = hex_storage::load(&path).unwrap();
+    let captured = hex_plugin_state::decode(loaded.main_devices()[0].state()).unwrap();
+    if !revocation {
+        assert_eq!(h.plugin_completed.load(Acquire), 0, "no PCM was processed");
+    }
+    assert_eq!(&captured.component.unwrap()[8..12], &3.0_f32.to_le_bytes());
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(path));
+    assert!(reopened.open_complete && reopened.project_replaced);
+    assert_eq!(*reopened.state.project, loaded);
+    super::super::super::resident_lifecycle::finish_replacement(&mut h, &reopened, old_output);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_delayed_capture_keeps_pcm_and_drains_cancelled_request() {
     const NAME: &str = "native_audio::tests::plugins::state::save::native_effect_save_delayed_capture_keeps_pcm_and_drains_cancelled_request";
     let Some(cancel) = std::env::var_os("HEX_DESKTOP_SAVE_CAPTURE_CHILD") else {

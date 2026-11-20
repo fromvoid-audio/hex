@@ -96,6 +96,7 @@ fn captures(project: &Project) -> Vec<PluginStateCapture> {
             editor_revision: 2,
         },
         cancellation: &cancellation,
+        flush_idle_editor_input: false,
         device_filter: None,
     };
     let mut result = Vec::new();
@@ -473,6 +474,7 @@ fn saved_reading_selection_keeps_raw_zero_and_excludes_base_and_host_targets() {
             editor_revision: 2,
         },
         cancellation: &cancellation,
+        flush_idle_editor_input: false,
         device_filter: None,
     };
     assert_eq!(

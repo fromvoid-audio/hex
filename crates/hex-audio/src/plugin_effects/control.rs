@@ -221,6 +221,11 @@ impl NativeEffect {
     ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
         self.worker.poll_stopped_edits_on_control(recovery)
     }
+    pub(crate) fn poll_joined_idle_edits(
+        &mut self,
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        self.worker.poll_joined_idle_edits_on_control()
+    }
     pub(crate) fn edit_read_mode(&self) -> Result<Option<bool>, &'static str> {
         self.worker.edit_read_mode_on_control()
     }
@@ -444,6 +449,11 @@ impl NativeEffectControl {
         recovery: bool,
     ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
         self.worker.poll_stopped_edits_on_control(recovery)
+    }
+    pub(crate) fn poll_joined_idle_edits(
+        &mut self,
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        self.worker.poll_joined_idle_edits_on_control()
     }
     pub(crate) fn edit_read_mode(&self) -> Result<Option<bool>, &'static str> {
         self.worker.edit_read_mode_on_control()
