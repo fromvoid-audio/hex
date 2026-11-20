@@ -135,6 +135,7 @@ enum RemovalTransition {
     Device(NativeRemovalTransition),
     Track(usize),
     Reorder(usize),
+    Route(usize),
     Analytic(usize),
     Move(super::device_move::NativeTrackMove),
     Return(ReturnId),
@@ -150,6 +151,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Device(transition) => Some(transition),
             RemovalTransition::Track(_)
             | RemovalTransition::Reorder(_)
+            | RemovalTransition::Route(_)
             | RemovalTransition::Analytic(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
@@ -187,7 +189,9 @@ impl PendingNativeRemoval {
     }
 
     pub(super) fn faded_track(self, previous: &SessionPlayback, id: hex_project::TrackId) -> bool {
-        self.reordered_track(previous) == Some(id)
+        matches!(self.transition, RemovalTransition::Route(index)
+            if previous.routes.get(index).is_some_and(|route| route.id == id))
+            || self.reordered_track(previous) == Some(id)
             || self.faded_analytic_track(previous) == Some(id)
             || self.track_move().is_some_and(|movement| {
                 [movement.source, movement.destination]
@@ -219,6 +223,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
             RemovalTransition::Device(_)
             | RemovalTransition::Reorder(_)
+            | RemovalTransition::Route(_)
             | RemovalTransition::Analytic(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
@@ -241,6 +246,7 @@ impl PendingNativeRemoval {
                 .is_some_and(|fade| fade.id == id && fade.fader.removal_ready()),
             RemovalTransition::Track(index)
             | RemovalTransition::Reorder(index)
+            | RemovalTransition::Route(index)
             | RemovalTransition::Analytic(index) => {
                 previous
                     .track_faders
@@ -332,6 +338,10 @@ impl SessionPlayback {
                     .map(RemovalTransition::Reorder)
             })
             .or_else(|| {
+                self.resident_group_entry_from(previous)
+                    .map(RemovalTransition::Route)
+            })
+            .or_else(|| {
                 self.direct_audio_track_move_from(previous)
                     .map(RemovalTransition::Move)
             })
@@ -400,6 +410,7 @@ impl SessionPlayback {
                 }
                 RemovalTransition::Track(index)
                 | RemovalTransition::Reorder(index)
+                | RemovalTransition::Route(index)
                 | RemovalTransition::Analytic(index) => {
                     let rate = previous.revision.arrangement().sample_rate();
                     previous.track_faders.get_mut(index).is_some_and(|fader| {
@@ -467,6 +478,7 @@ impl SessionPlayback {
                 }
                 RemovalTransition::Track(index)
                 | RemovalTransition::Reorder(index)
+                | RemovalTransition::Route(index)
                 | RemovalTransition::Analytic(index) => {
                     let arrangement = previous.revision.arrangement();
                     if let Some(track) = arrangement.tracks().get(index)
