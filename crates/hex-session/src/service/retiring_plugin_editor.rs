@@ -80,7 +80,8 @@ pub struct RetiringEditorBatch {
     pub successor_context: AudioSourceContext,
     pub device: u64,
     /// Highest sequence admitted on this binding before successor preparation.
-    /// A later receipt proves later admission, not a difference in saved state.
+    /// The helper can dispatch values from an open cohort before its
+    /// terminal, so each value is classified by its own admission sequence.
     pub predecessor_admitted_through: Option<u64>,
     events: Vec<RetiringEditorEvent>,
 }
@@ -235,8 +236,9 @@ impl RetiringEditorBatch {
         Ok(plan)
     }
 
-    /// Earlier complete cohorts are checked in place. Each later cohort keeps
-    /// its own SDK flush. No cohort can straddle the cut or lack its terminal.
+    /// Match every group marker and parameter hold across the entire receipt.
+    /// A group may span preparation, and its earlier values still require
+    /// successor verification before any later values can be replayed.
     fn validate_grouped_replay(&self, cut: u64) -> Result<(), &'static str> {
         use RetiringEditorEventKind::{Begin, End, GroupBegin, GroupEnd, Perform};
         const UNRESOLVED: &str = "vst3 editor group needs a separate ordered disposition";
@@ -252,12 +254,9 @@ impl RetiringEditorBatch {
             if earlier && !earlier_has_group {
                 continue;
             }
-            if cohort.is_some_and(|(_, started_earlier)| started_earlier != earlier) {
-                return Err(UNRESOLVED);
-            }
             match event.kind {
-                GroupBegin if cohort.is_none() => cohort = Some((event.gesture, earlier)),
-                GroupEnd if cohort == Some((event.gesture, earlier)) => cohort = None,
+                GroupBegin if cohort.is_none() => cohort = Some(event.gesture),
+                GroupEnd if cohort == Some(event.gesture) => cohort = None,
                 Begin => {
                     if active.insert(event.parameter, event.gesture).is_some() {
                         return Err(UNRESOLVED);
@@ -468,7 +467,24 @@ mod tests {
         let mut wrong_cohort = complete.clone();
         wrong_cohort[4].gesture = 2;
         assert!(project_values(wrong_cohort, 0).is_err());
-        assert!(project_values(complete.clone(), 1).is_err());
+        assert_eq!(
+            project_values(complete.clone(), 1),
+            Ok((vec![], vec![vec![(0, 0.75)]]))
+        );
+        assert_eq!(
+            project_values(complete.clone(), 3),
+            Ok((vec![(0, 0.75)], vec![]))
+        );
+        let mut spanning_values = complete.clone();
+        spanning_values[3].sequence = 5;
+        spanning_values[4].sequence = 6;
+        let mut late = event(4, 2, Perform);
+        late.normalized = 0.5;
+        spanning_values.insert(3, late);
+        assert_eq!(
+            project_values(spanning_values, 3),
+            Ok((vec![(0, 0.75)], vec![vec![(0, 0.5)]]))
+        );
 
         let mut several_values = complete;
         several_values.extend([
