@@ -4865,6 +4865,125 @@ fn staged_native_insert_is_refused_on_real_output_fault_without_a_late_commit() 
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn running_native_replacement_keeps_the_installed_device_until_exact_receipt() {
+    use hex_engine::{DeviceTypeId, NativeDeviceClass, default_native_device_state_for_class};
+    use hex_project::Command;
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    fn status(h: &ResidentHarness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    h.next();
+    let (applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 8192)));
+    let (applied, _) = h.applied(applied);
+    let before = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: default_native_device_state_for_class(
+            NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap(),
+    }));
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let predecessor = status(&h).recording_source().unwrap();
+    h.enable_confirmed_device_inserts();
+    let device = before.state.project.main_devices()[0].id();
+    let limiter = DeviceTypeId::from_static("hex.limiter");
+    for proceed in [false, true] {
+        h.service
+            .submit(Request::ReplaceNativeDevice {
+                device,
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(limiter),
+            })
+            .unwrap();
+        let pending = h.next();
+        assert!(
+            pending.error.is_none(),
+            "replacement refused: {:?}",
+            pending.error
+        );
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        assert!(
+            !pending.request_complete,
+            "replacement completed before audio confirmed its graph"
+        );
+        assert_eq!(pending.state.project, before.state.project);
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        let offered = h.next();
+        let offer = offered.device_insert_confirmation.unwrap();
+        assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+        assert_eq!(offered.state.project, before.state.project);
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        if !proceed {
+            assert!(offer.cancel());
+            let cancelled = h.next();
+            assert_eq!(
+                cancelled.device_insert_complete.unwrap().outcome,
+                DeviceInsertOutcome::Cancelled
+            );
+            assert_eq!(cancelled.state.project, before.state.project);
+            assert_eq!(cancelled.state.revision, before.state.revision);
+            assert_eq!(cancelled.state.can_undo, before.state.can_undo);
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+            continue;
+        }
+        let (submitted, resume) = h.probe_next_submitted_device_insert();
+        assert!(offer.proceed());
+        let confirmed = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        resume.send(()).unwrap();
+        assert_eq!(h.render()[0], [0.25 * 127.0 / 128.0; 2]);
+        assert_eq!(h.render()[63], [0.0; 2]);
+        assert_eq!(status(&h).recording_source(), Some(predecessor));
+        h.render();
+        let installed = h.next();
+        assert_eq!(installed.status.as_deref(), Some("device replaced"));
+        let receipt = installed.device_insert_complete.unwrap();
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        assert_eq!(receipt.submission, confirmed);
+        assert_eq!(
+            confirmed.audio_revision,
+            status(&h).recording_source().unwrap().audio_revision
+        );
+        assert_eq!(installed.state.project.main_devices().len(), 1);
+        assert_eq!(
+            installed
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .type_id(),
+            limiter
+        );
+        assert_eq!(installed.state.revision, before.state.revision + 1);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+        let undone = h.run(Request::Undo);
+        assert_eq!(undone.state.project, before.state.project);
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn confirmed_limiter_keeps_the_same_output_and_commits_only_after_its_fade() {
     confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::Insert);
 }

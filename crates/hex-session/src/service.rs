@@ -6636,6 +6636,7 @@ fn run_worker(
                                 if reason == hex_engine::PlaybackHandoffRejection::DeviceInsertNeedsConfirmation {
                                     error = Some(match operation.device() {
                                         Some(GraphEditOperation::InsertDevice) => "stop playback to insert this device",
+                                        Some(GraphEditOperation::ReplaceDevice) => "stop playback to replace this device",
                                         Some(GraphEditOperation::RemoveDevice) => "stop playback to remove this device",
                                         Some(GraphEditOperation::MoveDevice) => "stop playback to move devices",
                                         Some(GraphEditOperation::MoveTrack) => "stop playback to move this track",
@@ -8680,14 +8681,26 @@ fn run_worker(
                     match replacement {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match resident_audio::execute_command(
+                            let confirmed_output = events.resident_audio().is_some_and(|sink| {
+                                match session.audio_mode() {
+                                    DocumentAudioMode::Resident => {
+                                        sink.confirms_device_inserts()
+                                            && sink.resident_publication_readiness()
+                                                != ResidentPublicationReadiness::NoOutput
+                                    }
+                                    DocumentAudioMode::VerifiedStreaming => {
+                                        sink.confirms_verified_device_inserts()
+                                    }
+                                }
+                            });
+                            let proposal =
+                                confirmed_output.then(|| Arc::new(PluginEffectControl::default()));
+                            match resident_audio::device_insert::submit_browser_edit(
                                 &mut session,
                                 command,
+                                &state,
+                                project_generation,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                hex_engine::AudioSourceContext {
-                                    project_generation,
-                                    editor_revision: revision.saturating_add(1),
-                                },
                                 &mut events,
                                 &mut resident_snapshot,
                                 export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
@@ -8696,13 +8709,25 @@ fn run_worker(
                                         prepared: Some(prepared),
                                     }
                                 }), resident_seek.as_ref(), resident_preview.as_ref()),
+                                request_document_intent,
+                                proposal.as_ref(),
                             ) {
-                                Ok((_, prepared)) if session.project() != &before_project => {
+                                Ok(BrowserEdit::Pending(mut staged)) => {
+                                    staged.operation = resident_audio::device_insert::Operation::Device(
+                                        GraphEditOperation::ReplaceDevice,
+                                    );
+                                    staged.publish_created = false;
+                                    staged.proposal_control = proposal;
+                                    pending_device_insert = Some(*staged);
+                                    request_complete = false;
+                                    status = Some("device replacement pending · waiting for audio".into());
+                                }
+                                Ok(BrowserEdit::Applied(_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                     status = Some("device replaced".into());
                                 }
-                                Ok(_) => status = Some("no change".into()),
+                                Ok(BrowserEdit::Applied(..) | BrowserEdit::Unchanged) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
