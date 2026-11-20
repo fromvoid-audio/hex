@@ -1,5 +1,5 @@
-//! The existing bound Utility-width gesture contract through the real Verified
-//! reader, worker, closed publication and callback, with only output substituted.
+//! Native effect gestures through the actual Verified reader, worker, closed
+//! publication and callback, with only the physical output substituted.
 use super::*;
 use hex_session::device_gesture::{
     GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
@@ -18,6 +18,159 @@ fn verified_width_preserves_non_neutral_balance_automation_through_cancel_and_hi
 #[test]
 fn verified_width_preserves_dc_filter_history_through_preview_terminals_and_undo() {
     width_preview(true, true);
+}
+
+#[test]
+fn verified_eq_node_drag_previews_cancels_and_commits_with_one_undo() {
+    use hex_engine::eq::{EqState, Node, NodeId, NodeParameter};
+    use hex_session::device_gesture::{DeviceParameterSnapshot, ParameterPairValue};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.wav(48_000, 131_072);
+    let mut wav = fs::read(&path).unwrap();
+    let period: [i16; 64] = std::array::from_fn(|i| {
+        (4096.0 * (i as f64 * std::f64::consts::TAU / 64.0).sin()).round() as i16
+    });
+    for (index, sample) in wav[44..].chunks_exact_mut(2).enumerate() {
+        sample.copy_from_slice(&period[index % period.len()].to_le_bytes());
+    }
+    fs::write(&path, wav).unwrap();
+
+    let mut h = super::verified_gain::actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let id = NodeId::new(7).unwrap();
+    let mut eq = EqState::default();
+    eq.add(Node::new(id, 320.0, 0.0, 0).unwrap()).unwrap();
+    let inserted = h.run_verified_device_insert(hex_project::Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    });
+    let Some(hex_project::Created::Device(device)) = inserted.created else {
+        panic!("sparse EQ")
+    };
+    let first = id.parameter(NodeParameter::Frequency).unwrap();
+    let second = id.parameter(NodeParameter::Gain).unwrap();
+    let base = DeviceParameterSnapshot::new(&[
+        (first, ParameterValue::Float(320.0)),
+        (second, ParameterValue::Float(0.0)),
+    ])
+    .unwrap();
+    let changed = ParameterPairValue {
+        first: ParameterValue::Float(750.0),
+        second: ParameterValue::Float(20.0 * 2.0_f32.log10()),
+    };
+    let snapshot =
+        DeviceParameterSnapshot::new(&[(first, changed.first), (second, changed.second)]).unwrap();
+    let canonical = inserted.state.project.clone();
+    let context = h.context.unwrap();
+    let applied = h.applied(context);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let wait_tone = |h: &Harness, minimum_revision: u64, amplitude: f32| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let block = h.render();
+            let source = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source()
+                .unwrap();
+            // 64 samples at 48 kHz cover one full 750 Hz cycle. At a bell's
+            // center frequency a 6.0206 dB boost doubles its steady amplitude.
+            let actual = (block.iter().map(|f| f[0] * f[0]).sum::<f32>() / 32.0).sqrt();
+            if source.context == h.context.unwrap()
+                && source.audio_revision >= minimum_revision
+                && (actual - amplitude).abs() < 0.0002
+            {
+                return source.audio_revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {amplitude}, got {actual}, source {source:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let applied = wait_tone(&h, applied.audio_revision, 0.125_f32);
+    let key = GestureKey {
+        generation: context.project_generation,
+        token: 1,
+    };
+    h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameterPair {
+            device,
+            first,
+            second,
+        },
+    }));
+    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangePair {
+        key,
+        sequence: 1,
+        value: changed,
+    }));
+    assert!(preview.gesture_ack.unwrap().accepted);
+    assert_eq!(preview.state.project, canonical);
+    let audible = wait_tone(&h, applied + 1, 0.25);
+    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    assert!(cancelled.gesture_ack.unwrap().accepted);
+    assert_eq!(cancelled.state.project, canonical);
+    let restored = wait_tone(&h, audible + 1, 0.125);
+
+    let key = GestureKey { token: 2, ..key };
+    h.run(Request::DeviceGesture(GestureRequest::BeginSnapshot {
+        key,
+        device,
+        snapshot: base,
+    }));
+    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+        key,
+        sequence: 1,
+        snapshot,
+        touched_parameters: Default::default(),
+    }));
+    assert!(preview.gesture_ack.unwrap().accepted);
+    assert_eq!(preview.state.project, canonical);
+    let audible = wait_tone(&h, restored + 1, 0.25);
+    let committed = h.run(Request::DeviceGesture(GestureRequest::CommitSnapshot {
+        key,
+        sequence: 1,
+        snapshot,
+        touched_parameters: Default::default(),
+    }));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    let state = committed.state.project.device(device).unwrap().state();
+    assert_eq!(
+        hex_engine::native_device_parameter(state, first).unwrap(),
+        changed.first
+    );
+    assert_eq!(
+        hex_engine::native_device_parameter(state, second).unwrap(),
+        changed.second
+    );
+    let committed = wait_tone(&h, audible + 1, 0.25);
+    let restored = h.run(Request::Undo);
+    assert_eq!(restored.state.project, canonical);
+    wait_tone(&h, committed + 1, 0.125);
 }
 
 fn width_preview(automated_balance: bool, dc_remove: bool) {
