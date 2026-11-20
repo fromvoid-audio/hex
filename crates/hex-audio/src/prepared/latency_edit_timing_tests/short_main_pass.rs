@@ -151,14 +151,19 @@ fn terminal_inline_stage(
         );
 
         const SEEK: u64 = 1_024;
-        let mut after_seek = vec![[0.0; 2]; latency_frames + 64];
+        // A running seek fades out at the old cursor before clearing the ring,
+        // then fades in at the new cursor (128 frames at 48 kHz).
+        let seek_fade = (128 * sample_rate / RATE) as usize;
+        let mut after_seek = vec![[0.0; 2]; 2 * seek_fade + latency_frames + 64];
         control.command(PlaybackCommand::Seek(SEEK)).unwrap();
         for chunk in after_seek.chunks_mut(partition) {
             render(&mut callback, chunk);
         }
-        let (cleared, audible) = after_seek.split_at(latency_frames);
+        let cleared = &after_seek[seek_fade..seek_fade + latency_frames];
         assert!(cleared.iter().all(|sample| *sample == [0.0; 2]));
-        assert_eq!(audible, &pcm[SEEK as usize..SEEK as usize + audible.len()]);
+        let audible = &after_seek[2 * seek_fade + latency_frames..];
+        let first = SEEK as usize + seek_fade;
+        assert_eq!(audible, &pcm[first..first + audible.len()]);
 
         control.command(PlaybackCommand::Pause).unwrap();
         render(&mut callback, &mut next);
