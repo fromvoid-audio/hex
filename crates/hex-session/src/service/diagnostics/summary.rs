@@ -1623,6 +1623,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::QueryPluginParameters(query) => {
             describe!("query_plugin_parameters"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="")
         }
+        Request::ContinueRetiringEditorReplay => {
+            describe!("continue_retiring_editor_replay"; []; omitted="")
+        }
         Request::ContinuePluginParameters => {
             describe!("continue_plugin_parameters"; []; omitted="")
         }
@@ -1716,6 +1719,13 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::QueryDeviceAutomationCloseSafety { request_id } => {
             describe!("query_device_automation_close_safety"; ["request_id" => request_id]; omitted="none")
+        }
+        Request::PreparePluginEditorClose {
+            request_id,
+            context,
+            ..
+        } => {
+            describe!("prepare_plugin_editor_close"; ["request_id" => request_id, "project_generation" => context.project_generation, "revision" => context.editor_revision]; omitted="attempt")
         }
         Request::RecoverDeviceAutomationTake {
             request_id,

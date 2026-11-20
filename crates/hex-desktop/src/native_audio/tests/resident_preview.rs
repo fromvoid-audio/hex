@@ -1553,6 +1553,11 @@ pub(super) enum EditorRecordingProbe {
         SyncSender<Result<(), String>>,
     ),
     Take(SyncSender<Option<hex_session::service::PluginParameterObservation>>),
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    RetiringBatch(
+        hex_audio::plugin_effects::EffectBinding,
+        SyncSender<Option<hex_session::service::RetiringEditorBatch>>,
+    ),
 }
 
 struct ResidentSink {
@@ -1592,7 +1597,94 @@ struct PublicationProbe {
     resume: mpsc::Receiver<()>,
     busy: SyncSender<()>,
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn emit_replay_fixture_edit(trace: &std::path::Path) {
+    let release =
+        std::path::PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
+    std::fs::write(release.join(trace.file_stem().unwrap()), b"edit").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if std::fs::read(trace)
+            .ok()
+            .is_some_and(|trace| trace.get(..4) == Some(&25_i32.to_le_bytes()))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "original SDK did not emit its edit"
+        );
+        std::thread::yield_now();
+    }
+}
+
 impl WorkerAudioSink for ResidentSink {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn retiring_editor_replay_ready(&self) -> bool {
+        self.inner.retiring_editor_replay_ready()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_plugin_editor_close(
+        &mut self,
+        context: AudioSourceContext,
+        attempt: &std::sync::Weak<hex_session::service::PluginEditorCloseAttempt>,
+    ) -> hex_session::service::PluginEditorCloseAdmission {
+        self.inner.prepare_plugin_editor_close(context, attempt)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn retiring_editor_close_blocker(
+        &self,
+    ) -> Option<hex_session::service::RetiringEditorCloseBlocker> {
+        self.inner.retiring_editor_close_blocker()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn next_retiring_editor_replay(&mut self) -> Option<hex_session::service::RetiringEditorBatch> {
+        self.inner.next_retiring_editor_replay()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn capture_retiring_editor_replay(
+        &mut self,
+        batch: &hex_session::service::RetiringEditorBatch,
+        points: &[(u32, f64)],
+        publication: AudioSourceContext,
+    ) -> Result<hex_session::service::PluginParameterCapture, String> {
+        let captured = self
+            .inner
+            .capture_retiring_editor_replay(batch, points, publication);
+        if captured.is_ok() && std::env::var_os("HEX_REPLAY_TEST_REFUSE").is_some() {
+            let release = std::path::PathBuf::from(
+                std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap(),
+            );
+            if let Ok(trace) = std::fs::read_to_string(release.join("after-replay")) {
+                emit_replay_fixture_edit(std::path::Path::new(&trace));
+            }
+            self.refuse
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        captured
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn finish_retiring_editor_replay(
+        &mut self,
+        batch: &hex_session::service::RetiringEditorBatch,
+        disposition: hex_session::service::RetiringEditorReplayDisposition,
+    ) -> Result<(), String> {
+        self.inner.finish_retiring_editor_replay(batch, disposition)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn accept_retiring_editor_batch(
+        &mut self,
+        batch: &hex_session::service::RetiringEditorBatch,
+    ) -> Result<(), String> {
+        self.inner.accept_retiring_editor_batch(batch)
+    }
+
     fn capture_plugin_states(
         &mut self,
         input: hex_session::service::PluginStateCaptureInput<'_>,
@@ -2241,6 +2333,12 @@ impl WorkerAudioSink for ResidentSink {
                 EditorRecordingProbe::Take(reply) => {
                     reply
                         .try_send(self.inner.take_plugin_parameter_observation())
+                        .unwrap();
+                }
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                EditorRecordingProbe::RetiringBatch(binding, reply) => {
+                    reply
+                        .try_send(self.inner.plugins.retained_editor_batch(binding))
                         .unwrap();
                 }
             }

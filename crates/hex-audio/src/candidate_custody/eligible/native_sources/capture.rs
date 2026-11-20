@@ -374,15 +374,16 @@ impl Custody {
         binding: Binding,
         expected_editor_admission: u64,
         points: &[(u32, f64)],
+        after: Option<&NativeWorkerControllerQuery>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.admit_live_operation(
             binding,
             |owner| match owner {
                 Owner::Effect(owner) => {
-                    owner.begin_guarded_editor_write(expected_editor_admission, points)
+                    owner.begin_guarded_editor_write(expected_editor_admission, points, after)
                 }
                 Owner::Loaned(owner) => {
-                    owner.begin_guarded_editor_write(expected_editor_admission, points)
+                    owner.begin_guarded_editor_write(expected_editor_admission, points, after)
                 }
                 _ => Err("native guarded editor write owner differs"),
             },
@@ -829,11 +830,15 @@ impl CandidateRoot {
         binding: Binding,
         expected_editor_admission: u64,
         points: &[(u32, f64)],
+        after: Option<&NativeWorkerControllerQuery>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.require_native_source_control_open()?;
-        self.0
-            .eligible
-            .begin_guarded_editor_write(binding, expected_editor_admission, points)
+        self.0.eligible.begin_guarded_editor_write(
+            binding,
+            expected_editor_admission,
+            points,
+            after,
+        )
     }
     pub(crate) fn poll_guarded_editor_write(
         &self,

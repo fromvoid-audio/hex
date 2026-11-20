@@ -193,7 +193,15 @@ impl NativeWorker {
             .ordinal
             .checked_add(1)
             .ok_or("native controller ordinal exhausted")?;
-        let guarded = if query.kind() == Kind::GuardedWrite {
+        let guarded = if let Operation::Guarded(write) = query {
+            if let Some(previous) = write.previous
+                && slot
+                    .parameter_change
+                    .guarded_write_readback(previous)
+                    .is_none()
+            {
+                return Err("native guarded editor write was superseded");
+            }
             // Supersede both control-side sequenced facts and any callback
             // permit from earlier non-guarded writes before accepting input.
             let next = slot.parameter_change.next_ordinal()?;
@@ -321,10 +329,14 @@ impl NativeWorker {
         }
         let reply = slot.reply;
         slot.requested = false;
+        use NativeWorkerGuardedEditorWriteProgress as Guarded;
         if let Some(ordinal) = request.parameter_ordinal
-            && reply.guarded_write == Some(NativeWorkerGuardedEditorWriteProgress::Applied)
+            && let Some(terminal @ (Guarded::Applied | Guarded::ReadbackChanged)) =
+                reply.guarded_write
         {
-            mailbox.parameter_change.record_guarded_write(ordinal);
+            mailbox
+                .parameter_change
+                .record_guarded_write(ordinal, terminal == Guarded::Applied);
         }
         drop(mailbox);
         Ok(Poll::Ready(reply))

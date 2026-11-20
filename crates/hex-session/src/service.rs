@@ -116,6 +116,12 @@ mod plugin_effect;
 mod plugin_parameters;
 mod plugin_recording;
 mod plugin_state_save;
+mod retiring_plugin_editor;
+pub use retiring_plugin_editor::{
+    MAX_RETIRING_EDITOR_EVENTS, PluginEditorCloseAdmission, PluginEditorCloseAttempt,
+    RetiringEditorBatch, RetiringEditorCloseBlocker, RetiringEditorEvent, RetiringEditorEventKind,
+    RetiringEditorReplayDisposition,
+};
 mod project_save;
 pub use project_save::sample_take_root;
 mod recording_barrier;
@@ -962,6 +968,8 @@ pub enum Request {
         device: hex_project::DeviceId,
     },
     ContinuePluginEditor,
+    #[doc(hidden)]
+    ContinueRetiringEditorReplay,
     QueryPluginParameters(PluginParameterQuery),
     ContinuePluginParameters,
     QueryPluginParameterConversion(PluginParameterConversionQuery),
@@ -1037,6 +1045,13 @@ pub enum Request {
     /// must prevent later admissions until it acts on this response.
     QueryDeviceAutomationCloseSafety {
         request_id: u64,
+    },
+    /// Hold the original native editor producers while this exact close
+    /// attempt is alive. A later poll must present the same attempt.
+    PreparePluginEditorClose {
+        request_id: u64,
+        context: hex_engine::AudioSourceContext,
+        attempt: std::sync::Weak<PluginEditorCloseAttempt>,
     },
     /// Recover one completed device take without reconstructing its old worker.
     /// Current context fences publication; expected target/provenance bind only
@@ -1371,12 +1386,14 @@ impl Request {
         matches!(
             self,
             Self::QueryPluginParameters(_)
+                | Self::ContinueRetiringEditorReplay
                 | Self::ContinuePluginParameters
                 | Self::QueryPluginParameterConversion(_)
                 | Self::ContinuePluginParameterConversion
                 | Self::QueryFailedPluginAutomation { .. }
                 | Self::InspectSealedAutomationRecovery { .. }
                 | Self::QueryDeviceAutomationCloseSafety { .. }
+                | Self::PreparePluginEditorClose { .. }
                 | Self::PreparePausedInputMonitor { .. }
         )
     }
@@ -3529,6 +3546,20 @@ fn run_worker(
                     sink,
                 );
             }
+            let editor_replay_ready = session.audio_mode() == DocumentAudioMode::Resident
+                && resident_preview.is_none()
+                && !resident_seek
+                    .as_ref()
+                    .is_some_and(resident_seek::Lane::pending)
+                && device_gesture.snapshot().is_none()
+                && tuning_gesture.snapshot().is_none()
+                && pending_plugin_effect.is_none()
+                && pending_stopped_restore.is_none()
+                && !plugin_recording.editor_active()
+                && !plugin_recording.pending()
+                && audio
+                    .as_ref()
+                    .is_some_and(|sink| sink.retiring_editor_replay_ready());
             audio_sink::native_sampler::drive(
                 audio,
                 &session,
@@ -3551,6 +3582,7 @@ fn run_worker(
                 gesture: plugin_recording.ready(),
                 editor_take: plugin_recording.editor_ready(),
                 recovery_ready: recovery_tracker.async_ready(),
+                editor_replay_ready,
             }
         },
     ) {
@@ -3715,6 +3747,22 @@ fn run_worker(
         let defaults_root = defaults_directory.as_deref().map(PathBuf::as_path);
         let recording_barrier_completion = queued.recording_barrier;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let opening_project = request.is_project_open();
+        let retiring_editor_replacement_failure = if opening_project {
+            events
+                .sampler_edit_audio()
+                .and_then(|sink| sink.retiring_editor_close_blocker())
+                .map(|blocker| match blocker {
+                    RetiringEditorCloseBlocker::Transferring => {
+                        "vst3 editor changes are still transferring · retry opening the project"
+                    }
+                    RetiringEditorCloseBlocker::Unresolved => {
+                        "resolve the retiring vst3 editor changes before replacing the project"
+                    }
+                })
+        } else {
+            None
+        };
         let mut device_insert_proposal = None;
         let mut repeated_device_insert = false;
         let mut device_insert_proposal_accepted = false;
@@ -3774,6 +3822,7 @@ fn run_worker(
                 | Request::ContinueDeviceInsert
                 | Request::ContinuePluginEditor
                 | Request::ContinuePluginEditorRecording { .. }
+                | Request::ContinueRetiringEditorReplay
                 | Request::ContinuePluginParameters
                 | Request::ContinuePluginParameterConversion
                 | Request::ContinuePluginStateRestore
@@ -3792,13 +3841,9 @@ fn run_worker(
         let mut plugin_parameters = None;
         let mut plugin_parameter_conversion = None;
         let mut sampler_edit_complete = None;
-        if matches!(
-            &request,
-            Request::NewWithAudioMode { .. }
-                | Request::Open(_)
-                | Request::OpenWith { .. }
-                | Request::OpenWithAudioMode { .. }
-        ) && recording_barrier::failure(recording_barrier_completion).is_none()
+        if opening_project
+            && retiring_editor_replacement_failure.is_none()
+            && recording_barrier::failure(recording_barrier_completion).is_none()
             && let Some(gain) = pending_sampler_parameter.take()
         {
             gain.cancel().store(true, Ordering::Release);
@@ -4420,15 +4465,47 @@ fn run_worker(
                         resolved
                     })
             }
-            Request::QueryDeviceAutomationCloseSafety { request_id } => {
-                let safe = native_automation_take.close_safe() && plugin_recording.close_safe();
+            Request::QueryDeviceAutomationCloseSafety { request_id }
+            | Request::PreparePluginEditorClose { request_id, .. } => {
+                let context = hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                };
+                let attempt = match &request {
+                    Request::PreparePluginEditorClose {
+                        context: expected,
+                        attempt,
+                        ..
+                    } => Some((*expected, attempt)),
+                    _ => None,
+                };
+                let progress = if attempt.is_some_and(|(expected, attempt)| {
+                    expected != context || !attempt.upgrade().is_some_and(|owner| owner.is_valid())
+                }) {
+                    DeviceAutomationTakeProgress::ClosePluginEditor(
+                        PluginEditorCloseAdmission::Refused,
+                    )
+                } else if !native_automation_take.close_safe() || !plugin_recording.close_safe() {
+                    DeviceAutomationTakeProgress::CloseBlocked
+                } else if let Some(blocker) = events
+                    .resident_audio()
+                    .and_then(|sink| sink.retiring_editor_close_blocker())
+                {
+                    DeviceAutomationTakeProgress::CloseRetiringEditor(blocker)
+                } else if let Some((_, attempt)) = attempt {
+                    let admission = events.sampler_edit_audio().map_or(
+                        PluginEditorCloseAdmission::Held {
+                            admitted_edits: false,
+                        },
+                        |sink| sink.prepare_plugin_editor_close(context, attempt),
+                    );
+                    DeviceAutomationTakeProgress::ClosePluginEditor(admission)
+                } else {
+                    DeviceAutomationTakeProgress::CloseSafe
+                };
                 device_automation_take_complete = Some(DeviceAutomationTakeCompletion {
                     request_id: *request_id,
-                    progress: if safe {
-                        DeviceAutomationTakeProgress::CloseSafe
-                    } else {
-                        DeviceAutomationTakeProgress::CloseBlocked
-                    },
+                    progress,
                 });
                 None
             }
@@ -5341,6 +5418,7 @@ fn run_worker(
         if barrier_failure.is_none() {
             barrier_failure = publication_wait_failure
                 .or_else(|| recording_barrier::failure(recording_barrier_completion))
+                .or(retiring_editor_replacement_failure)
                 .map(str::to_owned);
         }
         if !recording_barrier::save_matches(
@@ -5592,6 +5670,7 @@ fn run_worker(
                     | Request::QueryFailedPluginAutomation { .. }
                     | Request::InspectSealedAutomationRecovery { .. }
                     | Request::QueryDeviceAutomationCloseSafety { .. }
+                    | Request::PreparePluginEditorClose { .. }
                     | Request::RecoverDeviceAutomationTake { .. }
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
@@ -5599,6 +5678,7 @@ fn run_worker(
                     | Request::TogglePluginEditor { .. }
                     | Request::ContinuePluginEditor
                     | Request::QueryPluginParameters(_)
+                    | Request::ContinueRetiringEditorReplay
                     | Request::ContinuePluginParameters
                     | Request::QueryPluginParameterConversion(_)
                     | Request::ContinuePluginParameterConversion
@@ -6318,6 +6398,44 @@ fn run_worker(
                             descriptor_signature: None,
                             rows: Err(reason),
                         });
+                    }
+                }
+                Request::ContinueRetiringEditorReplay => {
+                    if session.audio_mode() == DocumentAudioMode::Resident
+                        && resident_preview.is_none()
+                        && device_gesture.snapshot().is_none()
+                        && !plugin_recording.editor_active()
+                        && let Some(sink) = events.sampler_edit_audio()
+                    {
+                        match retiring_plugin_editor::apply(
+                            &mut session,
+                            sink,
+                            &mut resident_snapshot,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                None,
+                            ),
+                        ) {
+                            Ok(Some(outcome)) => {
+                                if let Some(prepared) = outcome.prepared {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                }
+                                error = outcome.receipt_failure;
+                            }
+                            Ok(None) => {}
+                            Err(reason) => error = Some(reason),
+                        }
                     }
                 }
                 Request::ContinuePluginParameters => {
@@ -8904,6 +9022,7 @@ fn run_worker(
                 | Request::QueryFailedPluginAutomation { .. }
                 | Request::InspectSealedAutomationRecovery { .. }
                 | Request::QueryDeviceAutomationCloseSafety { .. }
+                | Request::PreparePluginEditorClose { .. }
                 | Request::RecoverDeviceAutomationTake { .. } => {}
                 Request::ArmNativeParameterRecording {
                     project_generation: expected_generation,

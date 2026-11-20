@@ -534,7 +534,10 @@ mod tests {
             owner: ProcessorChainOwner::Main,
             device: binding.instance,
             project_generation: context.project_generation,
-            operation: SourceOperation::Edit(context),
+            operation: SourceOperation::Edit {
+                context,
+                predecessor: None,
+            },
             authored: None,
             accepted: false,
             retiring: false,
@@ -545,6 +548,7 @@ mod tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            provider: None,
             editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]

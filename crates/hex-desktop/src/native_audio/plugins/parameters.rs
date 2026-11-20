@@ -647,6 +647,7 @@ mod tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            provider: None,
             editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]

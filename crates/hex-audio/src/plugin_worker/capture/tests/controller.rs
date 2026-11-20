@@ -372,6 +372,19 @@ fn guarded_capture_follows_only_the_latest_applied_write_on_the_original_worker(
     );
     let (new_conflict, terminal) = guarded(&mut owner, 1);
     assert_eq!(terminal, Write::Conflict);
+    let restore_refusal =
+        retry(
+            || match owner.begin_guarded_editor_write_after(0, &[(7, 0.25)], Some(&applied)) {
+                Err(reason @ "native controller mailbox is busy") => Err(reason),
+                result => Ok(result.err()),
+            },
+        );
+    assert_eq!(
+        restore_refusal,
+        Some("native guarded editor write was superseded")
+    );
+    let read = query(&mut owner);
+    assert_eq!(page(&mut owner, &read).as_slice()[0].normalized, 0.75);
     assert!(
         owner
             .observe_guarded_capture_input_on_control(&fact)

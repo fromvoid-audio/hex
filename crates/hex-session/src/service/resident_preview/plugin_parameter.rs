@@ -255,7 +255,7 @@ pub(in crate::service) fn operation_using(
     result
 }
 
-fn bind_capture(
+pub(in crate::service) fn bind_capture(
     state: &NativeDeviceState,
     captured: NativeDeviceState,
 ) -> Result<NativeDeviceState, SessionError> {

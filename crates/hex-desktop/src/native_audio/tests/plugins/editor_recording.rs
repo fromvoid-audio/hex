@@ -566,7 +566,7 @@ fn verify_session_recording(
     );
 }
 
-fn probe<T>(
+pub(super) fn probe<T>(
     h: &ResidentHarness,
     request: impl FnOnce(mpsc::SyncSender<T>) -> EditorRecordingProbe,
 ) -> T {

@@ -17,6 +17,7 @@ use hex_session::service::{
 };
 mod degraded;
 mod editor;
+mod editor_close;
 pub(super) mod editor_recording;
 mod parameter_conversion;
 mod parameter_gesture;
@@ -32,13 +33,17 @@ pub(super) use paused_monitor::{
 };
 mod reopen;
 mod retiring_editor;
+mod retiring_replay;
 mod save;
 use reopen::Reopen;
 
 enum SourceOperation {
     Insertion(Arc<PluginEffectControl>),
     Reopen,
-    Edit(AudioSourceContext),
+    Edit {
+        context: AudioSourceContext,
+        predecessor: Option<EditorPreparationCut>,
+    },
 }
 impl SourceOperation {
     fn insertion(&self) -> Option<&Arc<PluginEffectControl>> {
@@ -47,12 +52,48 @@ impl SourceOperation {
             _ => None,
         }
     }
+    fn edit_context(&self) -> Option<AudioSourceContext> {
+        match self {
+            Self::Edit { context, .. } => Some(*context),
+            _ => None,
+        }
+    }
     fn is_reopen(&self) -> bool {
         matches!(self, Self::Reopen)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetiringSuccessor {
+    binding: Binding,
+    context: AudioSourceContext,
+    predecessor_admitted_through: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct EditorPreparationCut {
+    binding: Binding,
+    admitted_through: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ProviderIdentity {
+    class: [u8; 16],
+    executable_sha256: [u8; 32],
+    info_sha256: [u8; 32],
+}
+
+fn provider_identity(state: &NativeDeviceState) -> Result<ProviderIdentity, String> {
+    let identity = Hosting::saved_identity_on_control(state)?;
+    Ok(ProviderIdentity {
+        class: identity.class.bytes(),
+        executable_sha256: identity.binary.executable_sha256,
+        info_sha256: identity.binary.info_sha256,
+    })
+}
+
 struct Source {
     binding: Binding,
+    provider: Option<ProviderIdentity>,
     owner: ProcessorChainOwner,
     device: u64,
     project_generation: u64,
@@ -169,6 +210,8 @@ pub(super) struct Plugins {
     paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
     editor: Option<editor::EditorOperation>,
+    editor_close: Option<editor_close::EditorClose>,
+    editor_close_ordinal: u64,
     queued_editor_toggle: Option<(Binding, u64)>,
     editor_visibility_cursor: usize,
     next_editor_visibility: Option<std::time::Instant>,
@@ -190,6 +233,8 @@ pub(super) struct Plugins {
     diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
     parameter_poll: parameter_touches::PollSchedule,
     retiring_poll: usize,
+    retiring_replay_capture: Option<retiring_replay::ReplayCapture>,
+    retiring_replay_restore: Option<retiring_replay::ReplayRestore>,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -289,6 +334,7 @@ impl Plugins {
     pub fn output_closed(&mut self) {
         // The relinquished output's Root retains every outstanding loan.
         self.paused_monitor_sources.clear();
+        self.editor_close_output_closed();
         self.close_editor_recording();
         if let Some(parameters) = &mut self.parameters {
             parameters.output_closed();
@@ -388,6 +434,13 @@ impl Plugins {
             .capacity()
             .checked_mul(std::mem::size_of::<Source>())
             .and_then(|n| n.checked_add(monitor_bytes))
+            .and_then(|n| {
+                n.checked_add(
+                    policy
+                        .capacity
+                        .checked_mul(std::mem::size_of::<editor_close::Worker>())?,
+                )
+            })
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
             .and_then(|n| {
@@ -631,6 +684,7 @@ impl Plugins {
                 editor_open_on_insert: false,
                 edit_backlog: false,
                 edit_recovery: None,
+                provider: None,
                 editor_retirement: Default::default(),
                 pending_touch: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -778,6 +832,7 @@ impl Plugins {
             self.output_closed();
             return;
         };
+        self.poll_editor_close(control, context.map(|context| context.project_generation));
         self.poll_editor(control, context, desired);
         self.poll_parameters(control, context);
         self.poll_parameter_conversion(control, context);
@@ -1336,7 +1391,11 @@ fn advance_source_at_progress(
                 }
             }
             if control.native_source_endpoint_installed(source.binding) == Some(true) {
-                return Ok(control.native_source_prepared_state(source.binding));
+                let Some(state) = control.native_source_prepared_state(source.binding) else {
+                    return Ok(None);
+                };
+                source.provider = Some(provider_identity(&state)?);
+                return Ok(Some(state));
             }
         }
         Some(Progress::Failed | Progress::Complete | Progress::Retiring) => {
@@ -1410,6 +1469,7 @@ mod idle_tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            provider: None,
             editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]
@@ -1466,6 +1526,7 @@ mod idle_tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            provider: None,
             editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]

@@ -84,6 +84,11 @@ fn native_effect_save_keeps_pending_mix_publication_and_metadata_alias() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_after_stop_preserves_original_source_for_later_playback() {
+    use hex_session::service::{
+        DeviceAutomationTakeProgress, PluginEditorCloseAdmission as Admission,
+        PluginEditorCloseAttempt,
+    };
+
     let _native = native_fixture();
     let (mut h, files, before) = fixture(Start::Saved);
     let (applied, _) = h.applied(0);
@@ -111,13 +116,72 @@ fn native_effect_save_after_stop_preserves_original_source_for_later_playback() 
         u32::from_le_bytes(captured.component.unwrap()[4..8].try_into().unwrap()),
         4
     );
+    let context = saved
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let original = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let mut next_request = 1;
+    let mut poll_close = |h: &mut ResidentHarness, close: &Arc<PluginEditorCloseAttempt>| {
+        let request_id = next_request;
+        next_request += 1;
+        let event = h.run(Request::PreparePluginEditorClose {
+            request_id,
+            context,
+            attempt: Arc::downgrade(close),
+        });
+        let result = event.device_automation_take_complete.unwrap();
+        assert_eq!(result.request_id, request_id);
+        let DeviceAutomationTakeProgress::ClosePluginEditor(admission) = result.progress else {
+            panic!("unexpected close observation: {:?}", result.progress);
+        };
+        admission
+    };
+    let mut wait_for_hold = |h: &mut ResidentHarness, close: &Arc<PluginEditorCloseAttempt>| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match poll_close(h, close) {
+                Admission::Held {
+                    admitted_edits: false,
+                } => return,
+                Admission::Pending => {}
+                other => panic!("fresh original controller hold: {other:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original editor admission did not become available"
+            );
+        }
+    };
+    let close = Arc::new(PluginEditorCloseAttempt::default());
+    wait_for_hold(&mut h, &close);
+    assert!(close.is_valid());
+
     let mut restored = h.run(Request::RestoreStoppedPlayback);
+    assert!(
+        !close.is_valid(),
+        "admitting stopped restoration invalidates the pre-renewal close"
+    );
     if !restored.stopped_playback_restore_complete {
         restored = restored_terminal(&mut h);
     }
     assert!(restored.error.is_none(), "{:?}", restored.error);
     assert_eq!(restored.state.project, before.project);
     h.applied(applied);
+    let renewed = h.plugin_progress.lock().unwrap().binding.unwrap();
+    assert_ne!(original, renewed);
+    assert_eq!(
+        (original.root, original.instance),
+        (renewed.root, renewed.instance)
+    );
+    let retry = Arc::new(PluginEditorCloseAttempt::default());
+    // The old attempt remains alive. The renewed binding must nevertheless
+    // accept a new token, which proves the old SDK hold was released.
+    wait_for_hold(&mut h, &retry);
+    drop(retry);
+    assert!(!close.is_valid());
     wait(|| h.plugin_completed.load(Acquire) == 0);
     wait(|| {
         h.audio

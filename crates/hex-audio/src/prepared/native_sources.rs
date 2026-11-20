@@ -905,8 +905,33 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native guarded editor write output is closing");
         }
-        self.candidate_root
-            .begin_guarded_editor_write(binding, expected_editor_admission, points)
+        self.candidate_root.begin_guarded_editor_write(
+            binding,
+            expected_editor_admission,
+            points,
+            None,
+        )
+    }
+
+    /// Enqueue a compensating write only while the exact preceding SDK write
+    /// still owns host input. The helper also checks its editor admission
+    /// frontier before applying any supplied prior values.
+    pub fn begin_native_source_guarded_editor_restore_on_control(
+        &mut self,
+        binding: Binding,
+        expected_editor_admission: u64,
+        written: &NativeWorkerControllerQuery,
+        restore: &[(u32, f64)],
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        self.candidate_root.begin_guarded_editor_write(
+            binding,
+            expected_editor_admission,
+            restore,
+            Some(written),
+        )
     }
 
     /// Read the original write's SDK terminal. Source changes can suppress

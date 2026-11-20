@@ -1,7 +1,9 @@
 use super::EditorView;
 use gpui::{App, AppContext, Context, Global, PromptButton, PromptLevel, Window};
-use std::cell::Cell;
+use hex_engine::AudioSourceContext;
+use hex_session::service::{PluginEditorCloseAdmission, PluginEditorCloseAttempt};
 use std::time::Duration;
+use std::{cell::Cell, sync::Arc};
 
 /// One UI-owned close decision. Freeze gesture admission while draining the
 /// existing FIFO, awaiting Session's ordered custody read, and showing consent.
@@ -11,6 +13,7 @@ pub(super) struct AutomationClosePreflight {
     state: PreflightState,
     window: Option<gpui::AnyWindowHandle>,
     update: Option<u64>,
+    vst3: Option<Arc<PluginEditorCloseAttempt>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -33,18 +36,30 @@ enum PreflightState {
         quit: bool,
         generation: u64,
         revision: u64,
-        safe: bool,
+        safety: CloseSafety,
     },
     Dispatching {
         request: u64,
         quit: bool,
         generation: u64,
         revision: u64,
-        safe: bool,
+        safety: CloseSafety,
     },
     Held {
         quit: bool,
+        context: AudioSourceContext,
+        admitted_edits: bool,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CloseSafety {
+    Safe { admitted_edits: bool },
+    AutomationBlocked,
+    EditorTransferring,
+    EditorUnresolved,
+    EditorAdmissionRefused,
+    Stale,
 }
 
 impl AutomationClosePreflight {
@@ -63,21 +78,46 @@ impl AutomationClosePreflight {
     pub(super) fn awaiting_update(&self) -> bool {
         self.update.is_some() && self.blocks_update_approval()
     }
-    pub(super) fn update_safe(&self, id: u64) -> bool {
-        matches!(self.state, PreflightState::Held { .. })
-            && self.update.is_none_or(|expected| expected == id)
+    pub(super) fn update_safe(&self, id: u64, context: AudioSourceContext) -> bool {
+        self.held_for(context) && self.update.is_none_or(|expected| expected == id)
+    }
+
+    fn native_hold_valid(&self) -> bool {
+        self.vst3.as_ref().is_some_and(|owner| owner.is_valid())
+    }
+
+    fn held_for(&self, context: AudioSourceContext) -> bool {
+        matches!(self.state, PreflightState::Held { context: held, .. } if held == context)
+            && self.native_hold_valid()
+    }
+
+    pub(super) fn admitted_vst3_edits(&self) -> bool {
+        matches!(
+            self.state,
+            PreflightState::Held {
+                admitted_edits: true,
+                ..
+            }
+        )
+    }
+
+    pub(super) fn mark_vst3_edits_saved(&mut self) {
+        if let PreflightState::Held { admitted_edits, .. } = &mut self.state {
+            *admitted_edits = false;
+        }
     }
     pub(super) fn cancel_update(&mut self, id: u64) {
         if self.update == Some(id) {
             self.update = None;
             self.state = PreflightState::Idle;
+            self.vst3 = None;
         }
     }
 
     fn observe(
         &mut self,
         request_id: u64,
-        safe: bool,
+        safety: CloseSafety,
         observed_generation: u64,
         observed_revision: u64,
     ) {
@@ -86,7 +126,7 @@ impl AutomationClosePreflight {
             quit,
             generation,
             revision,
-            ..
+            deadline,
         } = self.state
         else {
             return;
@@ -94,12 +134,21 @@ impl AutomationClosePreflight {
         if request_id != request {
             return;
         }
-        self.state = PreflightState::Ready {
-            request,
-            quit,
-            generation,
-            revision,
-            safe: safe && observed_generation == generation && observed_revision == revision,
+        let safety = if observed_generation == generation && observed_revision == revision {
+            safety
+        } else {
+            CloseSafety::Stale
+        };
+        self.state = if safety == CloseSafety::EditorTransferring {
+            PreflightState::Draining { quit, deadline }
+        } else {
+            PreflightState::Ready {
+                request,
+                quit,
+                generation,
+                revision,
+                safety,
+            }
         };
     }
 }
@@ -237,6 +286,7 @@ impl EditorView {
     fn release_automation_close(&mut self, cx: &Context<Self>) {
         let update = self.automation_close_preflight.update.take();
         self.automation_close_preflight.state = PreflightState::Idle;
+        self.automation_close_preflight.vst3 = None;
         if let Some(id) = update {
             self.cancel_update(id, cx);
         }
@@ -285,7 +335,7 @@ impl EditorView {
                     | PreflightState::Waiting { quit: true, .. }
                     | PreflightState::Ready { quit: true, .. }
                     | PreflightState::Dispatching { quit: true, .. }
-                    | PreflightState::Held { quit: true }
+                    | PreflightState::Held { quit: true, .. }
             );
             if quit && !quit_already_pending {
                 quit_refused(cx);
@@ -367,13 +417,20 @@ impl EditorView {
             revision,
             deadline,
         };
+        let attempt = self
+            .automation_close_preflight
+            .vst3
+            .get_or_insert_with(Arc::default);
         if self
             .service
-            .submit(
-                hex_session::service::Request::QueryDeviceAutomationCloseSafety {
-                    request_id: request,
+            .submit(hex_session::service::Request::PreparePluginEditorClose {
+                request_id: request,
+                context: AudioSourceContext {
+                    project_generation: self.project_generation,
+                    editor_revision: revision,
                 },
-            )
+                attempt: Arc::downgrade(attempt),
+            })
             .is_err()
         {
             self.release_automation_close(cx);
@@ -391,11 +448,33 @@ impl EditorView {
         let Some(completion) = event.device_automation_take_complete.as_ref() else {
             return;
         };
-        use hex_session::service::DeviceAutomationTakeProgress as Progress;
-        let safe = event.error.is_none() && completion.progress == Progress::CloseSafe;
+        use hex_session::service::{
+            DeviceAutomationTakeProgress as Progress, RetiringEditorCloseBlocker,
+        };
+        let safety = match (&event.error, &completion.progress) {
+            (
+                None,
+                Progress::ClosePluginEditor(PluginEditorCloseAdmission::Held { admitted_edits }),
+            ) => CloseSafety::Safe {
+                admitted_edits: *admitted_edits,
+            },
+            (None, Progress::ClosePluginEditor(PluginEditorCloseAdmission::Pending)) => {
+                CloseSafety::EditorTransferring
+            }
+            (None, Progress::ClosePluginEditor(PluginEditorCloseAdmission::Refused)) => {
+                CloseSafety::EditorAdmissionRefused
+            }
+            (None, Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Transferring)) => {
+                CloseSafety::EditorTransferring
+            }
+            (None, Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Unresolved)) => {
+                CloseSafety::EditorUnresolved
+            }
+            _ => CloseSafety::AutomationBlocked,
+        };
         self.automation_close_preflight.observe(
             completion.request_id,
-            safe,
+            safety,
             self.project_generation,
             event.state.revision,
         );
@@ -407,7 +486,7 @@ impl EditorView {
             && std::time::Instant::now() >= deadline
         {
             self.release_automation_close(cx);
-            self.error = Some("automation safety check timed out · close cancelled".into());
+            self.error = Some("close safety check timed out · close cancelled".into());
             if quit {
                 quit_refused(cx);
             }
@@ -429,7 +508,7 @@ impl EditorView {
             quit,
             generation,
             revision,
-            safe,
+            safety,
         } = self.automation_close_preflight.state
         {
             let Some(handle) = self.automation_close_preflight.window else {
@@ -445,7 +524,7 @@ impl EditorView {
                 quit,
                 generation,
                 revision,
-                safe,
+                safety,
             };
             let editor = cx.entity();
             let error_editor = editor.clone();
@@ -473,7 +552,7 @@ impl EditorView {
             .detach();
             return true;
         }
-        if let PreflightState::Held { quit } = self.automation_close_preflight.state
+        if let PreflightState::Held { quit, .. } = self.automation_close_preflight.state
             && !self.close_prompt_open
             && !self.update_preparing()
         {
@@ -490,8 +569,9 @@ impl EditorView {
             PreflightState::Draining { quit, .. }
             | PreflightState::Waiting { quit, .. }
             | PreflightState::Ready { quit, .. }
-            | PreflightState::Dispatching { quit, .. } => quit,
-            _ => return false,
+            | PreflightState::Dispatching { quit, .. }
+            | PreflightState::Held { quit, .. } => quit,
+            PreflightState::Idle => return false,
         };
         self.release_automation_close(cx);
         self.error = Some("project worker stopped · close cancelled".into());
@@ -512,7 +592,7 @@ impl EditorView {
             quit,
             generation,
             revision,
-            safe,
+            safety,
         } = self.automation_close_preflight.state
         else {
             return;
@@ -520,7 +600,8 @@ impl EditorView {
         if current != request {
             return;
         }
-        let valid = safe
+        let valid = matches!(safety, CloseSafety::Safe { .. })
+            && self.automation_close_preflight.native_hold_valid()
             && self.project_generation == generation
             && self
                 .state
@@ -533,25 +614,46 @@ impl EditorView {
             && !self.device_gesture_pending();
         if !valid {
             self.release_automation_close(cx);
-            if !safe {
+            if matches!(safety, CloseSafety::AutomationBlocked | CloseSafety::Stale) {
                 self.probe_failed_plugin_automation();
             }
-            self.error = Some(
-                "automation take needs recovery or pending work changed · close cancelled".into(),
-            );
+            let reason = match safety {
+                CloseSafety::EditorUnresolved => {
+                    "original vst3 editor changes need recovery · close cancelled"
+                }
+                CloseSafety::EditorAdmissionRefused | CloseSafety::Safe { .. } => {
+                    "vst3 editor or project changed · close cancelled"
+                }
+                _ => "automation take needs recovery or pending work changed · close cancelled",
+            };
+            self.error = Some(reason.into());
             if quit {
                 quit_refused(cx);
             }
             cx.notify();
             return;
         }
-        self.automation_close_preflight.state = PreflightState::Held { quit };
+        self.automation_close_preflight.state = PreflightState::Held {
+            quit,
+            context: AudioSourceContext {
+                project_generation: generation,
+                editor_revision: revision,
+            },
+            admitted_edits: matches!(
+                safety,
+                CloseSafety::Safe {
+                    admitted_edits: true
+                }
+            ),
+        };
         if self.automation_close_preflight.update.is_some() {
             self.reconcile_update_ready(window, cx);
             cx.notify();
             return;
         }
-        if self.requires_close_confirmation(cx) {
+        if self.requires_close_confirmation(cx)
+            || self.automation_close_preflight.admitted_vst3_edits()
+        {
             self.show_close_prompt(window, cx, quit);
         } else if self.prepare_update_quit(false, cx) {
             // Keep the admission freeze until update preparation succeeds or fails.
@@ -571,7 +673,7 @@ impl EditorView {
     /// Join the session and export workers within [`QUIT_SHUTDOWN_BOUND`]
     /// before a confirmed quit. A timeout is logged and quitting continues;
     /// the workers stay signalled.
-    fn shutdown_service_for_quit(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn shutdown_service_for_quit(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.service.shutdown(QUIT_SHUTDOWN_BOUND) {
             let error = error.to_string();
             eprintln!("hex: {error}");
@@ -617,6 +719,8 @@ impl EditorView {
             "discard unsaved work?",
             Some(if self.export_pending {
                 "pending edits or project changes will be discarded. an export may not finish."
+            } else if self.automation_close_preflight.admitted_vst3_edits() {
+                "vst3 editor changes may be unsaved."
             } else {
                 "pending edits or project changes will be discarded."
             }),
@@ -630,14 +734,23 @@ impl EditorView {
         // Keep the prompt's editor alive until its answer is handled. Closing
         // the confirmed window must not depend on a weak entity update succeeding.
         let editor = cx.entity();
+        let error_editor = editor.clone();
         cx.spawn(async move |_, cx| {
-            let discard = answer.await.ok() == Some(1);
+            let discard_requested = answer.await.ok() == Some(1);
             if let Err(error) = cx.update_window(handle, move |_, window, cx| {
-                let preparing_update = editor.update(cx, |view, cx| {
+                let (discard, preparing_update) = editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
+                    let discard = discard_requested
+                        && view.state.as_ref().is_some_and(|state| {
+                            view.automation_close_preflight
+                                .held_for(AudioSourceContext {
+                                    project_generation: view.project_generation,
+                                    editor_revision: state.revision,
+                                })
+                        });
                     if discard {
                         if view.update_armed() {
-                            return view.prepare_update_quit(true, cx);
+                            return (true, view.prepare_update_quit(true, cx));
                         }
                         view.cancel_plugin_effect();
                         view.cancel_browser_sample_playback();
@@ -653,9 +766,13 @@ impl EditorView {
                         if quit {
                             quit_refused(cx);
                         }
+                        if discard_requested {
+                            view.error =
+                                Some("vst3 editor or project changed · close cancelled".into());
+                        }
                         cx.notify();
                     }
-                    false
+                    (discard, false)
                 });
                 // Release the prompt's extra handle inside this app update,
                 // so removing the last window also flushes editor/Service drops.
@@ -670,10 +787,12 @@ impl EditorView {
                 // A window that was already removed needs no second close.
                 // Other lifecycle failures must be observable during diagnosis.
                 eprintln!("hex: could not handle close prompt: {error}");
-                if quit {
-                    // Keep hex running rather than leave an OS request unanswered.
-                    let _ = cx.update(|cx| quit_refused(cx));
-                }
+                let _ = cx.update(|cx| {
+                    error_editor.update(cx, |view, cx| view.release_automation_close(cx));
+                    if quit {
+                        quit_refused(cx);
+                    }
+                });
             }
         })
         .detach();
@@ -682,7 +801,10 @@ impl EditorView {
 
 #[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
-    use super::{AutomationClosePreflight, PreflightState, requires_close_confirmation};
+    use super::{
+        Arc, AudioSourceContext, AutomationClosePreflight, CloseSafety, PreflightState,
+        requires_close_confirmation,
+    };
 
     #[test]
     fn automation_preflight_correlates_responses_and_keeps_admission_frozen() {
@@ -696,37 +818,111 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
         };
         assert!(gate.frozen());
-        gate.observe(6, true, 2, 3);
+        gate.observe(
+            6,
+            CloseSafety::Safe {
+                admitted_edits: false,
+            },
+            2,
+            3,
+        );
         assert!(matches!(gate.state, PreflightState::Waiting { .. }));
-        gate.observe(7, true, 2, 4);
+        gate.observe(
+            7,
+            CloseSafety::Safe {
+                admitted_edits: false,
+            },
+            2,
+            4,
+        );
         assert!(matches!(
             gate.state,
             PreflightState::Ready {
-                safe: false,
+                safety: CloseSafety::Stale,
                 quit: true,
                 ..
             }
         ));
         assert!(gate.frozen());
         gate.state = PreflightState::Idle;
-        gate.observe(7, true, 2, 3);
+        gate.observe(
+            7,
+            CloseSafety::Safe {
+                admitted_edits: false,
+            },
+            2,
+            3,
+        );
         assert!(!gate.frozen());
     }
 
     #[test]
-    fn update_readiness_belongs_to_one_update_and_cancellation_releases_it() {
+    fn retiring_editor_close_retries_under_the_same_deadline() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut gate = AutomationClosePreflight {
-            update: Some(7),
-            state: PreflightState::Held { quit: false },
+            state: PreflightState::Waiting {
+                request: 7,
+                quit: true,
+                generation: 2,
+                revision: 3,
+                deadline,
+            },
             ..Default::default()
         };
-        assert!(gate.update_safe(7));
-        assert!(!gate.update_safe(8));
+        gate.observe(7, CloseSafety::EditorTransferring, 2, 3);
+        assert!(
+            matches!(gate.state, PreflightState::Draining { quit: true, deadline: original } if original == deadline)
+        );
+        gate.observe(
+            7,
+            CloseSafety::Safe {
+                admitted_edits: false,
+            },
+            2,
+            3,
+        );
+        assert!(matches!(gate.state, PreflightState::Draining { .. }));
+        gate.state = PreflightState::Waiting {
+            request: 8,
+            quit: true,
+            generation: 2,
+            revision: 3,
+            deadline,
+        };
+        gate.observe(8, CloseSafety::EditorUnresolved, 2, 3);
+        assert!(matches!(
+            gate.state,
+            PreflightState::Ready {
+                safety: CloseSafety::EditorUnresolved,
+                ..
+            }
+        ));
+        assert!(gate.frozen());
+    }
+
+    #[test]
+    fn update_readiness_belongs_to_one_update_and_cancellation_releases_it() {
+        let context = AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 3,
+        };
+        let mut gate = AutomationClosePreflight {
+            update: Some(7),
+            vst3: Some(Arc::default()),
+            state: PreflightState::Held {
+                quit: false,
+                context,
+                admitted_edits: false,
+            },
+            ..Default::default()
+        };
+        assert!(gate.update_safe(7, context));
+        assert!(!gate.update_safe(8, context));
         gate.cancel_update(8);
         assert!(gate.frozen());
         gate.cancel_update(7);
         assert!(!gate.frozen());
-        assert!(!gate.update_safe(7));
+        assert!(!gate.update_safe(7, context));
     }
 
     #[test]
@@ -861,6 +1057,80 @@ mod window_tests {
     }
 
     #[gpui::test]
+    fn unresolved_retiring_editor_cancels_quit_and_keeps_session_open(cx: &mut TestAppContext) {
+        use hex_session::service::{DeviceAutomationTakeProgress, RetiringEditorCloseBlocker};
+        let (handle, editor) = dirty_replaced_window(cx);
+        let request = cx
+            .update_window(handle, |_, window, cx| {
+                editor.update(cx, |view, cx| {
+                    view.request_quit(window, cx);
+                    assert!(view.tick_automation_close(cx));
+                    let PreflightState::Waiting {
+                        request,
+                        quit: true,
+                        ..
+                    } = view.automation_close_preflight.state
+                    else {
+                        panic!("quit did not query the Session");
+                    };
+                    request
+                })
+            })
+            .unwrap();
+        let mut event = next_editor_service_event(&editor, cx);
+        let completion = event.device_automation_take_complete.as_mut().unwrap();
+        assert_eq!(completion.request_id, request);
+        completion.progress = DeviceAutomationTakeProgress::CloseRetiringEditor(
+            RetiringEditorCloseBlocker::Unresolved,
+        );
+        editor.update(cx, |view, cx| {
+            view.receive(event);
+            view.tick_automation_close(cx);
+        });
+        settle_close(cx);
+        assert_eq!(cx.windows().len(), 1);
+        assert!(!cx.has_pending_prompt());
+        editor.read_with(cx, |view, _| {
+            assert!(!view.automation_close_preflight.frozen());
+            assert_eq!(
+                view.error.as_deref(),
+                Some("original vst3 editor changes need recovery · close cancelled")
+            );
+            view.service
+                .submit(Request::QueryDeviceAutomationCloseSafety { request_id: 1003 })
+                .unwrap();
+        });
+        let response = next_editor_service_event(&editor, cx);
+        assert_eq!(
+            response.device_automation_take_complete.unwrap().request_id,
+            1003
+        );
+    }
+
+    #[gpui::test]
+    fn invalidated_vst3_admission_keeps_the_window_open_after_discard(cx: &mut TestAppContext) {
+        let (handle, editor) = dirty_replaced_window(cx);
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| view.request_quit(window, cx));
+        })
+        .unwrap();
+        settle_close(cx);
+        assert!(cx.has_pending_prompt());
+        let attempt = editor.read_with(cx, |view, _| {
+            let owner = view.automation_close_preflight.vst3.as_ref().unwrap();
+            owner.invalidate();
+            Arc::downgrade(owner)
+        });
+        cx.simulate_prompt_answer("discard");
+        settle_close(cx);
+        assert!(attempt.upgrade().is_none());
+        assert_eq!(cx.windows().len(), 1);
+        assert!(editor.read_with(cx, |view, _| {
+            view.error.as_deref() == Some("vst3 editor or project changed · close cancelled")
+        }));
+    }
+
+    #[gpui::test]
     fn automation_close_freezes_admission_until_prompt_cancellation(cx: &mut TestAppContext) {
         let (handle, editor) = dirty_replaced_window(cx);
         cx.update_window(handle, |_, window, cx| {
@@ -888,14 +1158,16 @@ mod window_tests {
         .unwrap();
         settle_close(cx);
         assert!(cx.has_pending_prompt());
-        editor.read_with(cx, |view, _| {
-            assert!(view.automation_close_preflight.frozen())
+        let attempt = editor.read_with(cx, |view, _| {
+            assert!(view.automation_close_preflight.frozen());
+            Arc::downgrade(view.automation_close_preflight.vst3.as_ref().unwrap())
         });
         cx.simulate_prompt_answer("cancel");
         settle_close(cx);
         editor.read_with(cx, |view, _| {
             assert!(!view.automation_close_preflight.frozen())
         });
+        assert!(attempt.upgrade().is_none());
         assert_eq!(cx.windows().len(), 1);
         editor.update(cx, |view, cx| {
             let revision = view.state.as_ref().unwrap().revision;
@@ -908,8 +1180,14 @@ mod window_tests {
             };
             assert!(view.tick_automation_close(cx));
             assert!(!view.automation_close_preflight.frozen());
-            view.automation_close_preflight
-                .observe(1000, true, view.project_generation, revision);
+            view.automation_close_preflight.observe(
+                1000,
+                CloseSafety::Safe {
+                    admitted_edits: false,
+                },
+                view.project_generation,
+                revision,
+            );
             assert!(
                 !view.automation_close_preflight.frozen(),
                 "late safe response stays retired"
@@ -921,8 +1199,12 @@ mod window_tests {
                 revision,
                 deadline: Instant::now() + Duration::from_secs(1),
             };
-            view.automation_close_preflight
-                .observe(1001, false, view.project_generation, revision);
+            view.automation_close_preflight.observe(
+                1001,
+                CloseSafety::AutomationBlocked,
+                view.project_generation,
+                revision,
+            );
             view.tick_automation_close(cx);
         });
         settle_close(cx);
