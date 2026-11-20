@@ -118,7 +118,9 @@ fn same_devices(
 ) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(a, b)| {
-            a.owner == b.owner
+            a.foreign_processor().is_none()
+                && b.foreign_processor().is_none()
+                && a.owner == b.owner
                 && a.device_id == b.device_id
                 && a.device_type == b.device_type
                 && a.bypassed == b.bypassed

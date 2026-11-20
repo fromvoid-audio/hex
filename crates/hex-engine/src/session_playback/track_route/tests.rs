@@ -140,6 +140,38 @@ fn one_resident_leaf_enters_existing_group_and_other_edits_refuse() {
         assert!(old.track_faders.iter().all(|fader| !fader.active()));
     }
 }
+#[test]
+fn route_only_device_proof_refuses_foreign_metadata_without_a_binding() {
+    let (editor, media, _, _) = fixture();
+    let revision = PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(crate::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let native = revision.arrangement().tracks()[2].device_chain[0].clone();
+    assert!(same_devices(
+        std::slice::from_ref(&native),
+        std::slice::from_ref(&native)
+    ));
+    let mut foreign = native.clone();
+    foreign.definition = Some(hex_lattice::PreparedProcessorFactory::Foreign(
+        hex_lattice::PreparedForeignProcessor::new(8, 0, 16).unwrap(),
+    ));
+    assert!(foreign.foreign_processor().unwrap().binding().is_none());
+    for (old, next) in [
+        (&native, &foreign),
+        (&foreign, &native),
+        (&foreign, &foreign),
+    ] {
+        assert!(!same_devices(
+            std::slice::from_ref(old),
+            std::slice::from_ref(next)
+        ));
+    }
+}
+
 fn hex_engine_delay() -> hex_lattice_contract::NativeDeviceState {
     use hex_lattice_contract::NativeDeviceMetadata;
     hex_devices::delay::DEFINITION.default_state().unwrap()
