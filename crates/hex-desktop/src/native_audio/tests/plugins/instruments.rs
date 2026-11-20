@@ -11,6 +11,8 @@ mod track_duplicate;
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
 fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparation() {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
     const CHILD: &str = "HEX_TEST_HOSTED_REPLACEMENT_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
@@ -139,7 +141,17 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
 
     h.run(Request::InsertPluginEffect(replacement()));
     let mut installed = None;
-    let mut consent_offered = false;
+    let mut confirmed = None;
+    let mut faded = false;
+    let position = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+    };
     wait(|| {
         h.pump();
         if let Ok(event) = h.service.try_event() {
@@ -149,35 +161,55 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
                 assert_eq!(source(&h), predecessor);
                 audible(&h);
                 panic!(
-                    "hosted replacement refused: {error}; consent={consent_offered}; receipt={:?}",
-                    event.device_insert_complete
+                    "hosted replacement refused: {error}; confirmed={confirmed:?}; receipt={:?}",
+                    event.device_insert_complete,
                 );
             }
             if let Some(offer) = event.device_insert_confirmation.as_ref() {
-                consent_offered = true;
+                assert!(confirmed.is_none());
+                assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
                 assert_eq!(event.state.project, before.state.project);
                 assert_eq!(event.state.revision, before.state.revision);
                 assert_eq!(source(&h), predecessor);
                 audible(&h);
+                let (submitted, resume) = h.probe_next_submitted_device_insert();
                 assert!(offer.proceed());
+                let queued = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+                assert_eq!(queued.context, offer.submission().context);
+                assert_eq!(queued.output_identity, offer.submission().output_identity);
+                assert_ne!(queued.audio_revision, offer.submission().audio_revision);
+                assert_eq!(source(&h), predecessor);
+                resume.send(()).unwrap();
+                confirmed = Some(queued);
             }
             if !event.plugin_effect_complete.is_empty() {
                 installed = Some(event);
                 return true;
             }
         }
-        h.render_plugin_block();
+        let start = position(&h);
+        let pcm = h.render_plugin_block();
+        if confirmed.is_some() && !faded && position(&h) == start + 128 {
+            assert_eq!(source(&h), predecessor);
+            assert!(
+                pcm[..127]
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 0.001)
+            );
+            assert!(pcm[127..].iter().all(|&frame| frame == [0.0; 2]));
+            faded = true;
+        }
         state::edits::workers_idle(&h);
         false
     });
     let installed = installed.unwrap();
-    assert!(consent_offered, "a rolling replacement needs consent");
+    assert!(faded, "a rolling replacement must fade the original source");
     assert!(installed.plugin_effect_complete[0].accepted);
+    assert_eq!(installed.status.as_deref(), Some("device replaced"));
     let receipt = installed.device_insert_complete.unwrap();
-    assert_eq!(
-        receipt.outcome,
-        hex_session::service::DeviceInsertOutcome::Installed
-    );
+    assert_eq!(Some(receipt.submission), confirmed);
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
     assert_eq!(source(&h).audio_revision, receipt.submission.audio_revision);
     assert_eq!(source(&h).context, receipt.submission.context);
     assert_eq!(source(&h).output_identity, predecessor.output_identity);
