@@ -427,6 +427,7 @@ impl EditorView {
                 GraphEditOperation::RemoveDevice => "interrupt playback to remove this device?",
                 GraphEditOperation::MoveDevice => "interrupt playback to move devices?",
                 GraphEditOperation::MoveTrack => "interrupt playback to move this track?",
+                GraphEditOperation::PowerDevice => "interrupt playback to change device power?",
                 GraphEditOperation::RemoveTrack => "interrupt playback to remove this track?",
             };
             let answer = window.prompt(

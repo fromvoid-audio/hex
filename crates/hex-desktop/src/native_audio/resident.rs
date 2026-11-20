@@ -1260,6 +1260,7 @@ impl NativeAudioSink {
             let policy = match policy {
                 ResidentPublicationPolicy::DeviceInsert {
                     predecessor: expected,
+                    stopped_fence,
                     ..
                 } => {
                     let source = control.status.recording_source().filter(|source| {
@@ -1275,6 +1276,24 @@ impl NativeAudioSink {
                             error: "device insert lost its installed source".into(),
                         });
                     };
+                    if let Some(stopped) = stopped_fence
+                        && (control
+                            .status
+                            .paused_input_interval()
+                            .is_none_or(|(source, _)| source != predecessor)
+                            || stopped.output_identity != output_identity
+                            || stopped.active_audio_revision != fence.expected_active_revision()
+                            || stopped.route_generation != fence.route_state_generation()
+                            || stopped.admitted_command_ticket != fence.admitted_command_ticket()
+                            || stopped.output_fault_epoch != fence.output_fault_epoch()
+                            || stopped.consumed_stop_generation != fence.consumed_stop_generation())
+                    {
+                        return Err(ResidentPublicationRefusal {
+                            kind: hex_session::service::ResidentPublicationFailure::Other,
+                            playback,
+                            error: "stopped device power source changed during preparation".into(),
+                        });
+                    }
                     hex_audio::prepared::PublicationPolicy::DeviceInsert { predecessor, fence }
                 }
                 ResidentPublicationPolicy::ArrangementEdit => {
