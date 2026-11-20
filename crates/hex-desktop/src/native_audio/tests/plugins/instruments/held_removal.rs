@@ -76,7 +76,7 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
     assert!(before.plugin_effect_complete[0].accepted);
     h.applied(applied);
     h.enable_confirmed_device_inserts();
-    let control = &h.audio.as_ref().unwrap().control;
+    let control = &mut h.audio.as_mut().unwrap().control;
     control.set_audio_diagnostics(hex_audio::audio_diagnostics::AudioDiagnosticsFlags::ALL);
     control.command(PlaybackCommand::Play).unwrap();
     for _ in 0..7 {
