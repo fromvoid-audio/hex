@@ -105,6 +105,79 @@ fn resident_reparent_waits_for_exact_install_and_commits_one_history_step() {
 }
 
 #[test]
+fn only_cross_parent_track_gap_waits_for_exact_install() {
+    let (service, fixture, original, track, group) = route_fixture();
+    submit(&service, &original, track, group);
+    let grouped = install_candidate(&service, &fixture).state;
+    let sibling = grouped
+        .project
+        .tracks()
+        .iter()
+        .find(|row| row.id() != track && row.parent_group() == Some(group))
+        .unwrap()
+        .id();
+    let drop_into_gap = |state: &ViewState, before| {
+        service
+            .submit(Request::ReorderTracks {
+                project_generation: 0,
+                revision: state.revision,
+                tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                before,
+            })
+            .unwrap();
+        receive(&service)
+    };
+    let order = |state: &ViewState| {
+        state
+            .project
+            .tracks()
+            .iter()
+            .map(|row| row.id())
+            .collect::<Vec<_>>()
+    };
+
+    let reordered = drop_into_gap(&grouped, Some(sibling));
+    assert!(reordered.request_complete);
+    assert!(reordered.device_insert_complete.is_none());
+    assert_eq!(reordered.state.revision, grouped.revision + 1);
+    assert_eq!(
+        reordered.state.project.track(track).unwrap().parent_group(),
+        Some(group)
+    );
+    assert_eq!(order(&reordered.state), [group, track, sibling]);
+
+    let pending = drop_into_gap(&reordered.state, None);
+    assert!(
+        !pending.request_complete,
+        "a gap outside the Group must wait for audio"
+    );
+    assert_eq!(
+        pending.status.as_deref(),
+        Some("track move pending · waiting for audio")
+    );
+    assert_eq!(pending.state.project, reordered.state.project);
+    assert_eq!(pending.state.revision, reordered.state.revision);
+    let installed = install_candidate(&service, &fixture);
+    assert_eq!(installed.state.revision, reordered.state.revision + 1);
+    assert_eq!(
+        installed.state.project.track(track).unwrap().parent_group(),
+        None
+    );
+    assert_eq!(order(&installed.state), [group, sibling, track]);
+
+    let pending = drop_into_gap(&installed.state, Some(sibling));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, installed.state.project);
+    let entered = install_candidate(&service, &fixture);
+    assert_eq!(entered.state.revision, installed.state.revision + 1);
+    assert_eq!(
+        entered.state.project.track(track).unwrap().parent_group(),
+        Some(group)
+    );
+    assert_eq!(order(&entered.state), [group, track, sibling]);
+}
+
+#[test]
 fn route_terminals_refuse_without_committing_the_candidate() {
     for (state, outcome) in [
         (CANCELLED, DeviceInsertOutcome::Cancelled),
