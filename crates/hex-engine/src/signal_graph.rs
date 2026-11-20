@@ -1,6 +1,7 @@
 //! Typed production signal topology and control-prepared compensation ownership.
 use crate::{Frame, Invalid, Project, Track, compensation::*};
 mod append_latency;
+mod group_reroute;
 mod latency_observation;
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
@@ -2059,47 +2060,6 @@ impl SignalRuntime {
     }
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
-    }
-
-    /// A grouped graph with latency only in Main owns no pre-Main delay PCM.
-    /// The route proof separately checks the unchanged processor chains.
-    pub(crate) fn group_route_main_delay_only(&self) -> bool {
-        let Some(&last_main_device) = self.graph.main_devices.last() else {
-            return false;
-        };
-        let output_latency = self.graph.plan.nodes()[last_main_device].output_arrival_frames;
-        output_latency != 0
-            && self.horizon() == output_latency
-            && self.graph.main_input_arrival() == 0
-            && self.graph.supports_closed_compensated_audio_groups()
-            && self
-                .graph
-                .tracks
-                .iter()
-                .all(|track| track.audio_feeds.is_empty())
-            && self
-                .graph
-                .pre_main_edges
-                .iter()
-                .all(|&edge| self.graph.plan.edges()[edge].delay_frames == 0)
-            && Arc::ptr_eq(&self.graph, &self.delay_graph)
-            && self.delays.is_closed()
-    }
-
-    pub(crate) fn can_copy_group_route_stamps_from(&self, previous: &Self) -> bool {
-        self.group_route_main_delay_only()
-            && previous.group_route_main_delay_only()
-            && self.horizon() == previous.horizon()
-            && previous.delays.history_ready()
-    }
-
-    pub(crate) fn copy_group_route_stamps_from(&mut self, previous: &Self) -> Result<(), Invalid> {
-        if !self.can_copy_group_route_stamps_from(previous) {
-            return Err(Invalid("group route cannot carry main transport history"));
-        }
-        self.delays
-            .copy_stamp_history_from(&previous.delays)
-            .map_err(error)
     }
 
     /// Whether the bounded edge table holds any PCM for the departing owner.

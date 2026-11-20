@@ -8,7 +8,7 @@ use super::{
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
 use hex_lattice_contract::NativeDeviceMetadata;
-use hex_project::ReturnId;
+use hex_project::{ReturnId, TrackId};
 
 #[derive(Clone, Copy)]
 pub(super) struct ReturnFade {
@@ -173,8 +173,13 @@ impl PendingNativeRemoval {
         self.runtime == previous.capture_runtime && self.epoch == previous.capture_epoch
     }
 
-    pub(super) fn matches_group_reroute(self, previous: &SessionPlayback) -> bool {
-        matches!(self.transition, RemovalTransition::Route(_)) && self.matches(previous)
+    pub(super) fn group_reroute_track(self, previous: &SessionPlayback) -> Option<TrackId> {
+        match self.transition {
+            RemovalTransition::Route(index) if self.matches(previous) => {
+                previous.routes.get(index).map(|route| route.id)
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {

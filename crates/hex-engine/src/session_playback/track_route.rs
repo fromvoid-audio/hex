@@ -1,8 +1,8 @@
 //! One Resident Arrangement leaf changes its route to Main or an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
-//! Group and Main processors stay on their existing clocks. When only Main
-//! has delay, copy its transport stamps without retaining pre-Main edge data.
+//! Group and Main processors stay on their existing clocks. A supported
+//! compensated route waits for the departing output's aligned PCM to drain.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
@@ -35,6 +35,7 @@ impl SessionPlayback {
             || old.loop_region != new.loop_region
             || old.master_gain != new.master_gain
             || main_latency != new.main_latency_frames()
+            || old_graph.main_input_arrival() != new_graph.main_input_arrival()
             || !old.midi_routing.is_empty()
             || !new.midi_routing.is_empty()
             || self.main_chain.len() != previous.main_chain.len()
@@ -110,6 +111,10 @@ impl SessionPlayback {
             }
         }
         let (from, to) = changed?;
+        if old_graph.main_input_arrival() != 0 {
+            let track = old.tracks().get(from)?.canonical_track_id()?;
+            new_graph.aligned_group_reroute_edges_from(old_graph, track)?;
+        }
         // The one row shift may move other indices without reordering the
         // other tracks. Reject a compound edit before staging any fader.
         let other_old_ids = old
@@ -143,7 +148,8 @@ impl SessionPlayback {
                     && ((runtime.horizon() == 0
                         && graph.supports_closed_group_stream()
                         && graph.supports_closed_compensated_audio_groups())
-                        || runtime.group_route_main_delay_only())
+                        || runtime.group_route_main_delay_only()
+                        || runtime.group_route_upstream_delay())
             }
         };
         supported.then_some(graph)
