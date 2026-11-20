@@ -227,7 +227,7 @@ pub use edit::{
     Command, Created, InstrumentAssetOwner, InstrumentLoadPlacement, MidiNoteInsert,
     MidiNoteUpdate, TrackDeviceSlot,
 };
-pub use history::{Editor, SampleRateHistoryAction, StagedProjectEdit};
+pub use history::{Editor, SampleRateHistoryAction, StagedProjectEdit, StagedProjectHistory};
 mod import_existing;
 pub use import_existing::ExistingAudioPlacement;
 pub use instrument_history::{
