@@ -4886,8 +4886,19 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         let staged = h.next();
         assert!(!staged.request_complete);
         assert_eq!(staged.state.project, previous.project);
-        assert_eq!(h.render(), [[0.25; 2]; 64]);
-        let installed = h.next();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let installed = loop {
+            assert_eq!(h.render(), [[0.25; 2]; 64]);
+            h.pump();
+            if let Ok(event) = h.service.try_event() {
+                break event;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "compensated edit did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
         assert!(installed.device_insert_confirmation.is_none());
         assert_eq!(
             installed.device_insert_complete.unwrap().outcome,
