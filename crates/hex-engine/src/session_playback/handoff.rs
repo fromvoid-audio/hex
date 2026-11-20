@@ -5241,17 +5241,20 @@ impl SessionPlayback {
                         .has_continued_source(transfer, origin.source)
                 })
             });
+            let moved_sine = if let Some(origin) = release.source_origin.as_mut()
+                && analytic_move.is_some_and(|movement| origin.source == movement.source_id)
+            {
+                origin.moved_sine = true;
+                true
+            } else {
+                false
+            };
             let audio_plan = shared_sources::plan_release_audio_owner(
                 release,
                 previous,
                 self.revision.as_ref(),
                 &analytic_owner_matches,
-                source_effects_continue
-                    || analytic_move.is_some_and(|movement| {
-                        release
-                            .source_origin
-                            .is_some_and(|origin| origin.source == movement.source_id)
-                    }),
+                source_effects_continue || moved_sine,
             )?;
             let Some(old_index) = audio_plan.old_receiver else {
                 continue;

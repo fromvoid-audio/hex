@@ -833,10 +833,9 @@ pub(super) fn plan_release_audio_owner(
     // A compatible source effect stage has already verified the explicit
     // prepared generator. Keep its held voices on the new source input;
     // a dry detached copy would bypass the transferred effect history.
-    // A moved single-contributor Sine can still be releasing a note from
-    // its previous Track. On later publications, follow the real source
-    // receiver when that exact instrument is still in the same direct slot.
-    let retained_sine_move = origin.receiver != release.track_id
+    // A moved Sine's captured note follows its proven single-contributor
+    // source while that instrument continues in the same direct slot.
+    let retained_sine_move = origin.moved_sine
         && current_receiver.is_some_and(|receiver| {
             let old = &previous.revision.arrangement().tracks()[old_receiver];
             let new = &candidate.arrangement().tracks()[receiver];
