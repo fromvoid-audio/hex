@@ -9751,6 +9751,11 @@ fn run_worker(
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
+                    let redo = matches!(request, Request::Redo);
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
                     let admission = export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, prepared)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
@@ -9761,15 +9766,27 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     );
+                    let mut pending_history = None;
                     let result = events
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
                         .and_then(|sink| {
+                            pending_history = session.stage_resident_move_history(
+                                redo,
+                                context,
+                                sink,
+                                admission,
+                                resident_snapshot.as_ref(),
+                                request_document_intent,
+                            )?;
+                            if pending_history.is_some() {
+                                return Ok(None);
+                            }
                             session.history_resident_snapshot(
-                                matches!(request, Request::Redo),
+                                redo,
                                 hex_engine::AudioSourceContext {
-                                    project_generation,
                                     editor_revision: revision.saturating_add(1),
+                                    ..context
                                 },
                                 sink,
                                 admission,
@@ -9782,6 +9799,11 @@ fn run_worker(
                             replacement_revision = Some(Arc::clone(&snapshot.prepared));
                             resident_snapshot = Some(snapshot);
                             status = Some("history committed".into());
+                        }
+                        Ok(None) if pending_history.is_some() => {
+                            pending_device_insert = pending_history;
+                            request_complete = false;
+                            status = Some("history pending · waiting for audio".into());
                         }
                         Ok(None) => status = Some("no history change".into()),
                         Err(reason) => error = Some(reason.to_string()),
