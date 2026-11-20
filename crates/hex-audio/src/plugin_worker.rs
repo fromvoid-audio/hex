@@ -124,15 +124,15 @@ fn live_poll_wait(
     }
 }
 
-// Poll within roughly one thirty-second of an admitted native quantum,
-// retaining the original slice for fast or small quanta. This executes once
-// on the transport worker and never schedules from the callback.
+// Give active workers more pickup opportunities under scheduling contention
+// by polling at most one sixty-fourth of a native quantum, subject to the
+// existing wait bounds. The quiet-window backoff still owns idle cadence.
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn native_active_poll(quantum: u16, sample_rate: f64) -> Duration {
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return LIVE_POLL;
     }
-    let micros = f64::from(quantum) * (1_000_000.0 / 32.0) / sample_rate;
+    let micros = f64::from(quantum) * (1_000_000.0 / 64.0) / sample_rate;
     Duration::from_micros(micros.clamp(50.0, 250.0) as u64)
 }
 
@@ -1409,11 +1409,9 @@ mod tests {
 
     #[test]
     fn native_active_poll_tracks_the_admitted_quantum_with_bounded_waits() {
-        assert_eq!(
-            native_active_poll(256, 44_100.0),
-            Duration::from_micros(181)
-        );
-        assert_eq!(native_active_poll(256, 96_000.0), Duration::from_micros(83));
+        assert_eq!(native_active_poll(256, 44_100.0), Duration::from_micros(90));
+        assert_eq!(native_active_poll(256, 48_000.0), Duration::from_micros(83));
+        assert_eq!(native_active_poll(256, 96_000.0), LIVE_POLL);
         assert_eq!(native_active_poll(64, 96_000.0), LIVE_POLL);
         assert_eq!(native_active_poll(256, 8_000.0), Duration::from_micros(250));
     }
