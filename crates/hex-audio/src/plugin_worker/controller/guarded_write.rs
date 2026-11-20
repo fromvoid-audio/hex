@@ -87,7 +87,7 @@ impl Reply {
 
 impl NativeWorker {
     /// Serialize one bounded write on the exact source's existing worker.
-    /// The token grants no authority to capture or modify canonical state.
+    /// Only an applied terminal may subsequently sequence a state capture.
     pub fn begin_guarded_editor_write_on_control(
         &mut self,
         expected_editor_admission: u64,
@@ -115,5 +115,19 @@ impl NativeWorker {
                 .guarded_write
                 .ok_or("native guarded editor write terminal differs"),
         }
+    }
+
+    pub(crate) fn guarded_write_ordinal(
+        &self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NonZeroU64, &'static str> {
+        if request.binding != self.binding
+            || request.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
+        {
+            return Err("native guarded editor write source differs");
+        }
+        request
+            .parameter_ordinal
+            .ok_or("native controller operation kind differs")
     }
 }

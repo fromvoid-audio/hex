@@ -277,6 +277,127 @@ fn revoked_worker_never_starts_a_queued_guarded_editor_write_during_stopped_read
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn guarded_capture_follows_only_the_latest_applied_write_on_the_original_worker() {
+    use crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress as Write;
+    use NativeWorkerGuardedCaptureProgress as Capture;
+
+    const NAME: &str = "plugin_worker::capture::tests::controller::guarded_capture_follows_only_the_latest_applied_write_on_the_original_worker";
+    if fixture_child(147, NAME) {
+        return;
+    }
+
+    fn retry<T>(mut operation: impl FnMut() -> Result<T, &'static str>) -> T {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match operation() {
+                Ok(value) => return value,
+                Err(
+                    "native controller mailbox is busy"
+                    | "native capture mailbox is busy"
+                    | "native parameter mailbox is busy",
+                ) => {}
+                Err(reason) => panic!("{reason}"),
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+    }
+
+    let instance = original_instance();
+    let child = instance.child_id_on_control();
+    let (mut owner, endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let (mut other, _other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let guarded = |owner: &mut NativeWorker, expected| {
+        let token = retry(|| owner.begin_guarded_editor_write_on_control(expected, &[(7, 0.75)]));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let terminal = owner.poll_guarded_editor_write_on_control(&token).unwrap();
+            if terminal != Write::Pending {
+                break (token, terminal);
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+    };
+
+    let (conflict, terminal) = guarded(&mut owner, 1);
+    assert_eq!(terminal, Write::Conflict);
+    assert!(
+        owner
+            .begin_state_capture_after_guarded_write_on_control(&conflict)
+            .is_err()
+    );
+    let (applied, terminal) = guarded(&mut owner, 0);
+    assert_eq!(terminal, Write::Applied);
+    assert!(
+        other
+            .begin_state_capture_after_guarded_write_on_control(&applied)
+            .is_err()
+    );
+    let read = query(&mut owner);
+    assert_eq!(page(&mut owner, &read).as_slice()[0].normalized, 0.75);
+    let request = retry(|| owner.begin_state_capture_after_guarded_write_on_control(&applied));
+    assert!(owner.poll_state_capture_on_control(&request).is_err());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let fact = loop {
+        match owner
+            .poll_state_capture_after_guarded_write_on_control(&request)
+            .unwrap()
+        {
+            Capture::Captured(fact) => break fact,
+            Capture::Pending => {}
+            Capture::Failed => panic!("guarded capture failed"),
+            Capture::Refused(reason) => panic!("guarded capture refused: {reason}"),
+        }
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    };
+    let component = hex_plugin_state::decode(fact.state())
+        .unwrap()
+        .component
+        .unwrap();
+    assert_eq!(
+        f32::from_le_bytes(component[8..12].try_into().unwrap()),
+        3.0
+    );
+    assert!(
+        owner
+            .observe_guarded_capture_input_on_control(&fact)
+            .is_some()
+    );
+    assert!(
+        other
+            .observe_guarded_capture_input_on_control(&fact)
+            .is_none()
+    );
+    let (new_conflict, terminal) = guarded(&mut owner, 1);
+    assert_eq!(terminal, Write::Conflict);
+    assert!(
+        owner
+            .observe_guarded_capture_input_on_control(&fact)
+            .is_none()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_guarded_write_on_control(&applied)
+            .is_err()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_guarded_write_on_control(&new_conflict)
+            .is_err()
+    );
+    owner.revoke_on_control();
+    let original = owner
+        .into_quiescent_on_control(endpoint)
+        .unwrap_or_else(|failure| panic!("original source: {}", failure.finish_on_control()));
+    assert_eq!(original.child_id_on_control(), child);
+    assert!(original.retire_on_control().unwrap().status.success());
+    assert!(other.retire_on_control().unwrap().native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn original_worker_holds_editor_admission_without_parking_the_callback() {
     use hex_plugin_host::protocol::{ControllerRequest, EditorAdmissionState};
     use std::num::NonZeroU64;
