@@ -2086,12 +2086,14 @@ impl PublicationControl {
         )
     }
     /// Bind a device insert's exact receipt after preparation and before the
-    /// graph becomes visible to the callback. The binding runs on control.
+    /// graph becomes visible to the callback. The attempt deadline also bounds
+    /// the callback's apply decision.
     pub fn publish_device_insert_with_receipt_on_control<E>(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
         source_context: hex_engine::AudioSourceContext,
+        preparation_deadline: Instant,
         mut bind_receipt: impl FnMut(&CancellablePublicationReceipt),
         admit: impl FnOnce(
             hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
@@ -2112,6 +2114,7 @@ impl PublicationControl {
             Some(FencedAdmission::DeviceInsert(DeviceInsertAdmission {
                 bind: &mut bind_receipt,
                 approved: None,
+                preparation_deadline,
             })),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             None,
@@ -2327,6 +2330,17 @@ impl PublicationControl {
             });
         }
         let approved = insert.as_ref().and_then(|insert| insert.approved);
+        let preparation_deadline = insert.as_ref().map(|insert| insert.preparation_deadline);
+        let preparation_expired =
+            || preparation_deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        let timed_out = "resident graph edit preparation timed out";
+        if preparation_expired() {
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason: timed_out,
+                playback,
+            });
+        }
         if approved
             .as_ref()
             .is_some_and(|consent| !self.device_insert_consent_is_current(consent))
@@ -2524,7 +2538,7 @@ impl PublicationControl {
                         fence,
                         &self.status,
                         approved,
-                        None,
+                        preparation_deadline,
                     ))
                 }
                 _ => tempo_cut.map_or(
@@ -2540,7 +2554,7 @@ impl PublicationControl {
                 fence.route_state_generation,
             )
         });
-        let publication = Publication {
+        let mut publication = Publication {
             pcm_frames,
             forwarded_pcm,
             revision,
@@ -2557,6 +2571,15 @@ impl PublicationControl {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_references,
         };
+        if preparation_expired() {
+            publication.release_streams_on_control(&self.candidate_root);
+            self.status.publication_pending.store(false, Release);
+            return Err(PublishError {
+                kind: PublishErrorKind::Other,
+                reason: timed_out,
+                playback: *publication.playback,
+            });
+        }
         if let (Some(insert), Some(receipt)) = (insert, cancellation.as_ref()) {
             (insert.bind)(receipt);
         }

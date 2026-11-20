@@ -40,6 +40,7 @@ fn overdrive_power_retains_aligned_dry_and_restarts_its_dsp_fresh() {
 fn aligned_effect_power(state: NativeDeviceState) {
     const LATENCY: usize = 11;
     const FADE: usize = 240;
+    const POWER_ON: usize = 24;
     let input: Vec<_> = (0..8192)
         .map(|frame| {
             let sample = (frame as f32 * 0.037).sin() * 0.3;
@@ -172,7 +173,7 @@ fn aligned_effect_power(state: NativeDeviceState) {
                     ),
                     _ if settled => (
                         fresh[offset],
-                        (offset + 1).saturating_sub(LATENCY).min(FADE) as f32 / FADE as f32,
+                        (offset + 1).saturating_sub(LATENCY).min(POWER_ON) as f32 / POWER_ON as f32,
                     ),
                     _ => {
                         let from = 1.0 - off_frames as f32 / FADE as f32;

@@ -13,6 +13,107 @@ pub enum NativeRemovalProgress {
     Ready,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Audio, Frame, LaunchQuantization, PreparedRevision, SessionPlaybackCommand};
+    use hex_project::{Command, Created, Editor, Project};
+    use std::{collections::BTreeMap, sync::Arc};
+
+    #[test]
+    fn session_audio_track_removal_fades_the_live_route_before_handoff() {
+        const RATE: u32 = 48_000;
+        const FADE: usize = 240;
+        const SIGNAL: Frame = [0.25, -0.125];
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "session audio".into(),
+                path: "session.wav".into(),
+                sample_rate: RATE,
+                frames: 2048,
+            })
+            .unwrap()
+        else {
+            panic!("audio");
+        };
+        let clip = editor.project().track(track).unwrap().clips()[0].id();
+        editor.execute(Command::RemoveClip(clip)).unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "session".into(),
+                asset,
+                source_start: 0,
+                source_end: 2048,
+            })
+            .unwrap()
+        else {
+            panic!("session clip");
+        };
+        let media = BTreeMap::from([(asset, Audio::new(RATE, vec![SIGNAL; 2048]).unwrap())]);
+        let table = Arc::new(crate::SineTable::new());
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let before = prepare(editor.project());
+        editor.execute(Command::RemoveTrack(track)).unwrap();
+        let after = prepare(editor.project());
+        for cancel in [false, true] {
+            let mut old = SessionPlayback::new(Arc::clone(&before)).unwrap();
+            old.apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut prefix = [[0.0; 2]; 32];
+            old.render(&mut prefix).unwrap();
+            assert_eq!(prefix, [SIGNAL; 32]);
+            let mut next = SessionPlayback::new(Arc::clone(&after)).unwrap();
+            next.require_continuous_insert = true;
+            assert_eq!(
+                next.advance_native_removal_from(&mut old).unwrap(),
+                NativeRemovalProgress::Fading
+            );
+            old.render(&mut prefix).unwrap();
+            for (index, frame) in prefix.iter().enumerate() {
+                let gain = 1.0 - (index + 1) as f32 / FADE as f32;
+                assert!((frame[0] - SIGNAL[0] * gain).abs() < 1e-6);
+            }
+            if cancel {
+                next.cancel_native_removal_from(&mut old);
+                let mut restored = [[0.0; 2]; FADE];
+                old.render(&mut restored).unwrap();
+                assert!(restored[0][0] > prefix[31][0]);
+                assert_eq!(restored[FADE - 1], SIGNAL);
+            } else {
+                let mut rest = [[0.0; 2]; FADE - 32];
+                old.render(&mut rest).unwrap();
+                assert_eq!(rest[FADE - 33], [0.0; 2]);
+                assert_eq!(
+                    next.advance_native_removal_from(&mut old).unwrap(),
+                    NativeRemovalProgress::Ready
+                );
+                next.try_inherit_state_live_from(&mut old).unwrap();
+                let mut output = [[0.0; 2]; 32];
+                next.render(&mut output).unwrap();
+                assert_eq!(output, [[0.0; 2]; 32]);
+                assert_eq!(next.performance_frame(), (32 + FADE + 32) as u64);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PendingNativeRemoval {
     transition: RemovalTransition,
@@ -25,6 +126,7 @@ pub(super) struct PendingNativeRemoval {
 enum RemovalTransition {
     Device(NativeRemovalTransition),
     Track(usize),
+    Reorder(usize),
 }
 
 impl PendingNativeRemoval {
@@ -35,7 +137,17 @@ impl PendingNativeRemoval {
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
             RemovalTransition::Device(transition) => Some(transition),
-            RemovalTransition::Track(_) => None,
+            RemovalTransition::Track(_) | RemovalTransition::Reorder(_) => None,
+        }
+    }
+
+    pub(super) fn reordered_track(
+        self,
+        previous: &SessionPlayback,
+    ) -> Option<hex_project::TrackId> {
+        match self.transition {
+            RemovalTransition::Reorder(index) => previous.routes.get(index).map(|route| route.id),
+            _ => None,
         }
     }
 
@@ -45,14 +157,14 @@ impl PendingNativeRemoval {
     ) -> Option<hex_project::TrackId> {
         match self.transition {
             RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
-            RemovalTransition::Device(_) => None,
+            RemovalTransition::Device(_) | RemovalTransition::Reorder(_) => None,
         }
     }
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
             RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
-            RemovalTransition::Track(index) => {
+            RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
                 previous
                     .track_faders
                     .get(index)
@@ -138,6 +250,10 @@ impl SessionPlayback {
                 self.direct_audio_track_removal_from(previous)
                     .map(RemovalTransition::Track)
             })
+            .or_else(|| {
+                self.direct_audio_track_reorder_from(previous)
+                    .map(RemovalTransition::Reorder)
+            })
         else {
             return Ok(false);
         };
@@ -165,7 +281,7 @@ impl SessionPlayback {
                 RemovalTransition::Device(transition) => previous
                     .native_removal_chain_mut(transition.identity().owner())
                     .is_some_and(|chain| chain.begin_native_removal(transition)),
-                RemovalTransition::Track(index) => {
+                RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
                     let rate = previous.revision.arrangement().sample_rate();
                     previous.track_faders.get_mut(index).is_some_and(|fader| {
                         fader.begin_removal(rate);
@@ -209,7 +325,7 @@ impl SessionPlayback {
                         chain.cancel_native_removal(transition);
                     }
                 }
-                RemovalTransition::Track(index) => {
+                RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
                     let arrangement = previous.revision.arrangement();
                     if let Some(track) = arrangement.tracks().get(index)
                         && let Some(fader) = previous.track_faders.get_mut(index)
@@ -280,7 +396,8 @@ impl SessionPlayback {
     }
 
     /// A direct audio track has no DSP or independent clock to detach. Its
-    /// existing post-fader output already feeds both Main and ordinary sends.
+    /// existing post-fader output already feeds both Main and ordinary sends,
+    /// whether Arrangement or Session owns the active audio source.
     fn direct_audio_track_removal_from(&self, previous: &Self) -> Option<usize> {
         let old = previous.revision.arrangement().tracks();
         let new = self.revision.arrangement().tracks();
@@ -303,9 +420,17 @@ impl SessionPlayback {
         let track = old.get(index)?;
         let id = track.canonical_track_id()?;
         let route = previous.routes.get(index)?;
+        let direct_audio = match route.owner {
+            RouteOwner::Arrangement => !track.clips.is_empty(),
+            RouteOwner::SessionAudio { clip, .. } => previous
+                .revision
+                .session()
+                .audio_clip(clip)
+                .is_some_and(|clip| clip.track == id),
+            RouteOwner::Session { .. } | RouteOwner::Silence => false,
+        };
         (route.id == id
-            && route.owner == RouteOwner::Arrangement
-            && !track.clips.is_empty()
+            && direct_audio
             && track.device_chain.is_empty()
             && track.instrument_id.is_none()
             && track.source_id.is_none()

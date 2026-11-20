@@ -24,6 +24,11 @@ pub(super) enum ShutdownHandoff {
     Drain(Option<Receipt>),
 }
 
+pub(super) struct Shutdown {
+    step: ShutdownHandoff,
+    controller: Option<NativeWorkerControllerQuery>,
+}
+
 pub(super) struct Drain {
     pub(super) stage: Stage,
     ordinal: u64,
@@ -55,7 +60,7 @@ pub struct RetiringEditLease {
     index: usize,
     claimed: bool,
     complete: bool,
-    shutdown: Option<ShutdownHandoff>,
+    shutdown: Option<Shutdown>,
 }
 
 impl RetiringEditLease {
@@ -157,19 +162,25 @@ impl RetiringEditLease {
     /// Once quiescent, Root seals the producer and retains every pending page.
     /// A nonempty sealed sequence without Session disposition remains in
     /// custody. The publication owner supplies any exact completed Session
-    /// receipt whose ACK still needs to reach Root.
+    /// receipt whose ACK still needs to reach Root, and any original pending
+    /// admission query. Its terminal must be consumed before sealing edits.
     pub fn handoff_on_shutdown(
         mut self,
         ever_accepted: bool,
         pending_read: Option<bool>,
         accepted_receipt: Option<Receipt>,
+        pending_controller: Option<NativeWorkerControllerQuery>,
     ) {
-        self.shutdown = Some(if self.claimed {
+        let step = if self.claimed {
             ShutdownHandoff::Drain(accepted_receipt)
         } else if ever_accepted {
             ShutdownHandoff::Claim(pending_read)
         } else {
             ShutdownHandoff::Unaccepted
+        };
+        self.shutdown = Some(Shutdown {
+            step,
+            controller: pending_controller,
         });
     }
 
@@ -734,8 +745,8 @@ impl Custody {
     /// release it. Pending keeps the same stage and tokens in the same cell.
     /// No callback or destructor waits for this control-side pump.
     pub(super) fn advance_retiring_edits_on_shutdown(&self, work: &mut Work, index: usize) {
-        let (binding, handoff) = {
-            let bank = lock(&self.bank);
+        let (binding, mut handoff) = {
+            let mut bank = lock(&self.bank);
             let slot = &bank.sources.slots[index];
             if !slot.retiring
                 || slot.endpoint_loaned
@@ -747,53 +758,87 @@ impl Custody {
             {
                 return;
             }
-            let (Some(binding), Some(handoff)) = (slot.binding, slot.retiring_edit_shutdown) else {
+            let Some(binding) = slot.binding else {
+                return;
+            };
+            let Some(handoff) = bank.sources.slots[index].retiring_edit_shutdown.take() else {
                 return;
             };
             (binding, handoff)
         };
 
-        let next = match handoff {
-            ShutdownHandoff::Unaccepted => {
-                let mut bank = lock(&self.bank);
-                let slot = &mut bank.sources.slots[index];
-                slot.retiring_edit_reserved = false;
-                self.retiring_edit_alive[index].store(false, Ordering::Release);
-                Ok(None)
-            }
-            ShutdownHandoff::Claim(recovery) => self
-                .claim_retiring_edits_with_work(work, binding, recovery)
-                .map(|()| Some(ShutdownHandoff::Drain(None))),
-            ShutdownHandoff::Drain(Some(receipt)) => self
-                .acknowledge_retiring_edits_with_work(work, binding, receipt)
-                .map(|()| Some(ShutdownHandoff::Drain(None))),
-            ShutdownHandoff::Drain(None) => {
-                match self.poll_retiring_edits_with_work(work, binding) {
-                    Ok(Progress::Pending) => return,
-                    Ok(Progress::Complete) => Ok(None),
-                    Ok(Progress::Batch(receipt, _)) => {
-                        // Move the page to the existing retained sequence so
-                        // the quiescent worker can return the rest. Latency
-                        // restarts have no remaining PCM to compensate here.
-                        self.consume_retiring_edit_receipt(work, binding, receipt, true)
-                            .map(|()| Some(ShutdownHandoff::Drain(None)))
+        // Admission-changing terminals cannot be superseded after revocation.
+        // Consume the exact desktop token before the retiring reader can issue
+        // Seal; even an already completed Release still occupies that mailbox.
+        let controller = match handoff.controller.as_ref() {
+            Some(query) => match work.cells[index].owner.as_mut() {
+                Some(Owner::Effect(owner)) => {
+                    owner
+                        .poll_controller_query(query)
+                        .and_then(|reply| match reply {
+                            NativeWorkerControllerProgress::Pending => Ok(false),
+                            NativeWorkerControllerProgress::EditorAdmission(_) => Ok(true),
+                            _ => Err("native shutdown admission terminal differs"),
+                        })
+                }
+                _ => Ok(false),
+            },
+            None => Ok(true),
+        };
+        if matches!(controller, Ok(false)) {
+            lock(&self.bank).sources.slots[index].retiring_edit_shutdown = Some(handoff);
+            return;
+        }
+        let next = controller.and_then(|_| {
+            handoff.controller = None;
+            match handoff.step {
+                ShutdownHandoff::Unaccepted => {
+                    let mut bank = lock(&self.bank);
+                    let slot = &mut bank.sources.slots[index];
+                    slot.retiring_edit_reserved = false;
+                    self.retiring_edit_alive[index].store(false, Ordering::Release);
+                    Ok(None)
+                }
+                ShutdownHandoff::Claim(recovery) => self
+                    .claim_retiring_edits_with_work(work, binding, recovery)
+                    .map(|()| Some(ShutdownHandoff::Drain(None))),
+                ShutdownHandoff::Drain(Some(receipt)) => self
+                    .acknowledge_retiring_edits_with_work(work, binding, receipt)
+                    .map(|()| Some(ShutdownHandoff::Drain(None))),
+                ShutdownHandoff::Drain(None) => {
+                    match self.poll_retiring_edits_with_work(work, binding) {
+                        Ok(Progress::Pending) => Ok(Some(handoff.step)),
+                        Ok(Progress::Complete) => Ok(None),
+                        Ok(Progress::Batch(receipt, _)) => {
+                            // Move the page to the existing retained sequence so
+                            // the quiescent worker can return the rest. Latency
+                            // restarts have no remaining PCM to compensate here.
+                            self.consume_retiring_edit_receipt(work, binding, receipt, true)
+                                .map(|()| Some(ShutdownHandoff::Drain(None)))
+                        }
+                        Ok(Progress::Disposition(_)) => {
+                            Err("vst3 editor receipts need project disposition after shutdown")
+                        }
+                        Err(reason) => Err(reason),
                     }
-                    Ok(Progress::Disposition(_)) => {
-                        Err("vst3 editor receipts need project disposition after shutdown")
-                    }
-                    Err(reason) => Err(reason),
                 }
             }
-        };
+        });
 
         match next {
-            Ok(state) => lock(&self.bank).sources.slots[index].retiring_edit_shutdown = state,
+            Ok(state) => {
+                lock(&self.bank).sources.slots[index].retiring_edit_shutdown = state.map(|step| {
+                    handoff.step = step;
+                    handoff
+                });
+            }
             Err(
                 "native preparation is busy"
                 | "native controller mailbox is busy"
                 | "native edit observation is busy",
-            ) => {}
+            ) => lock(&self.bank).sources.slots[index].retiring_edit_shutdown = Some(handoff),
             Err(reason) => {
+                lock(&self.bank).sources.slots[index].retiring_edit_shutdown = Some(handoff);
                 let cell = &mut work.cells[index];
                 cell.cleanup_error = Some(hex_plugin_host::Error::Protocol(reason));
                 self.fail_native_source(index);

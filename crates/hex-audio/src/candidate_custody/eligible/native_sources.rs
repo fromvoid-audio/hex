@@ -189,7 +189,7 @@ struct Slot {
     starting: bool,
     retiring: bool,
     retiring_edit_reserved: bool,
-    retiring_edit_shutdown: Option<retiring_edits::ShutdownHandoff>,
+    retiring_edit_shutdown: Option<retiring_edits::Shutdown>,
     facts: Option<hex_plugin_host::protocol::Facts>,
     presentation: Option<(
         hex_plugin_host::protocol::Presentation,

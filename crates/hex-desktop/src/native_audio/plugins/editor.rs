@@ -465,8 +465,7 @@ impl Plugins {
             && present
     }
 
-    /// Removed devices can retain a warm worker for Undo. Close its editor
-    /// after the canonical device disappears, even if the helper stays alive.
+    /// Close the editor of an absent device whose worker is still retained.
     pub(in crate::native_audio) fn close_removed_editor(
         &mut self,
         desired: &CanonicalAudioSourceSnapshot,

@@ -155,10 +155,16 @@ impl BypassRamp {
         }
     }
 
-    /// Keep the outgoing dry tap audible while a fresh wet history refills.
-    pub(crate) fn with_dry_lead(mut self, frames: u32) -> Self {
-        self.dry_lead = frames;
-        self
+    /// A settled power-off already reset DSP. Keep the outgoing aligned dry
+    /// tap until fresh wet samples arrive, then de-click over half a millisecond.
+    /// The longer reversal ramp remains for a still-running wet history.
+    pub(crate) fn fresh_power_on(latency_frames: u32, sample_rate: u32) -> Self {
+        Self {
+            from: 0.0,
+            elapsed: 0,
+            total: sample_rate.div_ceil(2000).max(1),
+            dry_lead: latency_frames,
+        }
     }
 
     pub(crate) fn remaining(self) -> usize {
@@ -187,17 +193,37 @@ mod tests {
     fn dry_lead_continues_across_an_equivalent_publication_and_can_reverse() {
         use super::BypassRamp;
 
-        let mut first =
-            BypassRamp::inherited(BypassRamp::INACTIVE, true, false, 8_000).with_dry_lead(3);
+        let mut first = BypassRamp::fresh_power_on(3, 8_000);
         assert_eq!(first.next(false), 0.0);
         let mut next = BypassRamp::inherited(first, false, false, 8_000);
-        assert_eq!(next.remaining(), 42);
+        assert_eq!(next.remaining(), 6);
         assert_eq!(next.next(false), 0.0);
         assert_eq!(next.next(false), 0.0);
         let mut cancelled = BypassRamp::inherited(next, false, true, 8_000);
         assert!(!cancelled.is_active());
         assert_eq!(cancelled.next(true), 0.0);
-        assert_eq!(next.next(false), 1.0 / 40.0);
+        assert_eq!(next.next(false), 1.0 / 4.0);
+    }
+
+    #[test]
+    fn cold_power_on_keeps_exact_latency_then_finishes_its_short_declick() {
+        use super::BypassRamp;
+
+        for rate in [8_000_u32, 44_100, 48_000, 192_000] {
+            for latency in [0, 11, 2366] {
+                let mut ramp = BypassRamp::fresh_power_on(latency, rate);
+                for _ in 0..latency {
+                    assert_eq!(ramp.next(false), 0.0);
+                }
+                let frames = rate.div_ceil(2000);
+                for frame in 1..=frames {
+                    assert_eq!(ramp.next(false), frame as f32 / frames as f32);
+                }
+                assert!(!ramp.is_active());
+                assert_eq!(ramp.remaining(), 0);
+                assert_eq!(ramp.next(false), 1.0);
+            }
+        }
     }
 
     #[test]
