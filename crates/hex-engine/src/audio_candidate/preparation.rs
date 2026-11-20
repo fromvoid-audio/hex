@@ -18,6 +18,51 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
     pub fn new(registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>) -> Self {
         Self { registry }
     }
+    /// Compile the editor's semantic revision with the same original effect facts.
+    /// The result owns no native processor or verified page endpoint.
+    pub fn prepare_semantic_revision(
+        &self,
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        table: Arc<crate::SineTable>,
+        previous: Option<&crate::PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<crate::PreparedRevision, crate::Invalid> {
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| crate::Invalid("invalid built-in native instrument registry"))?;
+        crate::PreparedRevision::prepare_with_registries_and_transforms(
+            project,
+            media,
+            table,
+            previous,
+            self.registry,
+            &instruments,
+            transforms,
+        )
+    }
+
+    /// Compile the same editor revision using verified original/pitch metadata.
+    #[allow(clippy::too_many_arguments)] // Existing semantic source compiler inputs.
+    pub fn prepare_semantic_streamed_revision(
+        &self,
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        generation: u64,
+        table: Arc<crate::SineTable>,
+        previous: Option<&crate::PreparedSessionInventory>,
+    ) -> Result<crate::PreparedRevision, crate::Invalid> {
+        crate::PreparedRevision::prepare_with_prepared_pitch_sources_and_effects(
+            project,
+            sources,
+            pitched,
+            generation,
+            table,
+            previous,
+            self.registry,
+        )
+    }
+
     /// Compose host definitions with the builtins for one synchronous control
     /// borrow. Neither the registry nor a native owner escapes this callback.
     pub fn with_host_definitions<T>(

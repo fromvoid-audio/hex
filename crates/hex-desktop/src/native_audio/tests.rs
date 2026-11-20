@@ -272,6 +272,16 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn prepare_saved_verified_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        self.inner.prepare_saved_verified_effects(input, prepare)
+    }
     fn confirms_verified_device_inserts(&self) -> bool {
         self.inner.confirms_verified_device_inserts()
     }

@@ -404,11 +404,34 @@ pub(crate) fn project_with_pitch_sources_and_midi_preview_and_contexts(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    project_with_pitch_sources_and_effects(
+        snapshot,
+        sources,
+        pitched,
+        generation,
+        sine_table,
+        shared_contexts,
+        transforms,
+        &registry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // The existing source bindings and borrowed host registry.
+pub(crate) fn project_with_pitch_sources_and_effects(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
     }
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
     let instruments = hex_devices::native_instrument_registry()
         .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_with_midi_preview(
@@ -422,7 +445,7 @@ pub(crate) fn project_with_pitch_sources_and_midi_preview_and_contexts(
             }
         },
         sine_table,
-        &registry,
+        registry,
         &instruments,
         shared_contexts,
         transforms,

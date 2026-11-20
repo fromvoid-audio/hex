@@ -395,6 +395,16 @@ impl MediaBank {
         table: Arc<hex_engine::SineTable>,
         previous: Option<&PreparedSessionInventory>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        self.prepare_with_effects(project, table, previous, None)
+    }
+
+    pub(crate) fn prepare_with_effects(
+        &self,
+        project: &Project,
+        table: Arc<hex_engine::SineTable>,
+        previous: Option<&PreparedSessionInventory>,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
+    ) -> Result<PreparedRevision, hex_engine::Invalid> {
         self.validate_clip_sources(project)?;
         if self.verified.is_empty() {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
@@ -435,9 +445,15 @@ impl MediaBank {
                 pitched.insert(derived.key(), Arc::new(derived));
             }
         }
-        PreparedRevision::prepare_with_prepared_pitch_sources(
-            project, &sources, &pitched, self.epoch, table, previous,
-        )
+        if let Some(effects) = effects {
+            effects.prepare_semantic_streamed_revision(
+                project, &sources, &pitched, self.epoch, table, previous,
+            )
+        } else {
+            PreparedRevision::prepare_with_prepared_pitch_sources(
+                project, &sources, &pitched, self.epoch, table, previous,
+            )
+        }
     }
 
     /// Full ordinary resource preparation shares the same verified bindings as semantic
