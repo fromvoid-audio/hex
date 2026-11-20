@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
 pub(super) struct PendingRead {
-    recovery: bool,
+    pub(super) recovery: bool,
     source: AppliedAudioSource,
 }
 
@@ -357,6 +357,7 @@ mod tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            editor_retirement: Default::default(),
             pending_touch: Some(Touch {
                 source: active,
                 parameter,

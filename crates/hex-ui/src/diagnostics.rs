@@ -463,11 +463,21 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
     };
     let level = match event {
         E::Unavailable { .. }
+        | E::PluginEditorRetirementIssue {
+            issue:
+                crate::PluginEditorRetirementIssue::NeedsDisposition
+                | crate::PluginEditorRetirementIssue::Failure(_),
+            ..
+        }
         | E::Publication {
             state: P::Fault(_), ..
         } => Level::Error,
         E::PluginParameterTouched { .. } => Level::Debug,
         E::DegradedPlugins { .. }
+        | E::PluginEditorRetirementIssue {
+            issue: crate::PluginEditorRetirementIssue::TailLatencyPending,
+            ..
+        }
         | E::Publication {
             state: P::Refused(_) | P::Busy,
             ..
@@ -514,6 +524,13 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         E::NativeLatencyRestart { source } => {
             format!("stage=native_latency_restart source={source:?}")
         }
+        E::PluginEditorRetirementIssue {
+            project_generation,
+            device,
+            issue,
+        } => format!(
+            "stage=plugin_editor_retirement_issue generation={project_generation} device={device} issue={issue:?}"
+        ),
         E::PluginParameterTouched {
             source,
             binding,
