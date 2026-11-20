@@ -49,6 +49,10 @@ use std::{
 ///   cleanup root. It keeps both owners and stops dispatching, so it cannot
 ///   serve another open.
 ///
+/// - `RetiringEditor`: original VST editor custody could not be resolved
+///   when its Session closed. The exact source and all retained receipts stay
+///   with the failed Root and audio reopen is refused.
+///
 /// Recoverable conditions are not lifecycle failures and never set this
 /// status. These are device-open errors (including the typed rate mismatch),
 /// a busy or full queue, and a stream pause the backend refused, which the
@@ -62,6 +66,8 @@ pub enum AudioLifecycleFailure {
     Cleanup = 2,
     /// The lane received a root different from its retained cleanup root.
     MismatchedOwner = 3,
+    /// Original editor receipts need disposition before audio can reopen.
+    RetiringEditor = 4,
 }
 
 pub(crate) struct LifecycleStatus(AtomicU8);
@@ -79,6 +85,7 @@ impl LifecycleStatus {
             1 => Some(AudioLifecycleFailure::Retirement),
             2 => Some(AudioLifecycleFailure::Cleanup),
             3 => Some(AudioLifecycleFailure::MismatchedOwner),
+            4 => Some(AudioLifecycleFailure::RetiringEditor),
             _ => None,
         }
     }
@@ -95,10 +102,20 @@ pub(crate) fn finish_cleanup_observed(
 ) -> bool {
     let complete = root.finish_on_control();
     if root.cleanup_failed() {
-        status.fail(AudioLifecycleFailure::Cleanup);
+        status.fail(cleanup_failure(root));
         return false;
     }
     complete
+}
+
+fn cleanup_failure(root: &crate::candidate_custody::CandidateRoot) -> AudioLifecycleFailure {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if root.retiring_editor_shutdown_failed() {
+        return AudioLifecycleFailure::RetiringEditor;
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let _ = root;
+    AudioLifecycleFailure::Cleanup
 }
 
 /// Read the first confirmed retained failure without starting a worker, locking,
@@ -243,6 +260,13 @@ impl StreamOwner {
             retirement.stream = Some(stream);
         }
     }
+    /// Control-only borrow from the original backend custody. No ownership or
+    /// retirement authority transfers to the device timing query.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn stream_on_control(&self) -> Option<&cpal::Stream> {
+        self.retirement.as_ref()?.stream.as_ref()
+    }
+
     pub(crate) fn play(&self) -> Result<(), String> {
         self.retirement
             .as_ref()
@@ -649,7 +673,7 @@ fn run_lifecycle_observed<T: Send + 'static, R: Send + 'static>(
         if let Some(root) = cleanup.as_ref() {
             root.advance_on_control();
             if root.cleanup_failed() {
-                status.fail(AudioLifecycleFailure::Cleanup);
+                status.fail(cleanup_failure(root));
             }
             if root.job_idle() {
                 cleanup = None;
@@ -1585,6 +1609,7 @@ mod tests {
             AudioLifecycleFailure::Retirement,
             AudioLifecycleFailure::Cleanup,
             AudioLifecycleFailure::MismatchedOwner,
+            AudioLifecycleFailure::RetiringEditor,
         ] {
             let status = LifecycleStatus::new();
             status.fail(failure);

@@ -6,6 +6,23 @@ use hex_lattice::NativeRuntimeEntryStorage;
 pub(crate) fn pair_bytes(
     entry: &NativeRuntimeEntryStorage<'_>,
 ) -> Result<Option<(usize, usize)>, AudioStorageError> {
+    let limiter = entry
+        .owned_runtime::<hex_devices::limiter::LimiterRuntime>()
+        .map(|runtime| runtime.control_storage().ok_or(AudioStorageError::Overflow))
+        .or_else(|| {
+            entry
+                .owned_runtime::<hex_devices::limiter::StructuralLimiterRuntime>()
+                .map(|runtime| runtime.control_storage().ok_or(AudioStorageError::Overflow))
+        })
+        .transpose()?;
+    if let Some((inline, [committed, scratch])) = limiter {
+        return Ok(Some((
+            inline
+                .checked_add(committed)
+                .ok_or(AudioStorageError::Overflow)?,
+            scratch,
+        )));
+    }
     if let Some(delay) = entry.owned_runtime::<hex_devices::delay::DelayRuntime>() {
         let (inline, [committed, scratch]) =
             delay.control_storage().ok_or(AudioStorageError::Overflow)?;
@@ -24,6 +41,12 @@ pub(crate) fn pair_bytes(
             scratch
                 .control_storage_bytes()
                 .ok_or(AudioStorageError::Overflow)?,
+        )));
+    }
+    if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::eq::EqRuntime>() {
+        return Ok(Some((
+            primary.private_storage_bytes(),
+            scratch.private_storage_bytes(),
         )));
     }
     match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
@@ -54,7 +77,9 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::overdrive::OVERDRIVE_TYPE_ID
         || id == hex_devices::gate::GATE_TYPE_ID
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
+        || id == hex_devices::eq::EQ_TYPE_ID
         || id == hex_devices::eq8::EQ8_TYPE_ID
         || id == hex_devices::rattle::RATTLE_TYPE_ID
         || id == hex_devices::delay::TYPE_ID
+        || id == hex_devices::limiter::TYPE_ID
 }

@@ -971,6 +971,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            note_chase: hex_engine::NoteChase::On,
             kind: crate::editor::arrangement_seek::SeekKind::Fresh,
             recovery_generation: None,
             destination_frame: 128,
@@ -1595,7 +1596,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             next.revision,
         );
         assert!(view.pending_audio_commands.iter().any(|pending| matches!(pending.action,
-            hex_engine::playback::PlaybackAction::LaunchAndPlay(hex_engine::SessionPlaybackCommand::LaunchScene { scene: target, .. }) if target == scene)),
+            hex_engine::playback::PlaybackAction::LaunchAndPlay(hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { scene: target, note_chase: hex_engine::NoteChase::On, .. }) if target == scene)),
             "launch must queue exactly its actual scene: error={:?}", view.error);
         view.tick(cx); // The normal pump assigns the real command ticket.
         assert!(view.pending_session_ticket.is_some(),

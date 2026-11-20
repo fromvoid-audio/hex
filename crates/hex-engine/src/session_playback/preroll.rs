@@ -5,7 +5,8 @@
 //! section launches construct a fresh runtime
 //! and apply the interactive Play-from discontinuity at the destination: device
 //! chains, return tails and mutable voices start empty, gate-active notes are
-//! chased on the first played block, and no prefix is rendered.
+//! chased by default on the first played block, and no prefix is rendered.
+//! Explicit ordinary starts may disable held-note chase without changing history/export laws.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,8 +26,8 @@ pub(super) const PREROLL_SCRATCH_BYTES: usize =
 enum PrerollRuntimePolicy {
     LinearExport,
     HistoryPreservingInteractive,
-    Interactive,
-    SectionLoop(hex_project::LoopRegion),
+    Interactive(crate::NoteChase),
+    SectionLoop(hex_project::LoopRegion, crate::NoteChase),
 }
 
 type PrerollConstructor = fn(
@@ -98,13 +99,32 @@ impl SessionPlayback {
         work_budget_frames: u64,
         cancelled: &AtomicBool,
     ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_section_arrangement_preroll_with_note_chase(
+            revision,
+            resources,
+            region,
+            work_budget_frames,
+            crate::NoteChase::On,
+            cancelled,
+        )
+    }
+
+    /// Prepare a section with a captured note policy. Off refuses private control-sampler replay.
+    pub fn prepare_section_arrangement_preroll_with_note_chase(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        region: hex_project::LoopRegion,
+        work_budget_frames: u64,
+        note_chase: crate::NoteChase,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
         Self::prepare_arrangement_preroll_from_revision_with_policy(
             revision,
             region.start(),
             work_budget_frames,
             true,
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
-            PrerollRuntimePolicy::SectionLoop(region),
+            PrerollRuntimePolicy::SectionLoop(region, note_chase),
             resources,
             || cancelled.load(Ordering::Acquire),
             |candidate, output| candidate.render(output).map_err(Into::into),
@@ -181,13 +201,34 @@ impl SessionPlayback {
         start_playing: bool,
         cancelled: &AtomicBool,
     ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_interactive_arrangement_preroll_from_revision_with_note_chase(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            crate::NoteChase::On,
+            cancelled,
+        )
+    }
+
+    /// Prepare an ordinary interactive start with a captured note policy.
+    /// Stopped candidates retain it for Play.
+    /// Off refuses private control-sampler replay before runtime construction.
+    pub fn prepare_interactive_arrangement_preroll_from_revision_with_note_chase(
+        revision: Arc<PreparedRevision>,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        note_chase: crate::NoteChase,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
         Self::prepare_arrangement_preroll_from_revision_with_policy(
             revision,
             destination_frame,
             work_budget_frames,
             start_playing,
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
-            PrerollRuntimePolicy::Interactive,
+            PrerollRuntimePolicy::Interactive(note_chase),
             None,
             || cancelled.load(Ordering::Acquire),
             |candidate, output| candidate.render(output).map_err(Into::into),
@@ -282,13 +323,35 @@ impl SessionPlayback {
         start_playing: bool,
         cancelled: &AtomicBool,
     ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_interactive_arrangement_preroll_with_device_resources_and_note_chase(
+            revision,
+            resources,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            crate::NoteChase::On,
+            cancelled,
+        )
+    }
+
+    /// Prepare an ordinary resource-backed start with a captured note policy. Exact resource scope,
+    /// cancellation and storage limits match the default-on constructor.
+    pub fn prepare_interactive_arrangement_preroll_with_device_resources_and_note_chase(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        note_chase: crate::NoteChase,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
         Self::prepare_arrangement_preroll_from_revision_with_policy(
             revision,
             destination_frame,
             work_budget_frames,
             start_playing,
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
-            PrerollRuntimePolicy::Interactive,
+            PrerollRuntimePolicy::Interactive(note_chase),
             Some(resources),
             || cancelled.load(Ordering::Acquire),
             |candidate, output| candidate.render(output).map_err(Into::into),
@@ -310,6 +373,35 @@ impl SessionPlayback {
         cancelled: &AtomicBool,
         pages: &mut P,
     ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_ordinary_arrangement_preroll_with_pages_and_note_chase(
+            revision,
+            resources,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            section,
+            crate::NoteChase::On,
+            cancelled,
+            pages,
+        )
+    }
+
+    /// Prepare an ordinary seek or section with pages and a captured note policy.
+    /// Off refuses private control-sampler replay before construction or page demand.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_ordinary_arrangement_preroll_with_pages_and_note_chase<
+        P: PreparedPrerollPages,
+    >(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        section: Option<hex_project::LoopRegion>,
+        note_chase: crate::NoteChase,
+        cancelled: &AtomicBool,
+        pages: &mut P,
+    ) -> Result<Self, ArrangementPrerollError> {
         if section.is_some_and(|region| {
             !region.enabled() || region.start() != destination_frame || !start_playing
         }) {
@@ -321,10 +413,9 @@ impl SessionPlayback {
             work_budget_frames,
             start_playing,
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
-            section.map_or(
-                PrerollRuntimePolicy::Interactive,
-                PrerollRuntimePolicy::SectionLoop,
-            ),
+            section.map_or(PrerollRuntimePolicy::Interactive(note_chase), |region| {
+                PrerollRuntimePolicy::SectionLoop(region, note_chase)
+            }),
             Some(resources),
             || cancelled.load(Ordering::Acquire),
             |candidate, output| render_preroll_pages(candidate, output, cancelled, pages),
@@ -374,6 +465,18 @@ impl SessionPlayback {
         if is_cancelled() {
             return Err(ArrangementPrerollError::Cancelled);
         }
+        let note_chase = match policy {
+            PrerollRuntimePolicy::Interactive(note_chase)
+            | PrerollRuntimePolicy::SectionLoop(_, note_chase) => note_chase,
+            PrerollRuntimePolicy::LinearExport
+            | PrerollRuntimePolicy::HistoryPreservingInteractive => crate::NoteChase::On,
+        };
+        if note_chase == crate::NoteChase::Off && revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "note chase off requires ordinary interactive playback",
+            )
+            .into());
+        }
         // Interactive seeks and section launches start device history empty:
         // the interactive Play-from discontinuity resets chains, return tails
         // and voices at the destination and chases gate-active notes on the
@@ -409,7 +512,7 @@ impl SessionPlayback {
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
-        let linear_cursor_history = matches!(policy, PrerollRuntimePolicy::Interactive)
+        let linear_cursor_history = matches!(policy, PrerollRuntimePolicy::Interactive(_))
             && revision
                 .arrangement()
                 .loop_region()
@@ -435,7 +538,7 @@ impl SessionPlayback {
             matches!(policy, PrerollRuntimePolicy::LinearExport),
             resources,
             match policy {
-                PrerollRuntimePolicy::SectionLoop(region)
+                PrerollRuntimePolicy::SectionLoop(region, _)
                     if revision.arrangement().loop_region() != Some(region) =>
                 {
                     Some(region)
@@ -453,10 +556,10 @@ impl SessionPlayback {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
         if !replay_history {
-            if start_playing || destination_frame != 0 {
-                candidate.play_from(destination_frame)?;
-                // Stopped candidates keep the pending destination chase for
-                // the first Play; no render or Pause discontinuity occurs.
+            if start_playing || destination_frame != 0 || note_chase == crate::NoteChase::Off {
+                candidate.play_from_with_note_chase(destination_frame, note_chase)?;
+                // Stopped candidates retain their captured note admission for
+                // the first Play, including Off at frame zero. No Pause occurs.
                 candidate.playing = start_playing;
             }
             if is_cancelled() {
@@ -566,7 +669,12 @@ impl SessionPlayback {
             suppression_scratch: self.suppression_scratch.capacity(),
         }
         .bytes()?
-        .checked_add(self.browser_audition.retained_bytes()?)
+        .checked_add(self.browser_audition.retained_bytes()?)?
+        .checked_add(
+            self.paused_source_monitor
+                .as_deref()
+                .map_or(Some(0), PausedTrackMonitor::runtime_storage_bytes)?,
+        )
     }
 }
 
@@ -758,7 +866,13 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
-    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, true)
+}
+
+pub(super) fn paused_source_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY, false)
 }
 
 pub(super) fn linear_export_runtime_storage_preflight_bytes(
@@ -767,12 +881,14 @@ pub(super) fn linear_export_runtime_storage_preflight_bytes(
     runtime_storage_preflight_bytes(
         revision,
         SessionPlayback::release_capacity_for(revision, true),
+        true,
     )
 }
 
 fn runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
     release_capacity: usize,
+    owns_instrument_sources: bool,
 ) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
@@ -804,10 +920,12 @@ fn runtime_storage_preflight_bytes(
             &arrangement.source_effects,
         )?,
     )?;
-    checked_add(
-        &mut total,
-        foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
-    )?;
+    if owns_instrument_sources {
+        checked_add(
+            &mut total,
+            foreign_arrangement::ForeignArrangement::preflight_bytes(revision)?,
+        )?;
+    }
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
             &mut total,
@@ -876,7 +994,14 @@ fn runtime_storage_preflight_bytes(
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
     let source_routing = revision.source_routing();
-    for (index, track) in arrangement.tracks().iter().enumerate() {
+    // The private pause route keeps the full slot vector and event scratch.
+    // Actual instruments and resource leases are charged to the resident.
+    for (index, track) in arrangement
+        .tracks()
+        .iter()
+        .enumerate()
+        .filter(|_| owns_instrument_sources)
+    {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(

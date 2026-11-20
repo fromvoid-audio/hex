@@ -3,7 +3,7 @@
 use super::*;
 mod runtime;
 mod state;
-pub use runtime::EQ_RUNTIME_BYTES;
+pub use runtime::{EQ_RUNTIME_BYTES, EqRuntime, PreparedEq};
 pub use state::{AutomationLane, AutomationPoint, EqState, Node, NodeId, NodeKind, NodeParameter};
 
 pub const EQ_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq");
@@ -188,6 +188,24 @@ impl NativeDeviceMetadata for EqDefinition {
     }
 }
 impl EqDefinition {
+    /// Prepare the exact sparse EQ used by the closed native chain constructor.
+    pub fn prepare_owned(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedEq, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        PreparedEq::prepare(EqState::decode(state)?, sample_rate, parameters)
+    }
+
+    /// Temporary codec and decoded state storage during closed chain preparation.
+    pub const fn preparation_overlap_bytes_bound() -> usize {
+        state::ENCODE_BUFFER_CAPACITY
+            + MAX_NODES * std::mem::size_of::<Node>()
+            + MAX_LANES * std::mem::size_of::<AutomationLane>()
+            + MAX_POINTS * std::mem::size_of::<AutomationPoint>()
+    }
+
     /// Control-only exact-grant component preparation. The returned processor
     /// uses the existing native checkpoint/runtime custody; no resource ownership
     /// transfers. Standard registry admission uses the same exact-grant component.

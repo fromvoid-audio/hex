@@ -72,11 +72,23 @@ impl std::str::FromStr for AudioDiagnosticsFlags {
     }
 }
 
+/// The callback prerequisite that kept an admitted graph pending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublicationWaitReason {
+    NativeRemovalFade,
+    PredecessorWindow,
+    StreamPages,
+    StreamPageCapacity,
+    RuntimeHandoff(PlaybackHandoffError),
+}
+
 /// Copy-only payloads retain exact static/typed causes, never graphs or strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioDiagnosticKind {
     PublicationAttempt,
-    PublicationWaiting,
+    PublicationWaiting {
+        reason: PublicationWaitReason,
+    },
     PublicationPrepared,
     PublicationApplied,
     PublicationRejected {
@@ -97,12 +109,15 @@ pub enum AudioDiagnosticKind {
     CallbackTiming {
         elapsed_ns: u64,
         deadline_ns: u64,
+        /// Gap from the preceding callback start on this output. Absent on
+        /// the first opted-in callback or after timing was disabled.
+        start_interval_ns: Option<u64>,
     },
 }
 impl AudioDiagnosticKind {
     pub const fn category(self) -> AudioDiagnosticsFlags {
         match self {
-            Self::StreamPreflightFailed { .. } | Self::PublicationWaiting => {
+            Self::StreamPreflightFailed { .. } | Self::PublicationWaiting { .. } => {
                 AudioDiagnosticsFlags::READINESS
             }
             Self::CommandDequeued { .. } | Self::PriorityStop { .. } => {

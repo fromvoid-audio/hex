@@ -5,7 +5,9 @@ use super::*;
 use hex_audio::plugin_worker::{
     NativeWorkerCapture, NativeWorkerCaptureProgress, StateCaptureRefusal,
 };
-use hex_session::service::{PluginStateCapture, PluginStateCaptureInput};
+use hex_audio::prepared::{AppliedAudioSource, PublicationControl};
+use hex_session::service::{PluginStateCapture, PluginStateCaptureInput, RequestCancellation};
+use std::time::{Duration, Instant};
 
 /// Whole-capture attempts per device while the helper reports that the plugin
 /// is still changing. Each refused attempt already spent the helper's settle
@@ -33,6 +35,7 @@ fn refused_capture(attempts: &mut u8, refusal: StateCaptureRefusal) -> Result<()
 }
 
 struct Entry {
+    source_index: usize,
     binding: Binding,
     owner: ProcessorChainOwner,
     device: u64,
@@ -42,7 +45,16 @@ struct Entry {
     /// Refused-as-still-changing attempts so far.
     refused: u8,
     done: bool,
+    idle_editor: Option<IdleEditorRead>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdleEditorRead {
+    Previous,
+    Save,
+}
+
+const SAVE_TRANSPORT_CHANGED: &str = "transport changed while preparing vst3 save · retry save";
 
 impl NativeAudioSink {
     pub(in crate::native_audio) fn capture_current_plugin_states(
@@ -88,19 +100,27 @@ impl Plugins {
         let cancellation = input.cancellation();
         let mut wanted = Vec::new();
         input.visit_plugin_devices(|owner, device, state| {
-            if let Some(source) = self.sources.iter().rev().find(|source| {
-                source.accepted
-                    && source.project_generation == input.context().project_generation
-                    && source.owner == owner
-                    && source.device == device
-            }) {
+            if let Some((source_index, source)) =
+                self.sources.iter().enumerate().rev().find(|(_, source)| {
+                    source.accepted
+                        && source.project_generation == input.context().project_generation
+                        && source.owner == owner
+                        && source.device == device
+                })
+            {
                 if source.retiring {
                     return Err("vst3 capture source is retiring".into());
+                }
+                if self.replay_state_is_unconfirmed(source.binding) {
+                    return Err(
+                        "vst3 state capture refused · editor replay recovery is unconfirmed".into(),
+                    );
                 }
                 wanted
                     .try_reserve(1)
                     .map_err(|_| "vst3 capture inventory allocation failed")?;
                 wanted.push(Entry {
+                    source_index,
                     binding: source.binding,
                     owner,
                     device,
@@ -109,6 +129,7 @@ impl Plugins {
                     captured: None,
                     refused: 0,
                     done: false,
+                    idle_editor: None,
                 });
             }
             // No actual hosted instance: preserve its canonical opaque state.
@@ -143,6 +164,11 @@ impl Plugins {
                 }
             }
         }
+        let idle_source = if input.flush_idle_editor_input() {
+            self.flush_idle_editor_before_save(control, input.context(), cancellation, &mut wanted)?
+        } else {
+            None
+        };
         let mut failure = None;
         while wanted.iter().any(|entry| !entry.done) {
             if cancellation.is_cancelled() && failure.is_none() {
@@ -276,7 +302,7 @@ impl Plugins {
                     let mut cancelled =
                         || cancellation.is_cancelled() || std::time::Instant::now() >= deadline;
                     if let Some(terminal) = scratch.poll_on_control(control, &mut cancelled) {
-                        entry.captured = Some(terminal?);
+                        entry.captured = Some(terminal.map_err(|error| error.to_string())?);
                         break;
                     }
                     edits::poll_control(control);
@@ -289,7 +315,77 @@ impl Plugins {
                 captured: entry.captured.ok_or("vst3 capture terminal is missing")?,
             });
         }
+        if idle_source
+            .is_some_and(|source| control.status.native_parameter_source(false) != Some(source))
+        {
+            return Err(SAVE_TRANSPORT_CHANGED.into());
+        }
         Ok(captures)
+    }
+
+    /// A normal idle worker can apply pending SDK editor callbacks without
+    /// PCM. Poll the already existing reader, in rounds across Save's exact
+    /// sources, while the usual Session poll is unavailable. A stopped original
+    /// worker drains through its joined SDK instance without restarting PCM.
+    fn flush_idle_editor_before_save(
+        &mut self,
+        control: &mut PublicationControl,
+        context: AudioSourceContext,
+        cancellation: &RequestCancellation,
+        wanted: &mut [Entry],
+    ) -> Result<Option<(AppliedAudioSource, u64)>, String> {
+        let Some(witness @ (source, _)) = control.status.native_parameter_source(false) else {
+            return Ok(None);
+        };
+        if source.context.project_generation != context.project_generation
+            || self.recording_binding().is_some()
+        {
+            return Ok(None);
+        }
+        for entry in wanted.iter_mut() {
+            if entry.binding.root == source.output_identity {
+                entry.idle_editor = Some(
+                    if self.sources[entry.source_index].edit_recovery.is_some() {
+                        IdleEditorRead::Previous
+                    } else {
+                        IdleEditorRead::Save
+                    },
+                );
+            }
+        }
+        if wanted.iter().all(|entry| entry.idle_editor.is_none()) {
+            return Ok(None);
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while wanted.iter().any(|entry| entry.idle_editor.is_some()) {
+            for entry in wanted
+                .iter_mut()
+                .filter(|entry| entry.idle_editor.is_some())
+            {
+                edits::check_cancel(Some(cancellation))?;
+                if control.status.native_parameter_source(false) != Some(witness) {
+                    return Err(SAVE_TRANSPORT_CHANGED.into());
+                }
+                let drained =
+                    self.poll_idle_save_editor_input(control, witness, entry.source_index)?;
+                if entry.idle_editor == Some(IdleEditorRead::Previous) {
+                    if self.sources[entry.source_index].edit_recovery.is_none() {
+                        // The earlier poll might have sampled before Save or
+                        // used a non-flushing mode. Ask for a fresh idle read.
+                        entry.idle_editor = Some(IdleEditorRead::Save);
+                    }
+                } else if drained {
+                    entry.idle_editor = None;
+                }
+            }
+            if wanted.iter().any(|entry| entry.idle_editor.is_some()) {
+                if Instant::now() >= deadline {
+                    return Err("vst3 editor input did not settle · retry save".into());
+                }
+                edits::poll_control(control);
+            }
+        }
+        Ok(Some(witness))
     }
 }
 

@@ -253,11 +253,12 @@ impl EditorView {
         }) {
             return;
         }
-        self.enqueue(Request::Edit(Command::SetClipFades {
-            clip: clip_id,
-            fade_in: 0,
-            fade_out: 0,
-        }));
+        if let Ok(fade) = ClipFade::neutral(duration) {
+            self.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+                clip: clip_id,
+                fade,
+            }));
+        }
     }
 
     fn report_fade_edit_blocked(&mut self) {

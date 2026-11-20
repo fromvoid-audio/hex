@@ -8,6 +8,7 @@ use crate::{BeatTime, Created, Device, DeviceId, Invalid, Project};
 pub use hex_lattice_contract::DeviceAutomationTarget;
 use hex_lattice_contract::ParameterId;
 
+pub(crate) mod arrangement;
 mod replacement;
 pub use replacement::DeviceAutomationReplacement;
 mod touch;
@@ -89,32 +90,51 @@ impl DeviceAutomation {
         if let Some(value) = touch::value_at(&self.touch, beat) {
             return Some(value);
         }
-        let first = self.points.first()?;
-        let next = self.points.partition_point(|point| point.beat <= beat);
-        if next == 0 {
-            return Some(first.value);
-        }
-        let left = self.points.get(next - 1)?;
-        let Some(right) = self.points.get(next) else {
-            return Some(left.value);
-        };
-        if left.outgoing == AutomationInterpolation::Step || beat == left.beat {
-            return Some(left.value);
-        }
-        let span = right.beat.raw().checked_sub(left.beat.raw())?;
-        if span == 0 {
-            return None;
-        }
-        let elapsed = beat.raw().checked_sub(left.beat.raw())?;
-        let fraction = elapsed as f64 / span as f64;
-        AutomationValue::new(
-            (f64::from(left.value.get())
-                + (f64::from(right.value.get()) - f64::from(left.value.get())) * fraction)
-                as f32,
-        )
-        .ok()
+        Some(base_sample(&self.points, beat, false)?.0)
     }
 }
+
+/// The incoming sample at a seam uses the segment ending there. The
+/// right-hand sample uses the final point at that beat and its outgoing mode.
+fn base_sample(
+    points: &[AutomationPoint],
+    beat: BeatTime,
+    incoming: bool,
+) -> Option<(AutomationValue, AutomationInterpolation)> {
+    let first = points.first()?;
+    let next = if incoming {
+        points.partition_point(|point| point.beat < beat)
+    } else {
+        points.partition_point(|point| point.beat <= beat)
+    };
+    if next == 0 {
+        return Some((first.value, AutomationInterpolation::Step));
+    }
+    let left = &points[next - 1];
+    if beat == left.beat {
+        return Some((left.value, left.outgoing));
+    }
+    let Some(right) = points.get(next) else {
+        return Some((left.value, AutomationInterpolation::Step));
+    };
+    if left.outgoing == AutomationInterpolation::Step {
+        return Some((left.value, left.outgoing));
+    }
+    let span = right.beat.raw().checked_sub(left.beat.raw())?;
+    if span == 0 {
+        return None;
+    }
+    let elapsed = beat.raw().checked_sub(left.beat.raw())?;
+    let fraction = elapsed as f64 / span as f64;
+    let value = AutomationValue::new(
+        (f64::from(left.value.get())
+            + (f64::from(right.value.get()) - f64::from(left.value.get())) * fraction)
+            as f32,
+    )
+    .ok()?;
+    Some((value, left.outgoing))
+}
+
 pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Invalid> {
     if lanes.len() > MAX_DEVICE_AUTOMATION_LANES {
         return Err(Invalid("device automation lane limit reached"));

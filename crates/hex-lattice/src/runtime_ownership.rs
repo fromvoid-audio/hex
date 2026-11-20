@@ -122,7 +122,7 @@ impl RuntimeOwnership {
         factory: Option<&PreparedProcessorFactory>,
     ) -> Result<Self, DeviceContractError> {
         match factory {
-            None => Ok(Self::Memoryless),
+            None | Some(PreparedProcessorFactory::PoweredOff) => Ok(Self::Memoryless),
             Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(ForeignRuntime {
                 prepared: *v,
                 modulation: None,
@@ -266,6 +266,15 @@ impl RuntimeOwnership {
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_retarget_source_host_matrix_from(old.as_ref())
                     && scratch.can_retarget_source_host_matrix_from(old.as_ref())
+            }
+            _ => false,
+        }
+    }
+    pub(super) fn can_retarget_source_parameters_from(&self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
+                primary.can_retarget_source_parameters_from(old.as_ref())
+                    && scratch.can_retarget_source_parameters_from(old.as_ref())
             }
             _ => false,
         }

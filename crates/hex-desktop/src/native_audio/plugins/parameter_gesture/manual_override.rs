@@ -77,6 +77,11 @@ impl Plugins {
         &self,
         successor: AudioSourceContext,
     ) -> Option<(AppliedAudioSource, u64, bool)> {
+        if let Some(replay) = &self.retiring_replay_capture
+            && let Some(source) = replay.isolated_source(successor)
+        {
+            return Some(source);
+        }
         let gesture = self.parameter_gesture.as_ref()?;
         let (predecessor, _) = gesture.commit?;
         let live = gesture.live.as_ref()?;
@@ -316,14 +321,16 @@ impl Gesture {
                 && let Some(terminal) = scratch.poll_on_control(control, &mut cancelled)
             {
                 live.scratch = None;
-                return terminal.map_err(refused).map(|base| {
-                    Prepared::OverrideCaptured(Box::new(PluginParameterOverride {
-                        source: live.source.context,
-                        class: live.class,
-                        parameter: self.origin.parameter,
-                        base,
-                    }))
-                });
+                return terminal
+                    .map_err(|error| refused(error.to_string()))
+                    .map(|base| {
+                        Prepared::OverrideCaptured(Box::new(PluginParameterOverride {
+                            source: live.source.context,
+                            class: live.class,
+                            parameter: self.origin.parameter,
+                            base,
+                        }))
+                    });
             }
             if Instant::now() >= deadline {
                 return Err(refused("vst3 manual base capture is still settling"));

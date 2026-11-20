@@ -88,7 +88,7 @@ fn every_configuration_has_exact_reserved_storage_and_bypass_latency() {
 }
 
 #[test]
-fn live_bypass_reversal_and_rollback_preserve_the_uninterrupted_detector_history() {
+fn rapid_reversal_keeps_detector_history_and_settled_power_restarts_it() {
     for lookahead in 0..3 {
         for routing in 0..2 {
             for mode in 0..3 {
@@ -113,7 +113,9 @@ fn check_mix(rate: u32, lookahead: u32, routing: u32, mode: u32) {
         .unwrap() as usize;
     let warm = latency * 2 + 64;
     let ramp = rate.div_ceil(200) as usize;
-    let settled = ramp + 60;
+    let power_on = rate.div_ceil(2000) as usize;
+    let settled = ramp + latency + 60;
+    let restart = 18 + 2 * settled;
     let count = 18 + 3 * settled;
     let input: Vec<_> = (0..warm + count)
         .map(|i| {
@@ -125,6 +127,14 @@ fn check_mix(rate: u32, lookahead: u32, routing: u32, mode: u32) {
         .collect();
     let mut reference = chain(rate, &changes, false);
     let wet = process(&mut reference, &input, 64);
+    let mut fresh = chain(rate, &changes, false);
+    let restarted_wet = process(&mut fresh, &input[warm + restart..], 64);
+    assert!(
+        wet[warm + restart + latency..]
+            .iter()
+            .zip(&restarted_wet[latency..])
+            .any(|(old, fresh)| old != fresh)
+    );
     for block in [1, 7, 64, 512] {
         let mut old = chain(rate, &changes, false);
         process(&mut old, &input[..warm], 64);
@@ -141,7 +151,9 @@ fn check_mix(rate: u32, lookahead: u32, routing: u32, mode: u32) {
             assert!(next.can_inherit_from(&old));
             next.transfer_history_from(&mut old);
             let start = warm + offset;
-            let mut discarded = input[start..start + 7].to_vec();
+            // Roll back across a fade completion or the aligned restart lead,
+            // even when this publication would otherwise finish the transition.
+            let mut discarded = input[start..start + length].to_vec();
             next.begin_block();
             next.process_block(&mut discarded).unwrap();
             next.rollback_block();
@@ -153,14 +165,19 @@ fn check_mix(rate: u32, lookahead: u32, routing: u32, mode: u32) {
                 } else if i < 18 + settled {
                     let initial = 1.0 - 18.0 / ramp as f32;
                     initial + (1.0 - initial) * (i - 17).min(ramp) as f32 / ramp as f32
-                } else if i < 18 + 2 * settled {
+                } else if i < restart {
                     1.0 - (i - 17 - settled).min(ramp) as f32 / ramp as f32
                 } else {
-                    (i - 17 - 2 * settled).min(ramp) as f32 / ramp as f32
+                    (i - restart + 1).saturating_sub(latency).min(power_on) as f32 / power_on as f32
                 };
                 let dry = input[warm + i - latency];
+                let processed = if i < restart {
+                    wet[warm + i]
+                } else {
+                    restarted_wet[i - restart]
+                };
                 for lane in 0..2 {
-                    let expected = dry[lane] + (wet[warm + i][lane] - dry[lane]) * mix;
+                    let expected = dry[lane] + (processed[lane] - dry[lane]) * mix;
                     assert!(
                         (frame[lane] - expected).abs() < 3e-6,
                         "{rate}/{lookahead}/{routing}/{mode} block={block} frame={i}: {frame:?} != {expected}"

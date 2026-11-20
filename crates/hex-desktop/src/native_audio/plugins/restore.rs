@@ -15,7 +15,9 @@ pub(super) struct Restore {
 }
 enum Stage {
     Fence,
-    Return,
+    Return {
+        hold_release_deadline: std::time::Instant,
+    },
     Renew(usize),
     RefreshLatency(Binding),
     Prepare(usize),
@@ -82,6 +84,8 @@ impl Plugins {
         let fence = control
             .request_ordinary_native_epoch_fence(source)
             .map_err(str::to_owned)?;
+        self.invalidate_editor_close();
+        self.release_replay_editor_hold(Some(control));
         self.restore = Some(Restore {
             context,
             source,
@@ -172,9 +176,27 @@ impl Plugins {
                         // another transport source started playback first.
                         return Err("playback started before vst3 effects were restored".into());
                     }
-                    StoppedEditFenceState::Ready => restore.stage = Stage::Return,
+                    StoppedEditFenceState::Ready => {
+                        let hold_release_deadline = std::time::Instant::now()
+                            .checked_add(PREPARATION_TIMEOUT)
+                            .ok_or("stopped vst3 editor hold deadline unavailable")?;
+                        restore.stage = Stage::Return {
+                            hold_release_deadline,
+                        };
+                    }
                 },
-                Stage::Return => match control
+                // The original controller must settle its exact release
+                // before returning the endpoint and reusing the SDK child.
+                Stage::Return {
+                    hold_release_deadline,
+                } if self.editor_close.is_some() || self.replay_editor_hold.is_some() => {
+                    if std::time::Instant::now() >= hold_release_deadline {
+                        return Err(
+                            "could not confirm release of the original vst3 editor hold".into()
+                        );
+                    }
+                }
+                Stage::Return { .. } => match control
                     .return_stopped_ordinary_native_epoch_runtime(restore.source, restore.fence)
                 {
                     Ok(()) => restore.stage = Stage::Renew(0),
@@ -184,14 +206,27 @@ impl Plugins {
                 Stage::Renew(index) => {
                     if let Some(source) = self.sources.get_mut(index) {
                         if source.accepted && !source.retiring {
-                            match control.quiesce_native_source_preparation(
+                            let lease = source.editor_retirement.lease.as_mut().ok_or(
+                                "stopped vst3 restore lost its editor receipt reservation",
+                            )?;
+                            match control.quiesce_native_source_with_editor_reservation(
                                 source.binding,
                                 source.binding.graph,
+                                lease,
                             ) {
                                 Ok(binding) => {
+                                    let previous = source.binding;
+                                    let observes_latency = source.observes_latency;
                                     source.binding = binding;
                                     source.queued = false;
-                                    if source.observes_latency {
+                                    for pending in &mut self.sources {
+                                        pending.editor_retirement.renew_successor(
+                                            previous,
+                                            binding,
+                                            restore.context,
+                                        );
+                                    }
+                                    if observes_latency {
                                         restore.stage = Stage::RefreshLatency(binding);
                                         return Ok(false);
                                     }

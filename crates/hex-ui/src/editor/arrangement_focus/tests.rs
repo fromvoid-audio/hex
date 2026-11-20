@@ -88,6 +88,39 @@ fn select_section(visual: &mut VisualTestContext, index: u64, toggle_membership:
 }
 
 #[gpui::test]
+fn section_focus_ignores_muted_audio_and_midi_clips(cx: &mut TestAppContext) {
+    let (mut visual, editor, mut f) = open(cx);
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    select_section(&mut visual, 0, false);
+    let visible = |visual: &VisualTestContext, expected: &[usize]| {
+        editor.read_with(visual, |view, _| {
+            assert_eq!(view.arrangement_track_indices(), expected);
+        });
+    };
+    visible(&visual, &[1, 3]);
+
+    // The audio track also has active clips outside the chosen section.
+    for (clip, active, expected) in [
+        (f.clips[0], false, &[3][..]),
+        (f.clips[2], false, &[][..]),
+        (f.clips[0], true, &[1][..]),
+    ] {
+        f.model
+            .execute(Command::SetClipActive { clip, active })
+            .unwrap();
+        replace(&mut visual, &editor, f.model.project().clone());
+        visible(&visual, expected);
+    }
+    let midi = selector("midi-clip-visual", f.clips[2].value());
+    assert!(visual.debug_bounds(midi).is_none());
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    visible(&visual, &[0, 1, 2, 3, 4]);
+    assert!(visual.debug_bounds(midi).is_some());
+}
+
+#[gpui::test]
 fn section_focus_renders_visible_child_with_nested_group_headers(cx: &mut TestAppContext) {
     let (mut visual, editor, mut f) = open(cx);
     let mut child = f.tracks[3];

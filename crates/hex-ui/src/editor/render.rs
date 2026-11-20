@@ -12,7 +12,7 @@ use super::{
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
-use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
+use gpui::{AnimationExt, Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
 use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
@@ -234,6 +234,24 @@ impl EditorView {
             );
         } else {
             let status = plugin_status.unwrap_or(&self.status);
+            let feedback_paint = self
+                .pending_plugin_effect
+                .as_ref()
+                .and_then(|pending| pending.trace.as_ref())
+                .filter(|trace| !trace.feedback_painted())
+                .map(|trace| {
+                    let trace = std::rc::Rc::clone(trace);
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, _| {
+                            if bounds.intersects(&window.content_mask().bounds) {
+                                trace.record_feedback_paint();
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0()
+                });
             bar = bar.child(
                 div()
                     .id("editor-status-message")
@@ -251,8 +269,50 @@ impl EditorView {
                             .into()
                         }
                     })
+                    .relative()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(status)),
+                    .child(theme::text(status))
+                    .children(feedback_paint),
+            );
+        }
+        if let Some(control) = &self.bounce_control {
+            let phase = if control.is_cancelled() {
+                "cancelling bounce"
+            } else {
+                "bouncing audio · escape cancels"
+            };
+            bar = bar.child(
+                div()
+                    .id("bounce-status-progress")
+                    .debug_selector(|| "bounce-status-progress".into())
+                    .relative()
+                    .w(px(48.0))
+                    .h(px(4.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .bg(rgb(theme::color(theme::PaletteRole::Border)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: theme::text(phase),
+                        })
+                        .into()
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .h_full()
+                            .w(px(16.0))
+                            .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+                            .with_animation(
+                                "bounce-status-sweep",
+                                gpui::Animation::new(std::time::Duration::from_millis(1200))
+                                    .repeat(),
+                                |fill, progress| {
+                                    fill.left(px(32.0 * (1.0 - (2.0 * progress - 1.0).abs())))
+                                },
+                            ),
+                    ),
             );
         }
         let offline = self
@@ -579,6 +639,7 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
         self.reconcile_truncated_import_offer(window, cx);
+        self.reconcile_device_insert_confirmation(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -600,9 +661,11 @@ impl Render for EditorView {
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
         self.reconcile_detail_context();
+        self.restore_proposed_plugin_focus(window);
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
+        self.reconcile_gain_audition();
         if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;

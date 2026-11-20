@@ -20,7 +20,7 @@ use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, num::NonZeroU64, sync::Arc};
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedDeviceIdentity {
@@ -66,11 +66,14 @@ struct PreparedMutableTrackRevision {
 }
 
 impl PreparedMutableTrackRevision {
-    fn topology_matches(&self, other: &Self) -> bool {
+    fn generator_matches(&self, other: &Self) -> bool {
         self.id == other.id
             && self.instrument == other.instrument
             && self.instrument_position == other.instrument_position
-            && self.effects == other.effects
+    }
+
+    fn topology_matches(&self, other: &Self) -> bool {
+        self.generator_matches(other) && self.effects == other.effects
     }
 
     /// Retargeting may change authored instrument state, but it may not alter
@@ -145,6 +148,7 @@ pub struct PreparedRevision {
     pub(crate) resource_scope: Option<u64>,
     pub(crate) device_resource_scope: Option<u64>,
     tuning_family: TuningContinuationFamily,
+    pub(crate) authored_clock_epoch: NonZeroU64,
     arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
     midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
@@ -718,7 +722,7 @@ impl PreparedRevision {
         )
     }
 
-    fn prepare_with_registries_and_transforms(
+    pub(crate) fn prepare_with_registries_and_transforms(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
         sine_table: Arc<SineTable>,
@@ -853,6 +857,7 @@ impl PreparedRevision {
                 resource_scope: samplers.and_then(|sources| sources.private_scope()),
                 device_resource_scope: samplers.and_then(|sources| sources.device_scope()),
                 tuning_family: TuningContinuationFamily::fresh()?,
+                authored_clock_epoch: NonZeroU64::MIN,
                 arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
                 session: crate::owned_shared::OwnedShared::new_owned(session),
                 midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
@@ -1024,6 +1029,82 @@ impl PreparedRevision {
         )
     }
 
+    /// Prepare Arrangement and Session together with separately verified
+    /// full-source pitch metadata. Session clips retain their raw asset source.
+    /// The host must retain matching worker and native source custody; these
+    /// metadata bindings alone grant neither readiness nor publication.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_prepared_pitch_sources_and_device_resources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+            project,
+            sources,
+            pitched,
+            expected_generation,
+            sine_table,
+            previous_session,
+            transforms,
+            resources,
+            max_scan_frames,
+            cancel,
+            &effects,
+            None,
+        )
+    }
+
+    /// Same preparation with the host's borrowed effect registry and input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_prepared_pitch_sources_device_resources_and_effect_registry(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<Self, Invalid> {
+        if expected_generation == 0 {
+            return Err(Invalid("stream source generation must be positive"));
+        }
+        resources.validate_project(project)?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        let preparation = crate::native_device_resources::CompilerDeviceResources::new(
+            resources,
+            max_scan_frames,
+            cancel,
+        );
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::MixedWithPitch(sources, pitched, expected_generation),
+            sine_table,
+            previous_session,
+            effects,
+            &instruments,
+            transforms,
+            Some(&preparation),
+            native_input,
+            &[],
+        )
+    }
+
     /// Control-only scalar compilation against an exact sealed source sidecar.
     /// The returned graph owns no source bank; generic runtime constructors
     /// refuse it without the matching sidecar. Applications must keep it private.
@@ -1104,6 +1185,48 @@ impl PreparedRevision {
         sine_table: Arc<SineTable>,
         previous_session: Option<&PreparedSessionInventory>,
     ) -> Result<Self, Invalid> {
+        Self::prepare_with_prepared_pitch_sources(
+            project,
+            sources,
+            &BTreeMap::new(),
+            expected_generation,
+            sine_table,
+            previous_session,
+        )
+    }
+
+    /// Prepare semantic Arrangement derived sources while Session slots keep raw
+    /// bindings. The supplied metadata does not grant worker or page custody.
+    pub fn prepare_with_prepared_pitch_sources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+    ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_prepared_pitch_sources_and_effects(
+            project,
+            sources,
+            pitched,
+            expected_generation,
+            sine_table,
+            previous_session,
+            &effects,
+        )
+    }
+
+    pub(crate) fn prepare_with_prepared_pitch_sources_and_effects(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        pitched: &BTreeMap<crate::StreamSourceKey, Arc<crate::StreamedSourceMetadata>>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
         crate::gain_envelope::validate_project(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let instruments = hex_devices::native_instrument_registry()
@@ -1121,13 +1244,15 @@ impl PreparedRevision {
             ));
         }
         let (mut arrangement, midi_preview) =
-            crate::compile::project_with_prepared_audio_sources_and_midi_preview_and_contexts(
+            crate::compile::project_with_pitch_sources_and_effects(
                 project,
                 sources,
+                pitched,
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
                 Some(Arc::clone(&shared_contexts)),
                 None,
+                effects,
             )?;
         let session =
             PreparedSessionInventory::prepare_with_prepared_audio_sources_and_shared_contexts(
@@ -1166,6 +1291,7 @@ impl PreparedRevision {
             resource_scope: None,
             device_resource_scope: None,
             tuning_family: TuningContinuationFamily::fresh()?,
+            authored_clock_epoch: NonZeroU64::MIN,
             arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
             session: crate::owned_shared::OwnedShared::new_owned(session),
             midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
@@ -1254,6 +1380,25 @@ impl PreparedRevision {
         self.scalar_automation.is_some()
             || self.arrangement.contains_streamed_sources()
             || self.session.contains_streamed_sources()
+    }
+
+    /// Whether these immutable ordinary revisions are suitable for attempting
+    /// a compensated Arrangement tempo cut. The callback still proves route,
+    /// transport and delay-history continuity against the actual donor.
+    pub fn can_schedule_ordinary_tempo_edit_from(&self, previous: &Self) -> bool {
+        !self
+            .session()
+            .timing()
+            .same_map(previous.session().timing())
+            && [self, previous].into_iter().all(|revision| {
+                let arrangement = revision.arrangement();
+                arrangement.main_latency_frames() > 0
+                    && revision.scalar_automation.is_none()
+                    && arrangement.source_effects.is_empty()
+                    && arrangement.tracks().iter().all(|track| {
+                        track.instrument.is_none() || track.foreign_instrument.is_some()
+                    })
+            })
     }
 
     /// Whether the compiled Arrangement owns any enabled mutable instrument.
@@ -1517,6 +1662,34 @@ impl PreparedRevision {
         self.arrangement.shared_contexts().tuning_identity()
             == other.arrangement.shared_contexts().tuning_identity()
             && old.topology_matches(new)
+    }
+
+    /// The callback proves that an appended stage is native and downstream
+    /// of this generator. Match the retained authored prefix and, for an
+    /// Arrangement route, the exact authored notes.
+    pub(crate) fn mutable_track_matches_at_latency_cut(
+        &self,
+        other: &Self,
+        track: TrackId,
+        arrangement: bool,
+        native_append: bool,
+    ) -> bool {
+        let Some((old, new)) = self
+            .mutable_track_revision(track)
+            .zip(other.mutable_track_revision(track))
+        else {
+            return false;
+        };
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.generator_matches(new)
+            && (old.effects == new.effects
+                || native_append
+                    && new
+                        .effects
+                        .split_last()
+                        .is_some_and(|(_, prefix)| prefix == old.effects))
+            && (!arrangement || old.arrangement_sources_match(new))
     }
 
     pub(crate) fn mutable_track_retarget_topology_matches(

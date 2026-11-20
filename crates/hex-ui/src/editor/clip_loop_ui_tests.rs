@@ -246,13 +246,32 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             .expect("first repeat marker");
         assert!(marker.left() > held.left() && marker.right() < held.right());
         assert!(f.visual.rendered_border(overlay).is_some());
+        let (corners, _) = f
+            .visual
+            .rendered_surface_geometry(overlay)
+            .expect("painted loop fill");
+        assert_eq!(corners, gpui::Corners::default());
         let body = f
             .visual
             .debug_bounds("clip-waveform-body")
             .expect("loop body");
         assert!(
-            body.bottom() <= held.bottom() - px(loop_handles::BOTTOM_RADIUS),
-            "child fills stay clear of rounded lower corners"
+            body.bottom() >= held.bottom() - px(2.0),
+            "loop body reaches the square bottom edge"
+        );
+        let trailing = if midi {
+            "midi-trim-preview-trailing"
+        } else {
+            "trim-preview-trailing"
+        };
+        let scale = f.visual.update(|window, _| window.scale_factor());
+        let edges = f.visual.rendered_quad_paint_layers(trailing, false);
+        assert!(
+            edges.iter().any(|(_, bounds)| {
+                bounds.top() > held.top().scale(scale)
+                    && bounds.bottom() >= (held.bottom() - px(1.0)).scale(scale)
+            }),
+            "the chamfer clips the top of the trailing stroke and the bottom remains square"
         );
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, modifiers);
@@ -337,6 +356,66 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
+}
+
+#[gpui::test]
+fn audio_repeat_gap_drag_retains_marker_until_the_worker_ack(cx: &mut TestAppContext) {
+    let mut f = fixture(cx, false);
+    let outer = drag(&mut f, "outer", 100.0, Modifiers::default());
+    f.visual
+        .simulate_mouse_up(outer, MouseButton::Left, Modifiers::default());
+    pump(&f.editor, &mut f.visual);
+    let before = f.editor.read_with(&f.visual, |v, _| {
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    let target = drag(&mut f, "cycle", 35.0, Modifiers::default());
+    let marker = f
+        .visual
+        .debug_bounds("clip-repeat-marker-0")
+        .expect("held repeat marker");
+    f.editor.read_with(&f.visual, |v, _| {
+        let held = v.active_trim_drag.as_ref().unwrap().preview.borrow();
+        assert!(
+            held.as_ref()
+                .unwrap()
+                .clip
+                .audio_edit()
+                .unwrap()
+                .repeat_period
+                .is_some()
+        );
+    });
+    f.visual
+        .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    f.visual.run_until_parked();
+    assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
+    f.editor.read_with(&f.visual, |v, _| {
+        assert!(v.pending_trim.is_some());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    pump(&f.editor, &mut f.visual);
+    f.editor.read_with(&f.visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(v.pending_trim.is_none());
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(f.clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .repeat_period
+                .is_some()
+        );
+    });
+    assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
+    f.visual.simulate_keystrokes("cmd-z");
+    pump(&f.editor, &mut f.visual);
+    f.editor.read_with(&f.visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
 }
 
 #[gpui::test]
@@ -505,7 +584,7 @@ fn clip_loop_compact_row_option_edge_repeats_and_keeps_first_boundary(cx: &mut T
         // option on it repeats.
         assert!(f.visual.debug_bounds(selector(&f, "outer")).is_none());
         let edge = f.visual.debug_bounds(right_edge(&f)).unwrap();
-        assert_eq!(edge.size.height, px(23.0));
+        assert_eq!(edge.size.height, px(22.0));
         f.visual
             .simulate_mouse_move(edge.center(), None, Modifiers::default());
         f.visual.run_until_parked();

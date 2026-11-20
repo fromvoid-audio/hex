@@ -78,6 +78,10 @@ live order of headroom, precedes any mutation. Source order differences and ties
 are translated without collapsing them; typed buffers and paint operations share
 the original append logic and paths receive fresh IDs. Contained Start/End
 operations remain in the stream. Refusal uses the unchanged per-operation replay.
+The scene records the outermost layer boundaries for both live and bulk-replayed
+paint operations. Replay tests for an enclosing layer at the requested start
+with a binary search. An unmatched earlier end still forces per-operation replay.
+
 No whole-row layer shortcut, native calls, unsafe code or new dependency is added.
 
 The implementation is confined to `src/scene.rs` and `src/bounds_tree.rs`;
@@ -103,6 +107,18 @@ graph test-support verifier checks insert/reserve/clear/overflow against a linea
 scan over deterministic mixed geometry at 1×/2× and a rounded-ancestor case,
 alongside the mixed-primitive replay oracle. No balancing, primitive/layer
 grouping, native API, allocation or dependency is added.
+
+Live ordering can reuse the nearest leaf when its clipped bounds exactly match
+the new rectangle. After the usual query, keep the largest order in the leaf
+and propagate the maximum along the usual ancestor path. Every primitive
+keeps its own assigned order and every future overlap has the same maximum.
+The locked verifier covers repeated overlap, reservation and disjoint reuse.
+
+Mac display requests still service dirty frames and explicit presentation.
+The optional recent-input replay of an unchanged scene skips drawable
+acquisition during a GPUI pointer drag. Release or cancellation restores the
+usual warm presentation cadence. The TestPlatform verifies that decision
+after dispatching real pan and clip drag inputs.
 
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
@@ -457,3 +473,8 @@ computed union. Otherwise each path uses ordinary insertion. The pair retains
 separate masks, primitive records and PathIds, and inherits any enclosing layer.
 Cached scene tests cover ordering, fallback and replay, and widget tests compare
 the completed triangles under the live clip mask.
+
+20 November piano-roll border test support: `rendered_quad_borders_at` reads the
+colors and widths of completed canvas quads at a logical point inside their
+content masks. Hex uses it to distinguish the idle, hover, and selected rounded
+note outlines. It is confined to the existing test-support context.

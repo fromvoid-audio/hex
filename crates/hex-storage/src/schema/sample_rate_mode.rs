@@ -51,6 +51,17 @@ mod tests {
         assert!(crate::encode_schema20(&follow).is_err());
 
         let mut malformed: Value = serde_json::from_slice(&encoded).unwrap();
+        for inventory in [
+            "group_output_mutes",
+            "musical_event_sources",
+            "sidechains",
+            "retained_source_paths",
+        ] {
+            let mut missing = malformed.clone();
+            let removed = missing.as_object_mut().unwrap().remove(inventory);
+            assert_eq!(removed, Some(Value::Array(Vec::new())));
+            assert!(crate::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+        }
         for invalid in [Value::Null, "fixed".into(), 1.into()] {
             malformed["sample_rate_mode"] = invalid;
             assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());

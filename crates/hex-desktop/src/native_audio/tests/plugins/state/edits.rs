@@ -2,10 +2,21 @@
 use super::*;
 
 fn with_gain(state: &NativeDeviceState, gain: f32) -> NativeDeviceState {
+    with_gain_and_axis(state, gain, None)
+}
+
+fn with_gain_and_axis(
+    state: &NativeDeviceState,
+    gain: f32,
+    axis_gain: Option<f64>,
+) -> NativeDeviceState {
     let captured = hex_plugin_state::decode(state).unwrap();
     let mut component = captured.component.unwrap().to_vec();
     assert_eq!(&component[..4], b"HXPS");
     component[8..12].copy_from_slice(&gain.to_le_bytes());
+    if let Some(axis_gain) = axis_gain {
+        component[32..40].copy_from_slice(&axis_gain.to_le_bytes());
+    }
     let mut controller = captured.controller.map(<[u8]>::to_vec);
     if let Some(controller) = controller.as_mut() {
         assert_eq!(&controller[..4], b"HXCT");
@@ -18,7 +29,7 @@ fn with_gain(state: &NativeDeviceState, gain: f32) -> NativeDeviceState {
     })
     .unwrap()
 }
-pub(super) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
+pub(in crate::native_audio::tests::plugins) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
     let end = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
@@ -36,7 +47,7 @@ pub(super) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
         std::thread::yield_now();
     }
 }
-fn workers_idle(h: &ResidentHarness) {
+pub(in crate::native_audio::tests::plugins) fn workers_idle(h: &ResidentHarness) {
     wait(|| {
         h.callback
             .lock()
@@ -79,6 +90,1855 @@ fn graph_publication_ready(h: &mut ResidentHarness, ready: &mpsc::Receiver<()>) 
         assert!(Instant::now() < until, "actual compiled graph publication");
         std::thread::yield_now();
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn plugin_editor_close_releases_unobserved_holds_before_next_attempt() {
+    use crate::native_audio::tests::resident_preview::emit_replay_fixture_edit;
+    use hex_session::service::{
+        DeviceAutomationTakeProgress, PluginEditorCloseAdmission as Admission,
+        PluginEditorCloseAttempt,
+    };
+
+    const CHILD: &str = "HEX_8291_CLOSE_HOLD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        let traces = files.0.join("traces");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&traces).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+            .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    let _native = native_fixture();
+    let (mut h, files, saved) = fixture(Start::Saved);
+    h.applied(0);
+    let context = saved.canonical_audio_source.as_ref().unwrap().context();
+    assert_eq!(context.editor_revision, saved.revision);
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let traces = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let trace = fs::read_dir(traces)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "bin"))
+        .unwrap();
+    emit_replay_fixture_edit(&trace);
+
+    let mut request_id = 0;
+    let mut prepare = |h: &mut ResidentHarness, context, attempt| {
+        request_id += 1;
+        h.service
+            .submit(Request::PreparePluginEditorClose {
+                request_id,
+                context,
+                attempt,
+            })
+            .unwrap();
+        loop {
+            let event = h.next();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if let Some(result) = event.device_automation_take_complete
+                && result.request_id == request_id
+            {
+                let DeviceAutomationTakeProgress::ClosePluginEditor(admission) = result.progress
+                else {
+                    panic!("unexpected close response: {:?}", result.progress);
+                };
+                return admission;
+            }
+        }
+    };
+    let first = Arc::new(PluginEditorCloseAttempt::default());
+    let first_request = Arc::downgrade(&first);
+    let stale = hex_engine::AudioSourceContext {
+        project_generation: context.project_generation + 1,
+        ..context
+    };
+    assert_eq!(
+        prepare(&mut h, stale, first_request.clone()),
+        Admission::Refused
+    );
+    assert_eq!(
+        prepare(&mut h, context, first_request.clone()),
+        Admission::Pending
+    );
+    drop(first);
+    assert_eq!(prepare(&mut h, context, first_request), Admission::Refused);
+
+    // A second attempt uses another token. The same SDK will refuse it while
+    // the first hold remains installed, even when its caller never saw Held.
+    let mut acquire = || {
+        let attempt = Arc::new(PluginEditorCloseAttempt::default());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match prepare(&mut h, context, Arc::downgrade(&attempt)) {
+                Admission::Pending => {}
+                Admission::Held { admitted_edits } => {
+                    assert!(
+                        admitted_edits,
+                        "the original SDK input frontier survives release"
+                    );
+                    break;
+                }
+                Admission::Refused => panic!("the original worker refused a fresh hold"),
+            }
+            assert!(Instant::now() < deadline, "cancelled close leaked its hold");
+        }
+        assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+        attempt
+    };
+    drop(acquire());
+    let held = acquire();
+    assert!(held.is_valid());
+    h.service.submit(Request::SaveCurrent).unwrap();
+    let save = ordinary_terminal(&mut h);
+    assert!(
+        save.save_complete && save.error.is_none(),
+        "{:?}",
+        save.error
+    );
+    let stored = hex_storage::load(files.0.join("effect.hex")).unwrap();
+    let state = hex_plugin_state::decode(stored.main_devices()[0].state()).unwrap();
+    assert_eq!(
+        f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
+        3.0,
+        "save under the admission hold captures the original SDK change"
+    );
+    assert!(held.is_valid());
+
+    // Replacing the exact native source invalidates the close decision even
+    // though its original caller keeps the grant alive through a prompt.
+    let device = &saved.project.main_devices()[0];
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device: device.id(),
+            state: with_gain(device.state(), 0.75),
+        }))
+        .unwrap();
+    let event = ordinary_terminal(&mut h);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while held.is_valid() {
+        h.pump();
+        h.render_worker_step();
+        assert!(
+            Instant::now() < deadline,
+            "replacement left the old close decision valid"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_receipts_survive_replacement_and_callback_held_shutdown() {
+    retiring_editor_replay_roundtrip(ReplayCase::Conflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_saves_and_reopens_on_the_same_successor() {
+    retiring_editor_replay_roundtrip(ReplayCase::Publish);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_already_in_canonical_successor_releases_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::AlreadyCanonical);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn pre_cut_editor_in_canonical_successor_releases_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::PreCutAlreadyCanonical);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn pre_cut_editor_conflict_preserves_the_replacement_and_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::PreCutConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_confirms_matching_receipt_while_playing() {
+    retiring_instrument_receipt(InstrumentReceipt::Matching);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_preserves_conflicting_receipt_while_playing() {
+    retiring_instrument_receipt(InstrumentReceipt::Conflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_late_receipt_without_restarting_held_note() {
+    retiring_instrument_receipt(InstrumentReceipt::Late);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_late_receipt_without_restarting_held_session_note() {
+    retiring_instrument_receipt(InstrumentReceipt::LateSession);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_late_authored_receipt_as_manual_base() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthored);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_authored_receipt_with_a_held_session_note() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthoredSession);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_keeps_authored_lane_and_releases_editor_hold_on_refusal() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthoredRefused);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_authored_replay_keeps_the_newer_successor_edit() {
+    retiring_instrument_receipt(InstrumentReceipt::LateAuthoredConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_restores_held_note_gain_when_late_publication_refuses() {
+    retiring_instrument_receipt(InstrumentReceipt::LateRefused);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InstrumentReceipt {
+    Matching,
+    Conflict,
+    Late,
+    LateSession,
+    LateAuthored,
+    LateAuthoredSession,
+    LateAuthoredRefused,
+    LateAuthoredConflict,
+    LateRefused,
+}
+
+fn retiring_instrument_receipt(case: InstrumentReceipt) {
+    const CHILD: &str = "HEX_RETIRING_INSTRUMENT_CONFIRMATION";
+    let refused = matches!(
+        case,
+        InstrumentReceipt::LateRefused | InstrumentReceipt::LateAuthoredRefused
+    );
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        let traces = files.0.join("traces");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&traces).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "146")
+            .env("HEX_ORIGINAL_EDITOR_TOUCH", "1")
+            .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
+            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
+            .envs(refused.then_some(("HEX_REPLAY_TEST_REFUSE", "1")))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    use crate::native_audio::tests::resident_preview::{
+        EditorRecordingProbe, emit_replay_fixture_edit,
+    };
+    use hex_project::BeatTime;
+    use hex_session::service::{
+        DeviceAutomationTakeProgress as Progress, RetiringEditorCloseBlocker,
+        RetiringEditorEventKind,
+    };
+
+    let _native = native_fixture();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "synth".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("midi track")
+    };
+    applied = h.applied(applied).0;
+    let length = BeatTime::from_quarters(64).unwrap();
+    let session_note = matches!(
+        case,
+        InstrumentReceipt::LateSession | InstrumentReceipt::LateAuthoredSession
+    );
+    let clip = if session_note {
+        let scene = h.run(Request::Edit(Command::AddScene {
+            name: "console".into(),
+        }));
+        let Some(Created::Scene(scene)) = scene.created else {
+            panic!("scene");
+        };
+        applied = h.applied(applied).0;
+        let placed = h.run(Request::Edit(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "console notes".into(),
+            source_length: length,
+        }));
+        let Some(Created::SessionClip(clip)) = placed.created else {
+            panic!("session midi clip");
+        };
+        clip
+    } else {
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("midi clip");
+        };
+        clip
+    };
+    applied = h.applied(applied).0;
+    let note = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: length,
+        pitch: 60,
+        channel: 2,
+        velocity: 64,
+    }));
+    applied = h.applied(applied).0;
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &note.state,
+            PluginEffectDestination::Instrument(track),
+        )))
+        .unwrap();
+    let mut inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    applied = h.applied(applied).0;
+    let original_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let traces = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let trace_files = || {
+        fs::read_dir(&traces)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "bin"))
+    };
+    let original_trace = trace_files().next().expect("original instrument trace");
+    let authored = matches!(
+        case,
+        InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredSession
+            | InstrumentReceipt::LateAuthoredRefused
+            | InstrumentReceipt::LateAuthoredConflict
+    );
+    let target = hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 };
+    let lane_points = [hex_project::AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: hex_project::AutomationValue::new(0.1875).unwrap(),
+        outgoing: hex_project::AutomationInterpolation::Step,
+    }];
+    if authored {
+        let device = inserted
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: lane_points.to_vec(),
+            }))
+            .unwrap();
+        inserted = ordinary_terminal(&mut h);
+        assert!(inserted.error.is_none(), "{:?}", inserted.error);
+        applied = h.applied(applied).0;
+    }
+    let original = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    let device = original.id();
+    let previous_traces: Vec<_> = trace_files().collect();
+    let expected = with_gain(original.state(), 3.0);
+    let replacement = if case == InstrumentReceipt::Matching {
+        expected.clone()
+    } else {
+        with_gain(original.state(), 1.5)
+    };
+    let late = matches!(
+        case,
+        InstrumentReceipt::Late
+            | InstrumentReceipt::LateRefused
+            | InstrumentReceipt::LateSession
+            | InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredSession
+            | InstrumentReceipt::LateAuthoredRefused
+            | InstrumentReceipt::LateAuthoredConflict
+    );
+    let publication = if late {
+        Some(h.probe_next_native_publication())
+    } else {
+        emit_replay_fixture_edit(&original_trace);
+        None
+    };
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: replacement.clone(),
+        }))
+        .unwrap();
+    if let Some((ready, resume, _)) = publication {
+        graph_publication_ready(&mut h, &ready);
+        emit_replay_fixture_edit(&original_trace);
+        resume.send(()).unwrap();
+    }
+    let installed = ordinary_terminal(&mut h);
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    let (installed_revision, _) = h.applied(applied);
+    let installed_binding = |h: &ResidentHarness| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .into_iter()
+            .flatten()
+            .find_map(|(id, binding, _)| (id == device.value()).then_some(binding))
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let successor = loop {
+        h.pump();
+        if let Some(binding) = installed_binding(&h)
+            && binding != original_binding
+        {
+            break binding;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replacement instrument was not installed"
+        );
+        std::thread::yield_now();
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    if session_note {
+        super::super::instruments::render_completed_block(&h);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    }
+    let mut baseline = 0.0_f32;
+    for _ in 0..8 {
+        let block = super::super::instruments::render_completed_block(&h);
+        baseline = block[255][0];
+        if !authored && baseline.abs() > 0.01 {
+            break;
+        }
+    }
+    assert!(
+        baseline.abs() > 0.01,
+        "replacement note did not reach the output"
+    );
+    let successor_trace = if late {
+        if authored {
+            // Authoring may prepare private metadata helpers. A fresh read
+            // on the installed controller identifies the one sounding child.
+            assert!(
+                super::super::installed_edits::query(&mut h, device, None, &mut 0)
+                    .rows
+                    .is_ok()
+            );
+        }
+        let mut paths = trace_files()
+            .filter(|path| !previous_traces.contains(path))
+            .filter(|path| {
+                !authored
+                    || fs::read(path)
+                        .is_ok_and(|contents| contents.get(4..8) == Some(&1_i32.to_ne_bytes()))
+            });
+        let path = paths.next().expect("installed successor trace");
+        assert!(paths.next().is_none(), "more than one prepared successor");
+        Some(path)
+    } else {
+        None
+    };
+    let newer = case == InstrumentReceipt::LateAuthoredConflict;
+    if newer {
+        emit_replay_fixture_edit(successor_trace.as_deref().unwrap());
+    }
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
+        b"end",
+    )
+    .unwrap();
+    let mut request_id = 1;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let settled = loop {
+        h.service
+            .submit(Request::QueryDeviceAutomationCloseSafety { request_id })
+            .unwrap();
+        let event = ordinary_terminal(&mut h);
+        let safety = event.device_automation_take_complete.unwrap();
+        assert_eq!(safety.request_id, request_id);
+        match safety.progress {
+            Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Transferring) => {}
+            result => break (result, event.state),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the original instrument did not settle"
+        );
+        request_id += 1;
+    };
+    let replayed = matches!(
+        case,
+        InstrumentReceipt::Late
+            | InstrumentReceipt::LateSession
+            | InstrumentReceipt::LateAuthored
+            | InstrumentReceipt::LateAuthoredSession
+    );
+    if replayed {
+        assert_eq!(settled.0, Progress::CloseSafe);
+        assert_eq!(settled.1.revision, installed.state.revision + 1);
+        assert_eq!(settled.1.project.device(device).unwrap().state(), &expected);
+    } else {
+        assert_eq!(settled.1.project, installed.state.project);
+        assert_eq!(settled.1.revision, installed.state.revision);
+    }
+    assert_eq!(installed_binding(&h), Some(successor));
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status.native_effect_source().unwrap().audio_revision,
+        installed_revision + u64::from(replayed)
+    );
+    assert!(status.playing.load(Acquire));
+    if refused {
+        // The test sink refuses only after obtaining the new opaque state.
+        assert!(h.refuse.load(Acquire));
+        h.refuse.store(false, Release);
+    }
+    let retained = super::super::editor_recording::probe(&h, |reply| {
+        EditorRecordingProbe::RetiringBatch(original_binding, reply)
+    });
+    let expected_output = if authored && replayed {
+        baseline * 4.0
+    } else if replayed {
+        baseline * 2.0
+    } else {
+        baseline
+    };
+    let mut observed = 0.0;
+    for _ in 0..8 {
+        let block = super::super::instruments::render_completed_block(&h);
+        observed = block[255][0];
+        if (observed - expected_output).abs() < 1.0e-6 {
+            break;
+        }
+    }
+    assert!(
+        (observed - expected_output).abs() < 1.0e-6,
+        "held-note output {observed}, expected {expected_output}, baseline {baseline}",
+    );
+    if replayed || case == InstrumentReceipt::Matching {
+        assert_eq!(settled.0, Progress::CloseSafe);
+        assert!(retained.is_none());
+    } else {
+        assert_eq!(
+            settled.0,
+            Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Unresolved)
+        );
+        let retained = retained.unwrap();
+        assert_eq!(retained.successor, successor);
+        if case == InstrumentReceipt::Conflict {
+            assert_eq!(retained.predecessor_admitted_through, Some(2));
+        }
+        assert_eq!(
+            retained
+                .events()
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            [
+                RetiringEditorEventKind::Begin,
+                RetiringEditorEventKind::Perform,
+                RetiringEditorEventKind::End
+            ],
+        );
+    }
+    if case != InstrumentReceipt::Conflict {
+        let files = Files::new();
+        let path = files.0.join("settled.hex");
+        assert!(h.run(Request::SaveNew(path.clone())).save_complete);
+        let project = hex_storage::load(path).unwrap();
+        assert_eq!(
+            project.device(device).unwrap().state(),
+            if refused || newer {
+                &replacement
+            } else {
+                &expected
+            },
+        );
+        if authored {
+            let lane = project
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .unwrap();
+            assert_eq!(lane.is_reading(), !replayed);
+            assert_eq!(lane.points.as_slice(), &lane_points);
+        }
+    }
+    if let Some(successor_trace) = successor_trace {
+        // Save calls getState on the successor, refreshing its control-side
+        // note trace. A restart or chase would send an extra event.
+        let bytes = fs::read(&successor_trace).unwrap();
+        assert_eq!(bytes.len(), 20);
+        let word = |index| i32::from_ne_bytes(bytes[index..index + 4].try_into().unwrap());
+        assert_eq!(
+            (word(4), word(8)),
+            (1, 0),
+            "successor retriggered its held note"
+        );
+        assert!(word(12) > 0, "successor did not retain a named gate");
+        if authored {
+            // The physical editor can admit a new gesture after either
+            // disposition. A leaked producer hold would reject its Begin.
+            if !newer {
+                emit_replay_fixture_edit(&successor_trace);
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let frontier = super::super::editor_recording::probe(&h, |reply| {
+                    EditorRecordingProbe::EditorFrontier(successor, reply)
+                });
+                if frontier.is_some_and(|sequence| sequence >= 2) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "successor editor stayed held");
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn earlier_group_matching_both_values_releases_the_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::EarlierGrouped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn earlier_group_with_one_conflicting_value_stays_in_original_custody() {
+    retiring_editor_replay_roundtrip(ReplayCase::EarlierGroupedConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn group_open_at_preparation_confirms_earlier_values_after_its_terminal() {
+    retiring_editor_replay_roundtrip(ReplayCase::SpanningGroup);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn group_open_at_preparation_keeps_the_receipt_when_one_earlier_value_conflicts() {
+    retiring_editor_replay_roundtrip(ReplayCase::SpanningGroupConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn mixed_retiring_editor_replays_group_after_confirming_earlier_value() {
+    retiring_editor_replay_roundtrip(ReplayCase::Mixed);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn mixed_retiring_editor_keeps_later_group_unapplied_if_earlier_value_conflicts() {
+    retiring_editor_replay_roundtrip(ReplayCase::MixedConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_group_replays_both_values_and_reopens_on_the_same_successor() {
+    retiring_editor_replay_roundtrip(ReplayCase::Grouped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn later_vst3_cohorts_replay_in_order_and_save_final_values() {
+    retiring_editor_replay_roundtrip(ReplayCase::SeveralGroups);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn later_vst3_cohorts_restore_original_values_when_publication_refuses() {
+    retiring_editor_replay_roundtrip(ReplayCase::SeveralGroupsRefuse);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_preserves_playing_transport() {
+    retiring_editor_replay_roundtrip(ReplayCase::Playing);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_preserves_playing_authored_effect_and_saves_manual_base() {
+    retiring_editor_replay_roundtrip(ReplayCase::AuthoredPlaying);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_saves_and_reopens_stopped_authored_effect() {
+    retiring_editor_replay_roundtrip(ReplayCase::AuthoredStopped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_saves_and_reopens_stopped_modulated_effect() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedStopped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_preserves_active_modulation_and_saves_manual_base() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedPlaying);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_renews_modulated_successor_after_stop() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedAfterStop);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_retries_after_stop_refuses_queued_modulated_candidate() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedStopAtConfirmation);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_retries_after_stop_interrupts_isolated_capture() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedStopAtCapture);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_refusal_restores_confirmed_successor() {
+    retiring_editor_replay_roundtrip(ReplayCase::Refuse);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_refusal_preserves_newer_editor_input() {
+    retiring_editor_replay_roundtrip(ReplayCase::RefuseAfterNewer);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplayCase {
+    Conflict,
+    Publish,
+    AlreadyCanonical,
+    PreCutAlreadyCanonical,
+    PreCutConflict,
+    EarlierGrouped,
+    EarlierGroupedConflict,
+    SpanningGroup,
+    SpanningGroupConflict,
+    Mixed,
+    MixedConflict,
+    Grouped,
+    SeveralGroups,
+    SeveralGroupsRefuse,
+    Playing,
+    AuthoredPlaying,
+    AuthoredStopped,
+    ModulatedStopped,
+    ModulatedPlaying,
+    ModulatedAfterStop,
+    ModulatedStopAtConfirmation,
+    ModulatedStopAtCapture,
+    Refuse,
+    RefuseAfterNewer,
+}
+
+fn gain_modulation(first_id: u64) -> hex_project::DeviceModulation {
+    use hex_project::{
+        DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    };
+    let source = ModulationSourceId::new(first_id).unwrap();
+    DeviceModulation::new(
+        vec![Modulator {
+            id: source,
+            color: Default::default(),
+            enabled: true,
+            state: hex_engine::lfo_modulator::Settings {
+                rate: hex_engine::lfo_modulator::Rate::Hertz(0.0),
+                phase: 0.25,
+                ..Default::default()
+            }
+            .encode()
+            .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(first_id + 1).unwrap(),
+            source,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: hex_plugin_state::TYPE_ID,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 0 },
+                vst3_class: Some(selection().cid),
+            },
+            amount: ModulationAmount::new(0.125).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap()
+}
+
+fn retiring_editor_replay_roundtrip(case: ReplayCase) {
+    const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
+    let authored = matches!(
+        case,
+        ReplayCase::AuthoredPlaying | ReplayCase::AuthoredStopped
+    );
+    let modulated = matches!(
+        case,
+        ReplayCase::ModulatedStopped
+            | ReplayCase::ModulatedPlaying
+            | ReplayCase::ModulatedAfterStop
+            | ReplayCase::ModulatedStopAtConfirmation
+            | ReplayCase::ModulatedStopAtCapture
+    );
+    let manual_base = authored || modulated;
+    let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
+    let spanning = matches!(
+        case,
+        ReplayCase::SpanningGroup | ReplayCase::SpanningGroupConflict
+    );
+    let earlier_group = spanning
+        || matches!(
+            case,
+            ReplayCase::EarlierGrouped | ReplayCase::EarlierGroupedConflict
+        );
+    let several_groups = manual_base
+        || matches!(
+            case,
+            ReplayCase::SeveralGroups | ReplayCase::SeveralGroupsRefuse
+        );
+    let grouped = earlier_group || mixed || several_groups || case == ReplayCase::Grouped;
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        let traces = files.0.join("traces");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&traces).unwrap();
+        let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .envs(
+                matches!(
+                    case,
+                    ReplayCase::Refuse
+                        | ReplayCase::RefuseAfterNewer
+                        | ReplayCase::SeveralGroupsRefuse
+                )
+                .then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
+            )
+            .envs(mixed.then_some(("HEX_EXPECT_RETIRING_MIXED_BATCH", "1")))
+            .envs(several_groups.then_some(("HEX_EXPECT_RETIRING_ORDERED_COHORTS", "1")))
+            .envs(earlier_group.then_some((
+                "HEX_EXPECT_RETIRING_EARLIER_GROUP",
+                if spanning { "spanning" } else { "complete" },
+            )))
+            .env(
+                "HEX_ORIGINAL_INSTANCE_VARIANT",
+                if grouped { "148" } else { "116" },
+            )
+            .env(
+                "HEX_ORIGINAL_GROUPED_EDITOR_PATTERN",
+                if mixed {
+                    "ordinary-first"
+                } else if spanning {
+                    "open-at-preparation"
+                } else if several_groups {
+                    "repeat"
+                } else {
+                    "split"
+                },
+            )
+            .env(
+                "HEX_ORIGINAL_GROUPED_RELEASE",
+                files.0.join("group-release"),
+            )
+            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
+            .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
+            .output()
+            .unwrap();
+        assert!(
+            outcome.status.success()
+                && String::from_utf8_lossy(&outcome.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        return;
+    }
+
+    let _native = native_fixture();
+    let playing = matches!(
+        case,
+        ReplayCase::Playing | ReplayCase::AuthoredPlaying | ReplayCase::ModulatedPlaying
+    );
+    let pre_cut = matches!(
+        case,
+        ReplayCase::PreCutAlreadyCanonical | ReplayCase::PreCutConflict
+    );
+    let already_canonical = matches!(
+        case,
+        ReplayCase::AlreadyCanonical
+            | ReplayCase::PreCutAlreadyCanonical
+            | ReplayCase::EarlierGrouped
+            | ReplayCase::SpanningGroup
+    );
+    let effect_host = || {
+        let host = host();
+        if grouped {
+            host.with_grouped_editor_callbacks()
+        } else {
+            host
+        }
+    };
+    let frames = if playing || manual_base {
+        48_000 * 20
+    } else {
+        2048
+    };
+    let (mut h, files, mut saved) = fixture_with_host(Start::Saved, frames, effect_host());
+    let (mut applied, _) = h.applied(0);
+    let automation_target = hex_project::DeviceAutomationTarget::Vst3 { parameter: 0 };
+    let lane_points = [hex_project::AutomationPoint {
+        beat: hex_project::BeatTime::ZERO,
+        value: hex_project::AutomationValue::new(0.1875).unwrap(),
+        outgoing: hex_project::AutomationInterpolation::Step,
+    }];
+    if authored {
+        let device = saved.project.main_devices()[0].id();
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: automation_target,
+                points: lane_points.to_vec(),
+            }))
+            .unwrap();
+        let lane = ordinary_terminal(&mut h);
+        assert!(lane.error.is_none(), "{:?}", lane.error);
+        (applied, _) = h.applied(applied);
+        saved = lane.state;
+    }
+    let modulation = modulated.then(|| gain_modulation(saved.project.next_identity()));
+    if let Some(modulation) = &modulation {
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceModulation {
+                device: saved.project.main_devices()[0].id(),
+                modulation: modulation.clone(),
+            }))
+            .unwrap();
+        let edited = ordinary_terminal(&mut h);
+        assert!(edited.error.is_none(), "{:?}", edited.error);
+        (applied, _) = h.applied(applied);
+        saved = edited.state;
+    }
+    let original = &saved.project.main_devices()[0];
+    let device = original.id();
+    let replacement_gain = if already_canonical || earlier_group {
+        3.0
+    } else if case == ReplayCase::Mixed {
+        2.0
+    } else {
+        1.5
+    };
+    let replacement = with_gain_and_axis(
+        original.state(),
+        replacement_gain,
+        (earlier_group && already_canonical).then_some(2.0),
+    );
+    let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let traces_dir = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let trace_files = || {
+        fs::read_dir(&traces_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+    };
+    let old_trace = if manual_base {
+        use std::os::unix::fs::MetadataExt as _;
+        let before: Vec<_> = trace_files()
+            .map(|path| {
+                let inode = fs::metadata(&path).unwrap().ino();
+                (path, inode)
+            })
+            .collect();
+        assert!(
+            super::super::installed_edits::query(&mut h, device, None, &mut 0)
+                .rows
+                .is_ok()
+        );
+        let mut refreshed = before.into_iter().filter_map(|(path, inode)| {
+            (fs::metadata(&path).unwrap().ino() != inode).then_some(path)
+        });
+        let path = refreshed
+            .next()
+            .expect("installed authored controller trace");
+        assert!(refreshed.next().is_none());
+        path
+    } else {
+        let mut traces = trace_files();
+        let path = traces.next().expect("original SDK helper trace");
+        assert!(traces.next().is_none());
+        path
+    };
+    use crate::native_audio::tests::resident_preview::emit_replay_fixture_edit as emit;
+    let finish_group = || {
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
+            b"end group",
+        )
+        .unwrap();
+    };
+    if pre_cut || earlier_group {
+        emit(&old_trace);
+    }
+    if earlier_group && !spanning {
+        finish_group();
+    }
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
+    if mixed {
+        fs::write(
+            release.join(old_trace.file_stem().unwrap()),
+            b"ordinary edit",
+        )
+        .unwrap();
+    }
+    let earlier_frontier = if mixed {
+        Some(3)
+    } else if spanning {
+        Some(5)
+    } else if earlier_group {
+        Some(12)
+    } else {
+        None
+    };
+    if let Some(expected) = earlier_frontier {
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let frontier = super::super::editor_recording::probe(&h, |reply| {
+                crate::native_audio::tests::resident_preview::EditorRecordingProbe::EditorFrontier(
+                    old_binding,
+                    reply,
+                )
+            });
+            if frontier == Some(expected) {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "original editor frontier {expected} was not observed"
+            );
+        }
+    }
+    if playing && !manual_base {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render_plugin_block();
+        workers_idle(&h);
+    }
+    let (ready, resume, _) = h.probe_next_native_publication();
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: replacement.clone(),
+        }))
+        .unwrap();
+    graph_publication_ready(&mut h, &ready);
+    if mixed {
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_GROUPED_RELEASE").unwrap(),
+            b"grouped edit",
+        )
+        .unwrap();
+    }
+    if !pre_cut && !earlier_group {
+        emit(&old_trace);
+    }
+    if grouped && !manual_base && (!earlier_group || spanning) {
+        finish_group();
+    }
+    if matches!(case, ReplayCase::Conflict | ReplayCase::RefuseAfterNewer) {
+        let successor_trace = fs::read_dir(&traces_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path != &old_trace && path.extension().is_some_and(|ext| ext == "bin"))
+            .expect("prepared successor trace");
+        if case == ReplayCase::Conflict {
+            emit(&successor_trace);
+        } else {
+            fs::write(
+                release.join("after-replay"),
+                successor_trace.to_str().unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    resume.send(()).unwrap();
+    let accepted = ordinary_terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(
+        accepted
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .processing_eq(&replacement)
+    );
+    let (replacement_audio, _) = h.applied(applied);
+    let installed = |h: &ResidentHarness| {
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .source_bindings
+            .into_iter()
+            .flatten()
+            .find_map(|(id, binding, _)| (id == device.value()).then_some(binding))
+    };
+    h.pump();
+    let start = Instant::now();
+    let successor = loop {
+        if let Some(binding) = installed(&h)
+            && binding != old_binding
+        {
+            break binding;
+        }
+        assert!(start.elapsed() < Duration::from_secs(1));
+        h.pump();
+        std::thread::yield_now();
+    };
+    let stop_during_confirmation = case == ReplayCase::ModulatedStopAtConfirmation;
+    let stop_during_capture = case == ReplayCase::ModulatedStopAtCapture;
+    let stopped_during_replay =
+        case == ReplayCase::ModulatedAfterStop || stop_during_confirmation || stop_during_capture;
+    if (playing && manual_base) || stopped_during_replay {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let mut block = [[0.0; 2]; 256];
+        for _ in 0..8 {
+            block = super::super::instruments::render_completed_block(&h);
+        }
+        let initial = if modulated { 0.5 } else { 0.1875 };
+        assert!(
+            (block[255][0] - initial).abs() < 1.0e-6,
+            "initial output {:?}",
+            block[255]
+        );
+    }
+    let deferred_confirmation = stop_during_confirmation.then(|| {
+        let (confirmation_ready, confirm) = h.probe_next_parameter_confirmation();
+        let (prepared, enqueue, _) = h.probe_next_native_publication();
+        finish_group();
+        graph_publication_ready(&mut h, &prepared);
+        enqueue.send(()).unwrap();
+        confirmation_ready
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            replacement_audio
+        );
+        confirm
+    });
+    let deferred_capture = stop_during_capture.then(|| {
+        let (admitted, resume) = h.probe_next_replay_capture();
+        finish_group();
+        graph_publication_ready(&mut h, &admitted);
+        resume
+    });
+    if stopped_during_replay {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            if status.native_parameter_source(false).is_some()
+                && (deferred_confirmation.is_none() || status.rejected_revision().is_some())
+            {
+                break;
+            }
+            h.pump();
+            h.render_plugin_block();
+            workers_idle(&h);
+            assert!(Instant::now() < deadline, "effect did not stop");
+        }
+    }
+    let after = if let Some(confirm) = deferred_confirmation {
+        let (queued, refusal) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            .expect("Stop must refuse the queued replay candidate");
+        assert!(queued > replacement_audio);
+        assert_eq!(
+            refusal,
+            hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged
+        );
+        confirm.send(()).unwrap();
+        queued
+    } else if let Some(resume) = deferred_capture {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let (installed, _) = status.native_parameter_source(false).unwrap();
+        assert_eq!(installed.audio_revision, replacement_audio);
+        assert!(status.rejected_revision().is_none());
+        resume.send(()).unwrap();
+        replacement_audio
+    } else {
+        if manual_base {
+            finish_group();
+        }
+        replacement_audio
+    };
+
+    if already_canonical {
+        use hex_session::service::{
+            DeviceAutomationTakeProgress as Progress, RetiringEditorCloseBlocker,
+        };
+
+        let mut request_id = 1;
+        let settled = loop {
+            h.service
+                .submit(Request::QueryDeviceAutomationCloseSafety { request_id })
+                .unwrap();
+            let event = ordinary_terminal(&mut h);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let safety = event.device_automation_take_complete.unwrap();
+            assert_eq!(safety.request_id, request_id);
+            match safety.progress {
+                Progress::CloseSafe => break event.state,
+                Progress::CloseRetiringEditor(RetiringEditorCloseBlocker::Transferring) => {}
+                other => panic!("same-value replay failed to settle: {other:?}"),
+            }
+            assert!(start.elapsed() < Duration::from_secs(2));
+            request_id += 1;
+        };
+        assert_eq!(settled.revision, accepted.state.revision);
+        assert_eq!(settled.project, accepted.state.project);
+        assert_eq!(settled.unsaved, accepted.state.unsaved);
+        if stopped_during_replay {
+            let renewed = installed(&h).unwrap();
+            assert_eq!(
+                (renewed.root, renewed.instance, renewed.graph),
+                (successor.root, successor.instance, successor.graph)
+            );
+            assert!(renewed.epoch > successor.epoch);
+        } else {
+            assert_eq!(installed(&h), Some(successor));
+        }
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .recording_source()
+                .unwrap()
+                .audio_revision,
+            replacement_audio
+        );
+        use crate::native_audio::tests::resident_preview::EditorRecordingProbe;
+        assert!(
+            super::super::editor_recording::probe(&h, |reply| {
+                EditorRecordingProbe::RetiringBatch(old_binding, reply)
+            })
+            .is_none()
+        );
+        let saved = h.run(Request::SaveCurrent);
+        assert!(saved.save_complete);
+        assert_eq!(saved.state.revision, accepted.state.revision);
+        let disk = hex_storage::load(files.0.join("effect.hex")).unwrap();
+        assert_eq!(disk.device(device).unwrap().state(), &replacement);
+        return;
+    }
+
+    if matches!(
+        case,
+        ReplayCase::Publish
+            | ReplayCase::Playing
+            | ReplayCase::AuthoredPlaying
+            | ReplayCase::AuthoredStopped
+            | ReplayCase::ModulatedStopped
+            | ReplayCase::ModulatedPlaying
+            | ReplayCase::ModulatedAfterStop
+            | ReplayCase::ModulatedStopAtConfirmation
+            | ReplayCase::ModulatedStopAtCapture
+            | ReplayCase::Grouped
+            | ReplayCase::Mixed
+            | ReplayCase::SeveralGroups
+    ) {
+        let mut restored_original_revision = false;
+        let event = loop {
+            h.pump();
+            if playing && manual_base {
+                let block = h.render();
+                assert!(
+                    block.iter().all(|frame| frame[0] > 0.1),
+                    "effect dropped in-flight audio: {block:?}"
+                );
+                workers_idle(&h);
+            } else {
+                h.render_worker_step();
+            }
+            if let Ok(event) = h.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                if stopped_during_replay && event.stopped_playback_restore_complete {
+                    assert_eq!(event.state.revision, accepted.state.revision);
+                    restored_original_revision = true;
+                }
+                if event.state.revision > accepted.state.revision {
+                    break event;
+                }
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "canonical replay did not publish, {:?}",
+                h.retirement_issues
+            );
+            std::thread::yield_now();
+        };
+        let (replayed_audio, publication) = h.applied(after);
+        assert_eq!(publication.context.editor_revision, event.state.revision);
+        assert_eq!(event.state.revision, accepted.state.revision + 1);
+        if stopped_during_replay {
+            assert!(restored_original_revision);
+            let renewed = installed(&h).unwrap();
+            assert_eq!(
+                (renewed.root, renewed.instance, renewed.graph),
+                (successor.root, successor.instance, successor.graph)
+            );
+            assert!(renewed.epoch > successor.epoch);
+        } else {
+            assert_eq!(installed(&h), Some(successor));
+        }
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire),
+            playing
+        );
+        let captured =
+            hex_plugin_state::decode(event.state.project.device(device).unwrap().state()).unwrap();
+        let final_gain = if several_groups { 1.0 } else { 3.0 };
+        assert_eq!(
+            f32::from_le_bytes(captured.component.unwrap()[8..12].try_into().unwrap()),
+            final_gain
+        );
+        if case == ReplayCase::Publish {
+            // The transferred editor input owns a distinct history transition
+            // after the already confirmed replacement.
+            h.service.submit(Request::Undo).unwrap();
+            let undone = ordinary_terminal(&mut h);
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(undone.state.project, accepted.state.project);
+            assert!(undone.state.can_redo);
+            let (undo_audio, undo_metadata) = h.applied(replayed_audio);
+            assert_eq!(undo_metadata.context.editor_revision, undone.state.revision);
+            let mut serial = 0;
+            let value = |h: &mut ResidentHarness, serial: &mut u64| {
+                super::super::installed_edits::query(h, device, None, serial)
+                    .rows
+                    .unwrap()
+                    .into_iter()
+                    .find(|row| row.id == 7)
+                    .unwrap()
+                    .normalized
+            };
+            assert_eq!(value(&mut h, &mut serial), 0.375);
+
+            h.service.submit(Request::Redo).unwrap();
+            let redone = ordinary_terminal(&mut h);
+            assert!(redone.error.is_none(), "{:?}", redone.error);
+            assert_eq!(redone.state.project, event.state.project);
+            let (_, redo_metadata) = h.applied(undo_audio);
+            assert_eq!(redo_metadata.context.editor_revision, redone.state.revision);
+            assert_eq!(value(&mut h, &mut serial), 0.75);
+        }
+        let path = files.0.join(if manual_base {
+            "manual.hex"
+        } else {
+            "effect.hex"
+        });
+        let request = if manual_base {
+            Request::SaveNew(path.clone())
+        } else {
+            Request::SaveCurrent
+        };
+        let saved = h.run(request);
+        assert!(
+            saved.save_complete && saved.error.is_none(),
+            "{:?}",
+            saved.error
+        );
+        let saved_project = hex_storage::load(&path).unwrap();
+        let state =
+            hex_plugin_state::decode(saved_project.device(device).unwrap().state()).unwrap();
+        assert_eq!(
+            f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
+            final_gain
+        );
+        if grouped {
+            for capture in [captured, state] {
+                assert_eq!(
+                    f64::from_le_bytes(capture.component.unwrap()[32..40].try_into().unwrap()),
+                    if several_groups { 1.0 } else { 2.0 }
+                );
+            }
+        }
+        let assert_manual_output = |h: &ResidentHarness| {
+            let mut block = [[0.0; 2]; 256];
+            for _ in 0..8 {
+                block = super::super::instruments::render_completed_block(h);
+            }
+            let expected = if modulated { 0.375 } else { 0.25 };
+            assert!(
+                (block[255][0] - expected).abs() < 1.0e-6,
+                "manual base output {:?}",
+                block[255]
+            );
+        };
+        if authored {
+            let lane = saved_project
+                .device(device)
+                .unwrap()
+                .automation_target(automation_target)
+                .unwrap();
+            assert!(!lane.is_reading());
+            assert_eq!(lane.points.as_slice(), &lane_points);
+        }
+        if let Some(modulation) = &modulation {
+            assert_eq!(
+                saved_project.device(device).unwrap().modulation(),
+                modulation
+            );
+        }
+        if playing && manual_base {
+            assert_manual_output(&h);
+            return;
+        }
+        let previous_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        h.service.shutdown(Duration::from_secs(1)).unwrap();
+        assert!(
+            h.callback
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .shutdown_requested()
+        );
+        assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+        h.release_relinquished_output();
+        drop(h);
+        let mut selected = selection();
+        let module = files.0.canonicalize().unwrap().join("original.vst3");
+        ui::copy_original_module(&selected.module, &module);
+        selected.module = module;
+        hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, "Fx", 0).unwrap();
+        let mut h = ResidentHarness::with_plugins_and_catalog(
+            effect_host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+            files.0.canonicalize().unwrap().join("plugin-catalog.json"),
+        );
+        assert!(h.next().error.is_none());
+        h.applied(0);
+        let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        assert_ne!(output, previous_output);
+        let opened = h.run(Request::Open(path));
+        assert!(opened.open_complete && opened.project_replaced);
+        assert_eq!(opened.state.project.as_ref(), &saved_project);
+        super::super::resident_lifecycle::finish_replacement(&mut h, &opened, output);
+        let restored = h.next();
+        assert!(restored.error.is_none() && !restored.request_complete);
+        let mut serial = 0;
+        let rows = super::super::installed_edits::query(&mut h, device, None, &mut serial)
+            .rows
+            .unwrap();
+        let gain_id = if grouped { 0 } else { 7 };
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == gain_id)
+                .unwrap()
+                .normalized,
+            if several_groups { 0.25 } else { 0.75 }
+        );
+        if grouped {
+            assert_eq!(
+                rows.iter().find(|row| row.id == 11).unwrap().normalized,
+                if several_groups { 0.25 } else { 0.5 }
+            );
+        }
+        if matches!(
+            case,
+            ReplayCase::AuthoredStopped
+                | ReplayCase::ModulatedStopped
+                | ReplayCase::ModulatedAfterStop
+                | ReplayCase::ModulatedStopAtConfirmation
+                | ReplayCase::ModulatedStopAtCapture
+        ) {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            assert_manual_output(&h);
+        }
+        assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+        return;
+    }
+
+    let error = loop {
+        h.pump();
+        h.render_worker_step();
+        if let Ok(event) = h.service.try_event() {
+            assert_eq!(event.state.revision, accepted.state.revision);
+            assert_eq!(event.state.project, accepted.state.project);
+            if let Some(error) = event.error {
+                break error;
+            }
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "missing replay refusal"
+        );
+        std::thread::yield_now();
+    };
+    if matches!(
+        case,
+        ReplayCase::Refuse | ReplayCase::RefuseAfterNewer | ReplayCase::SeveralGroupsRefuse
+    ) {
+        assert!(error.contains("fixture final admission refusal"), "{error}");
+        h.refuse.store(false, Release);
+        let path = files.0.join("effect.hex");
+        let original = fs::read(&path).unwrap();
+        h.service.submit(Request::SaveCurrent).unwrap();
+        let saved = ordinary_terminal(&mut h);
+        if case == ReplayCase::RefuseAfterNewer {
+            assert!(
+                error.contains("recovery encountered a newer editor edit"),
+                "{error}"
+            );
+            assert!(
+                saved
+                    .error
+                    .unwrap()
+                    .contains("editor replay recovery is unconfirmed")
+            );
+            assert_eq!(fs::read(path).unwrap(), original);
+            return;
+        }
+        assert!(!error.contains("recovery"), "{error}");
+        assert!(
+            saved.save_complete && saved.error.is_none(),
+            "{:?}",
+            saved.error
+        );
+        let project = hex_storage::load(path).unwrap();
+        let state = hex_plugin_state::decode(project.device(device).unwrap().state()).unwrap();
+        assert_eq!(
+            f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
+            1.5
+        );
+        if several_groups {
+            assert_eq!(
+                f64::from_le_bytes(state.component.unwrap()[32..40].try_into().unwrap()),
+                1.0
+            );
+            let original = super::super::editor_recording::probe(&h, |reply| {
+                crate::native_audio::tests::resident_preview::EditorRecordingProbe::RetiringBatch(
+                    old_binding,
+                    reply,
+                )
+            })
+            .unwrap();
+            assert_eq!(original.successor, successor);
+            let values: Vec<_> = original
+                .events()
+                .iter()
+                .filter(|edit| edit.kind == hex_session::service::RetiringEditorEventKind::Perform)
+                .map(|edit| (edit.parameter, edit.normalized))
+                .collect();
+            assert_eq!(values, [(0, 0.75), (11, 0.5), (0, 0.25), (11, 0.25)]);
+        }
+        return;
+    }
+    if pre_cut || earlier_group || case == ReplayCase::MixedConflict {
+        assert_eq!(
+            error,
+            "vst3 replacement does not already contain the retiring edit"
+        );
+        let mut serial = 0;
+        let rows = super::super::installed_edits::query(&mut h, device, None, &mut serial)
+            .rows
+            .unwrap();
+        let gain_id = if grouped { 0 } else { 7 };
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == gain_id)
+                .unwrap()
+                .normalized,
+            if earlier_group { 0.75 } else { 0.375 }
+        );
+        if grouped {
+            assert_eq!(
+                rows.iter().find(|row| row.id == 11).unwrap().normalized,
+                0.25
+            );
+        }
+    } else {
+        assert_eq!(error, "vst3 replacement accepted a newer editor edit");
+    }
+    let safety = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
+    assert_eq!(
+        safety.device_automation_take_complete.unwrap().progress,
+        hex_session::service::DeviceAutomationTakeProgress::CloseRetiringEditor(
+            hex_session::service::RetiringEditorCloseBlocker::Unresolved
+        )
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let needs_disposition = (
+        device.value(),
+        hex_ui::PluginEditorRetirementIssue::NeedsDisposition,
+    );
+    while !h.retirement_issues.contains(&needs_disposition) {
+        h.pump();
+        h.render_worker_step();
+        assert!(Instant::now() < deadline, "{:?}", h.retirement_issues);
+        std::thread::yield_now();
+    }
+    assert!(h.plugin_records.load(Acquire) >= 2);
+    use crate::native_audio::tests::resident_preview::EditorRecordingProbe;
+    use hex_session::service::RetiringEditorEventKind;
+    let retained = super::super::editor_recording::probe(&h, |reply| {
+        EditorRecordingProbe::RetiringBatch(old_binding, reply)
+    })
+    .unwrap();
+    assert_eq!(retained.source, old_binding);
+    assert_eq!(retained.successor, successor);
+    if mixed || earlier_group {
+        let cut = retained.predecessor_admitted_through.unwrap();
+        assert_eq!(Some(cut), earlier_frontier);
+        let values: Vec<_> = retained
+            .events()
+            .iter()
+            .filter(|edit| edit.kind == RetiringEditorEventKind::Perform)
+            .map(|edit| (edit.sequence <= cut, edit.parameter, edit.normalized))
+            .collect();
+        if mixed {
+            assert_eq!(values, [(true, 0, 0.5), (false, 0, 0.75), (false, 11, 0.5)]);
+        } else {
+            assert_eq!(values, [(true, 0, 0.75), (true, 11, 0.5)]);
+        }
+        return;
+    }
+    assert_eq!(
+        retained.predecessor_admitted_through,
+        Some(if pre_cut { 14 } else { 0 })
+    );
+    assert_eq!(retained.events().len(), 14);
+    for (index, edit) in retained.events().iter().enumerate() {
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.parameter),
+            (index as u64 + 1, 1, 7)
+        );
+        match index {
+            0 => assert_eq!(edit.kind, RetiringEditorEventKind::Begin),
+            13 => assert_eq!(edit.kind, RetiringEditorEventKind::End),
+            _ => {
+                assert_eq!(edit.kind, RetiringEditorEventKind::Perform);
+                assert_eq!(edit.normalized, 0.75);
+            }
+        }
+    }
+
+    let project = files.0.join("effect.hex");
+    let media = files.0.join("mixed-rate.wav");
+    let project_bytes = fs::read(&project).unwrap();
+    let media_bytes = fs::read(&media).unwrap();
+    let output = h.audio.as_ref().unwrap().control.output_identity();
+    let requests = [
+        Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        },
+        Request::Open(project.clone()),
+        Request::OpenWith {
+            source: hex_session::service::ProjectSource::Saved(project.clone()),
+            relinks: Default::default(),
+        },
+        Request::OpenWithAudioMode {
+            source: hex_session::service::ProjectSource::Saved(project.clone()),
+            relinks: Default::default(),
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        },
+    ];
+    for request in requests {
+        h.service.submit(request).unwrap();
+        let refused = ordinary_terminal(&mut h);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("resolve the retiring vst3 editor changes before replacing the project")
+        );
+        assert!(refused.open_complete && !refused.project_replaced);
+        assert_eq!(refused.state.project, accepted.state.project);
+        assert_eq!(refused.state.revision, accepted.state.revision);
+        assert_eq!(h.audio.as_ref().unwrap().control.output_identity(), output);
+    }
+    let retained_after_refusal = super::super::editor_recording::probe(&h, |reply| {
+        EditorRecordingProbe::RetiringBatch(old_binding, reply)
+    })
+    .unwrap();
+    assert_eq!(retained_after_refusal.source, retained.source);
+    assert_eq!(retained_after_refusal.successor, retained.successor);
+    assert_eq!(retained_after_refusal.events(), retained.events());
+    h.service.shutdown(Duration::from_secs(1)).unwrap();
+    assert!(
+        h.callback
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .shutdown_requested()
+    );
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+    h.release_relinquished_output();
+    wait(|| hex_audio::audio_lifecycle_failure().is_some());
+    assert_eq!(
+        hex_audio::audio_lifecycle_failure(),
+        Some(hex_audio::AudioLifecycleFailure::RetiringEditor)
+    );
+    let mut blocked = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
+    assert!(blocked.next().error.is_none());
+    wait(|| {
+        blocked.pump();
+        !blocked.unavailable.is_empty()
+    });
+    assert_eq!(
+        blocked.unavailable,
+        ["vst3 editor shutdown is unresolved · original source retained · audio reopen refused",]
+    );
+    assert!(blocked.audio.is_none());
+    assert_eq!(fs::read(project).unwrap(), project_bytes);
+    assert_eq!(fs::read(media).unwrap(), media_bytes);
 }
 
 #[test]
@@ -129,17 +1989,31 @@ fn repeated_state_history(playing: bool) {
             let event = ordinary_terminal(&mut h);
             assert!(
                 event.error.is_none(),
-                "playing={playing}, cycle {cycle}: {:?}",
-                event.error
+                "playing={playing}, cycle {cycle}: {:?}, retirement issues: {:?}, source: {:?}",
+                event.error,
+                h.retirement_issues,
+                h.plugin_progress.lock().unwrap(),
             );
             assert_eq!(&event.state.project, expected);
             (applied, _) = h.applied(applied);
         }
     }
-    assert!(
-        h.plugin_records.load(Acquire) <= 3,
-        "history must reclaim superseded sources"
-    );
+    // Graph ACK finishes the edit. The original callback return and SDK
+    // seal complete separately. Keep driving both owners after the last edit.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while h.plugin_records.load(Acquire) > 1 {
+        h.render_plugin_block();
+        workers_idle(&h);
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "superseded sources did not retire: {:?}",
+            h.retirement_issues,
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert!(h.retirement_issues.is_empty());
     assert_eq!(
         fs::read(files.0.join("effect.hex")).unwrap(),
         original_bytes
@@ -301,8 +2175,34 @@ fn native_effect_reused_graph_document_cancellation_respects_admission() {
         }
         let replaced = h.next();
         assert!(replaced.project_replaced && replaced.state.project.tracks().is_empty());
-        h.release_relinquished_output();
-        h.wait_fresh_output(old_output);
+        let context = replaced
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let terminal = (context.project_generation, old_output);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            h.pump();
+            if h.released.last() == Some(&terminal) {
+                h.release_relinquished_output();
+                h.wait_fresh_output(old_output);
+                break;
+            }
+            if h.rebound == Some(terminal) {
+                assert_eq!(
+                    h.audio.as_ref().unwrap().control.output_identity(),
+                    Some(old_output)
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "document output did not settle");
+            h.render_worker_step();
+            std::thread::yield_now();
+        }
+        let (_, metadata) = h.applied(0);
+        assert_eq!(metadata.context, context);
         assert_eq!(fs::read(files.0.join("effect.hex")).unwrap(), original);
     }
 }
@@ -418,12 +2318,119 @@ fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() 
         if cancel {
             let empty = h.next();
             assert!(empty.project_replaced && empty.error.is_none());
-            h.release_relinquished_output();
-            h.wait_fresh_output(old_output);
-            h.applied(0);
-            assert_eq!(h.plugin_records.load(Acquire), 0);
+            super::super::super::resident_lifecycle::finish_replacement(&mut h, &empty, old_output);
+            wait(|| {
+                h.render();
+                h.plugin_records.load(Acquire) == 0
+            });
+            assert_eq!(hex_audio::audio_lifecycle_failure(), None);
         }
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn rate_changing_open_retires_the_original_vst3_editor_source() {
+    const CHILD: &str = "HEX_TEST_RATE_CHANGING_EDITOR_OPEN";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        for mode in ["empty", "conflict"] {
+            let files = Files::new();
+            let name = std::thread::current().name().unwrap().to_owned();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--ignored", "--nocapture"])
+                .env(CHILD, mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", files.0.join("emit"))
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", files.0.join("trace"))
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        return;
+    };
+    let conflict = mode == "conflict";
+    let _native = native_fixture();
+    let (mut h, files, saved) = fixture(Start::Saved);
+    h.allow_unavailable = conflict;
+    let original_path = files.0.join("effect.hex");
+    let original_bytes = fs::read(&original_path).unwrap();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    assert_eq!(saved.project.main_devices().len(), 1);
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+
+    let incoming = hex_project::Project::new(44_100).unwrap();
+    let path = files.0.join("different-rate.hex");
+    hex_storage::save_new(&path, &incoming).unwrap();
+    h.service.submit(Request::Open(path)).unwrap();
+    wait(|| {
+        h.pump();
+        h.released.last() == Some(&(0, old_output))
+    });
+    if conflict {
+        // The callback still owns the endpoint. Accept real editor callbacks
+        // on the original worker before returning it to the close lane.
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+            b"emit",
+        )
+        .unwrap();
+        let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+        wait(|| fs::read(&trace).is_ok_and(|data| data.starts_with(&25_i32.to_le_bytes())));
+    }
+    h.release_relinquished_output();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let opened = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            break event;
+        }
+        if h.callback.lock().unwrap().is_some() {
+            h.render();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "rate-changing open did not settle"
+        );
+        std::thread::yield_now();
+    };
+    assert!(opened.open_complete);
+    if conflict {
+        assert!(!opened.project_replaced);
+        assert_eq!(opened.state.project, saved.project);
+        assert_eq!(
+            opened.error.as_deref(),
+            Some("resolve the retiring vst3 editor changes before replacing the project")
+        );
+        wait(|| {
+            h.pump();
+            !h.unavailable.is_empty()
+                && h.retirement_issues.iter().any(|&(device, issue)| {
+                    device == saved.project.main_devices()[0].id().value()
+                        && issue == hex_ui::PluginEditorRetirementIssue::NeedsDisposition
+                })
+        });
+        assert_eq!(
+            h.unavailable,
+            ["project open refused · original vst3 editor changes retained"]
+        );
+        assert!(h.audio.is_none());
+        assert_eq!(h.plugin_records.load(Acquire), 1);
+    } else {
+        assert!(opened.project_replaced, "{:?}", opened.error);
+        assert_eq!(*opened.state.project, incoming);
+        h.wait_fresh_output(old_output);
+        h.applied(0);
+        assert_eq!(h.audio.as_ref().unwrap().sample_rate, 44_100);
+        assert_eq!(h.plugin_records.load(Acquire), 0);
+    }
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+    assert_eq!(fs::read(original_path).unwrap(), original_bytes);
 }
 
 #[test]
@@ -560,6 +2567,178 @@ fn native_effect_failed_state_restore_preserves_last_confirmed_state_and_history
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn running_native_device_duplicate_waits_for_the_exact_install() {
+    use hex_project::{DeviceChainOwner, DeviceSelectionIds};
+    use hex_session::service::{DeviceClipboardAction, DeviceInsertOutcome};
+
+    let _native = native_fixture();
+    let (mut h, _files, before) = fixture_with_frames(Start::Unsaved, 8192);
+    let original = &before.project.main_devices()[0];
+    let (_, original_binding, accepted) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert!(accepted);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 256];
+    for _ in 0..4 {
+        pcm = super::super::instruments::render_completed_block(&h);
+    }
+    assert_eq!(pcm, [[0.15625; 2]; 256]);
+    let predecessor = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    h.enable_confirmed_device_inserts();
+    let (compiling, enqueue, _) = h.probe_next_native_publication();
+    h.service
+        .submit(Request::DeviceClipboard {
+            project_generation: predecessor.context.project_generation,
+            revision: before.revision,
+            action: DeviceClipboardAction::Duplicate {
+                source: DeviceChainOwner::Main,
+                selected: DeviceSelectionIds::new(&[original.id()]).unwrap(),
+                destination: DeviceChainOwner::Main,
+                before: None,
+            },
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while compiling.recv_timeout(Duration::from_millis(10)).is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            panic!("duplicate stopped before publication: {:?}", event.error);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "duplicate graph was not prepared"
+        );
+        let previous = pcm[0][0];
+        pcm = h.render_plugin_block();
+        workers_idle(&h);
+        assert_eq!(pcm, [[previous + 0.03125; 2]; 256]);
+    }
+    assert_eq!(
+        h.render_plugin_block(),
+        [[pcm[0][0] + 0.03125; 2]; 256],
+        "preparing a copy interrupted the original processor"
+    );
+    workers_idle(&h);
+    enqueue.send(()).unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(predecessor)
+    );
+    assert!(
+        !pending.request_complete,
+        "duplicate completed before audio installed its graph"
+    );
+    assert_eq!(pending.state.project, before.project);
+    assert_eq!(pending.state.revision, before.revision);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let installed = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.request_complete {
+                break event;
+            }
+            assert_eq!(event.state.project, before.project);
+            if let Some(offer) = event.device_insert_confirmation {
+                let (submitted, resume) = h.probe_next_submitted_device_insert();
+                assert!(offer.proceed());
+                let confirmed = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(confirmed.context, offer.submission().context);
+                resume.send(()).unwrap();
+            }
+        }
+        assert!(Instant::now() < deadline, "duplicate did not install");
+        h.render_plugin_block();
+        workers_idle(&h);
+    };
+    let receipt = installed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
+    assert!(receipt.submission.audio_revision > predecessor.audio_revision);
+    assert_eq!(
+        receipt.submission.context.editor_revision,
+        before.revision + 1
+    );
+    assert_eq!(installed.state.revision, before.revision + 1);
+    let applied = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_eq!(applied.audio_revision, receipt.submission.audio_revision);
+    assert_eq!(applied.context, receipt.submission.context);
+    let [retained, duplicate] = installed.state.project.main_devices() else {
+        panic!("original and its copy");
+    };
+    assert_eq!(retained, original);
+    assert_ne!(duplicate.id(), original.id());
+    assert_eq!(duplicate.state(), original.state());
+    let bindings = h.plugin_progress.lock().unwrap().source_bindings;
+    let binding = |device: hex_project::DeviceId| {
+        bindings
+            .into_iter()
+            .flatten()
+            .find_map(|(id, binding, _)| (id == device.value()).then_some(binding))
+    };
+    assert_eq!(binding(original.id()), Some(original_binding));
+    assert_ne!(binding(duplicate.id()).unwrap(), original_binding);
+
+    let clipboard = |action| Request::DeviceClipboard {
+        project_generation: predecessor.context.project_generation,
+        revision: installed.state.revision,
+        action,
+    };
+    h.run(clipboard(DeviceClipboardAction::Copy {
+        owner: DeviceChainOwner::Main,
+        selected: DeviceSelectionIds::new(&[duplicate.id()]).unwrap(),
+    }));
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(clipboard(DeviceClipboardAction::Paste {
+            owner: DeviceChainOwner::Main,
+            before: None,
+        }))
+        .unwrap();
+    let refused = ordinary_terminal(&mut h);
+    assert!(
+        refused
+            .error
+            .unwrap()
+            .contains("fixture final admission refusal")
+    );
+    assert_eq!(refused.state.project, installed.state.project);
+    assert_eq!(refused.state.revision, installed.state.revision);
+    assert_eq!(refused.state.can_undo, installed.state.can_undo);
+    assert_eq!(refused.state.can_redo, installed.state.can_redo);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_redo() {
     let _native = native_fixture();
     let files = Files::new();
@@ -626,7 +2805,14 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
     assert_eq!(duplicated.state.revision, state.revision + 1);
     assert_eq!(duplicated.state.project.tracks().len(), 4);
     (applied, _) = h.applied(applied);
-    assert_eq!(h.plugin_records.load(Acquire), 4);
+    // Superseded preparation records can still be awaiting their Root return
+    // after the four active processors have installed.
+    wait(|| {
+        h.render();
+        workers_idle(&h);
+        h.pump();
+        h.plugin_records.load(Acquire) == 4
+    });
     h.service.submit(Request::Undo).unwrap();
     let undone = ordinary_terminal(&mut h);
     assert!(undone.error.is_none(), "{:?}", undone.error);

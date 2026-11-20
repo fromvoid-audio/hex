@@ -459,7 +459,7 @@ pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool 
 }
 #[cfg(feature = "instrument-test-support")]
 pub mod control_drop_probe;
-#[cfg(feature = "instrument-test-support")]
+#[cfg(any(test, feature = "instrument-test-support"))]
 pub mod current_sampler_fixture;
 
 /// A synchronous resource borrow into one sealed owner. Both rendering modes

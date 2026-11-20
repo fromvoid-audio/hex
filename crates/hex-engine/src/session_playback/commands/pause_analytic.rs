@@ -77,6 +77,7 @@ impl SessionPlayback {
                 self.arrangement_frame,
                 performance,
                 true,
+                self.interactive_note_onset_floor(),
             )?;
             match route.owner {
                 RouteOwner::Arrangement => {
@@ -95,37 +96,41 @@ impl SessionPlayback {
                         })
                         .transpose()?;
                     track
-                        .for_each_active_midi_span(self.arrangement_frame, |span, _| {
-                            if span.start >= self.arrangement_frame {
-                                return;
-                            }
-                            let Some(until) = span
-                                .end
-                                .checked_sub(self.arrangement_frame)
-                                .and_then(|frames| performance.checked_add(frames))
-                            else {
-                                failure = Some(SessionPlaybackError::ArithmeticOverflow);
-                                return;
-                            };
-                            let until = pass_end.map_or(until, |pass_end| until.min(pass_end));
-                            if let Err(error) = pause_suppress(
-                                &mut self.suppression_scratch,
-                                self.release_capacity,
-                                route.id,
-                                span.clip,
-                                span.note,
-                                span.iteration,
-                                until,
-                            ) {
-                                failure = Some(error);
-                            }
-                        })
+                        .for_each_active_midi_span(
+                            self.arrangement_frame,
+                            self.interactive_note_onset_floor(),
+                            |span, _| {
+                                if span.start >= self.arrangement_frame {
+                                    return;
+                                }
+                                let Some(until) = span
+                                    .end
+                                    .checked_sub(self.arrangement_frame)
+                                    .and_then(|frames| performance.checked_add(frames))
+                                else {
+                                    failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                                    return;
+                                };
+                                let until = pass_end.map_or(until, |pass_end| until.min(pass_end));
+                                if let Err(error) = pause_suppress(
+                                    &mut self.suppression_scratch,
+                                    self.release_capacity,
+                                    route.id,
+                                    span.clip,
+                                    span.note,
+                                    span.iteration,
+                                    until,
+                                ) {
+                                    failure = Some(error);
+                                }
+                            },
+                        )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(error) = failure {
                         return Err(error);
                     }
                 }
-                RouteOwner::Session { clip, origin } => {
+                RouteOwner::Session { clip, origin, .. } => {
                     let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                         revision.session(),
                         self.midi_admission.as_ref(),
@@ -136,21 +141,21 @@ impl SessionPlayback {
                         timing_view_for(revision.session(), self.periodic_tempo(), self.anchor);
                     let template = prepared.instrument_template();
                     if let Some(floor) = self.historical_floor_for(index) {
-                        template.query_after_onset_with_origin(
+                        template.query_after_onset_with_origin_and_note_chase(
                             origin,
                             &timing,
-                            performance,
-                            end,
+                            (performance, end),
                             &mut self.spans,
                             floor,
+                            route.owner.note_chase(),
                         )
                     } else {
-                        template.query_with_origin(
+                        template.query_with_origin_and_note_chase(
                             origin,
                             &timing,
-                            performance,
-                            end,
+                            (performance, end),
                             &mut self.spans,
+                            route.owner.note_chase(),
                         )
                     }
                     .map_err(SessionPlaybackError::Midi)?;

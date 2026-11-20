@@ -802,6 +802,11 @@ impl VisualTestContext {
                 .collect()
         })
     }
+    /// Consult the display callback's retained-scene policy after real test input.
+    pub fn should_present_drawn_scene(&mut self, required: bool, keepalive: bool) -> bool {
+        self.update(|window, _| window.should_present_drawn_scene(required, keepalive))
+    }
+
     /// Returns the cursor request selected by the current rendered hitbox.
     /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
     pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -879,6 +884,29 @@ impl VisualTestContext {
                     && visible.size.height > crate::ScaledPixels(0.0))
                     .then(|| (visible, quad.background.clone()))
             }).collect()
+        })
+    }
+
+    /// Borders of completed quads whose clipped bounds contain a point.
+    /// This reads canvas paint data without drawing or injecting input.
+    pub fn rendered_quad_borders_at(
+        &mut self,
+        point: crate::Point<Pixels>,
+    ) -> Vec<(crate::Hsla, crate::Edges<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let point = point.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .filter(|quad| {
+                    quad.bounds.contains(&point)
+                        && quad.content_mask.bounds.contains(&point)
+                        && quad.border_widths != crate::Edges::default()
+                })
+                .map(|quad| (quad.border_color, quad.border_widths.clone()))
+                .collect()
         })
     }
 

@@ -25,7 +25,7 @@ fn state(window: &mut Window, cx: &mut App) -> Entity<Panels> {
 
 #[derive(IntoElement)]
 pub(super) struct Housing {
-    pub body: AnyElement,
+    pub body: Option<AnyElement>,
     pub modulator_panel: Option<AnyElement>,
     pub title: AnyElement,
     pub leading: AnyElement,
@@ -35,6 +35,11 @@ pub(super) struct Housing {
 impl RenderOnce for Housing {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = state(window, cx);
+        let header = crate::device_header(self.title, self.style, self.leading, self.actions);
+        let row = div().flex().flex_1().min_w_0().min_h_0();
+        let Some(body) = self.body else {
+            return row.child(header);
+        };
         let style = self.style.controls;
         let mut controls = div()
             .flex()
@@ -122,17 +127,12 @@ impl RenderOnce for Housing {
             );
         }
         let visible = state.read(cx).visible;
-        let body = panel_body(self.body, self.modulator_panel, style, visible);
-        div()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .child(
-                crate::device_header(self.title, self.style, self.leading, self.actions)
-                    .child(controls),
-            )
-            .child(body)
+        row.child(header.child(controls)).child(panel_body(
+            body,
+            self.modulator_panel,
+            style,
+            visible,
+        ))
     }
 }
 fn panel_body(

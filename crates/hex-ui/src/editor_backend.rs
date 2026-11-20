@@ -32,6 +32,14 @@ pub struct EditorBackend {
     pub source_reservation: SourcePlanReservation,
 }
 
+/// Bounded status of an outgoing plugin source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginEditorRetirementIssue {
+    NeedsDisposition,
+    Failure(&'static str),
+    TailLatencyPending,
+}
+
 /// Readiness and publication observations delivered to the UI.
 pub enum EditorAudioEvent {
     /// Close only the named old UI endpoint for a preflighted fresh-output
@@ -78,6 +86,20 @@ pub enum EditorAudioEvent {
     /// A pending SDK restart on this exact ordinary installed graph.
     NativeLatencyRestart {
         source: hex_audio::prepared::AppliedAudioSource,
+    },
+    /// A plain Space press reserved by the focused native VST3 editor.
+    PluginTransportToggle { project_generation: u64 },
+    /// Current logical VST3 editor windows on this output and document.
+    PluginEditorWindows {
+        project_generation: u64,
+        output_identity: u64,
+        devices: Vec<u64>,
+    },
+    /// An outgoing editor source needs attention while it is retained.
+    PluginEditorRetirementIssue {
+        project_generation: u64,
+        device: u64,
+        issue: PluginEditorRetirementIssue,
     },
     /// Latest native editor touch observed on an exact retained source. This
     /// carries an optional SDK-confirmed Perform value for immediate display.
@@ -140,6 +162,12 @@ pub enum EditorPublicationState {
         audio_revision: u64,
         identity: hex_session::service::DevicePreviewIdentity,
     },
+    /// A temporary gain audition with unchanged Arrangement geometry.
+    VerifiedArrangementGainSubmitted {
+        audio_revision: u64,
+    },
+    /// The running canonical source remains usable after a preview refusal.
+    VerifiedArrangementGainRefused(String),
     /// Exact submission correlation and bounded resource-free observation endpoints. Application
     /// still needs the output/revision callback ACK; no graph or native resource owner crosses.
     ResidentSubmitted {

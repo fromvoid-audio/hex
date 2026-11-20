@@ -20,6 +20,15 @@ pub enum InstrumentLoadPlacement {
     Replace(DeviceId),
 }
 
+/// Owner captured for an atomic original-asset replacement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentAssetOwner {
+    /// The instrument currently owned by this track.
+    Track(TrackId),
+    /// A retained source that is not linked to any track.
+    Source(crate::SourceId),
+}
+
 impl InstrumentLoadPlacement {
     pub fn replacement(self) -> Option<DeviceId> {
         match self {
@@ -195,7 +204,8 @@ pub enum Command {
     },
     /// Remove the section's entire half-open time interval and close the gap.
     DeleteArrangementSection(crate::SectionId),
-    /// Insert a song-wide copy immediately after the source, allocating new IDs.
+    /// Insert a song-wide copy, including device envelopes and touch spans,
+    /// immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
     /// Copy a section's complete song interval before/after a stable target.
     /// The source remains; one private candidate owns both copy and insertion,
@@ -381,6 +391,11 @@ pub enum Command {
         before: Option<DeviceId>,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Replace one exact top-level Main effect with a fresh authored identity.
+    ReplaceMainDevice {
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     /// Reorder within Main; cross-owner moves retain their existing commands.
     MoveMainDevice {
         device: DeviceId,
@@ -389,6 +404,13 @@ pub enum Command {
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Replace one direct effect on an ordinary track with a fresh identity.
+    /// The local ordinal and the separately authored instrument gap survive.
+    ReplaceTrackDevice {
+        track: TrackId,
+        replacing: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
     /// Fill a removed native instrument slot with a new stable device identity.
@@ -577,6 +599,12 @@ pub enum Command {
     InsertReturnDevice {
         return_track: ReturnId,
         before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Replace one exact top-level Return effect with a fresh authored identity.
+    ReplaceReturnDevice {
+        return_track: ReturnId,
+        replacing: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
     MoveReturnDevice {
@@ -837,7 +865,7 @@ pub enum Command {
     /// Atomically import an original source and bind or rebind an existing instrument.
     /// Captured identity/state/provider must still match; no IDs are predicted.
     ImportDeviceAssetReplacingInstrument {
-        track: TrackId,
+        owner: InstrumentAssetOwner,
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
         path: PathBuf,
@@ -1821,6 +1849,8 @@ pub(crate) fn split_clip_at_tempo(
     }
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
+    crate::audio_edit::retain_outer_fade_crop_context(original, &mut left, tempo)?;
+    crate::audio_edit::retain_outer_fade_crop_context(original, &mut right, tempo)?;
     Ok((left, right))
 }
 
@@ -2277,10 +2307,11 @@ impl Project {
                 points,
             } => self.replace_device_automation(device, parameter, points),
             Command::InitializeDevice(initialization) => initialization.apply(self),
-            main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
-                crate::main_devices::apply(self, main_command)
-            }
+            main_command @ (Command::InsertMainDevice { .. }
+            | Command::ReplaceMainDevice { .. }
+            | Command::MoveMainDevice { .. }) => crate::main_devices::apply(self, main_command),
             device_command @ (Command::InsertDevice { .. }
+            | Command::ReplaceTrackDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
             | Command::ReplaceTrackInstrument { .. }
@@ -2308,6 +2339,7 @@ impl Project {
             | Command::ReturnMute { .. }
             | Command::SetReturnSend { .. }
             | Command::InsertReturnDevice { .. }
+            | Command::ReplaceReturnDevice { .. }
             | Command::MoveReturnDevice { .. }) => crate::returns::apply(self, return_command),
             Command::DeleteTimeRange { range } => crate::time_range::clear(self, &range),
             Command::PasteTimeRange {
@@ -3025,7 +3057,7 @@ impl Project {
                 Ok(Created::Asset(asset))
             }
             Command::ImportDeviceAssetReplacingInstrument {
-                track,
+                owner,
                 device,
                 expected_state,
                 path,
@@ -3034,9 +3066,22 @@ impl Project {
                 state,
                 source_slot,
             } => {
-                let target = self
-                    .track(track)
-                    .and_then(|track| track.instrument())
+                let instrument = match owner {
+                    InstrumentAssetOwner::Track(track) => {
+                        self.track(track).and_then(|track| track.instrument())
+                    }
+                    InstrumentAssetOwner::Source(source) => {
+                        if self
+                            .tracks()
+                            .iter()
+                            .any(|track| track.source_id() == Some(source))
+                        {
+                            return Err(Invalid("instrument source is already assigned"));
+                        }
+                        self.native_source(source).map(|source| source.instrument())
+                    }
+                };
+                let target = instrument
                     .filter(|target| target.id() == device && target.state() == &expected_state)
                     .ok_or(Invalid("instrument source replacement target changed"))?;
                 if state.type_id() != target.state().type_id()

@@ -104,6 +104,13 @@ struct ReaderMetadata {
 }
 
 impl ResamplePlan {
+    /// Read-only DATA layout of this plan's captured conversion kernel. Shared
+    /// plans may report the same allocation; this does not transfer a handle
+    /// or account for Arc/allocator metadata or external aliases.
+    pub fn control_kernel_data_layout(&self) -> crate::ResampleKernelDataLayout {
+        self.kernel.control_data_layout()
+    }
+
     /// Control-only identity check for the actual captured kernel owner. No
     /// owner/Arc is returned and no source value or content infers identity.
     pub fn uses_kernel_allocation(&self, other: &ResampleKernel) -> bool {
@@ -174,6 +181,11 @@ impl ResamplePlan {
 
     pub fn target_rate(&self) -> u32 {
         self.kernel.target_rate()
+    }
+
+    /// The immutable kernel version; identity conversion does not use weights.
+    pub fn version(&self) -> ResampleVersion {
+        self.kernel.version()
     }
 
     pub const fn source_frames(&self) -> u64 {
@@ -279,6 +291,32 @@ impl ResamplePlan {
             source_scratch,
             |source_start, scratch| {
                 reader.read_frames_into(source_start, scratch)?;
+                Ok(())
+            },
+        )
+    }
+
+    /// Render from a tracked verified reader, preserving complete-page coverage
+    /// for the caller's later `VerifiedWavCoverage::finish`.
+    pub fn render_verified_coverage_window(
+        &self,
+        reader: &mut crate::VerifiedWavCoverage<'_>,
+        global_output_start: u64,
+        output: &mut [[f32; 2]],
+        source_scratch: &mut [[f32; 2]],
+    ) -> Result<(), ImportError> {
+        let (sample_rate, source_frames, max_window_frames) = reader.reader_metadata();
+        self.render_reader_window(
+            ReaderMetadata {
+                sample_rate,
+                source_frames,
+                max_window_frames,
+            },
+            global_output_start,
+            output,
+            source_scratch,
+            |source_start, scratch| {
+                reader.read_frames_into_with_cancel(source_start, scratch, || false)?;
                 Ok(())
             },
         )
@@ -687,6 +725,11 @@ mod tests {
         assert_eq!(kernel.table_payload_bytes(), kernel_bytes);
         assert!(plans.iter().all(|plan| plan.source_rate() == 44_100));
         assert!(plans.iter().all(|plan| plan.target_rate() == 48_000));
+        assert!(
+            plans
+                .iter()
+                .all(|plan| { plan.control_kernel_data_layout() == kernel.control_data_layout() })
+        );
     }
 
     #[test]

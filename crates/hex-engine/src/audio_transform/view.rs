@@ -8,7 +8,7 @@
 use super::*;
 use hex_project::{
     AudioClipTiming, AudioDomainClock, AudioProcessingProjection, AudioViewOccurrence,
-    AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES,
+    AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES, ProjectedOuterAudioFade,
 };
 
 /// Bound metadata traversal independently from PCM size. Total processed root
@@ -22,9 +22,47 @@ pub struct AudioPreviewRoot {
     pub audio: Audio,
     /// Technical domain-clock origin (raw beats for a musical domain).
     pub origin: i128,
+    /// Unweighted source summary and its clock for an eligible processing root.
+    pub event_source_peaks: Option<Arc<PreparedEventSourcePeaks>>,
 }
 
 impl AudioTransformPreparation {
+    /// Prepare a resident, uncommitted frame-clock repeat-period preview.
+    ///
+    /// Call on a control worker with the clip's already accepted decoded source;
+    /// rate and extent checks do not establish its identity. The
+    /// returned clip owns its prepared audio but does not publish a graph,
+    /// mutate the project or confer a saved edit. Unsupported source shapes,
+    /// incompatible rate or extent and capacity/cancellation failures refuse.
+    pub fn preview_repeat_period(
+        &self,
+        project: &CanonicalProject,
+        clip_id: hex_project::ClipId,
+        source: &Audio,
+        period: u64,
+    ) -> Result<Clip, Invalid> {
+        let clip = project
+            .clip(clip_id)
+            .ok_or(Invalid("audio preview clip is missing"))?;
+        let edit = clip
+            .audio_edit()
+            .ok_or(Invalid("audio repeat preview requires a captured repeat"))?;
+        let asset = project
+            .asset(clip.asset())
+            .ok_or(Invalid("audio preview asset is missing"))?;
+        edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        let projection = AudioViewProjection::new(clip, project.tempo_map())?
+            .preview_frame_repeat_period(period)?;
+        self.compile_view_projection(
+            project.tempo_map(),
+            clip,
+            edit,
+            asset,
+            PreparedAudioSourceRef::Resident(source),
+            projection,
+        )
+    }
+
     /// Resolve the retained first forward processing root for an accepted finite
     /// placement or directed content view. Use inside the caller's existing
     /// preparation transaction;
@@ -68,7 +106,12 @@ impl AudioTransformPreparation {
                 "audio preview root differs from canonical projection",
             ));
         }
-        Ok(Some(AudioPreviewRoot { audio, origin }))
+        let event_source_peaks = self.event_source_peaks(&audio);
+        Ok(Some(AudioPreviewRoot {
+            audio,
+            origin,
+            event_source_peaks,
+        }))
     }
 
     /// Resolve every original resident dependency for a finite-placement root
@@ -132,7 +175,11 @@ impl AudioTransformPreparation {
                 "grouped audio preview root differs from canonical domain",
             ));
         }
-        Ok(Some(AudioPreviewRoot { audio, origin }))
+        Ok(Some(AudioPreviewRoot {
+            audio,
+            origin,
+            event_source_peaks: None,
+        }))
     }
 
     pub(super) fn compile_view(
@@ -147,6 +194,81 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let projection = AudioViewProjection::new(clip, tempo_map)?;
+        self.compile_view_projection(tempo_map, clip, edit, asset, source, projection)
+    }
+
+    // A preview can differ from the canonical edit, so it must never use the
+    // canonical view cache key. Root processing remains shared as before.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn compile_view_projection(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        projection: AudioViewProjection<'_>,
+    ) -> Result<Clip, Invalid> {
+        if self.cancelled() {
+            return Err(Invalid("audio preparation cancelled"));
+        }
+        if !std::ptr::eq(projection.clip(), clip)
+            || clip
+                .audio_edit()
+                .is_none_or(|value| !std::ptr::eq(value, edit))
+            || clip.asset() != asset.id()
+            || projection.outer_frame_bounds()
+                != (
+                    clip.start(),
+                    clip.start()
+                        .checked_add(clip.duration())
+                        .ok_or(Invalid("audio placement end overflow"))?,
+                )
+        {
+            return Err(Invalid("audio projection differs from its clip"));
+        }
+        let outer = clip.projected_outer_fade(tempo_map)?;
+        self.compile_view_with_outer_fade(
+            tempo_map,
+            clip,
+            edit,
+            asset,
+            source,
+            projection,
+            outer.as_ref(),
+        )
+    }
+
+    /// Assemble a checked finite placement on control. The instance envelope
+    /// follows the source placement. The cached view PCM retains
+    /// only its processing-root law, including the repeated event fades.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn compile_view_with_outer_fade(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+        projection: AudioViewProjection<'_>,
+        outer: Option<&ProjectedOuterAudioFade<'_>>,
+    ) -> Result<Clip, Invalid> {
+        if outer.is_some() != (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer) {
+            return Err(Invalid(
+                "audio placement fade differs from its processing clock",
+            ));
+        }
+        let fade = OuterPlaybackFade::projected(outer, edit.domain.clock)?;
+        if let Some(fade) = fade {
+            fade.admit(
+                clip.duration(),
+                matches!(&source, PreparedAudioSourceRef::Resident(_)),
+            )?;
+        }
+        let attach_fade = |compiled: Clip| self.finish_outer_fade(compiled, fade);
+        let processing = super::processing_root::unfaded_outer_edit(edit, tempo_map)?;
+        let edit = processing.as_ref();
+        let canonical_cache = !projection.has_silent_repeat_gap();
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
             || projection.occurrence_count() > MAX_VIEW_OCCURRENCES
         {
@@ -159,6 +281,11 @@ impl AudioTransformPreparation {
                 "finite audio placement preparation currently requires resident audio; source changes were not committed",
             ));
         };
+        if source.sample_rate() != tempo_map.sample_rate()
+            || source.frames().len() as u64 != asset.playback_frames()
+        {
+            return Err(Invalid("audio preview source differs from project media"));
+        }
         let tempo = self.shared_tempo(tempo_map)?;
         // Admit all projections before PCM allocation or root preparation. Each
         // distinct musical occurrence has its own processing origin. Frame
@@ -183,18 +310,20 @@ impl AudioTransformPreparation {
             let first = projection.occurrence(0)?;
             let root_edit = occurrence_edit(edit, first.root_origin, self, tempo_map)?;
             let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
-            return looped_clip(root, clip, shape);
+            return looped_clip(root, clip, shape).and_then(attach_fade);
         }
         if matches!(edit.domain.clock, AudioDomainClock::Beats(_))
             && let Some((root, shape)) =
                 self.shared_musical_root(tempo_map, clip, edit, asset, source, &projection)?
         {
-            return looped_clip(root, clip, shape);
+            return looped_clip(root, clip, shape).and_then(attach_fade);
         }
-        if let Some(audio) = self.lookup_key(source, asset, |key| {
-            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
-        })? {
-            return placed_clip(audio, clip);
+        if canonical_cache
+            && let Some(audio) = self.lookup_key(source, asset, |key| {
+                key.matches_view(edit, tempo_map, clip.start(), clip.duration())
+            })?
+        {
+            return placed_clip(audio, clip).and_then(attach_fade);
         }
         let length = usize::try_from(clip.duration())
             .map_err(|_| Invalid("audio placement exceeds addressable frames"))?;
@@ -207,6 +336,20 @@ impl AudioTransformPreparation {
             .try_reserve_exact(length)
             .map_err(|_| Invalid("audio placement allocation failed"))?;
         frames.resize(length, [0.0; 2]);
+        let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
+        let mut event_sources = if musical
+            && canonical_cache
+            && projection.occurrence_count() > 1
+            && self.entry_limit > 0
+            && bytes <= self.cache_limit
+        {
+            PreparedEventOccurrences::admit(
+                projection.occurrence_count(),
+                super::preview_peaks::event_source_budget(),
+            )
+        } else {
+            None
+        };
         let mut frame_root: Option<Audio> = None;
         for index in 0..projection.occurrence_count() {
             if self.cancelled() {
@@ -228,6 +371,7 @@ impl AudioTransformPreparation {
                     "audio placement root projection differs from prepared pcm",
                 ));
             }
+            self.capture_event_occurrence(&mut event_sources, occurrence, root);
             let source_range = occurrence.root_start as usize..occurrence.root_end as usize;
             let elapsed = occurrence
                 .destination_start
@@ -246,7 +390,7 @@ impl AudioTransformPreparation {
                 .get(source_range)
                 .ok_or(Invalid("audio placement root crop exceeds pcm"))?;
             destination.copy_from_slice(source);
-            if matches!(edit.domain.clock, AudioDomainClock::Beats(_)) {
+            if musical {
                 frame_root = None;
             }
         }
@@ -254,21 +398,26 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let audio = Audio::from_derived(source.sample_rate(), frames, reservation)?;
-        self.retain(Entry {
-            source: source.clone(),
-            key: EntryKey::View {
-                edit: edit.clone(),
-                tempo,
-                start: clip.start(),
-                duration: clip.duration(),
-            },
-            algorithm_version: hex_warp::ALGORITHM_VERSION,
-            conversion: asset.conversion_version(),
-            source_rate: asset.source_sample_rate(),
-            prepared: audio.clone(),
-            bytes,
-        })?;
-        placed_clip(audio, clip)
+        if canonical_cache {
+            self.retain(Entry {
+                source: source.clone(),
+                key: EntryKey::View {
+                    edit: edit.clone(),
+                    tempo,
+                    start: clip.start(),
+                    duration: clip.duration(),
+                },
+                algorithm_version: hex_warp::ALGORITHM_VERSION,
+                conversion: asset.conversion_version(),
+                source_rate: asset.source_sample_rate(),
+                prepared: audio.clone(),
+                event_source_peaks: None,
+                event_source_occurrences: event_sources.map(Arc::new),
+                group_event_sources: None,
+                bytes,
+            })?;
+        }
+        placed_clip(audio, clip).and_then(attach_fade)
     }
 }
 
@@ -276,17 +425,8 @@ pub(super) fn validate_copy(
     clip: &hex_project::Clip,
     occurrence: AudioViewOccurrence,
 ) -> Result<(), Invalid> {
-    let source = occurrence
-        .root_end
-        .checked_sub(occurrence.root_start)
-        .filter(|length| *length > 0)
-        .ok_or(Invalid("audio placement has an empty processing crop"))?;
-    let destination = occurrence
-        .destination_end
-        .checked_sub(occurrence.destination_start)
-        .ok_or(Invalid("audio placement destination is reversed"))?;
-    if source != destination
-        || occurrence.destination_start < clip.start()
+    validate_copy_lengths(occurrence)?;
+    if occurrence.destination_start < clip.start()
         || occurrence.destination_end
             > clip
                 .start()
@@ -300,11 +440,39 @@ pub(super) fn validate_copy(
     Ok(())
 }
 
+pub(super) fn validate_copy_lengths(occurrence: AudioViewOccurrence) -> Result<(), Invalid> {
+    let source = occurrence
+        .root_end
+        .checked_sub(occurrence.root_start)
+        .filter(|length| *length > 0)
+        .ok_or(Invalid("audio placement has an empty processing crop"))?;
+    let destination = occurrence
+        .destination_end
+        .checked_sub(occurrence.destination_start)
+        .ok_or(Invalid("audio placement destination is reversed"))?;
+    if source != destination {
+        return Err(Invalid(
+            "audio placement requires an unsupported processing rebase",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn occurrence_edit(
     edit: &AudioClipEdit,
     origin: i128,
     preparation: &AudioTransformPreparation,
     current_tempo: &hex_project::TempoMap,
+) -> Result<AudioClipEdit, Invalid> {
+    bind_occurrence_clock(edit, origin, || {
+        preparation.shared_tempo(edit.processing_tempo(current_tempo))
+    })
+}
+
+pub(super) fn bind_occurrence_clock(
+    edit: &AudioClipEdit,
+    origin: i128,
+    tempo: impl FnOnce() -> Result<Arc<hex_project::TempoMap>, Invalid>,
 ) -> Result<AudioClipEdit, Invalid> {
     let mut root = edit.clone();
     root.content_view = None;
@@ -315,7 +483,7 @@ pub(super) fn occurrence_edit(
         match &mut root.timing {
             AudioClipTiming::Musical(_) => {
                 root.processing_projection = Some(Arc::new(AudioProcessingProjection {
-                    tempo: preparation.shared_tempo(edit.processing_tempo(current_tempo))?,
+                    tempo: tempo()?,
                     origin_beat_raw: origin,
                 }));
             }
@@ -392,6 +560,32 @@ pub(super) fn root_loop(
         return Ok(None);
     }
     tiled_window(clip, projection, edit.view_start, edit.view_end)
+}
+
+/// Source phase the Frame placement compiler can hand to the native slot.
+/// A crop within one window or a materialized placement uses a zero phase.
+pub(crate) fn prepared_frame_repeat_phase(
+    clip: &hex_project::Clip,
+    tempo: &hex_project::TempoMap,
+) -> Result<Option<std::num::NonZeroU64>, Invalid> {
+    let Some(edit) = clip.audio_edit().filter(|edit| {
+        matches!(edit.domain.clock, AudioDomainClock::Frames(_))
+            && edit.content_view.is_none()
+            && edit.placement.is_some_and(|placement| {
+                placement.mode == hex_project::AudioViewMode::Repeat && placement.cycle_phase != 0
+            })
+    }) else {
+        return Ok(None);
+    };
+    let projection = AudioViewProjection::new(clip, tempo)?;
+    if projection.occurrence_count() > MAX_VIEW_OCCURRENCES {
+        return Err(Invalid(
+            "audio placement exceeds bounded preparation occurrences",
+        ));
+    }
+    Ok(root_loop(clip, edit, &projection)?
+        .filter(|shape| clip.duration() > shape.period - shape.phase)
+        .and_then(|shape| std::num::NonZeroU64::new(shape.phase)))
 }
 
 /// Musical occurrences carry their own projected window. When every occurrence

@@ -14,6 +14,7 @@ struct CompiledLane {
 #[derive(Clone)]
 struct Configuration {
     nodes: Vec<Node>,
+    authored_stages: Vec<BandStages>,
     lanes: Vec<CompiledLane>,
     points: Vec<AutomationPoint>,
     mode: u8,
@@ -23,6 +24,7 @@ struct Configuration {
 impl Configuration {
     fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * std::mem::size_of::<Node>()
+            + self.authored_stages.capacity() * std::mem::size_of::<BandStages>()
             + self.lanes.capacity() * std::mem::size_of::<CompiledLane>()
             + self.points.capacity() * std::mem::size_of::<AutomationPoint>()
             + self.parameters.capacity() * std::mem::size_of::<automation::Grant>()
@@ -79,25 +81,36 @@ impl Configuration {
     }
 }
 
-pub(super) struct PreparedEq {
+/// Validated control-side configuration shared immutably by its runtime pair.
+pub struct PreparedEq {
     sample_rate: u32,
     configuration: Arc<Configuration>,
-    stages: Vec<BandStages>,
 }
 impl PreparedEq {
     pub(super) fn source_factory_bytes_bound() -> usize {
         // Source effects grant no host parameter slots. The retained historical
         // lanes and their point and node arrays have canonical state bounds.
-        crate::source_effect_arc_bytes::<Self>()
-            + crate::source_effect_arc_bytes::<Configuration>()
+        crate::source_effect_arc_bytes::<Self>() + Self::configuration_bytes_bound(0)
+    }
+    fn configuration_bytes_bound(parameters: usize) -> usize {
+        crate::source_effect_arc_bytes::<Configuration>()
             + MAX_NODES * (std::mem::size_of::<Node>() + std::mem::size_of::<BandStages>())
             + MAX_LANES * std::mem::size_of::<CompiledLane>()
             + MAX_POINTS * std::mem::size_of::<AutomationPoint>()
+            + parameters * std::mem::size_of::<automation::Grant>()
+    }
+    /// Bounds the factory's private backing for all supported saved states and grants.
+    pub fn closed_configuration_bytes_bound() -> usize {
+        Self::configuration_bytes_bound(hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE)
+    }
+    /// Private immutable backing charged once to the constructor that created this factory.
+    pub fn configuration_storage_bytes(&self) -> usize {
+        crate::source_effect_arc_bytes::<Configuration>() + self.configuration.heap_bytes()
     }
     pub(super) fn new(settings: EqState, sample_rate: u32) -> Result<Self, DeviceContractError> {
         Self::prepare(settings, sample_rate, &[])
     }
-    fn prepare(
+    pub(super) fn prepare(
         settings: EqState,
         sample_rate: u32,
         parameters: &[ParameterId],
@@ -152,13 +165,13 @@ impl PreparedEq {
             sample_rate,
             configuration: Arc::new(Configuration {
                 nodes: settings.nodes,
+                authored_stages: stages,
                 lanes,
                 points,
                 mode: settings.mode,
                 gain: f64::from(settings.output_gain),
                 parameters,
             }),
-            stages,
         })
     }
 }
@@ -186,6 +199,9 @@ impl PreparedNativeProcessor for PreparedEq {
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
+    fn supports_power_off(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         4
     }
@@ -198,14 +214,13 @@ impl PreparedNativeProcessor for PreparedEq {
             + self.configuration.heap_bytes()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        let mut bands =
-            vec![RuntimeBand::default(); self.configuration.nodes.len()].into_boxed_slice();
-        for (index, coefficients) in self.stages.iter().enumerate() {
-            bands[index].current = *coefficients;
-            bands[index].target = *coefficients;
-            bands[index].stages_used = stages_used(coefficients);
-            bands[index].shape = self.configuration.nodes[index].kind as u8;
-        }
+        let bands = self
+            .configuration
+            .authored_stages
+            .iter()
+            .zip(&self.configuration.nodes)
+            .map(|(&stages, node)| RuntimeBand::new(stages, node.kind))
+            .collect();
         Box::new(EqRuntime {
             sample_rate: self.sample_rate,
             configuration: Arc::clone(&self.configuration),
@@ -240,7 +255,12 @@ impl PreparedNativeProcessor for PreparedEq {
         Some(std::array::from_fn(|channel| {
             let bank = bank(self.configuration.mode, channel);
             let mut magnitude = self.configuration.gain;
-            for (node, stages) in self.configuration.nodes.iter().zip(&self.stages) {
+            for (node, stages) in self
+                .configuration
+                .nodes
+                .iter()
+                .zip(&self.configuration.authored_stages)
+            {
                 if node.enabled && node.bank == bank {
                     for stage in stages {
                         magnitude *= response_magnitude(
@@ -272,19 +292,24 @@ struct RuntimeBand {
     // until its histories are reset, including through coefficient ramps.
     stages_used: u8,
 }
+#[cfg(test)]
 impl Default for RuntimeBand {
     fn default() -> Self {
-        Self {
-            current: [Coefficients::IDENTITY; 4],
-            target: [Coefficients::IDENTITY; 4],
-            history: [[[0.0; 2]; 4]; 2],
-            remaining: 0,
-            shape: 0,
-            stages_used: 1,
-        }
+        Self::new([Coefficients::IDENTITY; 4], NodeKind::Bell)
     }
 }
 impl RuntimeBand {
+    fn new(stages: BandStages, kind: NodeKind) -> Self {
+        Self {
+            current: stages,
+            target: stages,
+            history: [[[0.0; 2]; 4]; 2],
+            remaining: 0,
+            shape: kind as u8,
+            stages_used: stages_used(&stages),
+        }
+    }
+
     #[inline]
     fn filter_channel(&mut self, channel: usize, input: f64) -> f64 {
         let used = usize::from(self.stages_used);
@@ -524,11 +549,14 @@ impl ModeFade {
     }
 }
 pub const EQ_RUNTIME_BYTES: usize = std::mem::size_of::<EqRuntime>();
-struct EqRuntime {
+/// Bounded sparse EQ histories, initialized on control and reused in playback.
+pub struct EqRuntime {
     sample_rate: u32,
     configuration: Arc<Configuration>,
     bands: Box<[RuntimeBand]>,
-    last_frame: Option<u64>,
+    // Arrangement position for authored target refresh, then the independent
+    // performance position for DSP continuity (legacy clocks use Arrangement).
+    last_frame: Option<(u64, u64)>,
     fallback_frame: u64,
     refresh_target: bool,
     audition: Option<ProcessorAuditionSelection>,
@@ -543,6 +571,13 @@ struct EqRuntime {
     mode_fade: ModeFade,
 }
 impl EqRuntime {
+    /// Runtime-private bytes. The original factory accounts for the immutable
+    /// configuration retained by both runtimes, including after chain transfer.
+    pub fn private_storage_bytes(&self) -> usize {
+        EQ_RUNTIME_BYTES
+            + std::mem::size_of_val(self.bands.as_ref())
+            + std::mem::size_of_val(self.mode_fade.bands.as_ref())
+    }
     fn mode_is_automated(&self) -> bool {
         self.configuration
             .parameters
@@ -621,17 +656,29 @@ impl EqRuntime {
         for (offset, frame) in frames.iter_mut().enumerate() {
             let offset = first_offset + offset;
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
-            // A stopped monitoring clock may repeat its arrangement origin.
-            // Only running content positions define a transport discontinuity.
+            // Stopped monitoring can repeat its Arrangement origin. While
+            // running, Arrangement wraps refresh authored targets but preserve
+            // DSP history on the continuous performance clock. Legacy clocks
+            // without performance origins keep Arrangement discontinuities.
             let origin = if running {
                 clock.and_then(|c| c.arrangement_frame_at_offset(offset))
             } else {
                 None
             };
             let position = origin.unwrap_or(self.fallback_frame);
-            let discontinuity = origin.is_some_and(|position| {
+            let current_frame = origin.map(|arrangement| {
+                let continuity = clock
+                    .and_then(|clock| clock.performance_frame_at_offset(offset))
+                    .unwrap_or(arrangement);
+                (arrangement, continuity)
+            });
+            let arrangement_changed = origin.is_some_and(|position| {
                 self.last_frame
-                    .is_none_or(|last| last.checked_add(1) != Some(position))
+                    .is_none_or(|(last, _)| last.checked_add(1) != Some(position))
+            });
+            let discontinuity = current_frame.is_some_and(|(_, position)| {
+                self.last_frame
+                    .is_none_or(|(_, last)| last.checked_add(1) != Some(position))
             });
             self.select_routing(targets.mode, discontinuity);
             if discontinuity {
@@ -641,7 +688,11 @@ impl EqRuntime {
                 self.audition_history = [[[0.0; 2]; 4]; 2];
                 self.mode_fade.clear();
             }
-            if self.refresh_target || discontinuity || (automated && position % CADENCE == 0) {
+            if self.refresh_target
+                || arrangement_changed
+                || discontinuity
+                || (automated && position % CADENCE == 0)
+            {
                 self.refresh_target = false;
                 let beat = if origin.is_some() && automated {
                     clock.and_then(|clock| clock.arrangement_beat_at_offset(offset))
@@ -763,7 +814,7 @@ impl EqRuntime {
             } else {
                 [finite_f32(output[0]), finite_f32(output[1])]
             };
-            self.last_frame = origin;
+            self.last_frame = current_frame;
             self.fallback_frame = self.fallback_frame.wrapping_add(1);
             self.pristine = false;
         }
@@ -851,15 +902,21 @@ impl NativeProcessorRuntime for EqRuntime {
         self.process(frames, None, true)
     }
     fn reset(&mut self) {
-        for band in &mut self.bands {
-            band.history = [[[0.0; 2]; 4]; 2];
-            band.current = band.target;
-            band.remaining = 0;
-            band.stages_used = stages_used(&band.target);
+        // Reset starts from the authored response, even when the previous
+        // block left an automated target and the first new block has no clock.
+        for ((band, &stages), node) in self
+            .bands
+            .iter_mut()
+            .zip(&self.configuration.authored_stages)
+            .zip(&self.configuration.nodes)
+        {
+            *band = RuntimeBand::new(stages, node.kind);
         }
         self.last_frame = None;
         self.fallback_frame = 0;
+        self.refresh_target = false;
         self.mode = self.configuration.mode;
+        self.gain = self.configuration.gain;
         self.effective_banks = std::array::from_fn(|index| {
             self.configuration
                 .nodes
@@ -1322,6 +1379,160 @@ mod smoothing_tests {
                     .all(|sample| sample.is_finite())
             );
         }
+    }
+
+    #[test]
+    fn arrangement_wrap_keeps_filter_history_on_the_continuous_performance_clock() {
+        struct Clock {
+            performance: Option<u64>,
+            arrangement: u64,
+        }
+        impl NativeInstrumentClock for Clock {
+            fn beat_at_offset(&self, _: usize) -> Option<u64> {
+                None
+            }
+            fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                self.arrangement.checked_add(offset as u64)
+            }
+            fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                self.performance?.checked_add(offset as u64)
+            }
+            fn transport_is_running(&self) -> Option<bool> {
+                Some(true)
+            }
+        }
+        const CYCLE: usize = 601;
+        // A preceding processor can retain a DC/tail contribution even when
+        // the source event has reached zero. There is no input edge to confuse
+        // with a kick attack: only an unwanted filter reset can add a transient.
+        const INPUT: StereoFrame = [0.25, -0.125];
+        for rate in [44_100, 48_000] {
+            let mut reference = runtime(rate, 9.0);
+            let mut expected = vec![INPUT; CYCLE * 2 + 128];
+            reference.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
+            for block in [1, 127, 257, 512] {
+                let mut actual = vec![INPUT; expected.len()];
+                let mut processor = runtime(rate, 9.0);
+                let mut first = 0;
+                while first < actual.len() {
+                    let count = block.min(CYCLE - first % CYCLE).min(actual.len() - first);
+                    processor.process_block_with_clock(
+                        &mut actual[first..first + count],
+                        Some(&Clock {
+                            performance: Some(first as u64),
+                            arrangement: (first % CYCLE) as u64,
+                        }),
+                        &EMPTY_DEVICE_RESOURCES,
+                    );
+                    first += count;
+                }
+                let mismatch = actual.iter().zip(&expected).position(|(a, b)| a != b);
+                assert!(
+                    mismatch.is_none(),
+                    "rate={rate}, block={block}, mismatch={mismatch:?}"
+                );
+                // A real discontinuity still starts empty, including a caller
+                // whose clock only supplies Arrangement origins.
+                for performance in [Some(10_000), None] {
+                    let mut at_seek = [INPUT; 64];
+                    processor.process_block_with_clock(
+                        &mut at_seek,
+                        Some(&Clock {
+                            performance,
+                            arrangement: 7,
+                        }),
+                        &EMPTY_DEVICE_RESOURCES,
+                    );
+                    let mut fresh = runtime(rate, 9.0);
+                    let mut cold = [INPUT; 64];
+                    fresh.process_block(&mut cold, &EMPTY_DEVICE_RESOURCES);
+                    assert_eq!(at_seek, cold, "seek rate={rate}, block={block}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn non_cadence_loop_start_refreshes_authored_target_without_clearing_history() {
+        struct Clock {
+            performance: u64,
+            arrangement: u64,
+            beat: u64,
+        }
+        impl NativeInstrumentClock for Clock {
+            fn beat_at_offset(&self, _: usize) -> Option<u64> {
+                Some(self.beat)
+            }
+            fn arrangement_beat_at_offset(&self, _: usize) -> Option<u64> {
+                Some(self.beat)
+            }
+            fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                self.arrangement.checked_add(offset as u64)
+            }
+            fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                self.performance.checked_add(offset as u64)
+            }
+            fn transport_is_running(&self) -> Option<bool> {
+                Some(true)
+            }
+        }
+        let mut settings = EqState::default();
+        let mut node = Node::new(NodeId::new(1).unwrap(), 750.0, 9.0, 0).unwrap();
+        node.kind = NodeKind::LowShelf;
+        settings.add(node).unwrap();
+        let mut disabled = settings.clone();
+        disabled.nodes[0].enabled = false;
+        settings
+            .set_lane(AutomationLane {
+                node: node.id,
+                parameter: NodeParameter::Enabled,
+                points: vec![
+                    AutomationPoint {
+                        beat: 0,
+                        normalized: 0.0,
+                    },
+                    AutomationPoint {
+                        beat: 1 << 32,
+                        normalized: 1.0,
+                    },
+                ],
+            })
+            .unwrap();
+        let mut actual = PreparedEq::new(settings, 48_000).unwrap().create_runtime();
+        actual.process_block_with_clock(
+            &mut [[0.25, -0.125]; 37],
+            Some(&Clock {
+                performance: 0,
+                arrangement: 1000,
+                beat: 1 << 32,
+            }),
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        // Independent existing owner operation: retarget the running filter to
+        // the authored loop-start state, retaining its warmed histories.
+        let mut expected = PreparedEq::new(disabled, 48_000).unwrap().create_runtime();
+        expected.copy_history_from(actual.as_ref());
+        let mut a = [[0.25, -0.125]; 64];
+        let mut b = a;
+        actual.process_block_with_clock(
+            &mut a,
+            Some(&Clock {
+                performance: 37,
+                arrangement: 17,
+                beat: 0,
+            }),
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        expected.process_block_with_clock(
+            &mut b,
+            Some(&Clock {
+                performance: 37,
+                arrangement: 1037,
+                beat: 0,
+            }),
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(a, b);
     }
 
     #[test]

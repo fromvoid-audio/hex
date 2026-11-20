@@ -309,8 +309,10 @@ fn copy_modifier_cursor_tracks_actual_payload_and_restores_after_cancel(cx: &mut
     let y = editor.read_with(&visual, |v, _| {
         roll.origin.y
             + roll.size.height
-                * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - 60) + 0.5)
-                    / f32::from(v.piano_pitch_rows))
+                * ((f32::from(
+                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 60,
+                ) + 0.5)
+                    / f32::from(v.piano_pitch.test_row_count()))
     });
     let down = point(roll.origin.x + roll.size.width * 0.375, y);
     let end = point(down.x + roll.size.width * 0.375, y);
@@ -394,8 +396,10 @@ fn idle_hover_selected_note_paint_are_distinct_on_completed_frames(cx: &mut Test
     let y = editor.read_with(&visual, |v, _| {
         roll.origin.y
             + roll.size.height
-                * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - 60) + 0.5)
-                    / f32::from(v.piano_pitch_rows))
+                * ((f32::from(
+                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 60,
+                ) + 0.5)
+                    / f32::from(v.piano_pitch.test_row_count()))
     });
     let at = point(roll.origin.x + roll.size.width * 0.375, y);
     editor.update(&mut visual, |v, cx| {
@@ -409,27 +413,30 @@ fn idle_hover_selected_note_paint_are_distinct_on_completed_frames(cx: &mut Test
     );
     visual.run_until_parked();
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
-    let count = |visual: &mut gpui::VisualTestContext, role, height: f32| {
-        let color: gpui::Background = gpui::rgb(crate::theme::color(role)).into();
+    let count = |visual: &mut gpui::VisualTestContext, role, stroke: f32| {
+        let color = gpui::Hsla::from(gpui::rgb(crate::theme::color(role)));
         visual
-            .rendered_filled_quads("midi-note-roll")
+            .rendered_quad_borders_at(at)
             .iter()
-            .filter(|(b, c)| {
-                *c == color
-                    && b.size.width / scale > 10.0
-                    && (b.size.height / scale - height).abs() < 0.01
+            .filter(|(border, widths)| {
+                *border == color
+                    && [widths.top, widths.bottom]
+                        .into_iter()
+                        .all(|width| (width / scale - stroke).abs() < 0.01)
             })
             .count()
     };
-    assert!(
-        count(&mut visual, crate::theme::PaletteRole::Background, 1.0) >= 2,
+    assert_eq!(
+        count(&mut visual, crate::theme::PaletteRole::Background, 1.0),
+        1,
         "idle borders are dark"
     );
     assert_eq!(count(&mut visual, crate::theme::PaletteRole::Text, 1.0), 0);
     visual.simulate_mouse_move(at, None, Modifiers::default());
     visual.run_until_parked();
-    assert!(
-        count(&mut visual, crate::theme::PaletteRole::SecondaryText, 1.0) >= 2,
+    assert_eq!(
+        count(&mut visual, crate::theme::PaletteRole::SecondaryText, 1.0),
+        1,
         "hover has a subtle outline"
     );
     assert_eq!(count(&mut visual, crate::theme::PaletteRole::Text, 2.0), 0);
@@ -437,7 +444,7 @@ fn idle_hover_selected_note_paint_are_distinct_on_completed_frames(cx: &mut Test
     visual.run_until_parked();
     assert_eq!(
         count(&mut visual, crate::theme::PaletteRole::Text, 2.0),
-        2,
+        1,
         "primary selection keeps its strong accent under hover"
     );
     assert_eq!(

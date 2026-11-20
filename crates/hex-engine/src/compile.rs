@@ -1,7 +1,9 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
 use crate::{
-    Audio, Invalid, Project, StreamedSourceMetadata, Track, serial_effect_power::EffectPower,
+    Audio, Invalid, Project, StreamedSourceMetadata, Track,
+    audio_transform::{materializes_musical_outer_fade, previews_event_source_peaks},
+    serial_effect_power::EffectPower,
 };
 use hex_project::{Asset, AssetId, DeviceId};
 use std::{collections::BTreeMap, sync::Arc};
@@ -24,6 +26,7 @@ fn validate_serial_effect_units(
 
 /// One prepared Arrangement audio dependency. Streamed entries must come from
 /// the caller's verified catalog for the requested project-open generation.
+/// Asset-keyed bindings describe the original source, not derived pitch pages.
 #[derive(Clone, Debug)]
 pub enum PreparedAudioSource {
     Resident(Audio),
@@ -36,6 +39,11 @@ pub enum PreparedAudioSource {
 pub(crate) enum SourceBank<'a> {
     Resident(&'a BTreeMap<AssetId, Audio>),
     Mixed(&'a BTreeMap<AssetId, PreparedAudioSource>, u64),
+    MixedWithPitch(
+        &'a BTreeMap<AssetId, PreparedAudioSource>,
+        &'a BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+        u64,
+    ),
 }
 impl<'a> SourceBank<'a> {
     pub(crate) fn resolve(
@@ -46,6 +54,14 @@ impl<'a> SourceBank<'a> {
         match self {
             Self::Resident(media) => resolve_resident(asset, rate, media),
             Self::Mixed(sources, generation) => resolve_prepared(asset, rate, sources, generation),
+            Self::MixedWithPitch(sources, pitched, generation) => {
+                match resolve_prepared(asset, rate, sources, generation)? {
+                    PreparedAudioSourceRef::Streamed(raw) => {
+                        Ok(PreparedAudioSourceRef::StreamedWithPitch(raw, pitched))
+                    }
+                    resident => Ok(resident),
+                }
+            }
         }
     }
 }
@@ -317,6 +333,36 @@ pub fn project_with_prepared_audio_sources(
     .map(|(project, _)| project)
 }
 
+/// Compile Arrangement with separately admitted full-source pitch streams.
+/// The caller supplies metadata from its verified worker catalog; this does not
+/// itself admit pages or establish their lifetime. Raw asset bindings remain
+/// separate and are used by unpitched clips.
+pub fn project_with_prepared_pitch_sources(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+) -> Result<Project, Invalid> {
+    if generation == 0 {
+        return Err(Invalid("stream source generation must be positive"));
+    }
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    let instruments = hex_devices::native_instrument_registry()
+        .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+    compile_project(
+        snapshot,
+        |asset, rate| SourceBank::MixedWithPitch(sources, pitched, generation).resolve(asset, rate),
+        None,
+        None,
+        &registry,
+        &instruments,
+        None,
+        None,
+    )
+    .map(|(project, _)| project)
+}
+
 /// Compile Arrangement playback and MIDI preview from one mixed source map,
 /// retaining the caller's immutable instrument table when supplied.
 pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
@@ -338,18 +384,68 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    project_with_pitch_sources_and_midi_preview_and_contexts(
+        snapshot,
+        sources,
+        &BTreeMap::new(),
+        generation,
+        sine_table,
+        shared_contexts,
+        transforms,
+    )
+}
+
+pub(crate) fn project_with_pitch_sources_and_midi_preview_and_contexts(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
+    let registry = hex_devices::native_registry()
+        .map_err(|_| Invalid("invalid built-in native device registry"))?;
+    project_with_pitch_sources_and_effects(
+        snapshot,
+        sources,
+        pitched,
+        generation,
+        sine_table,
+        shared_contexts,
+        transforms,
+        &registry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // The existing source bindings and borrowed host registry.
+pub(crate) fn project_with_pitch_sources_and_effects(
+    snapshot: &hex_project::Project,
+    sources: &BTreeMap<AssetId, PreparedAudioSource>,
+    pitched: &BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    generation: u64,
+    sine_table: Option<Arc<hex_devices::SineTable>>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
     }
-    let registry = hex_devices::native_registry()
-        .map_err(|_| Invalid("invalid built-in native device registry"))?;
     let instruments = hex_devices::native_instrument_registry()
         .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
     compile_with_midi_preview(
         snapshot,
-        |asset, project_rate| resolve_prepared(asset, project_rate, sources, generation),
+        |asset, project_rate| {
+            if pitched.is_empty() {
+                resolve_prepared(asset, project_rate, sources, generation)
+            } else {
+                SourceBank::MixedWithPitch(sources, pitched, generation)
+                    .resolve(asset, project_rate)
+            }
+        },
         sine_table,
-        &registry,
+        registry,
         &instruments,
         shared_contexts,
         transforms,
@@ -625,6 +721,25 @@ fn compile_project_inner<'a>(
     let source_instruments =
         prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
+    // At most 4 MiB of neutral leaf bins per Arrangement revision. Allocate
+    // them evenly among candidates, including clips before their first fade.
+    let musical_peak_candidate = |clip: &hex_project::Clip| {
+        clip.audio_edit().is_some_and(|edit| {
+            matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_))
+                && (edit.domain.fade_clock == hex_project::AudioClipFadeClock::Outer
+                    || edit.domain.fade.is_neutral())
+        })
+    };
+    let musical_peak_candidates = snapshot
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .filter(|clip| musical_peak_candidate(clip))
+        .count();
+    let musical_peak_limit = (262_144 / musical_peak_candidates.max(1)).min(1_024);
+    // The bake already visits every sample. Bound the additional optional read
+    // for unfaded candidates across the entire revision, including repeats.
+    let mut neutral_peak_budget = hex_project::MAX_AUDIO_DOMAIN_FRAMES;
     let solo = crate::TrackSoloSelection::prepare(snapshot);
     let any_soloed = solo.any;
     let mut tracks = Vec::new();
@@ -719,7 +834,8 @@ fn compile_project_inner<'a>(
                 {
                     return Ok(None);
                 }
-                let mut compiled = if let Some(events) = clip.audio_edit()
+                let bakes_musical_fade = clip.audio_edit().is_some_and(materializes_musical_outer_fade);
+                let (mut compiled, materialized) = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
                 {
@@ -736,18 +852,46 @@ fn compile_project_inner<'a>(
                         };
                         sources.push(crate::audio_transform::GroupSource { root, asset, audio });
                     }
-                    Some(transforms.compile_arrangement_group(clip, &sources)?)
+                    (Some(transforms.compile_arrangement_group(clip, &sources)?), None)
                 } else {
                     let source = resolve_source(asset, snapshot.sample_rate())?;
-                    transforms.compile_clip(snapshot, clip, asset, source)?
+                    if bakes_musical_fade {
+                        let (compiled, peaks) = transforms.capture_musical_peaks(musical_peak_limit, || {
+                            transforms.compile_clip(snapshot, clip, asset, source)
+                        })?;
+                        (compiled, Some(peaks))
+                    } else {
+                        (transforms.compile_clip(snapshot, clip, asset, source)?, None)
+                    }
                 };
+                let mut materialized = materialized.unwrap_or_default();
+                let mut neutral_musical_peaks = std::mem::take(&mut materialized.destination);
                 if let Some(compiled) = compiled.as_mut() {
+                    if !bakes_musical_fade && musical_peak_candidate(clip) {
+                        neutral_musical_peaks = transforms.capture_unbaked_musical_peaks(
+                            compiled, musical_peak_limit, &mut neutral_peak_budget,
+                        );
+                    }
                     compiled.active = clip.active();
                 }
                 if let Some(compiled) = &compiled
                     && let Some(audio) = &compiled.audio
-                    && audio.frames._derived.is_some()
+                    && (audio.frames._derived.is_some() || !neutral_musical_peaks.is_empty())
                 {
+                    let event_source_peaks = materialized.event_source.or_else(|| {
+                        clip.audio_edit()
+                            .filter(|edit| previews_event_source_peaks(edit))
+                            .and_then(|_| transforms.event_source_peaks(audio))
+                    });
+                    let repeat = crate::PreparedAudioRepeat::from_clip(compiled);
+                    let event_source_repeat = event_source_peaks.as_ref()
+                        .filter(|source| source.musical_clock().is_some())
+                        .and(materialized.event_source_repeat.or(repeat));
+                    let event_source_occurrences = materialized.event_source_occurrences.or_else(|| {
+                        clip.audio_edit()
+                            .filter(|edit| (edit.placement.is_some() || edit.content_view.is_some()) && matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_)))
+                            .and_then(|_| transforms.event_source_occurrences(audio))
+                    });
                     audio_clip_views
                         .try_reserve(1)
                         .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
@@ -757,13 +901,13 @@ fn compile_project_inner<'a>(
                         offset: compiled.source_offset as u64,
                         length: compiled.end - compiled.start,
                         sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
-                        repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
-                            period: compiled.source_length as u64,
-                            phase: compiled
-                                .metadata
-                                .as_deref()
-                                .map_or(0, |metadata| metadata.source_phase),
-                        }),
+                        neutral_musical_peaks,
+                        event_source_peaks,
+                        event_source_repeat,
+                        event_source_occurrences,
+                        group_event_sources: clip.has_retained_audio_roots()
+                            .then(|| transforms.group_event_sources(audio)).flatten(),
+                        repeat,
                     });
                 }
                 Ok::<_, Invalid>(compiled)
@@ -994,9 +1138,11 @@ fn compile_project_inner<'a>(
     )?;
     for device in &main_plan.device_chain {
         if let Some(definition) = &device.definition {
-            stateful_count = stateful_count
-                .checked_add(1)
-                .ok_or(Invalid("stateful device count overflow"))?;
+            if !definition.is_powered_off() {
+                stateful_count = stateful_count
+                    .checked_add(1)
+                    .ok_or(Invalid("stateful device count overflow"))?;
+            }
             stateful_bytes = stateful_bytes
                 .checked_add(
                     definition
@@ -1459,6 +1605,10 @@ fn compile_effect_devices(
 pub(crate) enum PreparedAudioSourceRef<'a> {
     Resident(&'a Audio),
     Streamed(&'a Arc<StreamedSourceMetadata>),
+    StreamedWithPitch(
+        &'a Arc<StreamedSourceMetadata>,
+        &'a BTreeMap<crate::StreamSourceKey, Arc<StreamedSourceMetadata>>,
+    ),
 }
 
 pub(crate) fn resolve_resident<'a>(
@@ -1488,7 +1638,8 @@ pub(crate) fn resolve_prepared<'a>(
             Ok(PreparedAudioSourceRef::Resident(audio))
         }
         PreparedAudioSource::Streamed(source) => {
-            if source.key().generation() != generation
+            if !source.key().is_raw()
+                || source.key().generation() != generation
                 || source.key().asset() != asset.id()
                 || source.source_rate() != asset.source_sample_rate()
                 || source.source_frames() != asset.source_frames()
@@ -1536,4 +1687,180 @@ pub(crate) fn project_with_source_bank<'a>(
         native_input,
         external_inputs,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project as CanonicalProject, WarpResampler};
+
+    #[test]
+    fn long_pitch_uses_its_own_pages_without_changing_the_raw_clip() {
+        const FRAMES: u64 = 20_000_000;
+        let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "long".into(),
+                path: "long.wav".into(),
+                sample_rate: 48_000,
+                frames: FRAMES,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let Created::Clip(pitched_clip) = editor.execute(Command::DuplicateClip(clip)).unwrap()
+        else {
+            panic!("duplicate fixture")
+        };
+        editor
+            .execute(Command::SetAudioClipPitch {
+                clip: pitched_clip,
+                cents: 700,
+            })
+            .unwrap();
+        let raw = Arc::new(
+            StreamedSourceMetadata::new(
+                crate::StreamSourceKey::new(7, asset),
+                48_000,
+                48_000,
+                FRAMES,
+                FRAMES,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let derived = Arc::new(raw.with_plain_pitch(700, WarpResampler::V2).unwrap());
+        let sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::clone(&raw)))]);
+        assert!(project_with_prepared_audio_sources(editor.project(), &sources, 7).is_err());
+        assert!(
+            project_with_prepared_pitch_sources(editor.project(), &sources, &BTreeMap::new(), 7)
+                .is_err()
+        );
+        let other = StreamedSourceMetadata::new(
+            raw.key(),
+            48_000,
+            48_000,
+            FRAMES,
+            FRAMES,
+            hex_project::IDENTITY_CONVERSION,
+            [8; 32],
+        )
+        .unwrap()
+        .with_plain_pitch(700, WarpResampler::V2)
+        .unwrap();
+        let wrong = BTreeMap::from([(derived.key(), Arc::new(other))]);
+        assert!(
+            project_with_prepared_pitch_sources(editor.project(), &sources, &wrong, 7).is_err()
+        );
+        let catalog = BTreeMap::from([(derived.key(), Arc::clone(&derived))]);
+        let project =
+            project_with_prepared_pitch_sources(editor.project(), &sources, &catalog, 7).unwrap();
+        struct Pages {
+            raw: crate::StreamSourceKey,
+            pitched: crate::StreamSourceKey,
+            frames: [[f32; 2]; crate::STREAM_PAGE_FRAMES],
+        }
+        impl crate::MediaPages for Pages {
+            fn page(
+                &mut self,
+                key: crate::StreamSourceKey,
+                page_index: u64,
+            ) -> Option<crate::BorrowedMediaPage<'_>> {
+                let value = if key == self.raw {
+                    0.25
+                } else if key == self.pitched {
+                    0.75
+                } else {
+                    return None;
+                };
+                self.frames.fill([value; 2]);
+                Some(crate::BorrowedMediaPage {
+                    page_index,
+                    frames: &self.frames,
+                })
+            }
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+                panic!("pages are available")
+            }
+        }
+        let mut pages = Pages {
+            raw: raw.key(),
+            pitched: derived.key(),
+            frames: [[0.0; 2]; crate::STREAM_PAGE_FRAMES],
+        };
+        let mut renderer = crate::Renderer::new(&project);
+        renderer.play();
+        let mut output = [[0.0; 2]; 128];
+        renderer.render_with_pages(&mut output, &mut pages).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.25; 2]));
+        renderer.seek(FRAMES);
+        renderer.render_with_pages(&mut output, &mut pages).unwrap();
+        assert!(output.iter().all(|frame| *frame == [0.75; 2]));
+    }
+
+    #[test]
+    fn raw_asset_compilation_refuses_derived_pitch_pages() {
+        const FRAMES: u64 = 20_000_000;
+        let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { asset, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "plain".into(),
+                path: "plain.wav".into(),
+                sample_rate: 48_000,
+                frames: FRAMES,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        let raw = StreamedSourceMetadata::new(
+            crate::StreamSourceKey::new(7, asset),
+            48_000,
+            48_000,
+            FRAMES,
+            FRAMES,
+            hex_project::IDENTITY_CONVERSION,
+            [7; 32],
+        )
+        .unwrap();
+        let pitched = raw.with_plain_pitch(700, WarpResampler::V2).unwrap();
+        let raw_sources = BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(raw)))]);
+        let pitched_sources =
+            BTreeMap::from([(asset, PreparedAudioSource::Streamed(Arc::new(pitched)))]);
+        let check_sources = |project: &CanonicalProject| {
+            let compiled = project_with_prepared_audio_sources(project, &raw_sources, 7).unwrap();
+            assert!(compiled.contains_streamed_sources());
+            assert!(
+                project_with_prepared_audio_sources(project, &pitched_sources, 7).is_err(),
+                "a raw clip must never consume pitched pages"
+            );
+        };
+        check_sources(editor.project());
+        let settings = editor
+            .project()
+            .audio_warp_settings_for_enable(clip)
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: None,
+            })
+            .unwrap();
+        check_sources(editor.project());
+    }
 }

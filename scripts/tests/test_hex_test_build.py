@@ -16,8 +16,9 @@ import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, nullcontext, redirect_stderr
 from test_ci_target_storage import reuse_fixed_scratch_observations
+import test_local_ci
 from test_local_ci import install_delivery_source_fixture, load_delivery_source_fixture
 
 delivery = load_delivery_source_fixture("hex_test_build")
@@ -27,6 +28,125 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_delivery_switches_validation_when_fresh_owner_is_admitted(self):
+        (self.root / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        included = self.root / "included.json"
+        included.write_text(json.dumps([{"pr": "https://github.com/PORTALSURFER/hex/pull/1", "head": "a" * 40}]))
+        checklist = self.root / "checklist"
+        checklist.write_text("review")
+        args = SimpleNamespace(candidate="a" * 40, ci_report=self.root / "report", included=included,
+                               checklist=checklist, build_only=False, prepare_only=False)
+        runner = Mock(root=self.root, output_dir=self.root / "output")
+        runner._resolve_cargo_identity.return_value = True
+        runner._check_disk_headroom.return_value = True
+        reservation = object()
+        owner = {"state": "pending"}
+        class Finished(Exception):
+            pass
+        def guard(_runner, **kwargs):
+            self.assertIs(kwargs["reservation"], reservation)
+            kwargs["verification_check"]()
+            kwargs["on_admission"](owner)
+            kwargs["verification_check"]()
+            raise Finished
+        with patch.object(delivery, "ROOT", self.root), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}), \
+                patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
+                patch.object(delivery, "activation_lock", return_value=nullcontext()), \
+                patch.object(delivery, "recover"), patch.object(delivery, "assert_inactive"), \
+                patch.object(delivery, "changelog_payload", return_value=(None, {})), \
+                patch.object(delivery, "prepare_discovery_input", return_value=None), \
+                patch.object(delivery, "optimized_artifact", side_effect=guard), \
+                patch.object(delivery, "validate_ci") as validate:
+            with self.assertRaises(Finished):
+                delivery._build(args, reservation=reservation)
+        self.assertEqual(len(validate.call_args_list), 4)
+        self.assertTrue(all(call.kwargs.get("reservation") is reservation for call in validate.call_args_list[:3]))
+        self.assertNotIn("reservation", validate.call_args_list[3].kwargs)
+        runner._resolve_cargo_identity.assert_called_once_with(reservation)
+        runner.validate_release_inputs.assert_called_once_with(owner)
+
+    def test_fresh_delivery_reserves_before_build_and_rejects_recovery(self):
+        target = self.root / "fresh-target"
+        target.mkdir()
+        args = SimpleNamespace(fresh_release_target=True)
+        with patch.object(delivery, "ROOT", self.root), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target), "CARGO_CACHE_RUSTC_INFO": "0"}), \
+                patch.object(delivery, "_build") as build:
+            def observe(_args, *, reservation):
+                reservation.revalidate(str(target))
+                self.assertIsNotNone(reservation._lock.file)
+                return "built"
+            build.side_effect = observe
+            self.assertEqual(delivery.build(args), "built")
+            self.assertIsNone(build.call_args.kwargs["reservation"]._lock.file)
+            for field in ("adopt_release_target", "expected_release_owner_sha256",
+                          "expected_recreated_target_device", "expected_recreated_target_inode"):
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "cannot adopt"):
+                        delivery.build(SimpleNamespace(fresh_release_target=True, **{field: 1}))
+            target.rmdir()
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "absent"):
+                delivery.build(args)
+            target.mkdir()
+            (target / "foreign").write_text("preserve")
+            with self.assertRaises(delivery.ci.TargetCacheError):
+                delivery.build(args)
+            self.assertEqual((target / "foreign").read_text(), "preserve")
+
+    def test_optimized_delivery_keeps_fresh_reservation_through_build(self):
+        fixture = test_local_ci.LocalCiRunnerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        runner, reservation, target = fixture._reserved_release_runner("delivery-fresh")
+        runner.env["CARGO_CACHE_RUSTC_INFO"] = "0"
+        runner.output_dir.mkdir(parents=True)
+        lock = reservation._lock
+        tree = runner.summary["start_tree"]
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        dependencies = {"fixture": "matching input identity"}
+        report = fixture.base / "ci-report.json"
+        delivery.write_json(report, {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+            "exit_code": 0, "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
+            "plan": plan, "target_cache": {"dependency_inputs": dependencies},
+            "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                       "test_results": {"python_executions": [1]}} for step in delivery.ci.planned_steps(plan)]})
+        actual_run = subprocess.run
+        checks = []
+        admitted = [False]
+        def run(argv, **kwargs):
+            if argv[:2] == ["cargo", "build"]:
+                self.assertIs(runner.target_lock, lock)
+                artifact = target / "release" / "hex-desktop"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"optimized fixture")
+                event = {"reason": "compiler-artifact", "executable": str(artifact),
+                         "target": {"name": "hex-desktop"}, "profile": {"opt_level": "3"}}
+                return subprocess.CompletedProcess(argv, 0, json.dumps(event) + "\n")
+            return actual_run(argv, **kwargs)
+        def verify():
+            if runner.target_lock is not None:
+                self.assertIs(runner.target_lock, lock)
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True,
+                                 reservation=None if admitted[0] else reservation)
+            checks.append(True)
+        def admit(owner):
+            admitted[0] = True
+            checks.append(owner["state"])
+        with patch.object(subprocess, "run", side_effect=run), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan), \
+                patch.object(runner, "_dependency_context", return_value=dependencies):
+            verify()
+            with delivery.optimized_artifact(runner, reservation=reservation, verification_check=verify,
+                                             on_admission=admit) as (binary, owner):
+                self.assertEqual(binary.read_bytes(), b"optimized fixture")
+                self.assertIs(runner.target_lock, lock)
+                self.assertEqual(owner["state"], "pending")
+        self.assertEqual(checks, [True, True, "pending", True])
+        self.assertIsNone(lock.file)
+
     def test_direct_delivery_compiles_witnessed_bytes_before_qualifying_source(self):
         scripts = self.root / "scripts"
         path = scripts / "hex-test-build.py"
@@ -378,6 +498,32 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
             report.write_text(json.dumps(evidence))
             self.assertEqual(delivery.validate_ci(report, runner, tree["commit"]), evidence)
 
+    def test_sharded_full_audit_requires_complete_discovery_for_delivery(self):
+        runner = delivery.ci.LocalCiRunner(self.root, env={})
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "native_acceptance_opt_in": False,
+                    "sharded_full_python": True,
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in runner.steps]}
+        report = self.root / "sharded-ci.json"
+        tooling = next(s for s in evidence["steps"] if s["step_id"] == "runner-tests")
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            delivery.write_json(report, evidence)
+            self.assertEqual(delivery.validate_ci(report, runner, tree["commit"]), evidence)
+            delivery.write_json(report, {**evidence, "native_acceptance_opt_in": True})
+            with self.assertRaisesRegex(delivery.DeliveryError, "without native opt-in"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            delivery.write_json(report, {**evidence, "sharded_full_python": False})
+            with self.assertRaisesRegex(delivery.DeliveryError, "full exact-source"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            tooling["argv"] = ["python3", "scripts/python_shards.py", "--", "test_local_ci"]
+            delivery.write_json(report, evidence)
+            with self.assertRaisesRegex(delivery.DeliveryError, "full exact-source"):
+                delivery.validate_ci(report, runner, tree["commit"])
+
     def test_review_ci_gate_rejects_legacy_and_changed_guarded_inputs(self):
         runner = delivery.ci.LocalCiRunner(self.root)
         tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
@@ -721,6 +867,9 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
 
+    def test_production_build_version_metadata_uses_runner_environment(self):
+        self.assert_production_build(build_only=True, metadata_env_check=True)
+
     def test_default_build_stages_discovery_in_the_installed_app(self):
         self.assert_production_build(build_only=False, discovery=True)
 
@@ -922,7 +1071,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
                                 prepare_only=False, followup_failure=False, validate_ci_receipt=False,
-                                discovery=False):
+                                discovery=False, metadata_env_check=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -953,6 +1102,23 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         checklist = self.root / "USER-TEST.md"
         checklist.write_text("1. launch stable app\n2. inspect source identity\n")
         runner = delivery.ci.LocalCiRunner(source)
+        metadata_environment = {}
+        real_subprocess_run = subprocess.run
+        if metadata_env_check:
+            tools = self.root / "fake-cargo-bin"
+            tools.mkdir()
+            cargo = tools / "cargo"
+            cargo.write_text(f"#!{sys.executable}\n" +
+                "import json, os\n"
+                "version = '0.2.7' if os.environ.get('CARGO_CACHE_RUSTC_INFO') == '0' and "
+                "os.environ.get('CARGO_TARGET_DIR') == os.environ.get('EXPECTED_TARGET') else '9.9.9'\n"
+                "print(json.dumps({'packages': [{'name': 'hex-desktop', 'version': version}]}))\n")
+            cargo.chmod(0o755)
+            metadata_environment = {"PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                                    "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
+                                    "CARGO_CACHE_RUSTC_INFO": "1"}
+            runner.env.update(PATH=metadata_environment["PATH"], CARGO_TARGET_DIR=str(target.parent.parent),
+                              EXPECTED_TARGET=str(target.parent.parent), CARGO_CACHE_RUSTC_INFO="0")
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
         dependency_inputs = {"fixture": "guarded input identity"}
@@ -984,10 +1150,13 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
                  "target":{"name":"hex-desktop"}, "profile":{"opt_level":"3"}}
-        def tool(argv, root=source):
+        def tool(argv, root=source, *, env=None):
             if argv[:2] == ["git", "rev-parse"]:
                 return str(source / ".git")
             if argv[:2] == ["cargo", "metadata"]:
+                if metadata_env_check:
+                    return real_subprocess_run(argv, cwd=root, env=env, check=True,
+                                               capture_output=True, text=True).stdout.strip()
                 return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
             if prepare_only and argv[0] == "ps":
                 return f"123 {self.app}/Contents/MacOS/hex"
@@ -1037,7 +1206,7 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                                  side_effect=AssertionError("CI required for build-only") if build_only else None))
         with patch.object(delivery, "ROOT", source), \
                 patch.object(delivery.sys, "platform", "darwin"), \
-                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app), **metadata_environment}), \
                 patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
                 ci_check as checked_ci, \
                 patch.object(runner, "run", side_effect=AssertionError("tests during packaging")), \
@@ -1272,6 +1441,8 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
                 delivery.verify(self.app)
             delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
+        if metadata_env_check:
+            self.assertEqual(receipt["version"], "0.2.7")
         self.assertEqual(verified["profile"], "release")
         if discovery:
             self.assertEqual(verified["vst3_discovery"], discovery_evidence)
@@ -1345,6 +1516,97 @@ if os.environ.get("HEX_FIXTURE_CHANGE_DELIVERY") == "1":
             runner.summary["start_tree"] = {**tree, "content_sha256": "changed"}
             with self.assertRaises(delivery.DeliveryError):
                 delivery.validate_ci(report, runner, tree["commit"])
+
+    def test_scoped_ci_metadata_uses_runner_environment(self):
+        tools = self.root / "metadata-tools"
+        tools.mkdir()
+        cargo = tools / "cargo"
+        cargo.write_text(f"#!{sys.executable}\n" +
+            "import json, os\n"
+            "print(json.dumps({'target_directory': os.environ.get('CARGO_TARGET_DIR'), "
+            "'cache': os.environ.get('CARGO_CACHE_RUSTC_INFO')}))\n")
+        cargo.chmod(0o755)
+        path = str(tools) + os.pathsep + os.environ["PATH"]
+        runner_target = str(self.root / "runner-target")
+        env = {**os.environ, "PATH": path, "CARGO_TARGET_DIR": runner_target,
+               "CARGO_CACHE_RUSTC_INFO": "0"}
+        runner = delivery.ci.LocalCiRunner(self.root, env=env)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        required = delivery.ci.planned_steps(plan)
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for step in required]}
+        report = self.root / "scoped-env.json"
+        delivery.write_json(report, evidence)
+        def resolve(_root, **kwargs):
+            self.assertEqual(kwargs["metadata"], {"target_directory": runner_target, "cache": "0"})
+            self.assertIs(kwargs["env"], runner.env)
+            return plan
+        with patch.dict(os.environ, {"PATH": path, "CARGO_TARGET_DIR": str(self.root / "ambient-target"),
+                                    "CARGO_CACHE_RUSTC_INFO": "1"}), \
+                patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", side_effect=resolve):
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+
+    def test_scoped_ci_reuse_uses_runner_environment(self):
+        runner = delivery.ci.LocalCiRunner(self.root, env={**os.environ, "HEX_VST3_SDK_DIR": "fixture"})
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40, "reuse": {"report": "previous.json"}}
+        report = self.root / "scoped-reuse-env.json"
+        report.write_text(json.dumps({"schema_version": 2, "steps": [], "start_tree": tree,
+                                      "end_tree": tree, "plan": plan}))
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value={}), \
+                patch.object(delivery.ci, "reusable_plan", side_effect=ValueError("fixture stop")) as reuse:
+            with self.assertRaisesRegex(ValueError, "fixture stop"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+        self.assertIs(reuse.call_args.kwargs["env"], runner.env)
+
+    def test_scoped_ci_revalidates_reserved_target_around_metadata(self):
+        target = self.root / "reserved-metadata"
+        target.mkdir()
+        runner = delivery.ci.LocalCiRunner(self.root, env={**os.environ, "CARGO_TARGET_DIR": str(target),
+                                                           "CARGO_CACHE_RUSTC_INFO": "0"})
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}}
+                              for step in delivery.ci.planned_steps(plan)]}
+        report = self.root / "reserved-report.json"
+        delivery.write_json(report, evidence)
+        reservation = delivery.ci.FreshTargetReservation.acquire(self.root, str(target), {"run_id": "ci"})
+        self.addCleanup(reservation.close)
+        foreign = target / "foreign"
+        def metadata(*_args, **_kwargs):
+            self.assertIsNotNone(reservation._lock.file)
+            if mutate[0]:
+                foreign.write_text("preserve")
+            return json.dumps({"workspace_root": str(self.root), "target_directory": str(target)})
+        mutate = [False]
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", side_effect=metadata), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan) as resolve:
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True, reservation=reservation)
+            resolve.assert_called_once()
+            mutate[0] = True
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "not empty"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True, reservation=reservation)
+            resolve.assert_called_once()
+        self.assertEqual(foreign.read_text(), "preserve")
 
     def test_scoped_ci_requires_explicit_dev_and_recomputed_plan_with_positive_tests(self):
         # Fabricated report data tests consumer refusal, not product execution.
@@ -1595,127 +1857,103 @@ class ReleaseCargoTests(unittest.TestCase):
                                                  verification_check=refuse_certificate):
                     self.fail("changed CI certificate reached compilation/consumer")
             self.assertEqual(Path(first["owner_path"]).read_bytes(), owner_before)
-            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            self.assertTrue(dependencies)
-            # Keep a real dev build and ensure release handoff cannot touch it.
+            # Keep a real dev build and verify all refusals preserve it.
             command(["cargo", "build", "--offline", "--locked"], root, env)
-            dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
-            self.assertTrue(dev)
-            wrapper_dir = base / "bin"
-            wrapper_dir.mkdir()
-            cargo = shutil.which("cargo")
-            self.assertIsNotNone(cargo)
-            wrapper = wrapper_dir / "cargo"
-            wrapper.write_text('#!/usr/bin/env python3\nimport os,glob,sys\n'
-                'if sys.argv[1:2] == ["build"] and "--release" in sys.argv:\n'
-                ' stale=glob.glob(os.path.join(os.environ["CARGO_TARGET_DIR"], "release/deps/libfixture_api-*.rlib"))\n'
-                ' if stale:\n  print("workspace release artifact survived handoff",file=sys.stderr)\n  sys.exit(23)\n'
-                f'os.execv({cargo!r},[{cargo!r},*sys.argv[1:]])\n')
-            wrapper.chmod(0o755)
-            guarded_env = {**env, "PATH":str(wrapper_dir) + os.pathsep + env["PATH"]}
-            # Negative control: ordinary dev handoff leaves these release artifacts.
-            dev_runner = runner(other, "dev-only", guarded_env)
-            dev_runner.adopt_target = True
-            dev_runner.output_dir.mkdir(parents=True)
-            self.assertTrue(dev_runner._capture_repository_state("start_tree"))
-            self.assertTrue(dev_runner._resolve_cargo_identity())
-            self.assertTrue(dev_runner._prepare_target_cache())
-            dev_runner.target_lock.release()
-            dev_runner.target_lock = None
-            control = subprocess.run(["cargo", "build", "--release", "--locked"], cwd=other,
-                                     env=guarded_env, capture_output=True, text=True)
-            self.assertEqual(control.returncode, 23, control.stderr)
-            command(["cargo", "build", "--offline", "--locked"], other, env)
-            dev = {str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}
-            second = build(other, "release-b", "B string API 9", guarded_env, retain=True)
-            third = build(root, "release-a-again", "16", guarded_env)
-            self.assertEqual(second["cleanup_status"], "passed")
-            self.assertEqual(third["cleanup_status"], "passed")
-            self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)
-            self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
-            self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
-            self.assertEqual(command([str(base / "release-b-retained-binary")]), "B string API 9")
-            build(root, "release-a-normal-tool", "16")
+            def inventory(directory):
+                return {str(p.relative_to(directory)): delivery.sha(p)
+                        for p in directory.rglob("*") if p.is_file()}
+
+            original_dev = inventory(target / "debug")
+            original_release = inventory(target / "release")
+            self.assertTrue(original_dev)
+            self.assertTrue(original_release)
+            self.assertTrue(any("libexternal_helper" in path for path in original_release))
+
+            def refuse(cwd, name, reason="fresh release target", selected_env=env, **options):
+                with self.assertRaisesRegex(delivery.ci.TargetCacheError, reason):
+                    with delivery.optimized_artifact(
+                            runner(cwd, name, selected_env), package="fixture-app", **options):
+                        self.fail("unsupported release target reached the build")
+
+            def fresh(cwd, name, expected, selected_env=env):
+                fresh_env = {**selected_env, "CARGO_TARGET_DIR": str(base / (name + "-target"))}
+                return build(cwd, name, expected, fresh_env)
+
+            # A -> B -> A across worktrees. B uses separate custody; returning
+            # to the unchanged A inputs can reuse the original A target.
+            refuse(other, "refuse-shared-b")
+            fresh(other, "release-b", "B string API 9")
             reused = build(root, "release-a-reuse", "16")
+            self.assertEqual(reused["action"], "reuse")
             self.assertEqual(reused["cleanup_status"], "not_needed")
-            # Same checkout/source edit must invoke Cargo and change the actual
-            # executable, retaining the known build cache rather than cleaning.
-            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 10 }\n')
+            self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
+            stable_owner = Path(reused["owner_path"])
+            stable_owner_bytes = stable_owner.read_bytes()
+
+            # Workspace changes, including restored source mtimes, cannot reuse
+            # a prior release's dependencies even from the same checkout.
+            api = root / "api/src/lib.rs"
+            api.write_text('pub fn value() -> u32 { 10 }\n')
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "same checkout changed behavior"])
-            incremental = build(root, "release-a-incremental", "19")
-            self.assertEqual(incremental["cleanup_status"], "not_needed")
-            self.assertNotEqual(incremental["source"], reused["source"])
-            self.assertNotEqual(incremental["artifact"]["sha256"], reused["artifact"]["sha256"])
-            # Same-size current source with the exact old mtime must never
-            # reuse the old optimized executable. Normal edits above stay warm.
-            api = root / "api/src/lib.rs"
+            refuse(root, "refuse-edited-a")
+            updated = fresh(root, "release-a-updated", "19")
             stamp = api.stat()
             api.write_text('pub fn value() -> u32 { 20 }\n')
             os.utime(api, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "backdated workspace behavior"])
-            restored = build(root, "release-a-restored-mtime", "29")
-            self.assertEqual(restored["cleanup_status"], "passed")
-            self.assertIn("fixture-api", " ".join(restored["cleanup_argv"]))
-            self.assertNotEqual(restored["artifact"]["sha256"], incremental["artifact"]["sha256"])
-            # External path dependencies need the same content-based release
-            # protection, even when Cargo's timestamp observation is unchanged.
-            # Keep workspace source fixed at the previous successful build.
+            updated_env = {**env, "CARGO_TARGET_DIR": updated["target_directory"]}
+            refuse(root, "refuse-backdated-a", selected_env=updated_env)
+            restored = fresh(root, "release-a-restored-mtime", "29")
+
+            # Exact source alone is insufficient: restored-mtime external
+            # dependencies and compiler config also change the cache witness.
             external_source = external / "src/lib.rs"
             stamp = external_source.stat()
             external_source.write_text('pub fn suffix() -> u32 { 8 }\n')
             os.utime(external_source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-            external_changed = build(root, "release-a-external-restored", "28")
-            self.assertIn("external-helper", " ".join(external_changed["cleanup_argv"]))
-            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            self.assertTrue(dependencies)
+            restored_env = {**env, "CARGO_TARGET_DIR": restored["target_directory"]}
+            refuse(root, "refuse-external-change", selected_env=restored_env)
+            external_changed = fresh(root, "release-a-external-restored", "28")
             configured_env = {**env, "RUSTFLAGS": "--cfg release_fixture_changed"}
-            changed_config = build(root, "release-a-config", "28", configured_env)
-            self.assertEqual(changed_config["cleanup_status"], "passed")
-            configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            self.assertEqual({name: configured_dependencies[name] for name in dependencies}, dependencies)
+            refuse(root, "refuse-compiler-config", selected_env={
+                **configured_env, "CARGO_TARGET_DIR": external_changed["target_directory"]})
+            fresh(root, "release-a-config", "28", configured_env)
+
             original_main = (root / "app/src/main.rs").read_text()
             (root / "app/src/main.rs").write_text("invalid Rust source")
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "actual failed build"])
-            failed = runner(root, "release-a-failed", configured_env)
+            failed_env = {**configured_env, "CARGO_TARGET_DIR": str(base / "failed-target")}
+            failed = runner(root, "release-a-failed", failed_env)
             with self.assertRaises(delivery.DeliveryError):
                 with delivery.optimized_artifact(failed, package="fixture-app"):
                     self.fail("failed Cargo build yielded an artifact")
-            owner = json.loads(Path(incremental["owner_path"]).read_text())
-            self.assertEqual(owner["state"], "pending")
+            pending = Path(failed.summary["release_target_cache"]["owner_path"])
+            pending_before = pending.read_bytes()
+            self.assertEqual(json.loads(pending_before)["state"], "pending")
+            refuse(root, "pending-refused", "pending", failed_env)
             (root / "app/src/main.rs").write_text(original_main)
             (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
             external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "restore behavior"])
-            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "pending"):
-                with delivery.optimized_artifact(runner(root, "pending-refused", configured_env), package="fixture-app"):
-                    self.fail("pending state was silently reused")
-            with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
-                self.assertEqual(command([str(binary)]), "16")
-            # Explicit recovery restores the original release inputs.
-            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
-            # Cargo cannot select the old removed/renamed member from this graph.
+            refuse(root, "pending-changed-input", selected_env=failed_env, adopt=True)
+            self.assertEqual(pending.read_bytes(), pending_before)
+            fresh(root, "restored-after-failure", "16")
+
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')
             (other / "app/Cargo.toml").write_text(manifest.replace('fixture-api={path=', 'fixture-api={package="renamed-api",path='))
             command(["cargo", "generate-lockfile", "--offline"], other)
             command(["git", "add", "."], other)
             command(["git", "commit", "-qm", "rename member"], other)
-            before = delivery.sha(target / "release/fixture-app")
-            for name in ("renamed", "removed"):
-                if name == "removed":
-                    (other / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["api"]\nresolver="2"\n')
-                    command(["git", "add", "."], other)
-                    command(["git", "commit", "-qm", "remove workspace member"], other)
-                with self.assertRaisesRegex(delivery.ci.TargetCacheError, "removed, renamed"):
-                    with delivery.optimized_artifact(runner(other, name), package="fixture-app"):
-                        self.fail("unsupported package handoff built")
-                self.assertEqual(delivery.sha(target / "release/fixture-app"), before)
-                self.assertEqual(json.loads(Path(first["owner_path"]).read_text())["state"], "ready")
-            # Pure additions retain every old package, so Cargo can clean the
-            # complete current workspace and compile the newly added dependency.
+            refuse(other, "renamed", "removed, renamed")
+            (other / "Cargo.toml").write_text('[workspace]\nmembers=["app"]\nexclude=["api"]\nresolver="2"\n')
+            command(["git", "add", "."], other)
+            command(["git", "commit", "-qm", "remove workspace member"], other)
+            refuse(other, "removed", "removed, renamed")
+
             (root / "extra/src").mkdir(parents=True)
             extra_manifest = root / "extra/Cargo.toml"
             extra_manifest.write_text('[package]\nname="fixture-extra"\nversion="0.1.0"\nedition="2021"\n')
@@ -1727,24 +1965,20 @@ class ReleaseCargoTests(unittest.TestCase):
             command(["cargo", "generate-lockfile", "--offline"])
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "add workspace dependency"])
-            addition = build(root, "release-addition", "17")
-            self.assertEqual(addition["cleanup_status"], "passed")
-            self.assertTrue(any("fixture-extra" in argument for argument in addition["cleanup_argv"]))
-            self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)
-            self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
+            refuse(root, "addition-on-old-target")
+            addition = fresh(root, "release-addition", "17")
             owner = Path(addition["owner_path"])
             owner_before = owner.read_bytes()
-            binary_before = delivery.sha(target / "release/fixture-app")
             extra_manifest.write_text(extra_manifest.read_text().replace('version="0.1.0"', 'version="0.2.0"'))
             command(["cargo", "generate-lockfile", "--offline"])
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "change existing member version"])
-            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "removed, renamed or version-changed"):
-                with delivery.optimized_artifact(runner(root, "version-changed"), package="fixture-app"):
-                    self.fail("version-changed handoff built")
-            self.assertEqual(delivery.sha(target / "release/fixture-app"), binary_before)
+            addition_env = {**env, "CARGO_TARGET_DIR": addition["target_directory"]}
+            refuse(root, "version-changed", "removed, renamed or version-changed", addition_env)
             self.assertEqual(owner.read_bytes(), owner_before)
-            print("real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified", flush=True)
+            self.assertEqual(inventory(target / "debug"), original_dev)
+            self.assertEqual(inventory(target / "release"), original_release)
+            self.assertEqual(stable_owner.read_bytes(), stable_owner_bytes)
 
 
 

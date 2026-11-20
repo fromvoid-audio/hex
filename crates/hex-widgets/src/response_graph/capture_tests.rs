@@ -59,6 +59,7 @@ fn fixture(cx: &mut TestAppContext, creation: bool) -> Fixture {
             } else {
                 let mut model = g.model.clone();
                 model.nodes = vec![ResponseGraphNode {
+                    accent: None,
                     id: 1,
                     position: [0.5, 0.5],
                     enabled: true,

@@ -9,6 +9,8 @@ pub struct AudioCandidateRuntimeStatus {
     pub position: u64,
     pub performance_frame: u64,
     pub playing: bool,
+    /// Session Arrangement loop pass and active region, if supported.
+    pub arrangement_loop_state: Option<crate::session_playback::ArrangementLoopState>,
     pub metronome_enabled: bool,
     pub session_capability: crate::SessionCapabilityStatus,
     /// True only for a successfully admitted, installed private CURRENT runtime.
@@ -43,6 +45,7 @@ impl ClaimedAudioCandidateRuntime {
             position: playback.position(),
             performance_frame: playback.performance_frame(),
             playing: playback.playing(),
+            arrangement_loop_state: playback.arrangement_loop_state(),
             metronome_enabled: playback.metronome_enabled(),
             session_capability: playback.session_capability_status(),
             sampler_console: self
@@ -63,6 +66,99 @@ impl ClaimedAudioCandidateRuntime {
     pub fn session_route_status(&self, index: usize) -> Option<crate::SessionRouteStatus> {
         self.current_playback()?.session_route_status(index)
     }
+    /// Classify this insert under the same continuity law at preview and commit.
+    pub fn require_continuous_device_insert(&mut self) -> bool {
+        let Some(runtime) = self.device_insert_runtime() else {
+            return false;
+        };
+        runtime.require_continuous_device_insert();
+        true
+    }
+    /// Start the fade on this current graph after the host validates consent
+    /// and protects the predecessor's pages and the projected successor.
+    pub fn begin_device_insert_cut(&mut self) -> bool {
+        self.device_insert_runtime()
+            .is_some_and(Playback::begin_device_insert_cut)
+    }
+    /// Restore this graph after aborting a confirmed cut.
+    pub fn release_device_insert_cut(&mut self) {
+        if let Some(runtime) = self.device_insert_runtime() {
+            runtime.release_device_insert_cut();
+        }
+    }
+    pub fn device_insert_cut_pending(&self) -> bool {
+        self.current_playback()
+            .is_some_and(Playback::device_insert_cut_pending)
+    }
+    pub fn device_insert_held(&self) -> bool {
+        self.current_playback()
+            .is_some_and(Playback::device_insert_held)
+    }
+    pub fn device_insert_fade_frames(&self) -> Option<u32> {
+        self.current_playback()
+            .map(Playback::device_insert_fade_frames)
+    }
+    fn device_insert_runtime(&mut self) -> Option<&mut Playback> {
+        self.current_runtime_mut()
+            .filter(|runtime| runtime.sampler_sources.is_none())
+            .map(|runtime| &mut runtime.playback)
+    }
+
+    /// Classify one fitting stage removal on these claimed graph owners.
+    /// Publication must validate the receipt and prove both render windows
+    /// before it advances the running stage.
+    pub fn plan_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<bool, crate::PlaybackHandoffError> {
+        if self.identity() == previous.identity() {
+            return Err(crate::PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        let Some(next) = self.device_insert_runtime() else {
+            return Ok(false);
+        };
+        let Some(old) = previous.device_insert_runtime() else {
+            return Ok(false);
+        };
+        if (0..old.session_route_count()).any(|index| {
+            old.session_route_status(index)
+                .is_some_and(|route| route.pending.is_some())
+        }) {
+            return Ok(false);
+        }
+        next.plan_native_removal_from(old)
+    }
+
+    /// Advance this exact stage only after page and publication preflight.
+    pub fn advance_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<crate::session_playback::NativeRemovalProgress, crate::PlaybackHandoffError> {
+        let (Some(next), Some(old)) = (
+            self.device_insert_runtime(),
+            previous.device_insert_runtime(),
+        ) else {
+            return Err(crate::PlaybackHandoffError::RuntimeFenceChanged);
+        };
+        next.advance_planned_native_removal_from(old)
+    }
+
+    /// A returned candidate with an armed removal must restore its predecessor.
+    pub fn native_removal_started(&self) -> bool {
+        self.current_playback()
+            .is_some_and(Playback::native_removal_started)
+    }
+
+    /// Return a refused candidate to control after restoring its donor.
+    pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {
+        if let (Some(next), Some(old)) = (
+            self.device_insert_runtime(),
+            previous.device_insert_runtime(),
+        ) {
+            next.cancel_native_removal_from(old);
+        }
+    }
+
     pub fn render_with_post_node_observer(
         &mut self,
         output: &mut [crate::Frame],
@@ -97,6 +193,26 @@ impl ClaimedAudioCandidateRuntime {
         self.current_runtime_mut()
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_signal_observers(output, observer, project)
+    }
+    /// Render live input through the current closed runtime and retained resources.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_live_track_audio(
+        &mut self,
+        output: &mut [crate::Frame],
+        track: hex_project::TrackId,
+        input: &[crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let Some(runtime) = self.current_runtime_mut() else {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(crate::Invalid("candidate runtime is not current"));
+        };
+        runtime
+            .render_with_live_track_audio(output, track, input, pages, observer, project, foreign)
     }
     /// Stage native effects through the original closed runtime and sampler
     /// sources. Success is not output acceptance; the audio owner alone accepts

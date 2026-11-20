@@ -157,9 +157,8 @@ impl Spectrum {
         self.sample_policy(
             operator,
             phase,
-            step,
             age,
-            base_step,
+            || (step, base_step),
             sine,
             bank,
             phase_table,
@@ -172,9 +171,8 @@ impl Spectrum {
         &self,
         operator: usize,
         phase: u64,
-        step: u64,
         age: u64,
-        base_step: u64,
+        pitch_steps: impl FnOnce() -> (u64, u64),
         sine: &SineTable,
         bank: &OperatorWaveformBank,
         phase_table: &HarmonicPhaseTable,
@@ -186,6 +184,7 @@ impl Spectrum {
         {
             return (0.0_f64 + f64::from(sine.sample_phase_policy(phase, interpolate))) as f32;
         }
+        let (step, base_step) = pitch_steps();
         let mut value = 0.0;
         // Keep the original full builtin bank, including its 512-partial caps.
         let mut active = self.builtin_active[operator];

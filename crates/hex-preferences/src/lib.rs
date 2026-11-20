@@ -25,8 +25,20 @@ pub use midi_input::{
     save_midi_input_preferences,
 };
 
+mod playback;
+pub use playback::{
+    PlaybackPreferences, load_playback_preferences, playback_preferences_path,
+    save_playback_preferences,
+};
+
 mod project_directory;
 pub use project_directory::{load_project_directory, save_project_directory};
+
+mod vst3_editor;
+pub use vst3_editor::{
+    Vst3EditorPreferences, load_vst3_editor_preferences, save_vst3_editor_preferences,
+    vst3_editor_preferences_path,
+};
 
 use serde::{Deserialize, Serialize};
 use std::{

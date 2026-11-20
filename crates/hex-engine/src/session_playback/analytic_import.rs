@@ -223,9 +223,10 @@ impl SessionPlayback {
         match old_route.owner {
             RouteOwner::Arrangement => {
                 let cut = previous.arrangement_frame;
+                let old_floor = previous.interactive_note_onset_floor();
                 let mut failure = None;
                 old_track
-                    .for_each_active_midi_span(cut, |span, sampler| {
+                    .for_each_active_midi_span(cut, old_floor, |span, sampler| {
                         if failure.is_some() {
                             return;
                         }
@@ -267,7 +268,7 @@ impl SessionPlayback {
                     return Err(e);
                 }
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                     previous.revision.session(),
                     previous.midi_admission.as_ref(),
@@ -281,22 +282,24 @@ impl SessionPlayback {
                 if let Some(floor) = previous.historical_floor_for(old_index) {
                     prepared
                         .instrument_template()
-                        .query_after_onset_with_origin(
+                        .query_after_onset_with_origin_and_note_chase(
                             origin,
                             clock,
-                            previous.performance_frame,
-                            end,
+                            (previous.performance_frame, end),
                             spans,
                             floor,
+                            old_route.owner.note_chase(),
                         )
                 } else {
-                    prepared.instrument_template().query_with_origin(
-                        origin,
-                        clock,
-                        previous.performance_frame,
-                        end,
-                        spans,
-                    )
+                    prepared
+                        .instrument_template()
+                        .query_with_origin_and_note_chase(
+                            origin,
+                            clock,
+                            (previous.performance_frame, end),
+                            spans,
+                            old_route.owner.note_chase(),
+                        )
                 }
                 .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans().copied() {

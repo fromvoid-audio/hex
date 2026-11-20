@@ -1,4 +1,4 @@
-//! Clip-local loop-brace view. Shares the source ruler's single immutable
+//! Clip-local scope-bar view. Shares the source ruler's single immutable
 //! capture/preview/edit owner; no transport, source-growth or Arrangement loop API.
 //! Disabled loops retain editable bounds. Edge drags preserve the opposite edge;
 //! body drags preserve length, constrained by the existing source and playback start.
@@ -102,7 +102,7 @@ impl EditorView {
             beat_text(values.loop_end - values.loop_start)
         );
         let identification = format!(
-            "clip loop {} · {}",
+            "scope bar · looping {} · {}",
             if values.looping {
                 "on"
             } else {
@@ -111,7 +111,7 @@ impl EditorView {
             label
         );
         let description = format!(
-            "clip loop {} · {} · drag either end or move brace · hold cmd/control to invert snapping",
+            "clip scope · looping {} · {} · drag either end or move scope bar · hold cmd/control to invert snapping",
             if values.looping {
                 "on"
             } else {

@@ -57,7 +57,15 @@ fn open_browser(
     location: u8,
     presentation: Option<EffectPresentation>,
 ) -> BrowserFixture {
-    open_browser_metadata(cx, location, presentation, "Fx", 0, false, false)
+    open_browser_metadata(cx, location, presentation, "Fx", 0, None, false, None)
+}
+
+fn utility_anchor() -> hex_session::service::NativeDeviceState {
+    hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
 }
 
 pub(super) fn copy_original_module(source: &Path, target: &Path) {
@@ -76,25 +84,30 @@ pub(super) fn copy_original_module(source: &Path, target: &Path) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Reuse the same rendered browser fixture with an optional backend probe.
 fn open_browser_metadata(
     cx: &mut TestAppContext,
     location: u8,
     presentation: Option<EffectPresentation>,
     subcategories: &str,
     factory_flags: u32,
-    seed_anchor: bool,
+    anchor: Option<hex_session::service::NativeDeviceState>,
     seed_instrument: bool,
+    configure: Option<&mut dyn FnMut(&ResidentHarness)>,
 ) -> BrowserFixture {
     let (reached, facts) = mpsc::sync_channel(1);
     let (resume, resumed) = mpsc::sync_channel(1);
+    let files = Files::new();
     let mut h = ResidentHarness::with_plugins_paused_at_facts(
         host(),
         presentation,
         crate::native_audio::plugins::FactsGate::new(reached, resumed),
+        configure
+            .is_some()
+            .then(|| files.0.canonicalize().unwrap().join("plugin-catalog.json")),
     );
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    let files = Files::new();
     let mut state = h.run(Request::Import(files.wav(48_000, 4096))).state;
     (applied, _) = h.applied(applied);
     let track = state.project.tracks()[0].id();
@@ -124,26 +137,21 @@ fn open_browser_metadata(
         1 => PluginEffectDestination::Return(state.project.return_tracks()[0].id()),
         _ => PluginEffectDestination::Main,
     };
-    if seed_anchor {
-        let utility = hex_engine::default_native_device_state_for_class(
-            hex_engine::NativeDeviceClass::Effect,
-            hex_engine::DeviceTypeId::from_static("hex.utility"),
-        )
-        .unwrap();
+    if let Some(anchor) = anchor {
         let command = match expected_owner {
             PluginEffectDestination::Track(track) => Command::InsertDevice {
                 track,
                 before: None,
-                state: utility,
+                state: anchor,
             },
             PluginEffectDestination::Return(return_track) => Command::InsertReturnDevice {
                 return_track,
                 before: None,
-                state: utility,
+                state: anchor,
             },
             PluginEffectDestination::Main => Command::InsertMainDevice {
                 before: None,
-                state: utility,
+                state: anchor,
             },
             _ => panic!("effect fixture destination"),
         };
@@ -182,6 +190,9 @@ fn open_browser_metadata(
     let completed = Arc::clone(&h.plugin_completed);
     let records = Arc::clone(&h.plugin_records);
     let progress = Arc::clone(&h.plugin_progress);
+    if let Some(configure) = configure {
+        configure(&h);
+    }
     let backend = h.into_plugin_ui_backend();
     let window =
         hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
@@ -278,6 +289,495 @@ impl BrowserFixture {
 
 #[gpui::test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_eq_drag_keeps_its_release_paint_while_vst3_prepares(cx: &mut TestAppContext) {
+    rendered_pending_eq_case(cx, PendingEqFinish::Cancel);
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_pending_vst3_save_and_undo_preserve_acknowledged_eq(cx: &mut TestAppContext) {
+    rendered_pending_eq_case(cx, PendingEqFinish::SaveInstallUndo);
+}
+
+enum PendingEqFinish {
+    Cancel,
+    SaveInstallUndo,
+}
+
+fn rendered_pending_eq_case(cx: &mut TestAppContext, finish: PendingEqFinish) {
+    use hex_engine::eq::{EqState, Node, NodeId};
+
+    let _native = native_fixture();
+    let mut eq = EqState::default();
+    let node = NodeId::new(1).unwrap();
+    // The log-frequency midpoint at 48 kHz and the centre of the gain scale.
+    eq.add(Node::new(node, (20.0_f32 * 20_000.0).sqrt(), 0.0, 0).unwrap())
+        .unwrap();
+    let mut fixture = open_browser_metadata(
+        cx,
+        0,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Fx",
+        0,
+        Some(eq.encode().unwrap()),
+        false,
+        None,
+    );
+    fixture
+        .visual
+        .simulate_resize(gpui::size(gpui::px(1500.0), gpui::px(800.0)));
+    fixture.visual.run_until_parked();
+    let device = fixture
+        .state
+        .project
+        .track(fixture.track)
+        .unwrap()
+        .devices()[0]
+        .id();
+    let plot = Box::leak(format!("eq-response-{}-plot", device.value()).into_boxed_str());
+    let bounds = fixture.visual.debug_bounds(plot).unwrap();
+    let start = bounds.center();
+    let end = gpui::point(
+        bounds.origin.x + bounds.size.width * 0.62,
+        bounds.origin.y + bounds.size.height * 0.30,
+    );
+    let scale = fixture.visual.update(|window, _| window.scale_factor());
+    let selected_node_diameter = 8.0 * f64::from(scale);
+    let node_at = |visual: &mut VisualTestContext, point: gpui::Point<gpui::Pixels>| {
+        visual
+            .rendered_filled_quads(plot)
+            .into_iter()
+            .any(|(quad, _)| {
+                (f64::from(quad.size.width) - selected_node_diameter).abs() < 0.1
+                    && (f64::from(quad.size.height) - selected_node_diameter).abs() < 0.1
+                    && quad.contains(&point.scale(scale))
+            })
+    };
+    let current = |fixture: &BrowserFixture, cx: &mut TestAppContext| {
+        let view = fixture.view(cx);
+        let state = view.state.unwrap();
+        EqState::decode(state.project.device(device).unwrap().state()).unwrap()
+    };
+
+    fixture.visual.simulate_keystrokes("space");
+    until("resident output is playing", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .transport
+            .is_some_and(|(_, playing)| playing)
+    });
+    fixture.activate_to_facts(cx, true);
+    assert!(
+        fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .is_some()
+    );
+    assert!(node_at(&mut fixture.visual, start));
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    fixture
+        .visual
+        .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    fixture.step(cx);
+    assert_eq!(current(&fixture, cx), eq);
+    assert!(node_at(&mut fixture.visual, end));
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+
+    // Complete repaints while the callback and worker-event timer are held.
+    for _ in 0..3 {
+        fixture.visual.update(|window, _| window.refresh());
+        fixture.visual.run_until_parked();
+        assert_eq!(current(&fixture, cx), eq);
+        assert!(node_at(&mut fixture.visual, end));
+        assert!(
+            fixture
+                .visual
+                .debug_bounds("device-chain-loading-slot")
+                .is_some()
+        );
+    }
+    until(
+        "EQ reaches canonical state while hosted facts are held",
+        || {
+            fixture.step(cx);
+            current(&fixture, cx).node(node).unwrap().gain_db > 8.0
+        },
+    );
+    let edited = current(&fixture, cx);
+    assert!(node_at(&mut fixture.visual, end));
+    assert!(fixture.view(cx).pending);
+    assert!(
+        fixture
+            .view(cx)
+            .transport
+            .is_some_and(|(_, playing)| playing)
+    );
+
+    match finish {
+        PendingEqFinish::Cancel => {
+            click(&mut fixture.visual, "device-chain-loading-cancel");
+            until("cancelled insertion retires from the UI", || {
+                fixture.step(cx);
+                !fixture.view(cx).pending && fixture.records.load(Acquire) == 0
+            });
+        }
+        PendingEqFinish::SaveInstallUndo => {
+            save_and_install_with_pending_eq(cx, &mut fixture, device, &edited);
+        }
+    }
+    assert_eq!(current(&fixture, cx), edited);
+    assert_eq!(
+        fixture
+            .view(cx)
+            .state
+            .unwrap()
+            .project
+            .track(fixture.track)
+            .unwrap()
+            .devices()
+            .len(),
+        1
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
+
+fn save_and_install_with_pending_eq(
+    cx: &mut TestAppContext,
+    fixture: &mut BrowserFixture,
+    device: hex_project::DeviceId,
+    edited: &hex_engine::eq::EqState,
+) {
+    let selected = fixture.files.0.join("pending-eq.hex");
+    let path = fixture.files.0.join("pending-eq/pending-eq.hex");
+    let baseline = fixture.view(cx).state.unwrap();
+    fixture.visual.simulate_keystrokes("cmd-s");
+    until("Save As picker while hosted Facts remain pending", || {
+        fixture.step(cx);
+        assert!(fixture.view(cx).pending);
+        cx.did_prompt_for_new_path()
+    });
+    cx.simulate_new_path_selection(|_| Some(selected.clone()));
+    until(
+        "saved only the installed EQ while Facts remain pending",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+            view.state.is_some_and(|state| {
+                assert_eq!(state.revision, baseline.revision);
+                !state.unsaved && state.document_path.as_deref() == Some(path.as_path())
+            })
+        },
+    );
+    let saved = hex_storage::load(path).unwrap();
+    assert_eq!(
+        saved.track(fixture.track).unwrap().devices(),
+        baseline.project.track(fixture.track).unwrap().devices()
+    );
+    assert_eq!(saved.track(fixture.track).unwrap().devices().len(), 1);
+    assert_eq!(
+        &hex_engine::eq::EqState::decode(saved.device(device).unwrap().state()).unwrap(),
+        edited
+    );
+
+    fixture.resume.send(()).unwrap();
+    until("the exact rebased hosted insertion installs", || {
+        fixture.step(cx);
+        if let Some((title, _)) = cx.pending_prompt() {
+            assert_eq!(title, "interrupt playback to insert this device?");
+            cx.simulate_prompt_answer("proceed");
+        }
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view.state.is_some_and(|state| {
+                state.revision == baseline.revision + 1
+                    && state.project.track(fixture.track).unwrap().devices().len() == 2
+                    && view
+                        .applied
+                        .is_some_and(|applied| applied.context.editor_revision == state.revision)
+            })
+    });
+    let installed = fixture.view(cx).state.unwrap();
+    assert_eq!(
+        installed.project.device(device),
+        baseline.project.device(device)
+    );
+    fixture.visual.simulate_keystrokes("space");
+    until(
+        "transport paused before undoing the installed effect",
+        || {
+            fixture.step(cx);
+            fixture
+                .view(cx)
+                .transport
+                .is_some_and(|(_, playing)| !playing)
+        },
+    );
+    click(&mut fixture.visual, "undo · cmd+z");
+    until("one Undo removes only the installed hosted effect", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == installed.revision + 1
+                && state.can_redo
+                && state.project.track(fixture.track).unwrap().devices()
+                    == saved.track(fixture.track).unwrap().devices()
+        })
+    });
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn arrangement_bounce_to_new_track_preserves_vst3_controls_and_reports_failure(
+    cx: &mut TestAppContext,
+) {
+    const RELEASE: &str = "HEX_ORIGINAL_INSTANCE_RELEASE";
+    const CHILD: &str = "HEX_DESKTOP_TEST_BOUNCE_VST3_PANEL";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        fs::write(&release, []).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            // The original effect waits inside process() if the release file is absent.
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "28")
+            .env(RELEASE, release)
+            .env("HOME", files.0.join("home"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    rendered_vst3_bounce(
+        cx,
+        selection(),
+        Some(PathBuf::from(std::env::var_os(RELEASE).unwrap())),
+    );
+}
+
+#[gpui::test]
+#[ignore = "requires signed SDK receipts and an explicit installed effect catalog entry"]
+fn arrangement_bounce_while_playing_keeps_the_installed_vst3_panel(cx: &mut TestAppContext) {
+    let bundle = std::env::var("HEX_TEST_VST3_EFFECT_BUNDLE").unwrap();
+    let catalog = PathBuf::from(std::env::var_os("HEX_TEST_VST3_EFFECT_CATALOG").unwrap());
+    rendered_vst3_bounce(
+        cx,
+        installed_selection(&catalog, &bundle, hex_plugin_catalog::PluginRole::Effect),
+        None,
+    );
+}
+
+fn rendered_vst3_bounce(
+    cx: &mut TestAppContext,
+    mut selected: PluginEffectSelection,
+    release: Option<PathBuf>,
+) {
+    let _native = native_fixture();
+    let files = Files::new();
+    let root = files.0.canonicalize().unwrap();
+    let playing_bounce = release.is_none();
+    if !playing_bounce {
+        let module = root.join("original.vst3");
+        copy_original_module(&selected.module, &module);
+        selected.module = module;
+    }
+    hex_ui::write_plugin_effect_test_catalog(&root, &selected, "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog_recovery(
+        host(),
+        None,
+        44_100,
+        2_000_000,
+        root.join("plugin-catalog.json"),
+        root.join("bounce.hex-journal"),
+    );
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(44_100, 4096)));
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let (mut applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.track(track).unwrap().clips()[0].id();
+    let state = if playing_bounce {
+        let looped = h.run(Request::Edit(Command::SetLoopRegion {
+            start: 0,
+            end: 4096,
+            enabled: true,
+        }));
+        assert!(looped.error.is_none(), "{:?}", looped.error);
+        (applied, _) = h.applied(applied);
+        looped.state
+    } else {
+        imported.state
+    };
+    let mut insertion = request(&state, PluginEffectDestination::Track(track));
+    insertion.selection = selected;
+    h.service
+        .submit(Request::InsertPluginEffect(insertion))
+        .unwrap();
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    h.applied(applied);
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let original = inserted.state;
+    let source_track = original.project.track(track).unwrap();
+    let device = source_track.devices()[0].id().value();
+    let active = Box::leak(format!("device-vst3-active-{device}").into_boxed_str());
+    let pending = Box::leak(format!("device-vst3-pending-{device}").into_boxed_str());
+
+    h.service.submit(Request::CopyClips(vec![clip])).unwrap();
+    let callback = Arc::clone(&h.callback);
+    let backend = h.into_plugin_ui_backend();
+    let window =
+        hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
+            .unwrap();
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.update(|window, _| window.activate_window());
+    let view = |cx: &mut TestAppContext| {
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+    };
+    until("source track is rendered", || {
+        repaint(cx, &mut visual);
+        view(cx)
+            .state
+            .is_some_and(|state| state.revision == original.revision)
+    });
+    let track_selector = |track: hex_project::TrackId| {
+        Box::leak(format!("track-name-{}", track.value()).into_boxed_str()) as &'static str
+    };
+    click(&mut visual, track_selector(track));
+    assert!(visual.debug_bounds(active).is_some());
+
+    click(
+        &mut visual,
+        Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str()),
+    );
+    let next_callback = std::cell::Cell::new(Instant::now());
+    let callback_interval = Duration::from_secs_f64(256.0 / 44_100.0);
+    let step = |cx: &mut TestAppContext, visual: &mut VisualTestContext| {
+        if playing_bounce {
+            // Give the real hosted worker one output period between callbacks.
+            std::thread::sleep(
+                next_callback
+                    .get()
+                    .saturating_duration_since(Instant::now()),
+            );
+            next_callback.set(Instant::now() + callback_interval);
+        }
+        let mut pcm = [[0.0; 2]; 256];
+        callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .render_native_direct(&mut pcm, &mut [0.0; 512])
+            .unwrap();
+        repaint(cx, visual);
+        pcm.iter().flatten().any(|sample| sample.abs() > 0.001)
+    };
+    if playing_bounce {
+        visual.simulate_keystrokes("space");
+        until(
+            "the installed effect renders audible output before bounce",
+            || step(cx, &mut visual) && view(cx).transport.is_some_and(|(_, playing)| playing),
+        );
+    }
+    let previous_output = view(cx).applied.unwrap().output_identity;
+    visual.simulate_keystrokes("b");
+    let bounced_revision = original.revision + 1;
+    until("applied bounce to new track", || {
+        step(cx, &mut visual);
+        let view = view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.applied
+            .is_some_and(|source| source.context.editor_revision == bounced_revision)
+            && view
+                .state
+                .is_some_and(|state| state.revision == bounced_revision)
+    });
+    let bounced_view = view(cx);
+    assert_eq!(
+        bounced_view.applied.unwrap().output_identity,
+        previous_output
+    );
+    if playing_bounce {
+        assert!(bounced_view.transport.is_some_and(|(_, playing)| playing));
+    }
+    let bounced = bounced_view.state.unwrap();
+    assert_eq!(
+        bounced.project.tracks().len(),
+        original.project.tracks().len() + 1
+    );
+    assert_eq!(bounced.project.track(track), Some(source_track));
+    let bounced_track = bounced
+        .project
+        .tracks()
+        .iter()
+        .find(|row| row.id() != track)
+        .unwrap();
+    assert_eq!(bounced_track.clips().len(), 1);
+    for selected in [bounced_track.id(), track] {
+        click(&mut visual, track_selector(selected));
+        assert_eq!(
+            view(cx).selected_owner,
+            Some(PluginEffectDestination::Track(selected)),
+        );
+    }
+    for _ in 0..3 {
+        step(cx, &mut visual);
+        assert!(visual.debug_bounds(active).is_some());
+        assert!(visual.debug_bounds(pending).is_none());
+    }
+    assert!(visual.debug_bounds("vst3-parameter-search-input").is_some());
+
+    if let Some(release) = &release {
+        fs::remove_file(release).unwrap();
+        visual.simulate_keystrokes("space");
+        let degraded = Box::leak(format!("device-vst3-degraded-{device}").into_boxed_str());
+        until("live VST3 deadline failure is displayed", || {
+            step(cx, &mut visual);
+            visual.debug_bounds(degraded).is_some()
+        });
+        fs::write(release, []).unwrap();
+        assert!(visual.debug_bounds(active).is_none());
+        assert!(visual.debug_bounds(pending).is_none());
+    }
+    let fault = callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .native_source_fault_on_control(binding);
+    if release.is_some() {
+        assert!(format!("{fault:?}").contains("MissingOutput"), "{fault:?}");
+    } else {
+        assert!(fault.is_none(), "{fault:?}");
+    }
+    assert_eq!(view(cx).state.unwrap().project, bounced.project);
+    visual.update(|window, _| window.remove_window());
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
     cx: &mut TestAppContext,
 ) {
@@ -292,8 +792,9 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             }),
             "Fx",
             0,
-            true,
+            Some(utility_anchor()),
             false,
+            None,
         );
         let owner = fixture.expected_owner;
         let devices = |state: &hex_session::service::ViewState| -> Vec<hex_project::DeviceId> {
@@ -348,9 +849,10 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
         assert_eq!(fixture.records.load(Acquire), 0);
 
         begin_drag(&mut fixture.visual);
+        let anchor_selector: &'static str = Box::leak(selector.into_boxed_str());
         let card = fixture
             .visual
-            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .debug_bounds(anchor_selector)
             .expect("painted device-chain insertion target");
         let before = gpui::point(card.origin.x + gpui::px(10.0), card.center().y);
         fixture
@@ -374,6 +876,23 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
             );
             fixture.facts.try_recv().is_ok()
         });
+        // The existing chain remains canonical while the original worker
+        // is held. The proposed card reserves the requested insertion point.
+        let pending = fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .expect("proposed VST3 card before worker completion");
+        let cancel = fixture
+            .visual
+            .debug_bounds("device-chain-loading-cancel")
+            .expect("cancel in the loading card");
+        let existing = fixture.visual.debug_bounds(anchor_selector).unwrap();
+        assert!(pending.contains(&cancel.center()));
+        assert!(pending.right() <= existing.left());
+        assert_eq!(
+            fixture.view(cx).state.unwrap().project,
+            fixture.state.project
+        );
         fixture.resume.send(()).unwrap();
         until("accepted drop and native endpoint", || {
             fixture.step(cx);
@@ -394,6 +913,14 @@ fn rendered_vst3_effect_drop_inserts_before_the_pointed_device_on_each_owner(
         assert_eq!(ids[0].value(), fixture.state.project.next_identity());
         assert_eq!(ids[1], anchor);
         assert_eq!(fixture.records.load(Acquire), 1);
+        assert!(
+            fixture
+                .visual
+                .debug_bounds("device-chain-loading-slot")
+                .is_none()
+        );
+        let active = Box::leak(format!("device-vst3-active-{}", ids[0].value()).into_boxed_str());
+        assert!(fixture.visual.debug_bounds(active).is_some());
         fixture.visual.update(|window, _| window.remove_window());
         fixture.visual.run_until_parked();
     }
@@ -441,8 +968,9 @@ fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_befo
             }),
             categories,
             flags,
+            None,
             false,
-            false,
+            None,
         );
         // Change the owned source only after the last-good catalog has loaded
         // and its actual row has painted. Admission must revalidate at use.
@@ -528,7 +1056,6 @@ enum Terminal {
     BrowserEscape,
     EditorEscape,
     StaleRevision,
-    UnknownPresentation,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -570,7 +1097,10 @@ fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparatio
             }
             Closing::Discard => {
                 click(&mut fixture.visual, "window-control-close");
-                assert!(cx.has_pending_prompt());
+                until("close safety receipt and discard confirmation", || {
+                    repaint(cx, &mut fixture.visual);
+                    cx.has_pending_prompt()
+                });
                 cx.simulate_prompt_answer("cancel");
                 cx.run_until_parked();
                 assert!(
@@ -579,7 +1109,10 @@ fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparatio
                 );
                 assert!(fixture.view(cx).pending);
                 click(&mut fixture.visual, "window-control-close");
-                assert!(cx.has_pending_prompt());
+                until("close safety receipt and discard confirmation", || {
+                    repaint(cx, &mut fixture.visual);
+                    cx.has_pending_prompt()
+                });
                 cx.simulate_prompt_answer("discard");
                 cx.run_until_parked();
             }
@@ -672,14 +1205,15 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
         Terminal::BrowserEscape,
         Terminal::EditorEscape,
         Terminal::StaleRevision,
-        Terminal::UnknownPresentation,
     ] {
-        let presentation =
-            (!matches!(terminal, Terminal::UnknownPresentation)).then_some(EffectPresentation {
+        let mut fixture = open_browser(
+            cx,
+            2,
+            Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: 512,
-            });
-        let mut fixture = open_browser(cx, 2, presentation);
+            }),
+        );
         fixture.activate_to_facts(cx, false);
         until(
             "pre-existing publications drained before terminal control",
@@ -714,7 +1248,6 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     "the intervening edit must be queued before native preparation resumes"
                 );
             }
-            Terminal::UnknownPresentation => {}
         }
         if matches!(terminal, Terminal::StaleRevision) {
             until(
@@ -762,9 +1295,6 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     fixture.state.revision
                 );
             }
-            if matches!(terminal, Terminal::UnknownPresentation) {
-                assert!(view.pending);
-            }
             assert!(view.applied.is_none());
             assert!(
                 fixture
@@ -775,9 +1305,6 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     ))
                     .is_none()
             );
-        }
-        if matches!(terminal, Terminal::UnknownPresentation) {
-            fixture.resume.send(()).unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -861,28 +1388,289 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
                     fixture.state.can_redo
                 )
             );
-            if matches!(terminal, Terminal::UnknownPresentation) {
-                assert!(
-                    view.error
-                        .as_ref()
-                        .is_some_and(|error| error.contains("presentation")),
-                    "{terminal:?}: {:?}",
-                    view.error
-                );
-            } else {
-                assert!(operation.is_cancelled());
-                assert!(
-                    view.error
-                        .as_ref()
-                        .is_none_or(|error| error.contains("cancel")),
-                    "{terminal:?}: {:?}",
-                    view.error
-                );
-            }
+            assert!(operation.is_cancelled());
+            assert!(
+                view.error
+                    .as_ref()
+                    .is_none_or(|error| error.contains("cancel")),
+                "{terminal:?}: {:?}",
+                view.error
+            );
         }
         fixture.visual.update(|window, _| window.remove_window());
         fixture.visual.run_until_parked();
     }
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_native_effect_allows_unknown_presentation_at_its_exact_install(
+    cx: &mut TestAppContext,
+) {
+    let _native = native_fixture();
+    let mut submission_probe = None;
+    // No device-presentation contribution is available to this output.
+    // Desktop explicitly permits Unknown for this normal hosted insertion.
+    let mut fixture = open_browser_metadata(
+        cx,
+        2,
+        None,
+        "Fx",
+        0,
+        None,
+        false,
+        Some(&mut |h| {
+            submission_probe = Some(h.device_insert_probe());
+        }),
+    );
+    let (submitted, resume_install) = submission_probe.unwrap().next_submitted();
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let mut exact = None;
+    until("Main effect submitted with unknown presentation", || {
+        if let Ok(submission) = submitted.try_recv() {
+            exact = Some(submission);
+            return true;
+        }
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        false
+    });
+    let exact = exact.unwrap();
+    let expected = fixture.state.project.next_identity();
+    let new_shell = Box::leak(format!("device-shell-{expected}").into_boxed_str());
+    for _ in 0..3 {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.pending && view.error.is_none(), "{:?}", view.error);
+        let state = view.state.unwrap();
+        assert_eq!(state.project, fixture.state.project);
+        assert_eq!(state.revision, fixture.state.revision);
+        assert!(fixture.visual.debug_bounds(new_shell).is_none());
+    }
+    resume_install.send(()).unwrap();
+    until(
+        "unknown presentation crosses its matching audio and canonical receipts",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            !view.pending
+                && view.applied.is_some_and(|source| {
+                    source.context == exact.context
+                        && source.audio_revision == exact.audio_revision
+                        && source.output_identity == exact.output_identity
+                })
+        },
+    );
+    let state = fixture.view(cx).state.unwrap();
+    let [device] = state.project.main_devices() else {
+        panic!("expected one installed Main VST3");
+    };
+    assert_eq!(device.id().value(), expected);
+    assert_eq!(state.revision, fixture.state.revision + 1);
+    assert!(fixture.visual.debug_bounds(new_shell).is_some());
+    assert!(
+        fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .is_none()
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAppContext) {
+    assert_rendered_vst3_effect_replacement(cx, 2);
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_return_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAppContext) {
+    assert_rendered_vst3_effect_replacement(cx, 1);
+}
+
+fn assert_rendered_vst3_effect_replacement(cx: &mut TestAppContext, location: u8) {
+    fn effect_chain(
+        project: &hex_project::Project,
+        return_track: Option<hex_project::ReturnId>,
+    ) -> &[hex_project::Device] {
+        match return_track {
+            Some(id) => project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .unwrap()
+                .devices(),
+            None => project.main_devices(),
+        }
+    }
+
+    let _native = native_fixture();
+    let mut submission_probe = None;
+    let mut fixture = open_browser_metadata(
+        cx,
+        location,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Fx",
+        0,
+        None,
+        false,
+        Some(&mut |h| {
+            h.enable_confirmed_device_inserts();
+            submission_probe = Some(h.device_insert_probe());
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    let (prefix, return_track) = match fixture.expected_owner {
+        PluginEffectDestination::Main => ("main", None),
+        PluginEffectDestination::Return(id) => ("return", Some(id)),
+        _ => panic!("expected an effect bus"),
+    };
+    fixture.resume.send(()).unwrap();
+    until("original VST3 effect installs", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == fixture.state.revision + 1)
+    });
+    let original = fixture.view(cx).state.unwrap();
+    let old = effect_chain(&original.project, return_track)[0]
+        .id()
+        .value();
+    let new = original.project.next_identity();
+    let selector = |name: &str, device| -> &'static str {
+        Box::leak(format!("{name}-{device}").into_boxed_str())
+    };
+    let original_shell = selector("device-shell", old);
+    let new_shell = selector("device-shell", new);
+    let original_active = selector("device-vst3-active", old);
+    let new_active = selector("device-vst3-active", new);
+    let replace_pad = selector(&format!("{prefix}-vst3-replace"), old);
+    assert!(fixture.visual.debug_bounds(replace_pad).is_none());
+    let card = fixture
+        .visual
+        .debug_bounds(selector(&format!("{prefix}-device-drop-card"), old))
+        .unwrap();
+    let row = fixture
+        .visual
+        .debug_bounds("browser-vst3-row-0")
+        .unwrap()
+        .center();
+    let modifiers = Modifiers::default();
+    fixture
+        .visual
+        .simulate_mouse_down(row, MouseButton::Left, modifiers);
+    fixture.visual.simulate_mouse_move(
+        gpui::point(row.x + gpui::px(12.0), row.y),
+        MouseButton::Left,
+        modifiers,
+    );
+    for (x, edge) in [
+        (card.origin.x + gpui::px(12.0), "before"),
+        (card.origin.x + card.size.width - gpui::px(12.0), "after"),
+    ] {
+        fixture.visual.simulate_mouse_move(
+            gpui::point(x, card.center().y),
+            MouseButton::Left,
+            modifiers,
+        );
+        repaint(cx, &mut fixture.visual);
+        assert!(
+            fixture
+                .visual
+                .debug_bounds(selector(&format!("{prefix}-device-insertion-{edge}"), old))
+                .is_some(),
+            "catalog drag still offers adjacent {edge} insertion"
+        );
+    }
+    let pad = fixture.visual.debug_bounds(replace_pad).unwrap().center();
+    fixture
+        .visual
+        .simulate_mouse_move(pad, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    assert!(fixture.visual.debug_bounds(original_shell).is_some());
+    for edge in ["before", "after"] {
+        assert!(
+            fixture
+                .visual
+                .debug_bounds(selector(&format!("{prefix}-device-insertion-{edge}"), old))
+                .is_none(),
+            "the replace target has its own captured intent"
+        );
+    }
+    let (queued, resume) = submission_probe.unwrap().next_submitted();
+    fixture
+        .visual
+        .simulate_mouse_up(pad, MouseButton::Left, modifiers);
+    let mut exact = None;
+    until("actual occupied-slot replacement submitted", || {
+        if let Ok(submission) = queued.try_recv() {
+            exact = Some(submission);
+            return true;
+        }
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        false
+    });
+    let exact = exact.unwrap();
+    for _ in 0..3 {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.pending && view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project, original.project);
+        assert_eq!(view.state.as_ref().unwrap().revision, original.revision);
+        assert!(
+            fixture
+                .visual
+                .debug_bounds("device-chain-loading-slot")
+                .is_some()
+        );
+        assert!(fixture.visual.debug_bounds(original_shell).is_some());
+        assert!(fixture.visual.debug_bounds(original_active).is_some());
+        assert!(fixture.visual.debug_bounds(new_shell).is_none());
+    }
+    resume.send(()).unwrap();
+    until("replacement canonical and audio receipts match", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view.applied.is_some_and(|source| {
+                source.audio_revision == exact.audio_revision
+                    && source.output_identity == exact.output_identity
+                    && source.context == exact.context
+            })
+    });
+    let applied = fixture.view(cx);
+    assert_eq!(applied.selected_owner, Some(fixture.expected_owner));
+    let accepted = applied.state.unwrap();
+    assert_eq!(accepted.revision, original.revision + 1);
+    let [device] = effect_chain(&accepted.project, return_track) else {
+        panic!("the exact replacement must keep one effect in the occupied bus");
+    };
+    assert_eq!(device.id().value(), new);
+    assert!(fixture.visual.debug_bounds(original_shell).is_none());
+    assert!(fixture.visual.debug_bounds(new_shell).is_some());
+    assert!(fixture.visual.debug_bounds(new_active).is_some());
+    assert!(
+        fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .is_none()
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
 }
 
 #[gpui::test]
@@ -1215,8 +2003,9 @@ fn rendered_vst3_instrument_drop_targets_the_instrument_slot_and_shows_editor_to
             }),
             "Instrument|Synth",
             0,
-            true,
+            Some(utility_anchor()),
             drop == 1,
+            None,
         );
         let track = fixture.track;
         let anchor = fixture.state.project.track(track).unwrap().devices()[0].id();
@@ -1509,6 +2298,361 @@ fn live_vst3_pointer_drag_reaches_native_device_during_playback(cx: &mut gpui::T
 
 #[gpui::test]
 #[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_vst3_host_edit_keeps_its_painted_control_through_play(cx: &mut TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_STOPPED_VST3_HOST_PLAY";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let home = files.0.canonicalize().unwrap().join("home");
+        fs::create_dir(&home).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .env("HOME", home)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(cx, 0, None);
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("stopped VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view.state.is_some_and(|state| state.revision == revision)
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let document = fixture.view(cx).state.unwrap();
+    let device = &document.project.track(fixture.track).unwrap().devices()[0];
+    let knob = Box::leak(format!("vst3-knob-{}-7-knob", device.id().value()).into_boxed_str());
+    until("stopped controller knob is visible", || {
+        fixture.step(cx);
+        fixture.visual.debug_bounds(knob).is_some()
+    });
+    let control = |view: &hex_ui::PluginEffectTestView| {
+        view.parameter_controls
+            .iter()
+            .find_map(|&(id, parameter, control)| {
+                (id == device.id().value() && parameter == 7).then_some(control)
+            })
+    };
+    let original_control = control(&fixture.view(cx)).unwrap();
+    let start = fixture.visual.debug_bounds(knob).unwrap().center();
+    let end = gpui::point(start.x, start.y - gpui::px(30.0));
+    let modifiers = Modifiers::default();
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    fixture
+        .visual
+        .simulate_mouse_move(end, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, modifiers);
+    // Request Play before giving the device another callback, while the
+    // stopped gesture and its publication may still be in flight.
+    click(
+        &mut fixture.visual,
+        "play or pause · space · right-click for history playback",
+    );
+    assert!(
+        fixture.visual.debug_bounds(knob).is_some(),
+        "host dial disappeared before playback"
+    );
+    until("playback started with the applied parameter edit", || {
+        if fixture
+            .callback
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .native_workers_idle_on_control()
+            == Some(true)
+        {
+            fixture.step(cx);
+        } else {
+            repaint(cx, &mut fixture.visual);
+        }
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(
+            fixture.visual.debug_bounds(knob).is_some(),
+            "host dial disappeared during playback start"
+        );
+        let playing = view.transport.is_some_and(|(_, playing)| playing);
+        let committed = view
+            .state
+            .as_ref()
+            .is_some_and(|state| state.revision == revision + 1);
+        assert!(
+            !playing || committed,
+            "playback began before the parameter commit finished"
+        );
+        playing
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision + 1)
+            && control(&view) == Some(original_control)
+    });
+    let state = fixture.view(cx).state.unwrap();
+    assert_eq!(state.revision, revision + 1);
+    assert!(
+        !state
+            .project
+            .device(device.id())
+            .unwrap()
+            .state()
+            .processing_eq(device.state())
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn vst3_controller_text_edit_commits_and_undoes(cx: &mut gpui::TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_CONTROLLER_TEXT_EDIT";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let home = files.0.canonicalize().unwrap().join("home");
+        fs::create_dir(&home).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "92")
+            .env("HOME", home)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("original VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let initial = fixture.view(cx).state.unwrap().project.clone();
+    let device = initial.main_devices()[0].id();
+    click(&mut fixture.visual, "main-track-header");
+    let value = Box::leak(format!("vst3-knob-{}-0-value", device.value()).into_boxed_str());
+    until("live controller value field", || {
+        fixture.step(cx);
+        fixture.visual.debug_bounds(value).is_some()
+    });
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("invalid");
+    fixture.visual.simulate_keystrokes("enter");
+    until("plugin refused invalid value", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("refused"))
+    });
+    assert_eq!(fixture.view(cx).state.unwrap().project, initial);
+    until("initial conversion has retired", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    assert!(
+        fixture.view(cx).parameter_query_pending,
+        "conversion must be admitted before cancellation"
+    );
+    fixture.visual.simulate_keystrokes("escape");
+    until("cancelled conversion retires", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    assert_eq!(
+        fixture.view(cx).state.unwrap().project,
+        initial,
+        "a late parse reply must not commit a cancelled draft"
+    );
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    assert!(fixture.view(cx).parameter_query_pending);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("unity");
+    until("superseded conversion retires", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    assert_eq!(
+        fixture.view(cx).state.unwrap().project,
+        initial,
+        "a late reply must not commit over newer text"
+    );
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    until("plugin text commits the parameter", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| {
+            state.revision == revision + 1
+                && state.project.device(device).unwrap().state()
+                    != initial.device(device).unwrap().state()
+        })
+    });
+    click(&mut fixture.visual, "undo · cmd+z");
+    until("undo restores the original plugin state", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .state
+            .is_some_and(|state| state.revision == revision + 2 && state.project == initial)
+    });
+    until("controller is refreshed after undo", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.parameter_query_pending
+            && fixture.visual.debug_bounds(value).is_some()
+            && view
+                .parameter_controls
+                .iter()
+                .any(|&(current, parameter, _)| current == device.value() && parameter == 0)
+    });
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("double");
+    fixture.visual.simulate_keystrokes("enter");
+    assert!(fixture.view(cx).parameter_query_pending);
+    click(&mut fixture.visual, "undo · cmd+z");
+    until(
+        "undo removes the source while conversion is pending",
+        || {
+            fixture.step(cx);
+            fixture.view(cx).state.is_some_and(|state| {
+                state.revision == revision + 3 && state.project.main_devices().is_empty()
+            })
+        },
+    );
+    until("old source conversion retires", || {
+        fixture.step(cx);
+        !fixture.view(cx).parameter_query_pending
+    });
+    let state = fixture.view(cx).state.unwrap();
+    assert_eq!(
+        state.revision,
+        revision + 3,
+        "the removed source must not receive a late edit"
+    );
+    assert!(state.project.main_devices().is_empty());
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn vst3_unsupported_text_parser_refuses_without_editing(cx: &mut gpui::TestAppContext) {
+    const CHILD: &str = "HEX_DESKTOP_TEST_UNSUPPORTED_CONTROLLER_TEXT";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let home = files.0.canonicalize().unwrap().join("home");
+        fs::create_dir(&home).unwrap();
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .env("HOME", home)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _native = native_fixture();
+    let mut fixture = open_browser(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    let revision = fixture.state.revision + 1;
+    until("original VST3 inserted and applied", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == revision)
+    });
+    let initial = fixture.view(cx).state.unwrap().project.clone();
+    let device = initial.main_devices()[0].id();
+    click(&mut fixture.visual, "main-track-header");
+    let value = Box::leak(format!("vst3-knob-{}-7-value", device.value()).into_boxed_str());
+    until("live controller value field", || {
+        fixture.step(cx);
+        fixture.visual.debug_bounds(value).is_some()
+    });
+    click(&mut fixture.visual, value);
+    fixture.visual.simulate_keystrokes("cmd-a");
+    fixture.visual.simulate_input("0.5");
+    fixture.visual.simulate_keystrokes("enter");
+    until("unsupported parser is reported", || {
+        fixture.step(cx);
+        fixture
+            .view(cx)
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("unsupported"))
+    });
+    assert_eq!(fixture.view(cx).state.unwrap().project, initial);
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper/source receipts required"]
 fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::TestAppContext) {
     const CHILD: &str = "HEX_DESKTOP_TEST_NATIVE_TOUCH";
     if std::env::var_os(CHILD).is_none() {
@@ -1659,6 +2803,183 @@ fn native_editor_touch_updates_host_follow_knob_and_arranger(cx: &mut gpui::Test
                 id == device && parameter == 7 && value < 0.74 && control.is_some() && lane
             })
     });
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_staged_effect_saves_the_confirmed_chain_before_and_after_install(
+    cx: &mut TestAppContext,
+) {
+    let _native = native_fixture();
+    let mut gates = None;
+    let mut fixture = open_browser_metadata(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Fx",
+        0,
+        None,
+        false,
+        Some(&mut |h| {
+            gates = Some((
+                h.probe_next_native_publication(),
+                h.probe_next_submitted_device_insert(),
+            ));
+        }),
+    );
+    let ((prepared, enqueue, _busy), (submitted, resume)) = gates.unwrap();
+    let chosen = fixture.files.0.join("staged.hex");
+    let saved = fixture.files.0.join("staged/staged.hex");
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-s");
+    let picker_deadline = Instant::now() + Duration::from_secs(2);
+    while !cx.did_prompt_for_new_path() {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(
+            Instant::now() < picker_deadline,
+            "initial Save As path picker: {}",
+            view.status
+        );
+        std::thread::yield_now();
+    }
+    cx.simulate_new_path_selection(|_| Some(chosen.clone()));
+    until("named predecessor saved", || {
+        repaint(cx, &mut fixture.visual);
+        fixture.view(cx).state.is_some_and(|state| {
+            !state.unsaved && state.document_path.as_deref() == Some(saved.as_path())
+        })
+    });
+    let baseline = fixture.view(cx).state.unwrap();
+    let shell =
+        Box::leak(format!("device-shell-{}", baseline.project.next_identity()).into_boxed_str());
+    let active = Box::leak(
+        format!("device-vst3-active-{}", baseline.project.next_identity()).into_boxed_str(),
+    );
+
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    until(
+        "original endpoint prepared and real graph parked before queue",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+            prepared.try_recv().is_ok()
+        },
+    );
+    enqueue.send(()).unwrap();
+    let submission = submitted.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(submission.context.editor_revision, baseline.revision + 1);
+    resume.send(()).unwrap();
+    // Repaint the actual UI but withhold the callback. Save and the visible
+    // device chain must use the incumbent project even though audio queued the successor.
+    let previous_save = hex_storage::recovery_path(&saved).unwrap();
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-s");
+    until("Save Current completed while callback was held", || {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+        let state = view.state.unwrap();
+        assert_eq!(state.revision, baseline.revision);
+        assert_eq!(state.can_undo, baseline.can_undo);
+        assert!(state.project.main_devices().is_empty());
+        assert!(fixture.visual.debug_bounds(shell).is_none());
+        assert!(view.applied.is_none());
+        previous_save.exists() && view.queued_requests == 0
+    });
+    assert!(hex_storage::load(&saved).unwrap().main_devices().is_empty());
+
+    until(
+        "exact receipt installs and paints the hosted device",
+        || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            !view.pending
+                && view
+                    .state
+                    .is_some_and(|state| state.revision == submission.context.editor_revision)
+                && view.applied.is_some_and(|source| {
+                    source.output_identity == submission.output_identity
+                        && source.audio_revision == submission.audio_revision
+                        && source.context == submission.context
+                })
+                && fixture.visual.debug_bounds(active).is_some()
+        },
+    );
+    let installed = fixture.view(cx).state.unwrap();
+    assert_eq!(installed.project.main_devices().len(), 1);
+
+    for (label, active_after) in [("undo · cmd+z", false), ("redo · cmd+shift+z", true)] {
+        let revision = fixture.view(cx).state.unwrap().revision + 1;
+        click(&mut fixture.visual, label);
+        until(label, || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert!(view.error.is_none(), "{label}: {:?}", view.error);
+            view.state.is_some_and(|state| state.revision == revision)
+                && fixture.visual.debug_bounds(shell).is_some() == active_after
+        });
+    }
+    assert_eq!(fixture.view(cx).state.unwrap().project, installed.project);
+
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-s");
+    until("installed device saved through the rendered editor", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        view.state.is_some_and(|state| !state.unsaved)
+    });
+    let stored = hex_storage::load(&saved).unwrap();
+    assert_eq!(stored.main_devices().len(), 1);
+    assert_eq!(
+        stored.main_devices()[0].id(),
+        installed.project.main_devices()[0].id()
+    );
+
+    click(&mut fixture.visual, "main-track-header");
+    fixture.visual.simulate_keystrokes("cmd-o");
+    until("open project picker", || {
+        repaint(cx, &mut fixture.visual);
+        cx.did_prompt_for_paths()
+    });
+    cx.simulate_paths_selection(Some(vec![saved]));
+    let reopen_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let state = view.state.as_ref().unwrap();
+        let context = state.canonical_audio_source.as_ref().unwrap().context();
+        let saved_chain = state.project.main_devices() == stored.main_devices();
+        if context.project_generation > submission.context.project_generation
+            && view.applied.is_some_and(|source| source.context == context)
+            && saved_chain
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < reopen_deadline,
+            "reopen did not restore the confirmed effect: status={}, context={context:?}, applied={:?}, stored matches={saved_chain}, requests={}, mode={:?}, native={:?}",
+            view.status,
+            view.applied,
+            view.queued_requests,
+            state.canonical_audio_source.as_ref().unwrap().audio_mode(),
+            fixture.progress.lock().unwrap(),
+        );
+        std::thread::yield_now();
+    }
+    click(&mut fixture.visual, "main-track-header");
+    assert!(fixture.visual.debug_bounds(active).is_some());
     fixture.visual.update(|window, _| window.remove_window());
     fixture.visual.run_until_parked();
 }

@@ -212,9 +212,11 @@ impl CandidateState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
-    fn reservation() -> AudioStorageLedgerReservation {
+    mod powered_off;
+    pub(in crate::audio_candidate) mod reserved_dry;
+    pub(in crate::audio_candidate) fn reservation() -> AudioStorageLedgerReservation {
         AudioStorageLedgerReservation {
             data_rows: 4096,
             handle_rows: 2048,

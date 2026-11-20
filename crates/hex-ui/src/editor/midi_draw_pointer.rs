@@ -112,8 +112,7 @@ impl EditorView {
             && self.detail_clip_id() == Some(captured.clip)
             && self.piano_beat_start == captured.view_start
             && self.piano_beat_span.raw() == captured.view_span
-            && self.piano_pitch_low == captured.pitch_low
-            && self.piano_pitch_rows == captured.pitch_rows
+            && self.piano_pitch == captured.pitch
             && self.midi_snap_grid == captured.grid
             && captured.pitch_locked == (self.midi_draw_pitch_locked ^ captured.pitch_modifier)
             && stroke.modifiers_match(window.modifiers().platform, window.modifiers().alt)

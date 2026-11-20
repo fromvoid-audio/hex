@@ -2,6 +2,10 @@
 use super::*;
 use crate::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+    plugin_worker::{
+        NativeWorkerCapture, NativeWorkerControllerQuery, NativeWorkerGuardedCaptureProgress,
+        NativeWorkerStateAfterGuardedWrite, NativeWorkerStateAfterParameter,
+    },
 };
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
@@ -26,7 +30,94 @@ impl FencedNativeQuantum {
     }
 }
 
+/// Exact control-side input and canonical contexts for one ordinary native
+/// parameter continuation. This describes the requested transaction; it is
+/// not a callback, native source, or graph publication acknowledgement.
+#[derive(Clone, Copy)]
+pub struct NativeParameterContinuationRequest<'a> {
+    pub source: AppliedAudioSource,
+    pub transport_epoch: u64,
+    pub playing: bool,
+    pub successor: hex_engine::AudioSourceContext,
+    pub identity: ProcessorInstanceIdentity,
+    pub binding: Binding,
+    pub previous_state: &'a NativeDeviceState,
+    pub capture: NativeParameterContinuationCapture<'a>,
+}
+
+/// Exact worker input and its captured state for an ordinary continuation.
+#[derive(Clone, Copy)]
+pub enum NativeParameterContinuationCapture<'a> {
+    Point {
+        fact: &'a NativeWorkerStateAfterParameter,
+        parameter: u32,
+        normalized: f64,
+    },
+    Guarded {
+        fact: &'a NativeWorkerStateAfterGuardedWrite,
+        /// The same opaque capture with canonical host metadata.
+        state: &'a NativeDeviceState,
+    },
+}
+
+impl<'a> NativeParameterContinuationCapture<'a> {
+    pub fn state(self) -> &'a NativeDeviceState {
+        match self {
+            Self::Point { fact, .. } => fact.state(),
+            Self::Guarded { state, .. } => state,
+        }
+    }
+
+    fn matches_input(self) -> bool {
+        match self {
+            Self::Point {
+                fact,
+                parameter,
+                normalized,
+            } => {
+                fact.parameter() == parameter
+                    && fact.normalized_input().to_bits() == normalized.to_bits()
+            }
+            Self::Guarded { fact, state } => {
+                state.shares_payload_storage_with(fact.state()) && state.processing_eq(fact.state())
+            }
+        }
+    }
+}
+
+fn stopped_program_frontier(
+    quantum: hex_plugin_host::transport::QuantumObservation,
+    worker: hex_engine::ForeignProgramFrontier,
+) -> hex_engine::ForeignProgramFrontier {
+    use crate::plugin_worker::CommittedQuantumState;
+    use hex_plugin_host::transport::QuantumObservation;
+    let open_quantum = match quantum {
+        QuantumObservation::Committed(quantum) => match quantum.state {
+            CommittedQuantumState::OpenProgram(key) => Some(key),
+            CommittedQuantumState::Closed | CommittedQuantumState::OpenUnprogrammed => None,
+        },
+        QuantumObservation::Untouched(_) => None,
+    };
+    hex_engine::ForeignProgramFrontier::Stopped {
+        open_quantum,
+        worker_empty: worker == hex_engine::ForeignProgramFrontier::Empty,
+    }
+}
+
 impl PublicationControl {
+    /// Reserve the exact source before retirement for an acknowledged editor
+    /// receipt drain. Transfer the lease to Root cleanup if the output closes
+    /// first, so the original worker stays owned until its receipts resolve.
+    pub fn reserve_native_retiring_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<crate::RetiringEditLease, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        crate::RetiringEditLease::reserve(&self.candidate_root, binding)
+    }
+
     fn stopped_native_quantum_fence_matches(
         &self,
         source: AppliedAudioSource,
@@ -64,10 +155,161 @@ impl PublicationControl {
         }))
     }
 
+    /// Combine the exact original callback's last coherent quantum and worker
+    /// pickup while the same stopped source fence remains ready. A proven
+    /// untouched pair is distinct from an absent or unavailable observation.
+    /// The worker's Unknown or keyed pickup is never promoted to an empty receipt. This is a control-side
+    /// observation only: callers must prove installed predecessor membership,
+    /// establish which programs can still be needed, and hold the fence until
+    /// the successor is installed or refused.
+    pub fn try_fenced_native_program_frontier_on_control(
+        &self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+        binding: Binding,
+    ) -> Result<hex_engine::ForeignProgramFrontier, &'static str> {
+        if binding.root != source.output_identity
+            || !self.stopped_native_quantum_fence_matches(source, fence)
+        {
+            return Err("native quantum fence is not current");
+        }
+        let quantum = self
+            .candidate_root
+            .try_native_source_quantum_observation(binding)?
+            .ok_or("native callback quantum is unavailable")?;
+        let worker = self.try_native_source_program_frontier_on_control(binding)?;
+        if !self.stopped_native_quantum_fence_matches(source, fence) {
+            return Err("native quantum fence is not current");
+        }
+        Ok(stopped_program_frontier(quantum, worker))
+    }
+
     /// Recheck the correlated fence only; this does not assert the callback
     /// observation is still the most recent quantum.
     pub fn fenced_native_quantum_fence_is_ready(&self, checkpoint: FencedNativeQuantum) -> bool {
         self.stopped_native_quantum_fence_matches(checkpoint.source, checkpoint.fence)
+    }
+
+    /// Admit and enqueue one exact original-worker continuation. The candidate
+    /// owns both states, and the publication owns the source observation and
+    /// matching native references until returned on control. The callback still
+    /// revalidates the source, endpoint and transport before preview and commit.
+    /// An enabled instrument without authored input or modulation may keep its
+    /// worker for a guarded editor capture. Point captures continue to use the
+    /// separate instrument gesture protocol.
+    #[allow(clippy::result_large_err)] // Refusal returns the actual unpublished graph to control.
+    pub fn publish_native_parameter_continuation_on_control<E>(
+        &mut self,
+        mut playback: Playback,
+        request: NativeParameterContinuationRequest<'_>,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        let failure = |reason, playback| {
+            AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            })
+        };
+        if self.status.device_fault.load(Acquire)
+            || self.status.render_fault.load(Acquire)
+            || request.binding.root != request.source.output_identity
+            || request.identity.device_id() != request.binding.instance
+            || request.successor.project_generation != request.source.context.project_generation
+            || request.source.context.editor_revision.checked_add(1)
+                != Some(request.successor.editor_revision)
+            || self.status.native_parameter_source(request.playing)
+                != Some((request.source, request.transport_epoch))
+            || !request.capture.matches_input()
+        {
+            return Err(failure(
+                "native continuation source or input differs",
+                playback,
+            ));
+        }
+        let guarded = matches!(
+            request.capture,
+            NativeParameterContinuationCapture::Guarded { .. }
+        );
+        let captured = request.capture.state();
+        let matching = playback
+            .foreign_nodes_on_control()
+            .filter(|node| {
+                node.owner == request.identity.owner()
+                    && node.device_id == request.identity.device_id()
+                    && node.configuration.as_ref().is_some_and(|state| {
+                        state.shares_payload_storage_with(captured) && **state == *captured
+                    })
+                    && node.foreign_processor().is_some_and(|prepared| {
+                        prepared.binding() == Some(request.binding)
+                            && node.automation.is_empty()
+                            && node.modulation.is_none()
+                            && (!prepared.is_instrument_profile() || (guarded && !node.bypassed))
+                    })
+            })
+            .count();
+        if matching != 1 {
+            return Err(failure("native continuation candidate differs", playback));
+        }
+        let observed = match request.capture {
+            NativeParameterContinuationCapture::Point { fact, .. } => {
+                self.observe_native_sequenced_capture_input_on_control(request.binding, fact)
+            }
+            NativeParameterContinuationCapture::Guarded { fact, .. } => self
+                .candidate_root
+                .observe_guarded_capture_input(request.binding, fact),
+        };
+        let observation = match observed {
+            Ok(Some(observation)) => observation,
+            Ok(None) => {
+                return Err(failure(
+                    "native continuation input is no longer current",
+                    playback,
+                ));
+            }
+            Err(reason) => return Err(failure(reason, playback)),
+        };
+        if playback.has_foreign_continuation_states() {
+            if !playback.foreign_continuation_states_match_on_control(
+                request.identity,
+                request.binding,
+                request.previous_state,
+                request.capture.state(),
+            ) {
+                return Err(failure(
+                    "native continuation candidate states differ",
+                    playback,
+                ));
+            }
+        } else if playback
+            .retain_foreign_continuation_states_on_control(
+                request.identity,
+                request.binding,
+                request.previous_state.clone(),
+                request.capture.state().clone(),
+            )
+            .is_err()
+        {
+            return Err(failure(
+                "native continuation state retention refused",
+                playback,
+            ));
+        }
+        self.publish_admitted_with_source(
+            playback,
+            PublicationPolicy::InheritUnderNativeParameter {
+                source: request.source,
+                transport_epoch: request.transport_epoch,
+                playing: request.playing,
+            },
+            request.successor.project_generation,
+            Some(request.successor),
+            None,
+            Some(observation),
+            admit,
+        )
     }
 
     /// Definite correspondence or a specific unavailable/busy observation.
@@ -84,6 +326,44 @@ impl PublicationControl {
         self.candidate_root
             .try_native_source_approves_captured_state(binding, state)
     }
+    /// Mark the exact original worker's completed capture as source-corresponding.
+    /// This is not a processing-profile approval or graph publication permit.
+    pub fn approve_native_sequenced_capture_on_control(
+        &self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_sequenced_capture(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        Ok(state)
+    }
+
+    /// Mark the exact guarded capture as source-corresponding. Processing
+    /// approval remains separate, and publication rechecks the input generation.
+    pub fn approve_native_guarded_capture_on_control(
+        &self,
+        binding: Binding,
+        fact: &NativeWorkerStateAfterGuardedWrite,
+    ) -> Result<NativeDeviceState, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        let state = self
+            .candidate_root
+            .approve_native_guarded_capture(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native captured-state output is closing");
+        }
+        Ok(state)
+    }
+
     pub(crate) fn approve_native_canonical_processing_on_control(
         &self,
         facts: &crate::plugin_effects::CapturedCanonicalBases,
@@ -350,7 +630,10 @@ impl PublicationControl {
             || self.status.closing.load(Acquire)
             || self.output_identity() != Some(source.output_identity)
             || binding.root != source.output_identity
-            || self.native_source_endpoint_installed(binding) != Some(true)
+            || self
+                .candidate_root
+                .try_native_source_endpoint_installed(binding)?
+                != Some(true)
         {
             return Err("vst3 delivery source differs or is closing");
         }
@@ -534,7 +817,10 @@ impl PublicationControl {
                 .live_native_parameter_source()
                 .map(|(source, _)| source)
                 != Some(expected)
-                || self.native_source_endpoint_installed(binding) != Some(true)
+                || self
+                    .candidate_root
+                    .try_native_source_endpoint_installed(binding)?
+                    != Some(true)
             {
                 return Err("native parameter hold source is not applied");
             }
@@ -626,6 +912,66 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Queue one bounded conditional write on the exact accepted source.
+    /// Keep the token until its terminal or until the original worker releases.
+    /// This does no native I/O on the caller and grants no project authority.
+    pub fn begin_native_source_guarded_editor_write_on_control(
+        &mut self,
+        binding: Binding,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        self.candidate_root.begin_guarded_editor_write(
+            binding,
+            expected_editor_admission,
+            points,
+            None,
+        )
+    }
+
+    /// Enqueue the next replay or compensating write only while the exact
+    /// preceding SDK write owns host input. The helper checks its editor
+    /// admission frontier before applying the new values.
+    pub fn begin_native_source_guarded_editor_write_after_on_control(
+        &mut self,
+        binding: Binding,
+        expected_editor_admission: u64,
+        previous: &NativeWorkerControllerQuery,
+        points: &[(u32, f64)],
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        self.candidate_root.begin_guarded_editor_write(
+            binding,
+            expected_editor_admission,
+            points,
+            Some(previous),
+        )
+    }
+
+    /// Read the original write's SDK terminal. Source changes can suppress
+    /// delivery even if the SDK processed the write. Session owns disposition.
+    pub fn poll_native_source_guarded_editor_write_on_control(
+        &mut self,
+        binding: Binding,
+        token: &crate::plugin_worker::NativeWorkerControllerQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_guarded_editor_write(binding, token)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native guarded editor write output is closing");
+        }
+        Ok(result)
+    }
+
     /// Query actual SDK controller metadata through the original Root effect
     /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
     /// replacing them. Normally stopped transport uses its joined original
@@ -667,8 +1013,10 @@ impl PublicationControl {
     /// original effect or loan control. None is pending; Some consumes at most
     /// eight receipts. Call regularly while observing an editor: bounded full
     /// queues backpressure, never coalesce gesture boundaries. Wrong/closed/
-    /// revoked sources refuse. Native receipts grant no canonical automation or
-    /// future-liveness authority; source terminal cancels pending observations.
+    /// revoked sources refuse admission. Once admitted, a pending read or
+    /// consumed receipt is returned even if close races the call. Native
+    /// receipts grant no canonical automation or future-liveness authority;
+    /// source terminal cancels pending observations.
     pub fn poll_native_source_parameter_edits_on_control(
         &mut self,
         binding: Binding,
@@ -676,11 +1024,7 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native edit output is closing");
         }
-        let result = self.candidate_root.native_source_parameter_edits(binding)?;
-        if self.status.closing.load(Acquire) {
-            return Err("native edit output is closing");
-        }
-        Ok(result)
+        self.candidate_root.native_source_parameter_edits(binding)
     }
     /// Observe the exact live worker's edit receipts and uncovered latency
     /// restart. Opt in only when the consumer can restore the stopped source.
@@ -695,6 +1039,35 @@ impl PublicationControl {
         }
         self.candidate_root
             .native_source_recovery_edits(binding, !self.status.playing.load(Acquire))
+    }
+    /// Recover only an earlier admitted edit read from the exact stopped
+    /// worker while its original source remains accepted by this output.
+    /// The returned batch belongs to the caller even if close races the read.
+    pub fn poll_native_source_stopped_edits_on_control(
+        &mut self,
+        binding: Binding,
+        recovery: bool,
+    ) -> Result<crate::plugin_worker::StoppedEditProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        self.candidate_root
+            .native_source_stopped_edits(binding, recovery)
+    }
+    /// Apply at most one original editor batch after the healthy worker's
+    /// transport returned. The exact idle fence must still match. Once read,
+    /// the receipt belongs to the caller even if that fence changes.
+    pub fn poll_native_source_joined_idle_edits_on_control(
+        &mut self,
+        binding: Binding,
+        witness: (AppliedAudioSource, u64),
+    ) -> Result<hex_plugin_host::protocol::RecoveryEdits, &'static str> {
+        if binding.root != witness.0.output_identity
+            || !self.canonical_source_matches_on_control((witness.0, witness.1, false), None)
+        {
+            return Err("native stopped edit source changed");
+        }
+        self.candidate_root.native_source_joined_idle_edits(binding)
     }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
@@ -751,6 +1124,114 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Admit a capture ordered after the exact original worker's processed
+    /// parameter input. This fact does not grant graph or canonical authority.
+    pub fn begin_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_parameter(binding, input)
+    }
+    /// Capture on the exact installed worker after its guarded write completed.
+    pub fn begin_native_capture_after_guarded_write_on_control(
+        &mut self,
+        binding: Binding,
+        input: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_guarded_write(binding, input)
+    }
+
+    /// Read the exact guarded capture terminal while its binding remains live.
+    pub fn poll_native_capture_after_guarded_write_on_control(
+        &mut self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerGuardedCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_capture_after_guarded_write(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Admit capture after an idle flush on the exact live worker. This does
+    /// not assert PCM processing, output delivery, or publication authority.
+    pub fn begin_native_capture_after_idle_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        input: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .begin_capture_after_idle_parameter(binding, input)
+    }
+    pub fn poll_native_capture_after_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerSequencedCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_capture_after_parameter(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    pub fn native_sequenced_capture_is_current_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .sequenced_capture_is_current(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Observe the original endpoint of an exact processed input and capture.
+    /// This weak control-owned observation can become stale immediately; it
+    /// does not admit a candidate, identify its state, or authorize a handoff.
+    /// Return and destroy it on control, outside the audio callback.
+    pub fn observe_native_sequenced_capture_input_on_control(
+        &mut self,
+        binding: Binding,
+        fact: &crate::plugin_worker::NativeWorkerStateAfterParameter,
+    ) -> Result<Option<hex_plugin_host::transport::ParameterInputSource>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .observe_sequenced_capture_input(binding, fact)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]
@@ -767,6 +1248,37 @@ impl PublicationControl {
             return None;
         }
         self.candidate_root.native_source_endpoint_status(binding)
+    }
+    /// Consume at most one editor Space press from the exact accepted helper.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn take_native_source_transport_space(&self, binding: Binding) -> bool {
+        !self.status.closing.load(Acquire)
+            && self
+                .candidate_root
+                .take_native_source_transport_space(binding)
+    }
+    /// Drain one best-effort sample from this exact active native source.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn take_native_source_slow_exchange(
+        &self,
+        binding: Binding,
+    ) -> Option<crate::plugin_worker::SlowPluginExchange> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_slow_exchange(binding)
+    }
+    /// Drain an accepted concealed quantum for the exact active source.
+    pub fn take_native_source_concealed_output(
+        &self,
+        binding: Binding,
+    ) -> Option<hex_plugin_host::transport::ConcealedOutput> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .take_native_source_concealed_output(binding)
     }
     /// Read the exact accepted endpoint's terminal diagnostic once, without
     /// joining its worker or exposing any callback state. Contention can defer it.
@@ -787,7 +1299,9 @@ impl PublicationControl {
             return None;
         }
         self.candidate_root
-            .native_source_endpoint_installed(binding)
+            .try_native_source_endpoint_installed(binding)
+            .ok()
+            .flatten()
     }
     /// Exclude transport/publication while the callback acknowledges the exact
     /// current native runtime after the admitted command prefix. This witness
@@ -948,7 +1462,24 @@ impl PublicationControl {
             return Err("native epoch output is closing");
         }
         self.candidate_root
-            .quiesce_native_source_preparation(previous, graph)
+            .quiesce_native_source_preparation(previous, graph, None)
+    }
+
+    /// Renew the exact SDK child and move its unclaimed editor receipt
+    /// reservation to the resulting binding. The caller retains the same
+    /// unique lease on refusal. Reserving the new binding does not acknowledge
+    /// any accepted edit, nor does it install the successor graph.
+    pub fn quiesce_native_source_with_editor_reservation(
+        &mut self,
+        previous: Binding,
+        graph: u64,
+        lease: &mut crate::RetiringEditLease,
+    ) -> Result<Binding, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native epoch output is closing");
+        }
+        self.candidate_root
+            .quiesce_native_source_preparation(previous, graph, Some(lease))
     }
     /// Reactivate this exact renewed reservation's stopped component and
     /// replace its facts before planning presentation and completing the epoch.
@@ -1076,6 +1607,7 @@ impl PublicationControl {
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
         trust: native::TrustUserCode,
+        timings: Option<&mut native::StartupTimings>,
     ) -> Result<Binding, &'static str> {
         if !self.native_custody
             || self.status.closing.load(Acquire)
@@ -1084,6 +1616,10 @@ impl PublicationControl {
         {
             return Err("native preparation output profile differs or is closing");
         }
+        let source = source.with_live_audio_deadline(
+            self.plugin_output_fence_on_control().is_some()
+                && std::env::var_os("HEX_VST3_DISABLE_WORKER_DEADLINE").is_none(),
+        );
         self.candidate_root.begin_native_source_preparation(
             identity,
             graph,
@@ -1092,6 +1628,7 @@ impl PublicationControl {
             preparation,
             restore,
             trust,
+            timings,
         )
     }
     /// Supply the presentation plan. The exact Pending becomes a Root-held Prepared or retained
@@ -1144,8 +1681,8 @@ impl PublicationControl {
             .with_native_effect_definition(bindings, prepare)
     }
     /// Borrow selected actual Root source definitions while preparing inside
-    /// this same Root's reserved cell. One Work guard covers both sides; no
-    /// nested acquisition, source extraction or independent lifecycle exists.
+    /// this same Root's reserved cell, alongside the built-in effect registry.
+    /// One Work guard covers both the source borrow and candidate preparation.
     pub fn prepare_audio_candidate_with_native_sources_on_control(
         &mut self,
         token: crate::AudioCandidatePreparationToken,
@@ -1284,6 +1821,30 @@ impl PublicationControl {
     /// Queue acceptance grants no graph, canonical edit or disposal authority.
     /// A full queue refuses before extracting the original constructor pair.
     pub fn publish_native_source_endpoint(&mut self, binding: Binding) -> Result<(), &'static str> {
+        self.publish_native_source_endpoint_with_paused_source(binding, None)
+    }
+
+    /// Loan a separate worker to the paused monitor bank. The original Root
+    /// still owns admission and retirement. The callback revalidates the
+    /// exact source when installing and again before it borrows the bank.
+    pub fn publish_paused_monitor_native_source_endpoint(
+        &mut self,
+        binding: Binding,
+        source: AppliedAudioSource,
+        transport_epoch: u64,
+    ) -> Result<(), &'static str> {
+        let scope = (source, transport_epoch);
+        if self.status.paused_input_source() != Some(scope) {
+            return Err("paused native monitor source changed");
+        }
+        self.publish_native_source_endpoint_with_paused_source(binding, Some(scope))
+    }
+
+    fn publish_native_source_endpoint_with_paused_source(
+        &mut self,
+        binding: Binding,
+        paused_source: Option<(AppliedAudioSource, u64)>,
+    ) -> Result<(), &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native preparation output is closing");
         }
@@ -1291,12 +1852,84 @@ impl PublicationControl {
             .publications
             .write_chunk_uninit(1)
             .map_err(|_| "native endpoint publication is busy")?;
-        let endpoint = self.candidate_root.loan_native_endpoint(binding)?;
+        let mut endpoint = self.candidate_root.loan_native_endpoint(binding)?;
+        if let Some(source) = paused_source {
+            endpoint.bind_paused_monitor(source);
+        }
         chunk.fill_from_iter(std::iter::once(QueuedPublication::Native(endpoint)));
         Ok(())
     }
 }
+/// Bounded observation of the exact paired input and endpoint return signal.
+/// This grants no graph or publication authority; the caller must additionally
+/// validate the source, candidate, transport and actual native custody.
+pub(super) struct NativeParameterInputFence<'a> {
+    input: hex_plugin_host::transport::ParameterInputFence<'a>,
+    endpoint: crate::candidate_custody::EndpointReturnFence<'a>,
+    closing: &'a std::sync::atomic::AtomicBool,
+}
+impl NativeParameterInputFence<'_> {
+    pub(super) fn is_live(&self) -> bool {
+        self.input.is_live() && self.endpoint.is_live() && !self.closing.load(Acquire)
+    }
+    /// Order one decision before source revocation, endpoint return, and output
+    /// shutdown. The later atomic decisions are sticky with respect to the
+    /// first decision; the caller must still authenticate and commit its graph.
+    pub(super) fn try_order_before_revocation(&mut self) -> bool {
+        self.input.try_order_before_revocation()
+            && self.endpoint.try_order_before_return()
+            && self
+                .closing
+                .compare_exchange(false, false, AcqRel, Acquire)
+                .is_ok()
+    }
+}
+
+pub(super) fn reserve_parameter_observation<'a>(
+    sources: &'a crate::candidate_custody::NativeEndpointBank,
+    status: &'a Status,
+    binding: Binding,
+    source: &hex_plugin_host::transport::ParameterInputSource,
+) -> Option<NativeParameterInputFence<'a>> {
+    if status.closing.load(Acquire) {
+        return None;
+    }
+    let (input, endpoint) = sources.reserve_observed_parameter_input(binding, source)?;
+    let fence = NativeParameterInputFence {
+        input,
+        endpoint,
+        closing: &status.closing,
+    };
+    fence.is_live().then_some(fence)
+}
+
 impl Callback {
+    pub(super) fn install_native_source_endpoint(
+        &mut self,
+        endpoint: crate::candidate_custody::NativeEndpointEnvelope,
+    ) -> Result<(), crate::candidate_custody::NativeEndpointEnvelope> {
+        let bank = if let Some(source) = endpoint.paused_source() {
+            if self.status.paused_input_source() != Some(source) {
+                return Err(endpoint);
+            }
+            &mut self.paused_native_sources
+        } else {
+            &mut self.native_sources
+        };
+        bank.install(self.candidate_root.root_id(), endpoint)
+    }
+    /// Borrow the installed original endpoint's input observation without
+    /// waiting, allocation, or ownership transfer. This is not graph, source,
+    /// transport, state, or publication authority; callers must validate each.
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn reserve_native_parameter_input_observation(
+        &self,
+        binding: Binding,
+        source: &hex_plugin_host::transport::ParameterInputSource,
+    ) -> Option<NativeParameterInputFence<'_>> {
+        reserve_parameter_observation(&self.native_sources, &self.status, binding, source)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_root_for_control_fixture(
         &self,
@@ -1307,8 +1940,13 @@ impl Callback {
     /// This grants no readiness, endpoint loan, graph admission or native ACK.
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
-        self.native_sources
-            .workers_idle_on_control(&self.candidate_root)
+        Some(
+            self.native_sources
+                .workers_idle_on_control(&self.candidate_root)?
+                && self
+                    .paused_native_sources
+                    .workers_idle_on_control(&self.candidate_root)?,
+        )
     }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn native_worker_phase_for_test(&self) -> Option<usize> {
@@ -1443,26 +2081,32 @@ impl Callback {
         }
     }
     pub(super) fn return_requested_native_sources(&mut self) {
+        let paused_endpoints = self.paused_native_sources.has_endpoints();
         for index in 0..hex_lattice::MAX_STATEFUL_PROCESSORS {
             if self.held_retirement.is_some() || self.retired.is_full() {
                 return;
             }
-            let Some(endpoint) = self.native_sources.take_requested(index) else {
+            let Some(endpoint) = self.native_sources.take_requested(index).or_else(|| {
+                paused_endpoints
+                    .then(|| self.paused_native_sources.take_requested(index))
+                    .flatten()
+            }) else {
                 continue;
             };
             self.return_publication(ReturnedPublication::Native(endpoint));
         }
     }
     pub(crate) fn has_native_source_endpoints(&self) -> bool {
-        self.native_sources.has_endpoints()
+        self.native_sources.has_endpoints() || self.paused_native_sources.has_endpoints()
     }
     pub(crate) fn extract_native_source_endpoints_on_control(
         &mut self,
         destination: &mut [Option<crate::candidate_custody::NativeEndpointEnvelope>;
                  hex_lattice::MAX_STATEFUL_PROCESSORS],
     ) -> bool {
-        self.native_sources
-            .extract(self.candidate_root.root_id(), destination)
+        let root = self.candidate_root.root_id();
+        self.native_sources.extract(root, destination)
+            && self.paused_native_sources.extract(root, destination)
     }
 }
 

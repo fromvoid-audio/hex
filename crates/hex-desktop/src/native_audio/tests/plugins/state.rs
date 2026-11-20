@@ -4,8 +4,11 @@
 use super::*;
 use hex_session::service::NativeDeviceState;
 use std::sync::atomic::Ordering::Release;
-mod edits;
+pub(super) mod edits;
+mod main_vst3_pass;
+mod power_receipt;
 mod save;
+mod verified;
 
 /// Tests that hold a fresh callback before its first graph use the real
 /// playing-output fallback, independently of the retained-output regressions.
@@ -146,6 +149,10 @@ fn retained_output_restores_saved_vst3_before_retiring_the_previous_generation()
     let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let mut previous = None;
     for _ in 0..2 {
+        if let Some(binding) = previous {
+            h.plugin_progress.lock().unwrap().hold_pending_read = Some(binding);
+            wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(binding));
+        }
         let opened = h.run(Request::Open(saved.path.clone()));
         assert_eq!(opened.state.project.as_ref(), &saved.project);
         assert_eq!(
@@ -895,11 +902,19 @@ fn fixture_with_frames(
     start: Start,
     frames: u32,
 ) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
+    fixture_with_host(start, frames, host())
+}
+
+fn fixture_with_host(
+    start: Start,
+    frames: u32,
+    hosting: Hosting,
+) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
     let files = Files::new();
     let wave = files.wav(48_000, frames);
     let wave_bytes = fs::read(&wave).unwrap();
     let mut h = ResidentHarness::with_plugins(
-        host(),
+        hosting,
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,

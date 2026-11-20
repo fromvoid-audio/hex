@@ -10,13 +10,18 @@ use hex_lattice_contract::{
 /// Borrow actual constructor-paired owners, or Root's original worker while
 /// its endpoint is loaned, during pure graph preparation. Copied IDs or equal
 /// state cannot construct these instances. Root/publication retains the same
-/// resources through the endpoint's actual return.
+/// resources through the endpoint's actual return. Private offline preparation
+/// may borrow an actual stopped lease and reserved epoch; it must complete that
+/// epoch before rendering. Neither view grants live Root source admission.
+/// Intentional Off instead retains one exact saved-state declaration without
+/// borrowing an SDK owner; it cannot construct active processing or an endpoint.
 pub struct NativeEffectDefinition<'a> {
     // Borrow only immutable configuration across pure compiler threads. The
     // lifetime retains each original owner; joining workers are not Sync.
     effects: Vec<&'a Configuration>,
     canonical: &'a [CapturedCanonicalBases],
     unavailable: Vec<(ProcessorInstanceIdentity, &'a NativeDeviceState)>,
+    powered_off: Option<(ProcessorInstanceIdentity, u32, &'a NativeDeviceState)>,
 }
 
 /// One exact preserved device with no native processing source. This grants no
@@ -27,7 +32,49 @@ pub struct UnavailableEffect<'a> {
     pub device_id: u64,
     pub state: &'a NativeDeviceState,
 }
+/// Exact saved Main metadata selected for an intentionally disabled stage.
+/// No source, factory, endpoint, SDK owner or publication authority is borrowed.
+#[derive(Clone, Copy)]
+pub struct PoweredOffEffect<'a> {
+    pub owner: hex_lattice::ProcessorChainOwner,
+    pub device_id: u64,
+    pub sample_rate: u32,
+    pub state: &'a NativeDeviceState,
+}
+
 impl<'a> NativeEffectDefinition<'a> {
+    /// Prepare one resource-free Main Off declaration. The output owner still
+    /// proves its stopped source and exact installation through ordinary admission.
+    pub fn powered_off(entries: &[PoweredOffEffect<'a>]) -> Result<Self, DeviceContractError> {
+        let [entry] = entries else {
+            return Err(DeviceContractError::InvalidId);
+        };
+        if entry.owner != hex_lattice::ProcessorChainOwner::Main {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        if entry.sample_rate == 0 {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        entry.state.require_asset_free_processing()?;
+        hex_plugin_state::decode(entry.state).map_err(|_| DeviceContractError::MalformedState)?;
+        let identity = ProcessorInstanceIdentity::new(entry.owner, entry.device_id)?;
+        let mut definition = Self::from_selected(std::iter::empty())?;
+        definition.powered_off = Some((identity, entry.sample_rate, entry.state));
+        Ok(definition)
+    }
+
+    fn is_powered_off(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        rate: u32,
+    ) -> bool {
+        self.powered_off
+            .is_some_and(|(id, sample_rate, preserved)| {
+                id == identity && sample_rate == rate && state.processing_eq(preserved)
+            })
+    }
+
     pub(crate) fn unavailable(
         entries: &[UnavailableEffect<'a>],
     ) -> Result<Self, DeviceContractError> {
@@ -44,6 +91,7 @@ impl<'a> NativeEffectDefinition<'a> {
             .checked_add(entries.len())
             .is_none_or(|n| n > hex_lattice::MAX_STATEFUL_PROCESSORS)
             || !self.unavailable.is_empty()
+            || self.powered_off.is_some()
         {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
         }
@@ -76,7 +124,53 @@ impl<'a> NativeEffectDefinition<'a> {
             effects,
             canonical: self.canonical,
             unavailable,
+            powered_off: None,
         })
+    }
+    /// Borrow actual zero-PCM private offline leases and their reserved epochs.
+    /// Their original owners must complete those epochs before any rendering;
+    /// this definition cannot admit sources into a live Root.
+    pub(super) fn from_offline_preparations(
+        effects: &'a [super::OfflineEffectPreparation],
+    ) -> Result<Self, DeviceContractError> {
+        let mut selected = Vec::new();
+        selected
+            .try_reserve_exact(effects.len().min(hex_lattice::MAX_STATEFUL_PROCESSORS))
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        for effect in effects {
+            let configuration = effect.configuration()?;
+            Self::push_configuration(&mut selected, configuration)?;
+        }
+        Ok(Self {
+            effects: selected,
+            canonical: &[],
+            unavailable: Vec::new(),
+            powered_off: None,
+        })
+    }
+    fn push_configuration(
+        selected: &mut Vec<&'a Configuration>,
+        configuration: &'a Configuration,
+    ) -> Result<(), DeviceContractError> {
+        if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        if selected
+            .iter()
+            .any(|old| old.identity.device_id() == configuration.identity.device_id())
+            || selected.first().is_some_and(|first| {
+                first.binding.root != configuration.binding.root
+                    || first.sample_rate != configuration.sample_rate
+                    || first.prepared.quantum_frames() != configuration.prepared.quantum_frames()
+            })
+        {
+            return Err(DeviceContractError::InvalidId);
+        }
+        selected
+            .try_reserve(1)
+            .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        selected.push(configuration);
+        Ok(())
     }
     pub fn new(effects: &'a [NativeEffect]) -> Result<Self, DeviceContractError> {
         if effects.len() > hex_lattice::MAX_STATEFUL_PROCESSORS {
@@ -169,6 +263,9 @@ impl<'a> NativeEffectDefinition<'a> {
             self.canonical_for(effect, state)?;
             return Ok(Some(effect));
         }
+        if self.is_powered_off(identity, state, rate) {
+            return Ok(None);
+        }
         if self
             .unavailable
             .iter()
@@ -179,36 +276,37 @@ impl<'a> NativeEffectDefinition<'a> {
         Err(DeviceContractError::ForeignProcessingUnavailable)
     }
 
+    /// Copy the processing declaration from a real source that matches this
+    /// exact authored state and rate. This does not loan or publish an endpoint.
+    pub fn prepared_processor_on_control(
+        &self,
+        node: &hex_lattice::PreparedRuntimeInstance,
+    ) -> Result<Option<hex_lattice::PreparedForeignProcessor>, DeviceContractError> {
+        let identity = ProcessorInstanceIdentity::new(node.owner, node.device_id)?;
+        let state = node
+            .configuration
+            .as_deref()
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+        Ok(self
+            .exact_configuration(identity, state, node.sample_rate)?
+            .map(|effect| effect.prepared))
+    }
+
     pub(super) fn from_selected(
         effects: impl IntoIterator<Item = (&'a Configuration, bool)>,
     ) -> Result<Self, DeviceContractError> {
         let mut selected: Vec<&'a Configuration> = Vec::new();
         for (configuration, paired) in effects {
-            if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
-                return Err(DeviceContractError::RuntimeBudgetExceeded);
-            }
-            if !paired
-                || selected
-                    .iter()
-                    .any(|old| old.identity.device_id() == configuration.identity.device_id())
-                || selected.first().is_some_and(|first| {
-                    first.binding.root != configuration.binding.root
-                        || first.sample_rate != configuration.sample_rate
-                        || first.prepared.quantum_frames()
-                            != configuration.prepared.quantum_frames()
-                })
-            {
+            if !paired {
                 return Err(DeviceContractError::InvalidId);
             }
-            selected
-                .try_reserve(1)
-                .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
-            selected.push(configuration);
+            Self::push_configuration(&mut selected, configuration)?;
         }
         Ok(Self {
             effects: selected,
             canonical: &[],
             unavailable: Vec::new(),
+            powered_off: None,
         })
     }
 }
@@ -307,6 +405,9 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        if self.is_powered_off(identity, state, context.sample_rate) {
+            return Ok(Some(PreparedProcessorFactory::PoweredOff));
+        }
         Ok(self
             .exact_configuration(identity, state, context.sample_rate)?
             .map(|effect| PreparedProcessorFactory::Foreign(effect.prepared)))
@@ -399,3 +500,6 @@ mod unavailable_tests {
         assert_eq!(state, original);
     }
 }
+
+#[cfg(test)]
+mod powered_off_tests;

@@ -44,8 +44,9 @@ impl Plugins {
         }
         self.edit = None;
         for source in &mut self.sources {
-            if matches!(source.operation, SourceOperation::Edit(current) if current == context) {
+            if source.operation.edit_context() == Some(context) {
                 source.accepted = accepted && !source.retiring;
+                source.editor_retirement.ever_accepted |= source.accepted;
                 source.retiring |= !source.accepted;
             }
         }
@@ -58,29 +59,85 @@ impl Plugins {
             // and outgoing-tail references return. Refusal leaves predecessors
             // untouched; no endpoint is reset or freed here.
             for index in 0..self.sources.len() {
-                let superseded = {
+                let successor = {
                     let old = &self.sources[index];
-                    old.accepted
-                        && !old.retiring
-                        && !matches!(old.operation, SourceOperation::Edit(current) if current == context)
-                        && self.sources.iter().any(|new| {
-                            new.accepted
-                                && !new.retiring
-                                && new.project_generation == old.project_generation
-                                && new.device == old.device
-                                && matches!(new.operation, SourceOperation::Edit(current) if current == context)
-                        })
+                    if !old.accepted
+                        || old.retiring
+                        || old.operation.edit_context() == Some(context)
+                    {
+                        None
+                    } else {
+                        self.sources
+                            .iter()
+                            .rev()
+                            .find(|new| {
+                                new.accepted
+                                    && !new.retiring
+                                    && new.project_generation == old.project_generation
+                                    && new.device == old.device
+                                    && new.operation.edit_context() == Some(context)
+                            })
+                            .map(|new| {
+                                let predecessor_admitted_through = match new.operation {
+                                    SourceOperation::Edit {
+                                        predecessor: Some(cut),
+                                        ..
+                                    } if cut.binding == old.binding => Some(cut.admitted_through),
+                                    _ => None,
+                                };
+                                RetiringSuccessor {
+                                    binding: new.binding,
+                                    context,
+                                    predecessor_admitted_through,
+                                }
+                            })
+                    }
                 };
-                if superseded {
+                if let Some(successor) = successor {
                     let old = &mut self.sources[index];
                     old.accepted = false;
                     old.retiring = true;
-                    // The old helper still owns the actual editor. Ask it to
-                    // detach before Root is asked to retire this source.
+                    old.editor_retirement.successor = Some(successor);
+                    // The original helper must detach without cutting an
+                    // active gesture before its editor moves to the successor.
                     old.editor_transfer = old.editor_open;
                 }
             }
         }
+    }
+
+    /// Validate the exact successor selected by the accepted transition. A
+    /// later replacement must not inherit an earlier editor's pending input.
+    /// Session must separately validate that its canonical context still matches.
+    pub(super) fn retiring_successor(
+        &self,
+        index: usize,
+    ) -> Result<RetiringSuccessor, &'static str> {
+        let old = self
+            .sources
+            .get(index)
+            .ok_or("vst3 retiring source changed")?;
+        let successor = old
+            .editor_retirement
+            .successor
+            .ok_or("vst3 editor replacement is unavailable")?;
+        let provider = old
+            .provider
+            .ok_or("vst3 retiring editor provider is unavailable")?;
+        self.sources
+            .iter()
+            .find(|source| {
+                source.binding == successor.binding
+                    && source.provider == Some(provider)
+                    && successor.binding.root == old.binding.root
+                    && source.accepted
+                    && !source.retiring
+                    && source.project_generation == old.project_generation
+                    && source.device == old.device
+                    && source.operation.edit_context() == Some(successor.context)
+            })
+            .ok_or("vst3 editor replacement changed before its edit was transferred")?;
+        Ok(successor)
     }
     #[allow(clippy::too_many_arguments)] // Exact target and its existing canonical source.
     pub(super) fn matching_edit_source(
@@ -101,18 +158,33 @@ impl Plugins {
                     .playing
                     .load(std::sync::atomic::Ordering::Acquire));
         let authored = requested_selection(input, device)?;
+        let replay = self.retiring_replay_capture.as_ref().filter(|replay| {
+            replay.publication == input.context()
+                && replay.identity.owner() == owner
+                && replay.identity.device_id() == device
+        });
         let mut changed_state = false;
+        let mut reintroduced = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
                 source.context().project_generation == input.context().project_generation
             })
         {
             let previous = desired.effect_preparation();
-            changed_state = !input.same_authored_plugin_program(
-                &previous,
-                device,
-                control.plugin_callback_quantum_on_control(),
-            );
+            let retimed_effect = !destination.is_instrument()
+                && control
+                    .status
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+                && input.retimes_existing_authored_effect(&previous, device);
+            changed_state = !retimed_effect
+                && !input.same_authored_plugin_program(
+                    &previous,
+                    device,
+                    control.plugin_callback_quantum_on_control(),
+                );
+            reintroduced =
+                self.catalog.is_some() && previous.plugin_device_bypassed(device).is_none();
             previous.visit_plugin_devices(|old_owner, old_device, old| {
                 if old_device == device {
                     let same_processor = old_owner.owner() == owner && old.processing_eq(state);
@@ -136,25 +208,56 @@ impl Plugins {
                 || source.retiring
                 || (input.preparing_edit()
                     && !source.accepted
-                    && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context()))
+                    && source.operation.edit_context() != Some(input.context()))
             {
                 continue;
             }
+            if let Some(replay) = replay {
+                if replay.binding == source.binding && source.accepted {
+                    return if replay.matches_candidate(control, state) {
+                        Ok(Some(source.binding))
+                    } else {
+                        Err("vst3 replay candidate source or state changed".into())
+                    };
+                }
+                continue;
+            }
             if changed_state
-                && !retain_instrument
-                && !matches!(source.operation, SourceOperation::Edit(context) if context == input.context())
+                && !destination.is_instrument()
+                && input.preparing_edit()
+                && let Some(gesture) = self.parameter_gesture.as_ref()
+                && gesture.sequenced_candidate_source(
+                    control,
+                    input.context(),
+                    desired.map(|old| old.context()),
+                    source.binding,
+                    device,
+                    state,
+                    cancellation,
+                )?
+            {
+                return Ok(Some(source.binding));
+            }
+            if (reintroduced || (changed_state && !retain_instrument))
+                && source.operation.edit_context() != Some(input.context())
             {
                 // A historical matching payload does not free its physical
                 // endpoint from the actual outgoing tail. Prepare this edit's
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            if (retain_instrument
+            // A fenced stopped restore may reuse the exact source whose
+            // sequenced capture became canonical during a playing gesture.
+            // The original prepared state can predate that capture.
+            if ((retain_instrument || self.restored_canonical_source(input.context()).is_some())
                 && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {
                 return Ok(Some(source.binding));
             }
+        }
+        if replay.is_some() {
+            return Err("vst3 replay candidate lost its original helper".into());
         }
         Ok(None)
     }
@@ -168,22 +271,24 @@ impl Plugins {
         state: &NativeDeviceState,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
+        fresh_source: bool,
     ) -> Result<(), String> {
         let context = input.context();
         let owner = destination.owner();
         let control = output.publication.control().ok_or("native output closed")?;
         self.extend_edit_targets(control, input, destination, device, state, cancellation)?;
-        if self
-            .matching_edit_source(
-                control,
-                input,
-                destination,
-                device,
-                state,
-                desired,
-                cancellation,
-            )?
-            .is_some()
+        if !fresh_source
+            && self
+                .matching_edit_source(
+                    control,
+                    input,
+                    destination,
+                    device,
+                    state,
+                    desired,
+                    cancellation,
+                )?
+                .is_some()
         {
             return Ok(());
         }
@@ -208,25 +313,60 @@ impl Plugins {
                 break;
             }
         }
-        let Some(original) = original else {
-            // Duplicating an existing unavailable device preserves its exact
-            // opaque state, without inventing an empty/default processor.
-            let mut preserved = false;
-            if let Some(desired) = desired
-                .filter(|source| source.context().project_generation == context.project_generation)
-            {
-                desired
-                    .effect_preparation()
-                    .visit_plugin_devices(|_, _, old| {
-                        preserved |= old.processing_eq(state);
-                        Ok(())
-                    })?;
-            }
-            return if preserved {
-                Ok(())
-            } else {
-                Err("original vst3 source unavailable for the changed state".into())
+        let metadata;
+        let catalog;
+        let selection = if let Some(original) = original {
+            metadata = loop {
+                check_cancel(cancellation)?;
+                match control.native_source_metadata(original) {
+                    Ok(metadata) => break metadata,
+                    Err(error)
+                        if matches!(
+                            error.as_str(),
+                            "native preparation is busy" | "native source is busy"
+                        ) =>
+                    {
+                        poll_control(control);
+                    }
+                    Err(error) => return Err(error),
+                }
             };
+            metadata.selection()
+        } else {
+            // History can reintroduce the last device from a provider whose
+            // worker has already retired. Use the same exact lookup as Open.
+            let previous = desired
+                .filter(|source| source.context().project_generation == context.project_generation)
+                .map(CanonicalAudioSourceSnapshot::effect_preparation);
+            let reintroduced = previous
+                .as_ref()
+                .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
+            let selected = if reintroduced {
+                self.saved_catalog_selection(state, destination)
+            } else {
+                Err("existing vst3 source unavailable".into())
+            };
+            catalog = match selected {
+                Ok(selected) => selected,
+                Err(reason) => {
+                    let mut preserved = false;
+                    if let Some(previous) = previous {
+                        previous.visit_plugin_devices(|_, _, old| {
+                            preserved |= old.processing_eq(state);
+                            Ok(())
+                        })?;
+                    }
+                    return if preserved {
+                        // Unavailable devices still duplicate their authored state.
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "original vst3 source unavailable for the changed state · {reason}"
+                        ))
+                    };
+                }
+            };
+            reopen::catalog_selection(&catalog)
         };
         if self.pending.is_some() || self.restore.is_some() || self.reopen.is_some() {
             return Err("another vst3 source operation is pending".into());
@@ -238,21 +378,25 @@ impl Plugins {
             return Err("vst3 edit source changed".into());
         }
         self.edit = Some(context);
-        let metadata = loop {
-            check_cancel(cancellation)?;
-            match control.native_source_metadata(original) {
-                Ok(metadata) => break metadata,
-                Err(error)
-                    if matches!(
-                        error.as_str(),
-                        "native preparation is busy" | "native source is busy"
-                    ) =>
-                {
-                    poll_control(control);
-                }
-                Err(error) => return Err(error),
-            }
+        let provider = provider_identity(state)?;
+        let predecessor = self
+            .sources
+            .iter()
+            .rev()
+            .find(|source| {
+                source.project_generation == context.project_generation
+                    && source.device == device
+                    && source.accepted
+                    && !source.retiring
+            })
+            .filter(|source| source.provider == Some(provider))
+            .map(|source| source.binding);
+        let predecessor = if let Some(binding) = predecessor {
+            self.observe_editor_preparation_cut(output, desired, binding, cancellation)?
+        } else {
+            None
         };
+        let control = output.publication.control().ok_or("native output closed")?;
         let binding = loop {
             check_cancel(cancellation)?;
             match self
@@ -261,26 +405,29 @@ impl Plugins {
                 .ok_or("qualified vst3 helper unavailable")?
                 .begin_on_control(
                     control,
-                    metadata.selection(),
+                    EffectSelection { ..selection },
                     owner,
                     device,
                     context.editor_revision.max(1),
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 ) {
                 Ok(binding) => break binding,
                 Err(error) if error == "native preparation is busy" => poll_control(control),
                 Err(error) => return Err(error),
             }
         };
-        drop(metadata);
         self.sources.push(Source {
             binding,
             owner,
             device,
             project_generation: context.project_generation,
-            operation: SourceOperation::Edit(context),
+            operation: SourceOperation::Edit {
+                context,
+                predecessor,
+            },
             authored,
             accepted: false,
             retiring: false,
@@ -288,8 +435,12 @@ impl Plugins {
             observes_latency: false,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
+            provider: None,
             edit_backlog: false,
             edit_recovery: None,
+            open_editor_group: None,
+            editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             observed_latency_receipt: false,
@@ -327,9 +478,64 @@ impl Plugins {
             }
         }
     }
+
+    /// Reuse the exact original controller token. A source which cannot be
+    /// observed has no ordering proof. Continue servicing existing controller
+    /// clients while trying to admit, and drain an admitted token before
+    /// honoring cancellation.
+    fn observe_editor_preparation_cut(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        binding: Binding,
+        cancellation: Option<&RequestCancellation>,
+    ) -> Result<Option<EditorPreparationCut>, String> {
+        use hex_audio::plugin_worker::{ControllerRequest, NativeWorkerControllerProgress};
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        let request = loop {
+            check_cancel(cancellation)?;
+            self.poll(output, desired);
+            let control = output.publication.control().ok_or("native output closed")?;
+            match control.begin_native_source_controller_query_on_control(
+                binding,
+                ControllerRequest::ReadEditorFrontier,
+            ) {
+                Ok(request) => break request,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native controller mailbox is busy"
+                    | "native controller query is already pending",
+                ) if std::time::Instant::now() < deadline => {
+                    poll_control(control);
+                }
+                Err(_) => return Ok(None),
+            }
+        };
+        let control = output.publication.control().ok_or("native output closed")?;
+        let cut = loop {
+            match control.poll_native_source_controller_query_on_control(binding, &request) {
+                Ok(NativeWorkerControllerProgress::EditorFrontier(admitted_through)) => {
+                    break Some(EditorPreparationCut {
+                        binding,
+                        admitted_through,
+                    });
+                }
+                Ok(NativeWorkerControllerProgress::Pending)
+                | Err("native preparation is busy" | "native source is busy") => {
+                    poll_control(control);
+                }
+                _ => break None,
+            }
+        };
+        check_cancel(cancellation)?;
+        Ok(cut)
+    }
 }
 pub(super) fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result<(), String> {
-    if cancellation.is_some_and(RequestCancellation::is_cancelled) {
+    if cancellation.is_some_and(RequestCancellation::preparation_expired) {
+        Err("verified vst3 preparation timed out".into())
+    } else if cancellation.is_some_and(RequestCancellation::is_cancelled) {
         Err("vst3 edit cancelled by document request or shutdown".into())
     } else {
         Ok(())
@@ -418,7 +624,7 @@ pub(super) fn requested_selection(
     .map_err(str::to_owned)
 }
 
-fn source_covers_selection(
+pub(super) fn source_covers_selection(
     armed: Option<&AuthoredSelection>,
     requested: Option<&AuthoredSelection>,
 ) -> bool {

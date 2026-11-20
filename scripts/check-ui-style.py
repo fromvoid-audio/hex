@@ -256,11 +256,11 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'self.console_reorder_layer(',
                                    'self.track_reorder_events(', 'self.console_mixer_row(', 'self.console_main_header(', 'body)', 'tail)', 'session_clip_backdrop(',
-                                   'super::clip_boundary::backdrop_shell('))
+                                   'super::clip_boundary::backdrop_shell(', 'pending_device_column('))
         )
         console_column_component = console_column_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/console_mixer.rs'
-            and suffix.startswith(('activator)', 'solo)', 'self.sample_arm_button(', 'gain)', 'pan)', 'toggles)', 'controls)', 'column)', 'self.main_track_controls(', 'self.console_return_paging(', 'super::track_meters::render('))
+            and suffix.startswith(('activator)', 'solo)', 'self.sample_arm_button(', 'gain)', 'pan)', 'toggles)', 'controls)', 'column)', 'self.main_track_controls(', 'self.console_return_paging(', 'super::track_meters::render(', 'super::session_grid::pending_device_column('))
         )
         console_column_component = console_column_component or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/console_returns.rs'
@@ -338,10 +338,10 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
             and suffix.startswith('panel.search.clone())')
         )
-        # This bound parameter view uses the shared themed control factory.
+        # This row contains only controls from the shared themed factory.
         modulator_parameter_control = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators.rs'
-            and suffix.startswith('parameter_control_with_presentation(')
+            and suffix.startswith(('parameter_control_with_presentation(', 'control_row)'))
         )
         if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not modulator_parameter_control:
             line = source.count('\n', 0, match.start()) + 1

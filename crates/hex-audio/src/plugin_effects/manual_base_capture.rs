@@ -9,8 +9,9 @@ use crate::{
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_plugin_host::{
     protocol::{FlushDisposition, PresentationPlan},
-    transport::{ParameterPoint, Parameters},
+    transport::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters},
 };
+use std::collections::VecDeque;
 
 pub(crate) struct BaseCaptureSource {
     pub metadata: EffectSourceMetadata,
@@ -25,9 +26,66 @@ enum Phase {
     Prepare,
     Flush,
     Capture,
-    Retire(Option<Result<NativeDeviceState, String>>),
+    Retire(Option<Result<NativeDeviceState, ManualBaseCaptureError>>),
     Approve(CompletedManualBase),
     Finished,
+}
+
+struct FlushPlan {
+    cohorts: VecDeque<Parameters>,
+    exact_readback: bool,
+}
+
+impl FlushPlan {
+    fn manual_point(id: u32, normalized: f64) -> Result<Self, String> {
+        let mut parameters = Parameters::default();
+        parameters
+            .push(ParameterPoint {
+                id,
+                frame: 0,
+                normalized,
+            })
+            .map_err(|_| "native manual base input is invalid")?;
+        Ok(Self {
+            cohorts: VecDeque::from([parameters]),
+            exact_readback: false,
+        })
+    }
+
+    fn ordered(cohorts: &[Vec<(u32, f64)>]) -> Result<Self, String> {
+        let mut plan = Self {
+            cohorts: VecDeque::new(),
+            exact_readback: true,
+        };
+        let mut remaining = MAX_PARAMETER_POINTS;
+        if cohorts.is_empty() || cohorts.len() > remaining {
+            return Err("native replay base cohort count is invalid".into());
+        }
+        plan.cohorts
+            .try_reserve_exact(cohorts.len())
+            .map_err(|_| "native replay base cohort allocation failed")?;
+        for cohort in cohorts {
+            remaining = remaining
+                .checked_sub(cohort.len())
+                .filter(|_| !cohort.is_empty())
+                .ok_or("native replay base input exceeds its point bound")?;
+            let mut parameters = Parameters::default();
+            for &(id, normalized) in cohort {
+                parameters
+                    .push(ParameterPoint {
+                        id,
+                        frame: 0,
+                        normalized,
+                    })
+                    .map_err(|_| "native replay base input is invalid")?;
+            }
+            if parameters.as_slice().len() != cohort.len() {
+                return Err("native replay base cohort repeats a parameter".into());
+            }
+            plan.cohorts.push_back(parameters);
+        }
+        Ok(plan)
+    }
 }
 
 /// One bounded in-flight scratch source, with no callback endpoint or graph
@@ -41,9 +99,30 @@ pub struct ManualBaseCapture {
     original_binding: Option<Binding>,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
-    parameters: Parameters,
+    flushes: FlushPlan,
     phase: Phase,
 }
+
+/// Failure reported when an isolated capture reaches its terminal.
+#[derive(Debug)]
+pub enum ManualBaseCaptureError {
+    /// The applied source or transport fence changed and the scratch source was recovered.
+    SourceChanged,
+    Cancelled,
+    Failed(String),
+}
+
+impl std::fmt::Display for ManualBaseCaptureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SourceChanged => f.write_str("native manual base capture source changed"),
+            Self::Cancelled => f.write_str("native manual base capture cancelled"),
+            Self::Failed(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for ManualBaseCaptureError {}
 
 /// Constructed only after this module has completed and reaped the actual
 /// scratch capture. Its fields cannot be assembled by adapters or Root callers.
@@ -83,11 +162,7 @@ impl Hosting {
             source,
             binding,
             canonical,
-            ParameterPoint {
-                id,
-                frame: 0,
-                normalized,
-            },
+            FlushPlan::manual_point(id, normalized)?,
             true,
         )
     }
@@ -108,12 +183,32 @@ impl Hosting {
             source,
             binding,
             canonical,
-            ParameterPoint {
-                id,
-                frame: 0,
-                normalized,
-            },
+            FlushPlan::manual_point(id, normalized)?,
             false,
+        )
+    }
+
+    /// Replay ordered native editor cohorts in a private sibling restored
+    /// from the installed source's exact canonical base. Every cohort requires
+    /// exact SDK readback before the next can run. The live program stays on
+    /// the original worker. A returned capture grants state preparation only;
+    /// the caller still owns editor-input conflict checks and publication.
+    pub fn begin_ordered_manual_base_capture_on_control(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        cohorts: &[Vec<(u32, f64)>],
+        playing: bool,
+    ) -> Result<ManualBaseCapture, String> {
+        self.begin_parameter_base_capture(
+            output,
+            source,
+            binding,
+            canonical,
+            FlushPlan::ordered(cohorts)?,
+            playing,
         )
     }
 
@@ -123,13 +218,9 @@ impl Hosting {
         source: AppliedAudioSource,
         binding: Binding,
         canonical: &NativeDeviceState,
-        point: ParameterPoint,
+        flushes: FlushPlan,
         playing: bool,
     ) -> Result<ManualBaseCapture, String> {
-        let mut parameters = Parameters::default();
-        parameters
-            .push(point)
-            .map_err(|_| "native manual base input is invalid")?;
         let identity = Self::saved_identity_on_control(canonical)?;
         let (rate, transport_epoch, original) =
             output.native_base_capture_source(source, binding, canonical, playing)?;
@@ -142,6 +233,7 @@ impl Hosting {
             rate,
             original.profile,
             Some(canonical.clone()),
+            None,
         )?;
         Ok(ManualBaseCapture {
             binding: scratch,
@@ -150,7 +242,7 @@ impl Hosting {
             original_binding: Some(binding),
             identity,
             presentation: original.presentation,
-            parameters,
+            flushes,
             phase: Phase::Prepare,
         })
     }
@@ -238,6 +330,7 @@ impl Hosting {
             rate,
             original.profile,
             Some(captured.clone()),
+            None,
         )?;
         Ok(ManualBaseCapture {
             binding: scratch,
@@ -246,17 +339,30 @@ impl Hosting {
             original_binding: None,
             identity,
             presentation: original.presentation,
-            parameters,
+            flushes: FlushPlan {
+                cohorts: VecDeque::from([parameters]),
+                exact_readback: true,
+            },
             phase: Phase::Prepare,
         })
     }
 }
 
 impl ManualBaseCapture {
-    fn source_matches(&self, status: &crate::prepared::Status) -> bool {
-        self.source.is_none_or(|(source, epoch, playing)| {
-            status.native_parameter_source(playing) == Some((source, epoch))
-        })
+    fn interruption(
+        source: Option<(AppliedAudioSource, u64, bool)>,
+        status: &crate::prepared::Status,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Option<ManualBaseCaptureError> {
+        if is_cancelled() {
+            Some(ManualBaseCaptureError::Cancelled)
+        } else {
+            source
+                .is_some_and(|(source, epoch, playing)| {
+                    status.native_parameter_source(playing) != Some((source, epoch))
+                })
+                .then_some(ManualBaseCaptureError::SourceChanged)
+        }
     }
 
     /// Advance one control operation. A captured envelope is returned once,
@@ -266,45 +372,43 @@ impl ManualBaseCapture {
         &mut self,
         output: &mut PublicationControl,
         is_cancelled: &mut dyn FnMut() -> bool,
-    ) -> Option<Result<NativeDeviceState, String>> {
+    ) -> Option<Result<NativeDeviceState, ManualBaseCaptureError>> {
+        use ManualBaseCaptureError::Failed;
         if matches!(self.phase, Phase::Finished)
             || output.output_identity() != Some(self.output_identity)
         {
             return None;
         }
         if let Phase::Approve(captured) = &self.phase {
-            if is_cancelled() || !captured.matches_source(&output.status) {
+            if let Some(error) = Self::interruption(self.source, &output.status, is_cancelled) {
                 self.phase = Phase::Finished;
-                return Some(Err("native manual base capture cancelled".into()));
+                return Some(Err(error));
             }
             let result = output.approve_native_manual_base_on_control(captured);
             if matches!(result, Err("native preparation is busy")) {
                 return None;
             }
-            let result = result.map_err(str::to_owned).and_then(|state| {
-                if is_cancelled() || !captured.matches_source(&output.status) {
-                    Err("native manual base capture cancelled".into())
-                } else {
-                    Ok(state)
-                }
-            });
+            let result = Self::interruption(self.source, &output.status, is_cancelled)
+                .map_or_else(|| result.map_err(|error| Failed(error.into())), Err);
             self.phase = Phase::Finished;
             return Some(result);
         }
         if !matches!(self.phase, Phase::Retire(Some(Err(_))))
-            && (is_cancelled() || !self.source_matches(&output.status))
+            && let Some(error) = Self::interruption(self.source, &output.status, is_cancelled)
         {
-            self.phase = Phase::Retire(Some(Err("native manual base capture cancelled".into())));
+            self.phase = Phase::Retire(Some(Err(error)));
         }
         let progress = output.native_source_preparation_progress(self.binding);
         if matches!(progress, Some(Progress::Failed)) {
             self.phase = Phase::Finished;
-            return Some(Err("native manual base disposal failed".into()));
+            return Some(Err(Failed("native manual base disposal failed".into())));
         }
         if matches!(progress, Some(Progress::Retiring | Progress::Complete))
             && !matches!(self.phase, Phase::Retire(_))
         {
-            self.phase = Phase::Retire(Some(Err("native manual base preparation refused".into())));
+            self.phase = Phase::Retire(Some(Err(Failed(
+                "native manual base preparation refused".into(),
+            ))));
         }
         if let Phase::Retire(result) = &mut self.phase {
             if !matches!(progress, Some(Progress::Complete)) {
@@ -315,12 +419,15 @@ impl ManualBaseCapture {
             }
             let report = output.recover_native_source_preparation(self.binding)?;
             let result = match (report.error.or(report.cleanup_error), result.take()) {
-                (Some(error), _) => Err(error.to_string()),
-                (None, Some(Ok(_))) if is_cancelled() || !self.source_matches(&output.status) => {
-                    Err("native manual base capture cancelled".into())
+                (Some(error), _) => Err(Failed(error.to_string())),
+                (None, Some(Ok(state))) => {
+                    Self::interruption(self.source, &output.status, is_cancelled)
+                        .map_or(Ok(state), Err)
                 }
-                (None, Some(result)) => result,
-                (None, None) => Err("native manual base capture result is unavailable".into()),
+                (None, Some(Err(error))) => Err(error),
+                (None, None) => Err(Failed(
+                    "native manual base capture result is unavailable".into(),
+                )),
             };
             match (result, self.original_binding, self.source) {
                 (Ok(state), Some(binding), Some(source)) => {
@@ -341,7 +448,13 @@ impl ManualBaseCapture {
         // Recheck source changes during bounded native I/O without taking
         // locks or borrowing the publication endpoint from the cancellation.
         let status = std::sync::Arc::clone(&output.status);
-        let mut cancelled = || is_cancelled() || !self.source_matches(&status);
+        let mut interruption = None;
+        let mut cancelled = || {
+            if interruption.is_none() {
+                interruption = Self::interruption(self.source, &status, is_cancelled);
+            }
+            interruption.is_some()
+        };
         let next = match (&self.phase, progress) {
             (Phase::Prepare, Some(Progress::Facts(_))) => output
                 .complete_native_source_preparation(self.binding, self.presentation)
@@ -355,49 +468,57 @@ impl ManualBaseCapture {
                     self.binding = binding;
                     Phase::Flush
                 }),
-            (Phase::Flush, Some(Progress::Facts(_))) => output
-                .flush_native_source_parameters_on_control(
-                    self.binding,
-                    &self.parameters,
-                    &mut cancelled,
-                )
-                .and_then(|reply| {
-                    reply
-                        .filter(|reply| {
-                            // Manual gestures allow SDK normalization. Save
-                            // requires readback of every exact frozen base.
-                            reply.disposition == FlushDisposition::Applied
-                                && self.parameters.as_slice().iter().all(|expected| {
-                                    reply.as_slice().iter().any(|value| {
-                                        value.id == expected.id
-                                            && (self.source.is_some()
-                                                || value.normalized == expected.normalized)
+            (Phase::Flush, Some(Progress::Facts(_))) => match self.flushes.cohorts.front() {
+                Some(points) => output
+                    .flush_native_source_parameters_on_control(self.binding, points, &mut cancelled)
+                    .and_then(|reply| {
+                        reply
+                            .filter(|reply| {
+                                reply.disposition == FlushDisposition::Applied
+                                    && points.as_slice().iter().all(|expected| {
+                                        reply.as_slice().iter().any(|value| {
+                                            value.id == expected.id
+                                                && (!self.flushes.exact_readback
+                                                    || value.normalized == expected.normalized)
+                                        })
                                     })
-                                })
-                        })
-                        .map(|_| Phase::Capture)
-                        .ok_or("native manual base input was not acknowledged")
-                }),
+                            })
+                            .map(|_| ())
+                            .ok_or("native manual base input was not acknowledged")
+                    })
+                    .map(|()| {
+                        self.flushes.cohorts.pop_front();
+                        if self.flushes.cohorts.is_empty() {
+                            Phase::Capture
+                        } else {
+                            Phase::Flush
+                        }
+                    }),
+                None => Err("native manual base input is unavailable"),
+            },
             (Phase::Capture, Some(Progress::Facts(_))) => output
                 .capture_native_source_state_on_control(self.binding, &mut cancelled)
                 .map(|state| {
                     let result = state
-                        .ok_or_else(|| "native manual base capture refused".to_owned())
+                        .ok_or_else(|| Failed("native manual base capture refused".into()))
                         .and_then(|state| {
-                            if Hosting::saved_identity_on_control(&state)? == self.identity {
+                            if Hosting::saved_identity_on_control(&state).map_err(Failed)?
+                                == self.identity
+                            {
                                 Ok(state)
                             } else {
-                                Err("native manual base capture identity differs".into())
+                                Err(Failed("native manual base capture identity differs".into()))
                             }
                         });
                     Phase::Retire(Some(result))
                 }),
             _ => return None,
         };
-        match next {
-            Ok(phase) => self.phase = phase,
-            Err("native preparation is busy") => {}
-            Err(error) => self.phase = Phase::Retire(Some(Err(error.into()))),
+        match (interruption, next) {
+            (Some(error), _) => self.phase = Phase::Retire(Some(Err(error))),
+            (None, Ok(phase)) => self.phase = phase,
+            (None, Err("native preparation is busy")) => {}
+            (None, Err(error)) => self.phase = Phase::Retire(Some(Err(Failed(error.into())))),
         }
         None
     }

@@ -5,18 +5,21 @@ use super::*;
 use hex_plugin_host::{
     Error,
     protocol::{
-        ControllerRequest, ParameterConversionResult, ParameterPage, ParameterPageProgress,
-        PluginEditorState,
+        ControllerRequest, EditorAdmissionState, EditorSealState, ParameterConversionResult,
+        ParameterPage, ParameterPageProgress, PluginEditorState,
     },
 };
 use std::{
+    num::NonZeroU64,
     sync::{TryLockError, Weak},
     time::Instant,
 };
 
 mod extension;
+mod guarded_write;
 pub use extension::NativeWorkerAuthoredParameterProgress;
-use extension::Operation;
+use extension::{Kind, Operation};
+pub use guarded_write::NativeWorkerGuardedEditorWriteProgress;
 
 #[derive(Clone, Copy, Default)]
 struct Reply {
@@ -24,7 +27,11 @@ struct Reply {
     changed: bool,
     conversion: Option<ParameterConversionResult>,
     editor: Option<PluginEditorState>,
+    editor_seal: Option<EditorSealState>,
+    editor_frontier: Option<u64>,
+    editor_admission: Option<EditorAdmissionState>,
     extension: Option<NativeWorkerAuthoredParameterProgress>,
+    guarded_write: Option<NativeWorkerGuardedEditorWriteProgress>,
 }
 
 #[derive(Default)]
@@ -68,7 +75,8 @@ pub struct NativeWorkerControllerQuery {
     binding: Binding,
     ordinal: u64,
     stopped: bool,
-    extension: bool,
+    kind: Kind,
+    parameter_ordinal: Option<NonZeroU64>,
 }
 impl NativeWorkerControllerQuery {
     /// Whether the original completion allocation has been released. This
@@ -82,9 +90,17 @@ impl NativeWorkerControllerQuery {
 pub enum NativeWorkerControllerProgress {
     Pending,
     Editor(PluginEditorState),
+    EditorSeal(EditorSealState),
+    /// The last editor callback admitted on this query’s original binding.
+    EditorFrontier(u64),
+    /// Exact producer result for a temporary editor admission hold or release.
+    EditorAdmission(EditorAdmissionState),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
-    Changed { revision: u64, total: u16 },
+    Changed {
+        revision: u64,
+        total: u16,
+    },
     Failed,
 }
 
@@ -98,6 +114,23 @@ enum Poll {
 }
 
 impl NativeWorker {
+    pub(super) fn editor_seal_query_pending_on_control(&self) -> Result<bool, &'static str> {
+        let slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => "native controller mailbox is busy",
+                TryLockError::Poisoned(_) => "native controller mailbox failed",
+            })?;
+        Ok(slot.controller.requested
+            && matches!(
+                slot.controller.query,
+                Operation::Observe(ControllerRequest::SealEditorEdits)
+            ))
+    }
+
     /// Admit one bounded query without SDK/socket work on a live worker.
     /// Full/contended admission preserves its existing query. Stopped mode
     /// first joins the healthy original transport; it never revives playback.
@@ -117,7 +150,17 @@ impl NativeWorker {
             return Err("native controller source is not live");
         }
         let stopped = !self.transport_is_live_on_control();
+        if matches!(
+            query,
+            Operation::Observe(ControllerRequest::SealEditorEdits)
+        ) && !stopped
+        {
+            return Err("native editor seal requires a stopped source");
+        }
         if stopped {
+            if query.kind() == Kind::GuardedWrite {
+                return Err("native guarded editor write requires a live worker");
+            }
             self.service_stopped_controller()?;
         }
         let mut slot = self
@@ -126,24 +169,67 @@ impl NativeWorker {
             .capture
             .try_lock()
             .map_err(|_| "native controller mailbox is busy")?;
-        let slot = &mut slot.controller;
-        // A revoked live token is already Failed. Retire its late data only
-        // after the actual original SDK query completed on the joined owner.
-        if stopped && slot.requested && slot.complete && !slot.stopped {
-            slot.requested = false;
+        if query.kind() == Kind::GuardedWrite
+            && (slot.capture_pending() || slot.parameter_change.pending())
+        {
+            return Err("native guarded editor write is busy");
         }
-        if slot.requested {
+        // Revoked live observations can be superseded after their SDK query
+        // completes. An admission terminal can change the same helper's
+        // continued editor behavior, so its original token must consume it.
+        if stopped
+            && slot.controller.requested
+            && slot.controller.complete
+            && !slot.controller.stopped
+            && !slot.controller.changes_editor_admission()
+        {
+            slot.controller.requested = false;
+        }
+        if slot.controller.requested {
             return Err("native controller query is already pending");
         }
         let ordinal = slot
+            .controller
             .ordinal
             .checked_add(1)
             .ok_or("native controller ordinal exhausted")?;
+        let guarded = if let Operation::Guarded(write) = query {
+            if let Some(previous) = write.previous
+                && slot
+                    .parameter_change
+                    .guarded_write_readback(previous)
+                    .is_none()
+            {
+                return Err("native guarded editor write was superseded");
+            }
+            // Supersede both control-side sequenced facts and any callback
+            // permit from earlier non-guarded writes before accepting input.
+            let next = slot.parameter_change.next_ordinal()?;
+            let admission = self
+                .reaper
+                .control
+                .reserve_parameter_input_on_control(next)
+                .map_err(|fault| match fault {
+                    Fault::Saturated => "native parameter mailbox is busy",
+                    Fault::Revoked => "native parameter source is not live",
+                    Fault::Exhausted => "native parameter input ordinal exhausted",
+                    _ => "native parameter input generation differs",
+                })?;
+            slot.parameter_change.supersede_with_guarded_write(next);
+            Some((next, admission))
+        } else {
+            None
+        };
+        let slot = &mut slot.controller;
         slot.ordinal = ordinal;
         slot.query = query;
         slot.requested = true;
         slot.complete = false;
         slot.stopped = stopped;
+        let parameter_ordinal = guarded.map(|(ordinal, admission)| {
+            admission.publish();
+            ordinal
+        });
         self.reaper
             .completed
             .controller_requested
@@ -153,19 +239,21 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             stopped,
-            extension: query.extension(),
+            kind: query.kind(),
+            parameter_ordinal,
         })
     }
 
     /// Only the exact token consumes its terminal once. Revocation wins over
-    /// late live data; stopped queries use the same retained reader after join.
+    /// late live observations. Hold and release terminals can still be read on
+    /// the joined original worker so the caller can settle the admission change.
     /// The returned page allocation belongs to this control-side caller and is
     /// outside the fixed constructor backing and the audio callback.
     pub fn poll_controller_query_on_control(
         &mut self,
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
-        if request.extension {
+        if request.kind != Kind::Observe {
             return Err("native controller operation kind differs");
         }
         let reply = match self.poll_reply(request)? {
@@ -175,6 +263,15 @@ impl NativeWorker {
         };
         Ok(if let Some(editor) = reply.editor {
             NativeWorkerControllerProgress::Editor(editor)
+        } else if let Some(seal) = reply.editor_seal {
+            if request.stopped && seal == EditorSealState::Sealed {
+                self.editor_edits_sealed = true;
+            }
+            NativeWorkerControllerProgress::EditorSeal(seal)
+        } else if let Some(frontier) = reply.editor_frontier {
+            NativeWorkerControllerProgress::EditorFrontier(frontier)
+        } else if let Some(admission) = reply.editor_admission {
+            NativeWorkerControllerProgress::EditorAdmission(admission)
         } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))
         } else if reply.changed {
@@ -193,7 +290,7 @@ impl NativeWorker {
         {
             return Err("native controller source differs");
         }
-        {
+        let changes_editor_admission = {
             let slot = match self.reaper.completed.capture.try_lock() {
                 Ok(slot) => slot,
                 Err(TryLockError::WouldBlock) => {
@@ -204,8 +301,10 @@ impl NativeWorker {
             if !slot.controller.matches(request) {
                 return Err("native controller operation differs");
             }
-        }
-        if request.stopped {
+            slot.controller.changes_editor_admission()
+        };
+        let live = self.transport_is_live_on_control();
+        if request.stopped || (!live && changes_editor_admission) {
             match self.service_stopped_controller() {
                 Ok(()) => {}
                 Err("native preparation is busy") => {
@@ -213,7 +312,7 @@ impl NativeWorker {
                 }
                 Err(_) => return Ok(Poll::Failed),
             }
-        } else if !self.transport_is_live_on_control() {
+        } else if !live {
             return Ok(Poll::Failed);
         }
         let mut mailbox = match self.reaper.completed.capture.try_lock() {
@@ -230,6 +329,15 @@ impl NativeWorker {
         }
         let reply = slot.reply;
         slot.requested = false;
+        use NativeWorkerGuardedEditorWriteProgress as Guarded;
+        if let Some(ordinal) = request.parameter_ordinal
+            && let Some(terminal @ (Guarded::Applied | Guarded::ReadbackChanged)) =
+                reply.guarded_write
+        {
+            mailbox
+                .parameter_change
+                .record_guarded_write(ordinal, terminal == Guarded::Applied);
+        }
         drop(mailbox);
         Ok(Poll::Ready(reply))
     }
@@ -268,23 +376,42 @@ impl NativeWorker {
     }
 }
 impl Slot {
+    fn changes_editor_admission(&self) -> bool {
+        matches!(
+            self.query,
+            Operation::Observe(
+                ControllerRequest::HoldEditorAdmission(_)
+                    | ControllerRequest::ReleaseEditorAdmission(_)
+            )
+        )
+    }
+
+    pub(super) fn guarded_write_pending(&self) -> bool {
+        self.requested && self.query.kind() == Kind::GuardedWrite
+    }
+
     fn matches(&self, request: &NativeWorkerControllerQuery) -> bool {
         self.requested
             && self.ordinal == request.ordinal
             && self.stopped == request.stopped
-            && self.query.extension() == request.extension
+            && self.query.kind() == request.kind
     }
 }
 impl State {
     // Three existing control observations share one reader. Rotation bounds
     // service to at most four eligible iterations even when PCM exchanges
     // take longer than the one-millisecond polling interval.
-    pub(super) fn advance_native_control(&mut self, signal: &Signal) -> Result<(), Error> {
+    pub(super) fn advance_native_control(
+        &mut self,
+        signal: &Signal,
+        before_control: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for offset in 0..4 {
             match (self.control_turn + offset) % 4 {
                 0 if (signal.capture_requested.load(Acquire) || self.capture.is_in_flight())
                     && !self.capture.between_polls() =>
                 {
+                    before_control()?;
                     self.control_turn = 1;
                     return self.advance_capture(signal);
                 }
@@ -292,14 +419,17 @@ impl State {
                     || self.controller.is_in_flight())
                     && !self.controller.between_polls() =>
                 {
+                    before_control()?;
                     self.control_turn = 2;
                     return self.advance_controller(signal);
                 }
                 2 if signal.edits_requested.load(Acquire) => {
+                    before_control()?;
                     self.control_turn = 3;
                     return self.advance_parameter_edits(signal);
                 }
                 3 if signal.parameter_change_requested.load(Acquire) => {
+                    before_control()?;
                     self.control_turn = 0;
                     return self.advance_idle_parameter_change(signal);
                 }
@@ -328,8 +458,17 @@ impl State {
             }
             let (ordinal, query) = (slot.controller.ordinal, slot.controller.query);
             drop(slot);
-            self.controller.result = query.begin(instance)?;
-            self.controller.extension = query.extension();
+            self.controller.result =
+                if query.kind() == Kind::GuardedWrite && self.worker.is_revoked() {
+                    // Normal reads can drain after revocation. Never start a new
+                    // mutation then, even from the stopped controller service.
+                    Reply::guarded(NativeWorkerGuardedEditorWriteProgress::Failed)
+                } else if query.kind() == Kind::GuardedWrite && self.parameter_change.has_hold() {
+                    Reply::guarded(NativeWorkerGuardedEditorWriteProgress::Conflict)
+                } else {
+                    query.begin(instance)?
+                };
+            self.controller.extension = query.kind() == Kind::Extension;
             self.controller.ordinal = Some(ordinal);
         } else if self.controller.result.is_none() {
             if self.controller.between_polls() {
@@ -344,12 +483,21 @@ impl State {
                         editor: Some(editor),
                         ..Reply::default()
                     }),
+                    ParameterPageProgress::EditorSeal(seal) => Some(Reply {
+                        editor_seal: Some(seal),
+                        ..Reply::default()
+                    }),
+                    ParameterPageProgress::EditorFrontier(frontier) => Some(Reply {
+                        editor_frontier: Some(frontier),
+                        ..Reply::default()
+                    }),
+                    ParameterPageProgress::EditorAdmission(admission) => Some(Reply {
+                        editor_admission: Some(admission),
+                        ..Reply::default()
+                    }),
                     ParameterPageProgress::Page(page) => Some(Reply {
                         page: *page,
-                        changed: false,
-                        conversion: None,
-                        editor: None,
-                        extension: None,
+                        ..Reply::default()
                     }),
                     ParameterPageProgress::Conversion(conversion) => Some(Reply {
                         conversion: Some(*conversion),
@@ -362,9 +510,7 @@ impl State {
                         Some(Reply {
                             page,
                             changed: true,
-                            conversion: None,
-                            editor: None,
-                            extension: None,
+                            ..Reply::default()
                         })
                     }
                 }

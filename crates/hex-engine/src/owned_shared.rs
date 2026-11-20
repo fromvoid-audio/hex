@@ -70,6 +70,7 @@ impl OwnedShared<crate::Project> {
     pub(crate) fn retain_foreign_programs(
         &mut self,
         previous: &Self,
+        clocks: [std::num::NonZeroU64; 2],
         received: &mut dyn FnMut(
             hex_lattice_contract::ForeignProcessorBinding,
         ) -> crate::ForeignProgramFrontier,
@@ -81,7 +82,12 @@ impl OwnedShared<crate::Project> {
         }
         let project = Arc::get_mut(&mut self.arc)
             .ok_or(crate::Invalid("foreign program graph is already shared"))?;
-        crate::prepared_revision::foreign_programs::retain_project(project, &previous.arc, received)
+        crate::prepared_revision::foreign_programs::retain_project(
+            project,
+            &previous.arc,
+            clocks,
+            received,
+        )
     }
 
     pub(crate) fn prepare_scalar_automation(

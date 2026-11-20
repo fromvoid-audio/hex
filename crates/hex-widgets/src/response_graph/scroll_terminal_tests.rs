@@ -131,6 +131,7 @@ fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Fixture) {
                         input_analyzer: None,
                         analyzer_peak: None,
                         nodes: vec![ResponseGraphNode {
+                            accent: None,
                             id: 1,
                             position: [0.5, 0.5],
                             enabled: true,

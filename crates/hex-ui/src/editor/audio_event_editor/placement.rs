@@ -252,7 +252,7 @@ impl Preview {
                 Arc::clone(waveform),
                 0,
                 a..b,
-                self.clip().gain(),
+                self.clip().gain().linear(),
                 true,
                 cache,
                 ink,
@@ -264,7 +264,7 @@ impl Preview {
             } => {
                 let a = clip.start().checked_add(a.checked_sub(*first)?)?;
                 let b = clip.start().checked_add(b.checked_sub(*first)?)?;
-                waveform::waveform_view_cached(waveform, clip, a, b, cache, ink)
+                waveform::waveform_view_cached(waveform, clip, a..b, None, cache, ink)
             }
         };
         Some(element.debug_selector(move || format!("audio-event-waveform-{event}")))

@@ -5,7 +5,7 @@ use super::*;
 use hex_engine::{DeviceTypeId, default_native_device_state};
 use hex_project::{Editor, Project};
 
-const RATE: u32 = 48_000;
+const DEFAULT_RATE: u32 = 48_000;
 const TRACKS: usize = 48;
 const SOURCE_FRAMES: u32 = 8192;
 const WARMUP: u32 = 128;
@@ -14,26 +14,45 @@ const MIXED_PLUGINS: usize = 4;
 // The shared headless output reserves the native host's 256-frame maximum.
 const PLUGIN_QUANTUM: usize = 256;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlaybackProfile {
+    Serial,
+    Paced,
+    Resume,
+}
+
 #[test]
 #[ignore = "opt-in optimized playback measurement with a fixed callback cadence"]
 fn dense_native_serial_baseline() {
-    profile(0);
+    profile(0, DEFAULT_RATE, PlaybackProfile::Serial);
 }
 
 #[test]
 #[ignore = "opt-in optimized playback measurement with controlled native VST3 receipts"]
 fn dense_mixed_serial_baseline() {
-    profile(MIXED_PLUGINS);
+    profile(MIXED_PLUGINS, DEFAULT_RATE, PlaybackProfile::Serial);
 }
 
-fn fixture(files: &Files) -> PathBuf {
-    let wav = files.wav(RATE, SOURCE_FRAMES);
-    let mut editor = Editor::new(Project::new(RATE).unwrap(), 1).unwrap();
+#[test]
+#[ignore = "opt-in optimized timing reproduction with twelve original SDK instances"]
+fn dense_twelve_vst3_deadline_profile() {
+    profile(12, 44_100, PlaybackProfile::Paced);
+}
+
+#[test]
+#[ignore = "opt-in optimized timing after a paused VST3 transport resumes"]
+fn dense_twelve_vst3_resume_deadline_profile() {
+    profile(12, 44_100, PlaybackProfile::Resume);
+}
+
+fn fixture(files: &Files, rate: u32) -> PathBuf {
+    let wav = files.wav(rate, SOURCE_FRAMES);
+    let mut editor = Editor::new(Project::new(rate).unwrap(), 1).unwrap();
     let Created::Imported { asset, track, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
             name: "profile audio".into(),
             path: wav.file_name().unwrap().into(),
-            source_sample_rate: RATE,
+            source_sample_rate: rate,
             source_frames: u64::from(SOURCE_FRAMES),
             playback_frames: u64::from(SOURCE_FRAMES),
             conversion_version: hex_project::IDENTITY_CONVERSION,
@@ -96,7 +115,8 @@ fn fixture(files: &Files) -> PathBuf {
     path
 }
 
-fn profile(plugins: usize) {
+fn profile(plugins: usize, rate: u32, profile: PlaybackProfile) {
+    let minimum_callback_spacing = profile != PlaybackProfile::Serial;
     let _native = native_fixture();
     require_release();
     let block: usize = std::env::var("HEX_PLAYBACK_PROFILE_BLOCK")
@@ -108,16 +128,20 @@ fn profile(plugins: usize) {
         "supported profile block sizes: 64, 128, 256"
     );
     let files = Files::new();
-    let path = fixture(&files);
+    let mut plugin_log = minimum_callback_spacing
+        .then(|| hex_diagnostics::SessionLog::start(files.0.join("plugin-diagnostics")).unwrap());
+    let path = fixture(&files, rate);
     let mut harness = if plugins == 0 {
         ResidentHarness::new()
     } else {
-        ResidentHarness::with_plugins(
+        ResidentHarness::with_plugins_at_rate_and_diagnostics(
             host(),
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: (PLUGIN_QUANTUM * 2) as u32,
             }),
+            rate,
+            plugin_log.as_ref().map(hex_diagnostics::SessionLog::handle),
         )
     };
     assert!(harness.next().error.is_none());
@@ -163,28 +187,94 @@ fn profile(plugins: usize) {
     let control = &mut harness.audio.as_mut().unwrap().control;
     control.command(PlaybackCommand::Play).unwrap();
 
-    let budget = Duration::from_nanos(block as u64 * 1_000_000_000 / u64::from(RATE));
+    let budget = Duration::from_nanos(block as u64 * 1_000_000_000 / u64::from(rate));
+    let (start_frame, worker_blocks_before_resume) = if profile == PlaybackProfile::Resume {
+        assert_eq!(
+            block, PLUGIN_QUANTUM,
+            "resume profile uses the physical fixture block"
+        );
+        render_paced_fixture_blocks(&mut harness, budget, 8);
+        assert!(
+            harness
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Pause)
+            .unwrap();
+        // Keep the physical callback cadence through a pause long enough
+        // for the workers to leave active PCM scheduling.
+        render_paced_fixture_blocks(&mut harness, budget, 12);
+        assert!(
+            !harness
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let before_resume = harness.plugin_completed.load(Acquire);
+        assert!(before_resume > 0);
+        let frame = 2_048;
+        plugin_log
+            .as_ref()
+            .unwrap()
+            .handle()
+            .record("dense_playback stage=resume_requested")
+            .unwrap();
+        harness
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(frame))
+            .unwrap();
+        (frame, before_resume)
+    } else {
+        (0, 0)
+    };
     let mut times = Vec::with_capacity(SAMPLES as usize);
+    let mut late_starts = 0;
+    let mut max_start_lateness = Duration::ZERO;
+    let mut late_callbacks = Vec::with_capacity((WARMUP + SAMPLES) as usize);
     let mut frames = vec![[0.0; 2]; block];
     let mut host = vec![0.0; block * 2];
     let mut fingerprint = 0xcbf29ce484222325_u64;
     let mut first_signal = None;
-    let mut slot = harness.callback.lock().unwrap();
+    let output_carrier = Arc::clone(&harness.callback);
+    let mut slot = output_carrier.lock().unwrap();
     let callback = slot.as_mut().unwrap();
-    let start = Instant::now();
+    let mut target = Instant::now();
     for index in 0..WARMUP + SAMPLES {
-        if let Some(until) = (start + budget * index).checked_duration_since(Instant::now()) {
+        if let Some(until) = target.checked_duration_since(Instant::now()) {
             std::thread::sleep(until);
         }
         let begin = Instant::now();
         let result = callback.render_native_direct(&mut frames, &mut host);
         let elapsed = begin.elapsed();
+        let start_lateness = begin.saturating_duration_since(target);
         assert!(
             result.is_ok(),
             "callback {index} failed after {elapsed:?}: {result:?}"
         );
         if index >= WARMUP {
             times.push(elapsed);
+            late_starts += usize::from(start_lateness >= budget);
+            max_start_lateness = max_start_lateness.max(start_lateness);
+        }
+        if minimum_callback_spacing && (start_lateness >= budget || elapsed > budget) {
+            late_callbacks.push((index, start_lateness, elapsed));
         }
         assert!(
             host.chunks_exact(2)
@@ -201,24 +291,36 @@ fn profile(plugins: usize) {
                     (fingerprint ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3);
             }
         }
+        harness.pump();
+        target += budget;
+        if minimum_callback_spacing {
+            // A late headless wake must not consume the next worker deadline
+            // early by feeding several nominal blocks back to back.
+            target = target.max(begin + budget);
+        }
     }
     let status = callback.status().unwrap();
     assert!(status.playing.load(Acquire));
     assert_eq!(status.applied_revision.load(Acquire), revision);
     let position = status.position.load(Acquire);
-    assert_eq!(position, u64::from(WARMUP + SAMPLES) * block as u64);
+    let rendered_frames = u64::from(WARMUP + SAMPLES) * block as u64;
+    assert_eq!(position, start_frame + rendered_frames);
     assert!(!status.device_fault.load(Acquire) && !status.render_fault.load(Acquire));
     let audible_lag = position
         .checked_sub(status.audible_position.load(Acquire))
         .unwrap();
     let first_signal = first_signal.expect("profile must deliver nonzero audio");
-    if plugins != 0 {
+    if plugins != 0 && harness.degraded_devices.is_empty() {
         assert!(
             first_signal >= 2 * PLUGIN_QUANTUM,
             "mixed output appeared before the native transport delay"
         );
-        let expected_worker_blocks = position / PLUGIN_QUANTUM as u64;
-        wait(|| harness.plugin_completed.load(Acquire) >= expected_worker_blocks);
+        if profile == PlaybackProfile::Resume {
+            wait(|| harness.plugin_completed.load(Acquire) > worker_blocks_before_resume);
+        } else {
+            let expected_worker_blocks = rendered_frames / PLUGIN_QUANTUM as u64;
+            wait(|| harness.plugin_completed.load(Acquire) >= expected_worker_blocks);
+        }
     }
     let worker_blocks = harness.plugin_completed.load(Acquire);
     times.sort_unstable();
@@ -227,16 +329,54 @@ fn profile(plugins: usize) {
     let misses = times.iter().filter(|&&time| time > budget).count();
     let plugin_quantum = if plugins == 0 { 0 } else { PLUGIN_QUANTUM };
     println!(
-        "dense_playback rate={RATE} block={block} tracks={TRACKS} utility=48 reverb=12 saturator=36 vst3={plugins} vst3_quantum={plugin_quantum} warmup={WARMUP} samples={SAMPLES} budget_ns={} mean_ns={mean} p50_ns={} p95_ns={} p99_ns={} max_ns={} misses={misses} first_signal={first_signal} audible_lag={audible_lag} worker_blocks={worker_blocks} pcm={fingerprint:016x}",
+        "dense_playback rate={rate} block={block} tracks={TRACKS} utility=48 reverb=12 saturator=36 vst3={plugins} vst3_quantum={plugin_quantum} warmup={WARMUP} samples={SAMPLES} start_frame={start_frame} worker_blocks_before_resume={worker_blocks_before_resume} budget_ns={} mean_ns={mean} p50_ns={} p95_ns={} p99_ns={} max_ns={} misses={misses} late_starts={late_starts} max_start_lateness_ns={} first_signal={first_signal} audible_lag={audible_lag} worker_blocks={worker_blocks} degraded_devices={:?} pcm={fingerprint:016x}",
         budget.as_nanos(),
         percentile(50),
         percentile(95),
         percentile(99),
         percentile(100),
+        max_start_lateness.as_nanos(),
+        harness.degraded_devices,
     );
+    if let Some(failure) = harness.plugin_failure.lock().unwrap().as_ref() {
+        println!("dense_playback worker_failure={failure}");
+    }
     // The callback and native workers retire through the harness after the
     // profiling borrow ends. No worker is waited on during timed rendering.
     drop(slot);
+    drop(harness);
+    if let Some(log) = plugin_log.as_mut() {
+        log.shutdown().unwrap();
+        let diagnostics = fs::read_to_string(log.path()).unwrap();
+        for line in diagnostics.lines().filter(|line| {
+            line.contains("stage=slow_exchange")
+                || line.contains("stage=concealed_output")
+                || line.contains("stage=worker_failure")
+                || line.contains("stage=resume_requested")
+                || line.starts_with("diagnostics_loss")
+                || line.starts_with("session_finished")
+        }) {
+            println!("{line}");
+        }
+        for (index, start_lateness, elapsed) in late_callbacks {
+            println!(
+                "dense_playback callback={index} start_lateness_ns={} wall_ns={}",
+                start_lateness.as_nanos(),
+                elapsed.as_nanos(),
+            );
+        }
+    }
+}
+
+fn render_paced_fixture_blocks(harness: &mut ResidentHarness, period: Duration, count: usize) {
+    for _ in 0..count {
+        let started = Instant::now();
+        harness.render_plugin_block();
+        harness.pump();
+        if let Some(remaining) = period.checked_sub(started.elapsed()) {
+            std::thread::sleep(remaining);
+        }
+    }
 }
 
 fn require_release() {

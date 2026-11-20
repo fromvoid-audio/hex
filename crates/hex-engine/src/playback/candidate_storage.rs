@@ -5,6 +5,12 @@ use crate::{
     audio_storage::{Location, Owner},
 };
 impl Playback {
+    #[cfg(test)]
+    pub(crate) fn test_main_chain(&self) -> Option<&hex_lattice::NativeRuntimeChain> {
+        self.session_runtime
+            .as_ref()
+            .map(|runtime| runtime.test_main_chain())
+    }
     pub(crate) fn candidate_constructor_is_fresh(&self) -> bool {
         self.session_runtime
             .as_ref()

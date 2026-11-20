@@ -243,6 +243,248 @@ fn fixture_at_rate(
     (session, clip, revision)
 }
 
+#[test]
+fn extending_first_audio_repeat_boundary_preserves_silence_and_history() {
+    use hex_project::AudioViewResizeOperation;
+
+    let (mut session, clip, original) = fixture();
+    session.max_resident_frames = 100_000;
+    let (_, repeated) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 22_000,
+                },
+            },
+            Some(&original),
+        )
+        .unwrap();
+    let before = session.project().snapshot();
+    let original_clip = session.project().clip(clip).unwrap().clone();
+    let (_, extended) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: 10_000,
+                },
+            },
+            Some(&repeated),
+        )
+        .expect("the first boundary can extend beyond the original source");
+    let saved = session.project().snapshot();
+    let edited_clip = session.project().clip(clip).unwrap();
+    assert_eq!(edited_clip.start(), original_clip.start());
+    assert_eq!(edited_clip.duration(), original_clip.duration());
+    assert_eq!(edited_clip.asset(), original_clip.asset());
+
+    let render = |revision: &Arc<hex_engine::PreparedRevision>, block: usize| {
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 22_000];
+        for chunk in output.chunks_mut(block) {
+            renderer.render(chunk).unwrap();
+        }
+        output
+    };
+    let source = render(&repeated, 257);
+    let actual = render(&extended, 257);
+    assert!(source[..8_000].iter().any(|frame| *frame != [0.0; 2]));
+    for (index, frame) in actual.iter().enumerate() {
+        let position = index % 10_000;
+        let expected = if position < 8_000 {
+            source[position]
+        } else {
+            [0.0; 2]
+        };
+        assert_eq!(*frame, expected, "frame {index}");
+    }
+    assert_eq!(render(&extended, 1), actual);
+    let bytes = hex_storage::encode(session.project()).unwrap();
+    let reopened = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(reopened.snapshot(), saved);
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &reopened,
+            &session.media_bank().resident,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(render(&prepared, 257), actual);
+    for command in [
+        Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::CycleEnd {
+                project_frame: 22_000,
+            },
+        },
+        Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 1_000,
+        },
+        Command::TrimClip {
+            clip,
+            start: 0,
+            duration: 8_000,
+            source_offset: 0,
+            source_length: 8_000,
+        },
+        Command::ReverseClips(vec![clip]),
+    ] {
+        assert!(
+            session
+                .command_prepared_revision(command, Some(&extended))
+                .is_err()
+        );
+        assert_eq!(session.project().snapshot(), saved);
+    }
+    let undone = session
+        .undo_prepared_revision(Some(&extended))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot().tracks, before.tracks);
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot().tracks, saved.tracks);
+    assert_eq!(render(&redone, 257), actual);
+    let (Created::Clip(duplicate), duplicated) = session
+        .command_prepared_revision(Command::DuplicateClip(clip), Some(&redone))
+        .unwrap()
+    else {
+        panic!("duplicate")
+    };
+    let before_group = session.project().snapshot();
+    assert!(
+        session
+            .command_prepared_revision(
+                Command::GroupClips(vec![clip, duplicate]),
+                Some(&duplicated)
+            )
+            .is_err()
+    );
+    assert_eq!(session.project().snapshot(), before_group);
+}
+
+#[test]
+fn silent_audio_repeat_can_be_shortened_and_outer_extent_extended() {
+    use hex_project::AudioViewResizeOperation;
+    let (mut session, clip, original) = fixture();
+    session.max_resident_frames = 150_000;
+    let mut revision = original;
+    for operation in [
+        AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 22_000,
+        },
+        AudioViewResizeOperation::CycleEnd {
+            project_frame: 10_000,
+        },
+        AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 24_000,
+        },
+    ] {
+        revision = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView { clip, operation },
+                Some(&revision),
+            )
+            .unwrap()
+            .1;
+    }
+    let clip_before = session.project().clip(clip).unwrap();
+    assert_eq!(clip_before.duration(), 24_000);
+    assert_eq!(
+        clip_before.audio_edit().unwrap().repeat_period,
+        Some(10_000)
+    );
+    let (_, shortened) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: 6_000,
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    let clip_after = session.project().clip(clip).unwrap();
+    assert_eq!(clip_after.duration(), 24_000);
+    assert_eq!(clip_after.audio_edit().unwrap().repeat_period, None);
+    assert_eq!(clip_after.audio_edit().unwrap().view_end, 6_000);
+    session
+        .undo_prepared_revision(Some(&shortened))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        session
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .repeat_period,
+        Some(10_000)
+    );
+}
+
+#[test]
+fn silent_audio_repeat_renders_at_48000_hz() {
+    use hex_project::AudioViewResizeOperation;
+    let (mut session, clip, original) = fixture_at_rate(48_000);
+    session.max_resident_frames = 200_000;
+    let (_, repeated) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 53_000,
+                },
+            },
+            Some(&original),
+        )
+        .unwrap();
+    let (_, extended) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleEnd {
+                    project_frame: 26_000,
+                },
+            },
+            Some(&repeated),
+        )
+        .unwrap();
+    let render = |revision: &Arc<hex_engine::PreparedRevision>| {
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.play();
+        let mut frames = vec![[0.0; 2]; 53_000];
+        for chunk in frames.chunks_mut(257) {
+            renderer.render(chunk).unwrap();
+        }
+        frames
+    };
+    let source = render(&repeated);
+    let actual = render(&extended);
+    for (index, frame) in actual.iter().enumerate() {
+        let position = index % 26_000;
+        assert_eq!(
+            *frame,
+            if position < 24_000 {
+                source[position]
+            } else {
+                [0.0; 2]
+            },
+            "frame {index}"
+        );
+    }
+}
+
 // Each rate/mode owns independent Sessions for all three tempos. Separate
 // cases let libtest balance the work without reducing the history/PCM matrix.
 mod subframe_tempo_history {
@@ -580,6 +822,154 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
 }
 
 #[test]
+fn accepted_warped_event_waveform_keeps_its_source_clock_through_fade_and_repeat() {
+    use hex_project::{
+        AudioEventEdit, AudioEventFade, AudioViewResizeOperation, BeatTime, ClipFade, Tempo,
+        WarpMode,
+    };
+    let (mut session, clip, mut revision) = fixture();
+    let project = session.project();
+    let settings = hex_project::default_audio_warp(
+        project.clip(clip).unwrap(),
+        project.tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let half = BeatTime::from_ratio(1, 2).unwrap();
+    for command in [
+        Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        },
+        Command::SetTempoPoint {
+            beat: half,
+            tempo: Tempo::new(240_000_000).unwrap(),
+        },
+    ] {
+        (_, revision) = session
+            .command_prepared_revision(command, Some(&revision))
+            .unwrap();
+    }
+    let accepted_source = |session: &Session| {
+        let source = session.audio_clip_waveforms.borrow()[&clip]
+            .event_source
+            .clone()
+            .unwrap();
+        assert!(source.frame_waveform().is_none());
+        assert!(source.waveform.bounded_samples(0..1, 1).is_none());
+        assert_eq!(source.waveform.source_frames(), 6_000);
+        let clock = source.musical_clock.as_ref().unwrap();
+        assert_eq!(clock.frame_at(half).unwrap(), 4_000);
+        assert_eq!(clock.frame_at(BeatTime::ONE).unwrap(), 6_000);
+        source
+    };
+    let original = accepted_source(&session);
+    (_, revision) = session
+        .command_prepared_revision(
+            Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetFade {
+                    event: 1,
+                    fade: Some(
+                        AudioEventFade::new(
+                            0,
+                            ClipFade::new(BeatTime::ONE.raw(), 0, half.raw(), 0).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &original.waveform,
+        &accepted_source(&session).waveform
+    ));
+    let (_, revision) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 12_000,
+                },
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(
+        session.audio_clip_waveforms.borrow()[&clip]
+            .preview_root
+            .is_some()
+    );
+    let repeated = accepted_source(&session);
+    assert!(Arc::ptr_eq(&original.waveform, &repeated.waveform));
+    assert_eq!(original.musical_clock, repeated.musical_clock);
+    assert!(repeated.repeat.is_none());
+    let sources = repeated.occurrences.as_ref().unwrap();
+    assert_eq!(sources.reads().len(), 3);
+    assert!(Arc::ptr_eq(
+        &repeated.waveform,
+        sources.waveform(0).unwrap()
+    ));
+    for (index, (start, end, root_frames)) in [
+        (0, 6_000, 6_000),
+        (6_000, 10_000, 4_000),
+        (10_000, 12_000, 4_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let read = &sources.reads()[index];
+        assert_eq!(
+            (
+                read.placement.destination_start,
+                read.placement.destination_end
+            ),
+            (start, end)
+        );
+        let waveform = sources.waveform(index).unwrap();
+        assert_eq!(waveform.source_frames(), root_frames);
+        assert!(waveform.bounded_samples(0..1, 1).is_none());
+        assert_eq!(waveform.bins()[0][0].max, read.source.bins()[0].max[0]);
+    }
+    assert!(sources.waveform(3).is_none());
+    let (_, revision) = session
+        .command_prepared_revision(
+            Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            },
+            Some(&revision),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        sources,
+        accepted_source(&session).occurrences.as_ref().unwrap()
+    ));
+    let (_, reversed) = session
+        .command_prepared_revision(Command::ReverseClips(vec![clip]), Some(&revision))
+        .unwrap();
+    let source = accepted_source(&session);
+    let reversed_sources = source.occurrences.as_ref().unwrap();
+    let maps = reversed_sources.directed().unwrap();
+    assert_eq!(maps.base(), 0..12_000);
+    let spans: Vec<_> = maps.spans().iter().map(|span| span.destination()).collect();
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0].start, 0);
+    assert_eq!(spans[2].end, 12_000);
+    assert!(spans.windows(2).all(|pair| pair[0].end == pair[1].start));
+    assert!(Arc::ptr_eq(
+        &reversed_sources.prepared,
+        reversed.arrangement().audio_clip_views()[0]
+            .event_source_occurrences
+            .as_ref()
+            .unwrap(),
+    ));
+    assert!(maps.position_q32(0).unwrap().unwrap() > maps.position_q32(11_999).unwrap().unwrap());
+}
+
+#[test]
 fn long_dense_clip_edge_stretch_commits_and_renders_late_attacks_through_history() {
     const RATE: u32 = 44_100;
     const SOURCE_FRAMES: u64 = RATE as u64 * 27;
@@ -705,7 +1095,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
             Command::MoveClip {
                 clip: second,
                 track,
-                start: 8_064,
+                start: 16_200,
             },
             Some(&previous),
         )
@@ -716,12 +1106,39 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     else {
         panic!("group")
     };
+    let child = session
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .sources[1]
+        .id;
+    let grouped_sources = |session: &Session, revision: &hex_engine::PreparedRevision| {
+        let grouped = session.audio_clip_waveforms.borrow()[&group]
+            .group_event_sources
+            .as_ref()
+            .unwrap()
+            .clone();
+        let view = &revision.arrangement().audio_clip_views()[0];
+        assert!(Arc::ptr_eq(
+            &grouped.prepared,
+            view.group_event_sources.as_ref().unwrap()
+        ));
+        assert!(grouped.waveform(u64::MAX).is_none());
+        grouped
+    };
+    assert!(
+        previous.arrangement().audio_clip_views()[0]
+            .sparse
+            .is_some()
+    );
+    let sparse_sources = grouped_sources(&session, &previous);
     let (_, repeated) = session
         .command_prepared_revision(
             Command::ResizeAudioClipView {
                 clip: group,
                 operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
-                    project_frame: 10_000,
+                    project_frame: 20_000,
                 },
             },
             Some(&previous),
@@ -740,29 +1157,44 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         .unwrap();
     let views = session.audio_clip_waveforms.borrow();
     let root = views[&group].preview_root.as_ref().unwrap();
-    assert_eq!(root.waveform.source_frames(), 8_192);
+    assert_eq!(root.waveform.source_frames(), 16_328);
     assert_eq!(
         root.waveform
-            .peaks_for_frames(8_000, 8_064)
+            .peaks_for_frames(8_016, 16_184)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.0, 0.0); 2]
     );
     assert_eq!(
         root.waveform
-            .peaks_for_frames(8_064, 8_192)
+            .peaks_for_frames(16_216, 16_328)
             .unwrap()
             .map(|peak| (peak.min, peak.max)),
         [(0.25, 0.25), (-0.5, -0.5)]
     );
-    assert_eq!(views[&group].length, 10_000);
+    assert_eq!(views[&group].length, 20_000);
     // The looped clip still exposes outer-clip peaks, built from the shared
     // root rather than a materialized repeat, and distinct from its root preview.
     assert_eq!(views[&group].offset, 0);
-    assert_eq!(views[&group].waveform.source_frames(), 10_000);
+    assert_eq!(views[&group].waveform.source_frames(), 20_000);
     assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
     let root_waveform = Arc::clone(&root.waveform);
     drop(views);
+    let loop_sources = grouped_sources(&session, &cropped);
+    let waveform = loop_sources.waveform(child).unwrap();
+    assert_eq!(waveform.source_frames(), 128);
+    assert!(waveform.bounded_samples(0..1, 1).is_none());
+    assert!(Arc::ptr_eq(
+        waveform,
+        sparse_sources.waveform(child).unwrap()
+    ));
+    assert_eq!(
+        waveform
+            .peaks_for_frames(0, 128)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.25, 0.25), (-0.5, -0.5)],
+    );
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
     renderer.play();
     let mut output = [[0.0; 2]; 257];
@@ -800,6 +1232,35 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
     renderer.play();
     renderer.render(&mut samples).unwrap();
     assert_eq!(samples, output);
+
+    let gain = hex_project::ClipGain::new(-6_000).unwrap();
+    let (_, edited) = session
+        .command_prepared_revision(
+            Command::EditAudioEvents {
+                clip: group,
+                operation: hex_project::AudioEventEdit::SetRetainedGain {
+                    sources: vec![child],
+                    event: 1,
+                    gain,
+                },
+            },
+            Some(&restored),
+        )
+        .unwrap();
+    let updated = grouped_sources(&session, &edited);
+    assert!(!Arc::ptr_eq(&loop_sources, &updated));
+    assert_eq!(
+        updated
+            .waveform(child)
+            .unwrap()
+            .peaks_for_frames(0, 128)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [
+            (0.25 * gain.linear(), 0.25 * gain.linear()),
+            (-0.5 * gain.linear(), -0.5 * gain.linear())
+        ],
+    );
 }
 
 #[test]
@@ -1169,6 +1630,44 @@ fn accepted_sparse_root_peaks_keep_exact_samples_and_silence_at_distant_edges() 
             min: s.min(0.0),
             max: s.max(0.0)
         })
+    );
+    let mut visited = Vec::new();
+    let over = waveform
+        .bounded_overrange(3_999_997..4_000_001, 4, |frame| {
+            visited.push(frame);
+            Some((1.0, 100.0))
+        })
+        .unwrap();
+    assert_eq!(visited, vec![3_999_997, 3_999_998, 3_999_999, 4_000_000]);
+    for (channel, value) in sample.iter().copied().enumerate() {
+        assert_eq!(over.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(over.negative[channel], value * 100.0 < -1.0);
+    }
+    let (offset, loud) = prepared.audio.frames()[7_000..]
+        .iter()
+        .enumerate()
+        .find(|(_, frame)| frame[0].abs() > 0.02 && frame[1].abs() > 0.02)
+        .expect("occupied sparse event has audible samples");
+    let logical = 4_000_000 + offset;
+    let loud_result = waveform
+        .bounded_overrange(logical..logical + 1, 1, |_| Some((1.0, 100.0)))
+        .unwrap();
+    for (channel, value) in loud.iter().copied().enumerate() {
+        assert_eq!(loud_result.positive[channel], value * 100.0 > 1.0);
+        assert_eq!(loud_result.negative[channel], value * 100.0 < -1.0);
+    }
+    assert!(loud_result.positive.into_iter().any(|present| present));
+    assert!(loud_result.negative.into_iter().any(|present| present));
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 3, |_| Some((1.0, 100.0)))
+            .is_none()
+    );
+    assert!(
+        waveform
+            .bounded_overrange(3_999_997..4_000_001, 4, |frame| (frame != 3_999_998)
+                .then_some((1.0, 1.0)))
+            .is_none()
     );
 }
 

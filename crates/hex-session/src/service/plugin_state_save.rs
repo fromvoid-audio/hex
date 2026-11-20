@@ -22,6 +22,7 @@ pub struct PluginStateCaptureInput<'a> {
     pub(super) project: &'a Project,
     pub(super) context: hex_engine::AudioSourceContext,
     pub(super) cancellation: &'a RequestCancellation,
+    pub(super) flush_idle_editor_input: bool,
     /// Optional set of target device IDs. The canonical project still
     /// resolves the actual hosted owner, even when a selected track only
     /// contributes MIDI to a shared instrument.
@@ -33,6 +34,11 @@ impl PluginStateCaptureInput<'_> {
     }
     pub fn cancellation(&self) -> &RequestCancellation {
         self.cancellation
+    }
+    /// Save may advance the existing editor reader before capturing a stopped
+    /// source. Other capture consumers keep their ordinary capture policy.
+    pub fn flush_idle_editor_input(&self) -> bool {
+        self.flush_idle_editor_input
     }
     /// Reading raw targets retained in the canonical saved project. Native
     /// source metadata must independently validate their exact class and bases.
@@ -101,6 +107,7 @@ pub(super) fn project_for_save_with_capture(
             project: session.project(),
             context,
             cancellation,
+            flush_idle_editor_input: true,
             device_filter: None,
         })?,
         None => Vec::new(),
@@ -109,6 +116,30 @@ pub(super) fn project_for_save_with_capture(
         return Err("project save cancelled".into());
     }
     project_with_captures(project, captures)
+}
+
+/// Snapshot current hosted state into an isolated export projection without
+/// editing the canonical project or transferring live processor custody.
+pub(super) fn project_for_export_with_capture(
+    project: &Project,
+    context: hex_engine::AudioSourceContext,
+    cancellation: &RequestCancellation,
+    audio: &mut dyn WorkerAudioSink,
+) -> Result<Project, String> {
+    if cancellation.is_cancelled() {
+        return Err("export cancelled".into());
+    }
+    let captures = audio.capture_plugin_states(PluginStateCaptureInput {
+        project,
+        context,
+        cancellation,
+        flush_idle_editor_input: false,
+        device_filter: None,
+    })?;
+    if cancellation.is_cancelled() {
+        return Err("export cancelled".into());
+    }
+    project_with_captures(project.clone(), captures)
 }
 
 /// Freeze the selected tracks from a temporary projection of their live
@@ -154,6 +185,7 @@ pub(super) fn capture_tracks_for_duplicate(
         project,
         context,
         cancellation,
+        flush_idle_editor_input: false,
         device_filter: Some(&devices),
     })?;
     if cancellation.is_cancelled() {
@@ -203,6 +235,7 @@ pub(super) fn project_for_bounce_with_capture(
             ..isolated.context
         },
         cancellation,
+        flush_idle_editor_input: false,
         device_filter: Some(&devices),
     })?;
     if cancellation.is_cancelled() {

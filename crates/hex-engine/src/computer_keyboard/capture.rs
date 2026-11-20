@@ -51,6 +51,7 @@ impl ComputerKeyboardRuntime {
         binding: MidiCaptureBinding,
         clock: &KeyboardActivationClock,
         route: usize,
+        latency_frames: u64,
     ) -> Result<(), Invalid> {
         if !self.validate_capture_input(binding, Some(clock))
             || self.midi_capture_active()
@@ -74,6 +75,7 @@ impl ComputerKeyboardRuntime {
         capture.faulted = None;
         capture.route = route;
         capture.first_occurrence = self.next_id;
+        capture.latency_frames = latency_frames;
         Ok(())
     }
     pub(crate) fn capture_finish_fault(&self, take_id: u64) -> Option<MidiCaptureFault> {

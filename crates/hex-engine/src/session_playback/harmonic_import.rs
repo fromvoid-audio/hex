@@ -238,9 +238,11 @@ fn append_track(
                 .tracks()
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let cut = previous.arrangement_frame;
+            let old_floor = previous.interactive_note_onset_floor();
             let mut failure = None;
             track
-                .for_each_active_midi_span(previous.arrangement_frame, |span, sampler| {
+                .for_each_active_midi_span(cut, old_floor, |span, sampler| {
                     if failure.is_some() {
                         return;
                     }
@@ -287,7 +289,7 @@ fn append_track(
                 return Err(error);
             }
         }
-        RouteOwner::Session { clip, origin } => {
+        RouteOwner::Session { clip, origin, .. } => {
             let clip = crate::session_inventory::EffectiveSessionMidi::new(
                 previous.revision.session(),
                 previous.midi_admission.as_ref(),
@@ -308,10 +310,22 @@ fn append_track(
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(floor) = previous.historical_floor_for(index) {
                 clip.instrument_template()
-                    .query_after_onset_with_origin(origin, &clock, frame, end, spans, floor)
+                    .query_after_onset_with_origin_and_note_chase(
+                        origin,
+                        &clock,
+                        (frame, end),
+                        spans,
+                        floor,
+                        route.owner.note_chase(),
+                    )
             } else {
-                clip.instrument_template()
-                    .query_with_origin(origin, &clock, frame, end, spans)
+                clip.instrument_template().query_with_origin_and_note_chase(
+                    origin,
+                    &clock,
+                    (frame, end),
+                    spans,
+                    route.owner.note_chase(),
+                )
             }
             .map_err(SessionPlaybackError::Midi)?;
             for span in spans.spans() {

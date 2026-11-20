@@ -517,6 +517,11 @@ impl PreparedNativeProcessor for PreparedCompressor {
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
+
+    fn supports_power_off(&self) -> bool {
+        true
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }

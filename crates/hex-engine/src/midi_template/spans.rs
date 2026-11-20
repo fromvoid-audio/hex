@@ -7,13 +7,16 @@ mod current_sampler;
 mod density;
 mod gates;
 mod volume;
-use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
+use crate::{
+    MidiTiming, NoteChase, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote,
+};
 pub(crate) use current_sampler::CurrentSamplerEventCustody;
 use density::{admit_held_voice_density, admit_voice_density};
 pub(crate) use gates::PreparedMidiGateTemplate;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_project::{BeatTime, TempoMap};
+use std::num::NonZeroU32;
 
 /// Maximum sounding note spans returned for one 256-frame window.
 pub const MIDI_SPAN_BUFFER_CAPACITY: usize = 192;
@@ -51,6 +54,7 @@ pub(crate) fn admit_held_transport_loop_density(
 
 #[derive(Clone, Copy, Debug)]
 struct VoiceSpan {
+    starts_inside_gate: bool,
     start: u64,
     gate_end: u64,
     raw_end: u128,
@@ -129,6 +133,8 @@ fn silent_note_sample(
 /// One immutable rendered-note interval in absolute project frames.
 #[derive(Clone, Copy, Debug)]
 pub struct MidiRenderSpan {
+    /// Direction-aware source-window clipping provenance, not a new note-on.
+    pub starts_inside_gate: bool,
     pub start_frame: u64,
     pub gate_end_frame: u64,
     pub end_frame: u64,
@@ -281,6 +287,14 @@ pub struct MidiReleaseVoice {
     gate_end_frame: u64,
     end_frame: u64,
     voice: crate::midi_note_bank::PreparedMidiNote,
+    power_fade: Option<AnalyticPowerFade>,
+}
+
+/// The host fade has its own deadline so loop clipping cannot change its slope.
+#[derive(Clone, Copy, Debug)]
+struct AnalyticPowerFade {
+    end_frame: u64,
+    frames: NonZeroU32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,6 +322,7 @@ impl MidiRenderSpan {
                 gate_end_frame: cut_frame,
                 end_frame,
                 voice,
+                power_fade: None,
             }))
         } else {
             Ok(Some(MidiReleaseVoice {
@@ -315,6 +330,7 @@ impl MidiRenderSpan {
                 gate_end_frame: self.gate_end_frame,
                 end_frame: self.end_frame,
                 voice,
+                power_fade: None,
             }))
         }
     }
@@ -344,6 +360,7 @@ impl MidiRenderSpan {
             gate_end_frame,
             end_frame,
             voice,
+            power_fade: None,
         }))
     }
 }
@@ -405,7 +422,37 @@ impl MidiReleaseVoice {
                 frame - self.start_frame,
                 self.gate_end_frame - self.start_frame,
             )
-            .map(Some)
+            .map(|sample| Some(self.apply_power_fade(frame, sample)))
+    }
+
+    fn apply_power_fade(&self, frame: u64, sample: [f32; 2]) -> [f32; 2] {
+        let Some(fade) = self.power_fade else {
+            return sample;
+        };
+        let remaining = fade
+            .end_frame
+            .saturating_sub(frame)
+            .min(u64::from(fade.frames.get()));
+        let gain = remaining as f32 / fade.frames.get() as f32;
+        sample.map(|channel| channel * gain)
+    }
+
+    /// Fade the already audible voice on the source clock without extending its
+    /// natural release or restarting an in-progress Power Off fade.
+    pub(crate) fn power_off_at(&mut self, frame: u64, sample_rate: u32) {
+        if self.power_fade.is_some() {
+            return;
+        }
+        let limit = sample_rate.div_ceil(200).max(1);
+        let remaining = self.end_frame.saturating_sub(frame).min(u64::from(limit));
+        let Some(frames) = NonZeroU32::new(remaining as u32) else {
+            return;
+        };
+        self.end_frame = frame + u64::from(frames.get());
+        self.power_fade = Some(AnalyticPowerFade {
+            end_frame: self.end_frame,
+            frames,
+        });
     }
 
     pub(crate) fn end_frame(&self) -> u64 {
@@ -424,7 +471,7 @@ impl MidiReleaseVoice {
         if cut_frame >= self.end_frame {
             return Ok(None);
         }
-        if cut_frame >= self.gate_end_frame {
+        if self.power_fade.is_some() || cut_frame >= self.gate_end_frame {
             return Ok(Some(self));
         }
         let Some(gate_end_frame) = remapped_gate_end.filter(|frame| *frame > cut_frame) else {
@@ -434,7 +481,7 @@ impl MidiReleaseVoice {
                 end_frame: cut_frame
                     .checked_add(self.voice.release_frames())
                     .ok_or(ReleaseVoiceError::ArithmeticOverflow)?,
-                voice: self.voice,
+                ..self
             }));
         };
         let end_frame = gate_end_frame
@@ -444,7 +491,7 @@ impl MidiReleaseVoice {
             start_frame: self.start_frame,
             gate_end_frame,
             end_frame,
-            voice: self.voice,
+            ..self
         }))
     }
 
@@ -478,6 +525,7 @@ impl MidiReleaseVoice {
                     .checked_add(voice.release_frames())
                     .ok_or(ReleaseVoiceError::ArithmeticOverflow)?,
                 voice,
+                power_fade: None,
             }
         } else {
             Self {
@@ -485,6 +533,7 @@ impl MidiReleaseVoice {
                 gate_end_frame,
                 end_frame,
                 voice,
+                power_fade: None,
             }
         };
         released.rebase(source_cut, performance_cut).map(Some)
@@ -506,16 +555,13 @@ impl MidiReleaseVoice {
             gate_end_frame,
             end_frame,
             voice,
+            power_fade: None,
         }
         .rebase(source_cut, performance_cut)
         .map(Some)
     }
 
-    pub(crate) fn rebase(
-        self,
-        source_cut: u64,
-        performance_cut: u64,
-    ) -> Result<Self, ReleaseVoiceError> {
+    fn rebase(self, source_cut: u64, performance_cut: u64) -> Result<Self, ReleaseVoiceError> {
         let elapsed = source_cut
             .checked_sub(self.start_frame)
             .ok_or(ReleaseVoiceError::ArithmeticOverflow)?;
@@ -543,7 +589,7 @@ impl MidiReleaseVoice {
             start_frame,
             gate_end_frame,
             end_frame,
-            voice: self.voice,
+            ..self
         })
     }
 
@@ -557,12 +603,14 @@ impl MidiReleaseVoice {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;
         }
-        self.voice.sample(
-            contexts,
-            retained,
-            frame - self.start_frame,
-            self.gate_end_frame - self.start_frame,
-        )
+        self.voice
+            .sample(
+                contexts,
+                retained,
+                frame - self.start_frame,
+                self.gate_end_frame - self.start_frame,
+            )
+            .map(|sample| self.apply_power_fade(frame, sample))
     }
 }
 
@@ -570,6 +618,7 @@ impl MidiReleaseVoice {
 /// The context owns no buffers or graph state and performs no preparation.
 pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTempoMap> {
     origin: SessionMidiOrigin,
+    note_chase: NoteChase,
     timing: &'a T,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
@@ -594,10 +643,17 @@ impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
         Self {
             origin,
             timing,
+            note_chase: NoteChase::On,
             onset_floor_exclusive: None,
             suppressions: &[],
             continuations: &[],
         }
+    }
+
+    /// Select whether to admit gates clipped at the initial source-window
+    /// boundary. Later repeats, cue floors and owned continuations are unchanged.
+    pub fn with_note_chase(self, note_chase: NoteChase) -> Self {
+        Self { note_chase, ..self }
     }
 
     /// Skip source occurrences strictly before the handoff beat before converting
@@ -1061,7 +1117,27 @@ impl PreparedMidiInstrumentTemplate {
         end_frame: u64,
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
-        self.query_with_onset_floor(origin, timing, start_frame, end_frame, buffer, None)
+        self.query_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start_frame, end_frame),
+            buffer,
+            NoteChase::On,
+        )
+    }
+
+    /// Query `[frames.0, frames.1)` with an explicit initial-window gate policy.
+    /// Off excludes clipped intro occurrences before conversion and capacity
+    /// accounting; genuine boundary onsets and later repeats remain eligible.
+    pub fn query_with_origin_and_note_chase<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        frames: (u64, u64),
+        buffer: &mut MidiSpanBuffer,
+        note_chase: NoteChase,
+    ) -> Result<(), MidiTemplateError> {
+        self.query_with_onset_floor(origin, timing, frames, buffer, None, note_chase)
     }
 
     pub(crate) fn query_after_onset_with_origin<T: MidiTiming + ?Sized>(
@@ -1073,13 +1149,32 @@ impl PreparedMidiInstrumentTemplate {
         buffer: &mut MidiSpanBuffer,
         onset_floor_exclusive: BeatTime,
     ) -> Result<(), MidiTemplateError> {
+        self.query_after_onset_with_origin_and_note_chase(
+            origin,
+            timing,
+            (start_frame, end_frame),
+            buffer,
+            onset_floor_exclusive,
+            NoteChase::On,
+        )
+    }
+
+    pub(crate) fn query_after_onset_with_origin_and_note_chase<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        frames: (u64, u64),
+        buffer: &mut MidiSpanBuffer,
+        onset_floor_exclusive: BeatTime,
+        note_chase: NoteChase,
+    ) -> Result<(), MidiTemplateError> {
         self.query_with_onset_floor(
             origin,
             timing,
-            start_frame,
-            end_frame,
+            frames,
             buffer,
             Some(onset_floor_exclusive),
+            note_chase,
         )
     }
 
@@ -1087,19 +1182,19 @@ impl PreparedMidiInstrumentTemplate {
         &self,
         origin: SessionMidiOrigin,
         timing: &T,
-        start_frame: u64,
-        end_frame: u64,
+        frames: (u64, u64),
         buffer: &mut MidiSpanBuffer,
         onset_floor_exclusive: Option<BeatTime>,
+        note_chase: NoteChase,
     ) -> Result<(), MidiTemplateError> {
         buffer.len = 0;
         let result = self.query_view().query_inner(
             origin,
             timing,
-            start_frame,
-            end_frame,
+            frames,
             buffer,
             onset_floor_exclusive,
+            note_chase,
         );
         if result.is_err() {
             buffer.len = 0;
@@ -1269,10 +1364,10 @@ impl PreparedMidiInstrumentTemplate {
         self.query_with_onset_floor(
             context.origin,
             context.timing,
-            start_frame,
-            end_frame,
+            (start_frame, end_frame),
             buffer,
             context.onset_floor_exclusive,
+            context.note_chase,
         )?;
         buffer.suppress_carried(context.suppressions, start_frame);
         Ok(())
@@ -1329,6 +1424,7 @@ impl PreparedMidiInstrumentTemplate {
 
 struct QueryContext<'a, T: MidiTiming + ?Sized> {
     origin: SessionMidiOrigin,
+    note_chase: NoteChase,
     timing: &'a T,
     start_frame: u64,
     end_frame: u64,
@@ -1374,6 +1470,7 @@ fn prepare_spans(
             .checked_add(u128::from(release_raw))
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         result.push(VoiceSpan {
+            starts_inside_gate: span.starts_inside_gate,
             start: span.start,
             gate_end: span.gate_end,
             raw_end,

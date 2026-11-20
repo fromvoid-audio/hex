@@ -72,8 +72,8 @@ pub(super) fn loop_surface() -> Div {
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
 }
 
-/// Fractions may extend beyond the viewport. Clip the connecting rail, but
-/// paint an endpoint only where its authored boundary is actually visible.
+/// Filled scope extent, clipped to the viewport. Endpoint selectors preserve
+/// boundary geometry; input and resize hit targets remain with each consumer.
 pub(super) fn loop_range(
     start: f64,
     end: f64,
@@ -86,14 +86,15 @@ pub(super) fn loop_range(
     let first = start.clamp(0.0, 1.0);
     let last = end.clamp(0.0, 1.0);
     let color = theme::color(if enabled {
-        theme::PaletteRole::Text
+        theme::PaletteRole::Primary
     } else {
         theme::PaletteRole::Muted
     });
     let mut rail = div()
+        .debug_selector(|| "scope-range-fill".into())
         .absolute()
-        .top(px(10.0))
-        .h(px(3.0))
+        .top(px(4.0))
+        .h(px(9.0))
         .left(relative(first as f32))
         .w(relative((last - first) as f32))
         .bg(rgb(color))
@@ -111,12 +112,12 @@ pub(super) fn loop_range(
                 div()
                     .debug_selector(move || endpoints[usize::from(!is_start)].into())
                     .absolute()
-                    .top(px(-6.0))
-                    .h(px(9.0))
+                    .top_0()
+                    .h_full()
                     .w(px(3.0))
                     .when(align_left, |d| d.left_0())
                     .when(!align_left, |d| d.right_0())
-                    .bg(rgb(color)),
+                    .when(first == last, |d| d.bg(rgb(color))),
             );
         }
     }

@@ -211,7 +211,9 @@ class ReleaseTests(unittest.TestCase):
         patch.object(release, "ROOT", self.root).start()
         (self.root / "scripts").mkdir()
         source_scripts = Path(__file__).resolve().parents[1]
-        shutil.copyfile(source_scripts / "hex-test-build.py", self.root / "scripts/hex-test-build.py")
+        for name in ("hex-test-build.py", "local-ci.py", "ci_plan.py", "python_test_plan.py",
+                     "build_inputs.py", "ci_checkpoint.py", "ci_target_storage.py"):
+            shutil.copyfile(source_scripts / name, self.root / "scripts" / name)
         config = Path(__file__).resolve().parents[1] / "hex-test-build.json"
         (self.root / "scripts/hex-test-build.json").write_bytes(config.read_bytes())
         (self.root / "scripts/hex-release.json").write_text('{"notary_profile":"fixture"}')
@@ -419,6 +421,115 @@ class ReleaseTests(unittest.TestCase):
                         patch.object(release, "package", return_value={}) as package:
                     self.assertEqual(release.main(argv), 0)
                 package.assert_called_once_with(candidate, adopt_release_target=adopt)
+
+    def test_fresh_distribution_reserves_before_cut_and_keeps_ci_target_separate(self):
+        dev = self.root / "dev-target"
+        target = self.root / "release target"
+        dev.mkdir()
+        target.mkdir()
+        lock_state = self.root / "locks"
+        state_paths = release.ci.target_state_paths
+        cut_release = release.cut
+        candidate = None
+        runners = []
+        calls = []
+
+        def require_lock():
+            with self.assertRaisesRegex(release.ci.TargetCacheError, "already in use"):
+                release.reserve_fresh_release_target(str(target), os.environ)
+
+        def cut(args, store):
+            nonlocal candidate
+            require_lock()
+            calls.append("cut")
+            candidate = cut_release(args, store)
+            return candidate
+
+        def runner(root, env):
+            self.assertEqual(root, self.root)
+            runners.append(dict(env))
+            report = self.root / "fixture-ci-summary.json"
+            report.write_text("{}")
+
+            def run():
+                require_lock()
+                calls.append("full-ci")
+                self.assertEqual(env["CARGO_TARGET_DIR"], str(dev))
+                self.assertEqual(env["CARGO_CACHE_RUSTC_INFO"], "0")
+                self.assertEqual(list(target.iterdir()), [])
+                return 0
+
+            return SimpleNamespace(env=env, summary_path=report,
+                                   output_dir=self.root / f"optimized-run-{len(runners)}",
+                                   run=run,
+                                   validate_release_inputs=lambda owner: calls.append(owner["state"]))
+
+        def verify(report, consumer, source, *, reservation=None):
+            require_lock()
+            self.assertEqual(source, "a" * 40)
+            self.assertEqual(report, self.root / "fixture-ci-summary.json")
+            self.assertEqual(consumer.env["CARGO_TARGET_DIR"], str(target))
+            self.assertEqual(consumer.env["CARGO_CACHE_RUSTC_INFO"], "0")
+            if reservation is not None:
+                reservation.revalidate(str(target))
+                calls.append("reserved-verification")
+            else:
+                calls.append("guarded-verification")
+
+        def artifact(consumer, *, adopt, reservation, on_admission, verification_check):
+            self.assertFalse(adopt)
+            require_lock()
+            reservation.revalidate(consumer.env["CARGO_TARGET_DIR"])
+            verification_check()
+            on_admission({"state": "pending"})
+            verification_check()
+            raise release.Refusal("fixture stops before packaging")
+
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(dev)}), \
+                patch.object(release.ci, "target_state_paths",
+                             side_effect=lambda path, state=None: state_paths(path, state or lock_state)), \
+                patch.object(release, "store_path", return_value=self.store), \
+                patch.object(release, "cut", side_effect=cut), \
+                patch.object(release, "preflight"), \
+                patch.object(release.ci, "LocalCiRunner", side_effect=runner), \
+                patch.object(release.delivery, "validate_ci", side_effect=verify), \
+                patch.object(release.delivery, "optimized_artifact", side_effect=artifact):
+            self.assertEqual(release.main(["beta", "--fresh-release-target", str(target)]), 1)
+            self.assertIsNotNone(candidate)
+            self.assertEqual(release.main(["resume", str(candidate), "--fresh-release-target", str(target)]), 1)
+            with release.reserve_fresh_release_target(str(target), os.environ) as again:
+                again.revalidate(str(target))
+        self.assertEqual([env["CARGO_TARGET_DIR"] for env in runners], [str(dev), str(target), str(target)])
+        self.assertEqual(calls, ["cut", "full-ci", "reserved-verification", "reserved-verification",
+                                 "guarded-verification", "pending", "reserved-verification", "reserved-verification",
+                                 "guarded-verification", "pending"])
+
+    def test_fresh_release_refuses_unsafe_target_before_cut_or_cargo(self):
+        dev = self.root / "dev-target"
+        dev.mkdir()
+        nested = dev / "nested"
+        nested.mkdir()
+        populated = self.root / "populated"
+        populated.mkdir()
+        original = populated / "payload"
+        original.write_bytes(b"keep existing bytes")
+        alias = self.root / "alias"
+        alias.symlink_to(populated, target_is_directory=True)
+        state_paths = release.ci.target_state_paths
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(dev)}), \
+                patch.object(release.ci, "target_state_paths",
+                             side_effect=lambda path, state=None: state_paths(path, state or self.root / "locks")), \
+                patch.object(release, "store_path", return_value=self.store), \
+                patch.object(release, "cut") as cut, \
+                patch.object(release.ci, "LocalCiRunner") as cargo:
+            for target in (dev, nested, populated, alias, self.root / "absent"):
+                with self.subTest(target=target):
+                    self.assertEqual(release.main(["beta", "--fresh-release-target", str(target)]), 1)
+            cut.assert_not_called()
+            cargo.assert_not_called()
+        self.assertEqual(original.read_bytes(), b"keep existing bytes")
+        self.assertTrue(alias.is_symlink())
+        self.assertFalse((self.root / "absent").exists())
 
     def test_partial_generated_stage_is_recoverable_but_redirected_stage_refuses(self):
         candidate = self.cut()

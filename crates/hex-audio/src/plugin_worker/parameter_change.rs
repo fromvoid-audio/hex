@@ -2,7 +2,10 @@
 //! Fixed request/result storage belongs to the original completion allocation;
 //! no SDK callback, invented process block, reader or source owner is added.
 use super::*;
-use std::sync::{TryLockError, Weak};
+use std::{
+    num::NonZeroU64,
+    sync::{TryLockError, Weak},
+};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -40,6 +43,9 @@ enum Terminal {
 #[derive(Default)]
 pub(super) struct Slot {
     ordinal: u64,
+    last_processed: Option<u64>,
+    last_idle_flush: Option<u64>,
+    last_guarded_write: Option<(NonZeroU64, bool)>,
     phase: Phase,
     point: ParameterPoint,
     intent: Intent,
@@ -216,6 +222,8 @@ impl NativeWorker {
             // original owner and fence intact for explicit fault recovery.
             return Err("native parameter input terminal missing");
         }
+        slot.last_processed = None;
+        slot.last_idle_flush = None;
         slot.phase = Phase::Idle;
         slot.result = None;
         if state.parameter_change.ordinal == Some(request.ordinal) {
@@ -415,14 +423,32 @@ impl NativeWorker {
             .capture
             .try_lock()
             .map_err(|_| "native parameter mailbox is busy")?;
+        if mailbox.controller.guarded_write_pending() {
+            return Err("native guarded editor write is pending");
+        }
         let slot = &mut mailbox.parameter_change;
-        if slot.phase != Phase::Idle {
+        if slot.pending() {
             return Err("native parameter input is already pending");
         }
-        let ordinal = slot
-            .ordinal
-            .checked_add(1)
-            .ok_or("native parameter input ordinal exhausted")?;
+        let ordinal_key = slot.next_ordinal()?;
+        let ordinal = ordinal_key.get();
+        // A stopped idle flush retains the quiescent source after revocation;
+        // its revoked endpoint cannot take part in a callback handoff.
+        let admission = if intent == Intent::Idle && !self.transport_is_live_on_control() {
+            None
+        } else {
+            Some(
+                self.reaper
+                    .control
+                    .reserve_parameter_input_on_control(ordinal_key)
+                    .map_err(|fault| match fault {
+                        Fault::Saturated => "native parameter mailbox is busy",
+                        Fault::Revoked => "native parameter source is not live",
+                        Fault::Exhausted => "native parameter input ordinal exhausted",
+                        _ => "native parameter input generation differs",
+                    })?,
+            )
+        };
         let request = NativeWorkerParameterChange {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
@@ -445,6 +471,9 @@ impl NativeWorker {
         slot.require_arrangement_origin = require_arrangement_origin;
         slot.phase = Phase::Queued;
         slot.result = None;
+        if let Some(admission) = admission {
+            admission.publish();
+        }
         self.reaper
             .completed
             .parameter_change_requested
@@ -510,6 +539,8 @@ impl NativeWorker {
         let result = slot
             .result
             .ok_or("native parameter input terminal missing")?;
+        slot.last_processed = matches!(result, Terminal::Processed(_)).then_some(request.ordinal);
+        slot.last_idle_flush = matches!(result, Terminal::Flushed).then_some(request.ordinal);
         slot.phase = Phase::Idle;
         slot.result = None;
         Ok(match result {
@@ -526,7 +557,7 @@ impl NativeWorker {
             Terminal::Withdrawn => NativeWorkerParameterProgress::Withdrawn,
         })
     }
-    fn require_parameter_change_source(
+    pub(super) fn require_parameter_change_source(
         &self,
         request: &NativeWorkerParameterChange,
     ) -> Result<(), &'static str> {
@@ -538,7 +569,76 @@ impl NativeWorker {
         Ok(())
     }
 }
+impl Work {
+    pub(super) fn has_hold(&self) -> bool {
+        self.hold.is_some()
+    }
+}
 impl Slot {
+    pub(super) fn pending(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+
+    pub(super) fn next_ordinal(&self) -> Result<std::num::NonZeroU64, &'static str> {
+        self.ordinal
+            .checked_add(1)
+            .and_then(std::num::NonZeroU64::new)
+            .ok_or("native parameter input ordinal exhausted")
+    }
+
+    pub(super) fn supersede_with_guarded_write(&mut self, ordinal: std::num::NonZeroU64) {
+        self.ordinal = ordinal.get();
+        self.last_processed = None;
+        self.last_idle_flush = None;
+    }
+
+    pub(super) fn record_guarded_write(&mut self, ordinal: NonZeroU64, readback_matches: bool) {
+        self.last_guarded_write = Some((ordinal, readback_matches));
+    }
+
+    pub(super) fn guarded_write_readback(&self, ordinal: NonZeroU64) -> Option<bool> {
+        let (written, matches) = self.last_guarded_write?;
+        (self.phase == Phase::Idle && self.ordinal == ordinal.get() && ordinal == written)
+            .then_some(matches)
+    }
+
+    pub(super) fn guarded_write_is_current(&self, ordinal: NonZeroU64) -> bool {
+        self.guarded_write_readback(ordinal) == Some(true)
+    }
+
+    pub(super) fn processed_ordinal(&self) -> Option<u64> {
+        (self.phase == Phase::Idle && self.last_processed == Some(self.ordinal))
+            .then_some(self.ordinal)
+    }
+
+    pub(super) fn processed_parameter(&self) -> Option<(u64, u32, u64)> {
+        self.processed_ordinal()
+            .map(|ordinal| (ordinal, self.point.id, self.point.normalized.to_bits()))
+    }
+
+    pub(super) fn is_processed(&self, request: &NativeWorkerParameterChange) -> bool {
+        request.pcm_delivery
+            && self.processed_ordinal() == Some(request.ordinal)
+            && self.point.id == request.parameter
+    }
+
+    pub(super) fn idle_flushed_parameter(&self) -> Option<(u64, u32, u64)> {
+        (self.phase == Phase::Idle && self.last_idle_flush == Some(self.ordinal)).then_some((
+            self.ordinal,
+            self.point.id,
+            self.point.normalized.to_bits(),
+        ))
+    }
+
+    pub(super) fn is_idle_flushed(&self, request: &NativeWorkerParameterChange) -> bool {
+        !request.pcm_delivery
+            && self
+                .idle_flushed_parameter()
+                .is_some_and(|(ordinal, id, _)| {
+                    ordinal == request.ordinal && id == request.parameter
+                })
+    }
+
     fn matches(&self, request: &NativeWorkerParameterChange) -> bool {
         self.phase != Phase::Idle && self.ordinal == request.ordinal
     }

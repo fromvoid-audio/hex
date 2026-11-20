@@ -1,6 +1,5 @@
 //! Bounded metadata-only affine source retiming, shared by preview and commit.
 use super::*;
-use crate::{BeatsPreserve, BeatsTail, WarpMode};
 
 fn scale(value: u64, numerator: u64, denominator: u64) -> Result<u64, Invalid> {
     if numerator == 0 || denominator == 0 {
@@ -28,6 +27,7 @@ pub(super) fn retime(
             "stretching a separated musical event source is unsupported",
         ));
     }
+    let outer_fade = edit.domain.fade_clock == AudioClipFadeClock::Outer;
     let (_, old_frames, _, _) = edit.projected_domain(tempo)?;
     let old_fade = edit.domain.fade;
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;
@@ -70,7 +70,9 @@ pub(super) fn retime(
     edit.timing = AudioClipTiming::Musical(tempo.frame_to_beat(start)?);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
-    domain.fade_start = scale(domain.fade_start, numerator, denominator)?;
+    if !outer_fade {
+        domain.fade_start = scale(domain.fade_start, numerator, denominator)?;
+    }
     if let Some(warp) = &mut domain.warp {
         for marker in &mut warp.markers {
             marker.beat = BeatTime::from_raw(scale(marker.beat.raw(), numerator, denominator)?);
@@ -88,11 +90,15 @@ pub(super) fn retime(
         }
     }
     edit.sync_content_length()?;
+    // Source retiming changes the visible geometry. Its outer instance law
+    // keeps the captured author clock and the elapsed destination context.
+    if outer_fade {
+        return Ok(());
+    }
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
-    if frames > MAX_AUDIO_DOMAIN_FRAMES {
-        return Err(transform_domain_limit(tempo.sample_rate()));
-    }
+    // Callers project the completed clip and apply its source-specific extent
+    // limit there, after the retimed fade and source metadata are in place.
     if frames == 0 {
         return Err(Invalid("stretch must retain a positive interval"));
     }
@@ -157,15 +163,7 @@ pub fn preview_audio_clip_stretch(
         .unwrap_or_else(|| AudioClipEdit::capture(clip));
     edit.anchor(clip.start, tempo)?;
     if edit.domain.warp.is_none() {
-        let settings = super::default_audio_warp(
-            clip,
-            tempo,
-            WarpMode::Beats {
-                preserve: BeatsPreserve::Transients,
-                tail: BeatsTail::Forward,
-                decay: 100,
-            },
-        )?;
+        let settings = initial_audio_warp(clip, tempo, asset_frames)?;
         Arc::make_mut(&mut edit.domain).warp = Some(settings);
     }
     Arc::make_mut(&mut edit.domain).warp_enabled = true;

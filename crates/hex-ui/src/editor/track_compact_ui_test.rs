@@ -160,13 +160,13 @@ fn compact(f: &mut Fixture) {
             bounds(&mut f.visual, "arrangement-lane", track.value())
                 .size
                 .height,
-            px(23.0)
+            px(22.0)
         );
         assert_eq!(
             bounds(&mut f.visual, "arrangement-track-header", track.value())
                 .size
                 .height,
-            px(23.0)
+            px(22.0)
         );
     }
 }
@@ -280,7 +280,7 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
         (f.clips[1], "midi-clip-visual"),
     ] {
         let surface = bounds(&mut f.visual, prefix, clip.value());
-        assert_eq!(surface.size.height, px(23.0));
+        assert_eq!(surface.size.height, px(22.0));
         assert_title(&mut f.visual, "clip-name", clip, surface);
         let (_, divider, _) = f
             .visual
@@ -365,7 +365,7 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
     ] {
         let clip = f.clips[index];
         let edge = bounds(&mut f.visual, prefix, clip.value());
-        assert_eq!(edge.size.height, px(23.0));
+        assert_eq!(edge.size.height, px(22.0));
         let down = edge.center();
         let end = point(down.x - px(32.0), down.y);
         f.visual
@@ -382,7 +382,7 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
             .visual
             .debug_bounds(preview_selector)
             .expect("real compact trim preview");
-        assert_eq!(preview.size.height, px(23.0));
+        assert_eq!(preview.size.height, px(22.0));
         assert_title(&mut f.visual, "clip-name", clip, preview);
         let fill = f.editor.read_with(&f.visual, |view, _| {
             let project = &view.state.as_ref().unwrap().project;
@@ -655,7 +655,7 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
             .visual
             .debug_bounds(name)
             .expect("named compact time fragment");
-        assert_eq!(fragment.size.height, px(23.0));
+        assert_eq!(fragment.size.height, px(22.0));
         // Fragment captions are passive and uniquely scoped, rather than
         // mounting the same authored clip identity in multiple residuals.
         let title_name = if index == 0 {

@@ -19,6 +19,52 @@ impl Source {
 }
 
 impl Plugins {
+    pub(super) fn saved_catalog_selection(
+        &self,
+        state: &NativeDeviceState,
+        destination: PluginEffectDestination,
+    ) -> Result<hex_plugin_catalog::PluginSelection, String> {
+        let identity = Hosting::saved_identity_on_control(state)?;
+        let catalog = hex_plugin_catalog::Catalog::load(
+            self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
+        )?;
+        catalog.resolve_plugin(
+            identity.class.bytes(),
+            identity.binary.executable_sha256,
+            identity.binary.info_sha256,
+            if destination.is_instrument() {
+                hex_plugin_catalog::PluginRole::Instrument
+            } else {
+                hex_plugin_catalog::PluginRole::Effect
+            },
+        )
+    }
+
+    pub(in crate::native_audio) fn prepare_saved_verified_effects(
+        &self,
+        input: ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<PreparedRevision, String> {
+        let mut effects = Vec::new();
+        input.visit_plugin_devices(|destination, device, state| {
+            if destination.is_instrument() {
+                return Err("verified vst3 instrument restoration is unavailable".into());
+            }
+            effects
+                .try_reserve(1)
+                .map_err(|_| "saved vst3 metadata allocation refused")?;
+            effects.push(hex_audio::plugin_effects::UnavailableEffect {
+                owner: destination.owner(),
+                device_id: device,
+                state,
+            });
+            Ok(())
+        })?;
+        Hosting::prepare_unavailable_on_control(&effects, prepare)
+    }
+
     pub(in crate::native_audio) fn request_reopen(
         &mut self,
         snapshot: &CanonicalAudioSourceSnapshot,
@@ -35,19 +81,16 @@ impl Plugins {
             has_effects = true;
             Ok(())
         });
-        self.reopen = (snapshot.audio_mode() == DocumentAudioMode::Resident
-            && visited.is_ok()
-            && has_effects
-            && self.host.is_some()
-            && self.catalog.is_some())
-        .then_some(Reopen {
-            context: input.context(),
-            output: None,
-            next: 0,
-            current: None,
-            ready: false,
-            cleanup: false,
-        });
+        self.reopen =
+            (visited.is_ok() && has_effects && self.host.is_some() && self.catalog.is_some())
+                .then_some(Reopen {
+                    context: input.context(),
+                    output: None,
+                    next: 0,
+                    current: None,
+                    ready: false,
+                    cleanup: false,
+                });
     }
     pub(in crate::native_audio) fn reopen_ready(&self) -> Option<AudioSourceContext> {
         self.reopen
@@ -80,7 +123,7 @@ impl Plugins {
         let Some(restore) = self
             .reopen
             .as_mut()
-            .filter(|restore| restore.context == context && restore.ready)
+            .filter(|restore| restore.context == context && (!accepted || restore.ready))
         else {
             return false;
         };
@@ -201,6 +244,7 @@ impl Plugins {
             match result {
                 Ok(Some(restored)) if restored.processing_eq(state) => {
                     source.accepted = true;
+                    source.editor_retirement.ever_accepted = true;
                     restore.current = None;
                     restore.next += 1;
                 }
@@ -233,22 +277,7 @@ impl Plugins {
         }
         // Catalog results are copied choices only. Drop the bounded catalog
         // before Host inspects files and starts its original restore protocol.
-        let selected = (|| {
-            let identity = Hosting::saved_identity_on_control(state)?;
-            let catalog = hex_plugin_catalog::Catalog::load(
-                self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
-            )?;
-            catalog.resolve_plugin(
-                identity.class.bytes(),
-                identity.binary.executable_sha256,
-                identity.binary.info_sha256,
-                if destination.is_instrument() {
-                    hex_plugin_catalog::PluginRole::Instrument
-                } else {
-                    hex_plugin_catalog::PluginRole::Effect
-                },
-            )
-        })();
+        let selected = self.saved_catalog_selection(state, destination);
         let binding = selected.and_then(|selected| {
             let authored = edits::requested_selection(&input, device)?;
 
@@ -257,19 +286,14 @@ impl Plugins {
                 .ok_or("qualified vst3 helper unavailable")?
                 .begin_on_control(
                     control,
-                    EffectSelection {
-                        module: &selected.module,
-                        executable: &selected.executable_relative_path,
-                        cid: selected.cid,
-                        executable_sha256: &selected.executable_sha256,
-                        info_sha256: &selected.info_sha256,
-                    },
+                    catalog_selection(&selected),
                     owner,
                     device,
                     restore.context.editor_revision.max(1),
                     output.sample_rate,
                     hosting_profile(destination),
                     Some(state.clone()),
+                    None,
                 )
                 .map(|binding| (binding, authored))
         });
@@ -288,8 +312,12 @@ impl Plugins {
                     observes_latency: false,
                     editor_open: false,
                     editor_transfer: false,
+                    editor_open_on_insert: false,
                     edit_backlog: false,
                     edit_recovery: None,
+                    open_editor_group: None,
+                    provider: None,
+                    editor_retirement: Default::default(),
                     pending_touch: None,
                     #[cfg(all(test, feature = "allocation-probe"))]
                     observed_latency_receipt: false,
@@ -304,5 +332,17 @@ impl Plugins {
             Err(_) => restore.next += 1,
         }
         self.reopen = Some(restore);
+    }
+}
+
+pub(super) fn catalog_selection(
+    selected: &hex_plugin_catalog::PluginSelection,
+) -> EffectSelection<'_> {
+    EffectSelection {
+        module: &selected.module,
+        executable: &selected.executable_relative_path,
+        cid: selected.cid,
+        executable_sha256: &selected.executable_sha256,
+        info_sha256: &selected.info_sha256,
     }
 }

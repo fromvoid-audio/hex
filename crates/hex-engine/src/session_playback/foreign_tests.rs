@@ -13,9 +13,13 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created};
 
+mod paused_monitor;
+mod streamed_effects;
+
 struct BorrowedDefinition {
     binding_epoch: Option<u64>,
     instances: Vec<(ProcessorInstanceIdentity, u32)>,
+    unbounded_tail: bool,
 }
 impl NativeDeviceMetadata for BorrowedDefinition {
     fn type_id(&self) -> DeviceTypeId {
@@ -87,8 +91,12 @@ impl NativeDeviceDefinition for BorrowedDefinition {
         let prepared = PreparedForeignProcessor::new(8, latency, 16)?;
         let prepared = if let Some(epoch) = self.binding_epoch {
             prepared
-                .with_output_tail(hex_lattice::OutputTail::Finite {
-                    max_tail_frames: u64::from(latency) + 16,
+                .with_output_tail(if self.unbounded_tail {
+                    hex_lattice::OutputTail::Unbounded
+                } else {
+                    hex_lattice::OutputTail::Finite {
+                        max_tail_frames: u64::from(latency) + 16,
+                    }
                 })
                 .with_binding(hex_lattice_contract::ForeignProcessorBinding {
                     root: 1,
@@ -182,6 +190,179 @@ impl ForeignProcessors for Borrowed {
     }
 }
 
+#[test]
+fn delayed_effect_origins_keep_their_clock_through_successive_tempo_edits() {
+    use hex_lattice::NativeInstrumentClock;
+    type Origin = (u64, u64, u32, Option<std::num::NonZeroU64>);
+
+    struct Endpoint {
+        effect: Borrowed,
+        origins: Vec<Origin>,
+    }
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let clock = clock.unwrap();
+            if let Some(source) = clock.performance_frame_at_offset(0) {
+                self.origins.push((
+                    source,
+                    clock.arrangement_frame_at_offset(0).unwrap(),
+                    clock.tempo_micro_bpm_at_offset(0).unwrap(),
+                    clock.authored_clock_epoch_at_offset(0),
+                ));
+            } else {
+                assert_eq!(clock.authored_clock_epoch_at_offset(0), None);
+            }
+            self.effect
+                .process_segment(node, offset, frames, Some(clock))
+        }
+
+        fn reject_callback(&mut self) {
+            self.effect.reject_callback();
+        }
+    }
+
+    let mut fixture = fixture(&[&[]], 4096);
+    let track = fixture.tracks[0];
+    fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Device(device) = fixture
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("one delayed foreign processor");
+    };
+    let owner = ProcessorChainOwner::Track(track.value());
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::limiter::DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &fixture.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut playing = prepare(fixture.editor.project());
+    let delay = playing.revision.arrangement().main_latency_frames() as usize - 19;
+    assert!(delay > 2);
+    let advance = |playback: &mut SessionPlayback, endpoint: &mut Endpoint, frames: usize| {
+        for chunk in vec![[0.0; 2]; frames].chunks_mut(257) {
+            endpoint.effect.next_offset = 0;
+            playback
+                .render_with_foreign_processors(chunk, None, None, None, endpoint)
+                .unwrap();
+        }
+    };
+    let publish = |playing: &mut SessionPlayback, project: &hex_project::Project| {
+        let mut candidate = prepare(project);
+        let report = candidate.try_inherit_state_live_from(playing).unwrap();
+        assert!(!report.running_audio_restart());
+        *playing = candidate;
+    };
+    let mut endpoint = Endpoint {
+        effect: Borrowed::new(owner, device.value()),
+        origins: Vec::new(),
+    };
+    endpoint.effect.initial_unstamped_frames = delay;
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    advance(&mut playing, &mut endpoint, 512);
+    fixture
+        .editor
+        .execute(Command::Gain { track, gain: 0.5 })
+        .unwrap();
+    publish(&mut playing, fixture.editor.project());
+    advance(&mut playing, &mut endpoint, delay + 8);
+    let first_cut = playing.performance_frame();
+    fixture
+        .editor
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    publish(&mut playing, fixture.editor.project());
+    let first_cursor = playing.arrangement_frame();
+    advance(&mut playing, &mut endpoint, delay / 2);
+    let second_cut = playing.performance_frame();
+    assert!(fixture.editor.undo());
+    publish(&mut playing, fixture.editor.project());
+    let second_cursor = playing.arrangement_frame();
+    advance(&mut playing, &mut endpoint, delay + 16);
+
+    let initial = endpoint.origins[0]
+        .3
+        .expect("initial Arrangement clock identity");
+    let first = endpoint.origins[first_cut as usize]
+        .3
+        .expect("first retimed clock identity");
+    let second = endpoint.origins[second_cut as usize]
+        .3
+        .expect("second retimed clock identity");
+    assert!(initial < first && first < second);
+    assert_eq!(endpoint.origins.len(), second_cut as usize + 16);
+    for (index, &(source, arrangement, tempo, epoch)) in endpoint.origins.iter().enumerate() {
+        assert_eq!(source, index as u64);
+        let expected = if source < first_cut {
+            (source, 120_000_000, initial)
+        } else if source < second_cut {
+            (first_cursor + source - first_cut, 90_000_000, first)
+        } else {
+            (second_cursor + source - second_cut, 120_000_000, second)
+        };
+        assert_eq!(
+            (arrangement, tempo, epoch.unwrap()),
+            expected,
+            "source {source}"
+        );
+    }
+}
+
+#[test]
+fn paused_input_monitor_refuses_foreign_track_return_and_main_effects() {
+    for location in 0..3 {
+        let (revision, _, _) = prepared(location, false);
+        let track = revision.arrangement().tracks()[0]
+            .canonical_track_id()
+            .unwrap();
+        assert!(matches!(
+            PausedTrackMonitor::prepare_on_control(
+                revision,
+                track,
+                MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            ),
+            Err(SessionPlaybackError::InvalidCommand)
+        ));
+    }
+}
+
 fn prepared(location: usize, bypassed: bool) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
     prepared_with_latency(location, bypassed, 3, None)
 }
@@ -190,6 +371,16 @@ fn prepared_with_latency(
     bypassed: bool,
     latency: u32,
     binding_epoch: Option<u64>,
+) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
+    prepared_with_tail(location, bypassed, latency, binding_epoch, false)
+}
+
+fn prepared_with_tail(
+    location: usize,
+    bypassed: bool,
+    latency: u32,
+    binding_epoch: Option<u64>,
+    unbounded_tail: bool,
 ) -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
     let mut f = fixture(&[&[]], 64);
     let (command, owner) = match location {
@@ -227,6 +418,142 @@ fn prepared_with_latency(
                 ProcessorChainOwner::Return(bus.value()),
             )
         }
+        3 => {
+            let Created::Track(track) = f
+                .editor
+                .execute(Command::AddMidiTrack {
+                    name: "midi".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            f.editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap();
+            (
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(19).unwrap(),
+                },
+                ProcessorChainOwner::Track(track.value()),
+            )
+        }
+        4..=6 | 8..=12 => {
+            let track = f.tracks[0];
+            f.editor
+                .execute(Command::InsertInstrument {
+                    track,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap();
+            let Created::Track(group) = f
+                .editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap()
+            else {
+                panic!("group")
+            };
+            f.editor
+                .execute(Command::Gain {
+                    track: group,
+                    gain: 0.5,
+                })
+                .unwrap();
+            if (5..=6).contains(&location) {
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: group,
+                        before: None,
+                        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                    })
+                    .unwrap();
+            }
+            if location == 6 {
+                let Created::Track(sibling) = f
+                    .editor
+                    .execute(Command::AddTrack {
+                        name: "slower".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                for _ in 0..2 {
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: sibling,
+                            before: None,
+                            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+                        })
+                        .unwrap();
+                }
+            }
+            if (8..=10).contains(&location) || location == 12 {
+                let Created::ReturnTrack(bus) = f
+                    .editor
+                    .execute(Command::AddReturnTrack {
+                        name: "return".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return")
+                };
+                f.editor
+                    .execute(Command::SetReturnSend {
+                        track: if matches!(location, 10 | 12) {
+                            track
+                        } else {
+                            group
+                        },
+                        return_track: bus,
+                        gain: if location == 8 { 0.5 } else { 0.75 },
+                    })
+                    .unwrap();
+            }
+            if location == 11 {
+                let Created::Track(target) = f
+                    .editor
+                    .execute(Command::AddTrack {
+                        name: "feed target".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                f.editor
+                    .execute(Command::SetAudioFeed {
+                        source: hex_project::RoutingOwner::Track(track),
+                        destination: target,
+                        gain: 0.5,
+                    })
+                    .unwrap();
+            }
+            if location == 12 {
+                f.editor
+                    .execute(Command::SetLoopRegion {
+                        start: 0,
+                        end: 256,
+                        enabled: true,
+                    })
+                    .unwrap();
+            }
+            (
+                Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: state(19).unwrap(),
+                },
+                ProcessorChainOwner::Track(track.value()),
+            )
+        }
         _ => (
             Command::InsertMainDevice {
                 before: None,
@@ -243,12 +570,14 @@ fn prepared_with_latency(
         .unwrap();
     let definition = BorrowedDefinition {
         binding_epoch,
+        unbounded_tail,
         instances: vec![(
             ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
             latency,
         )],
     };
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::limiter::DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let instruments = hex_devices::native_instrument_registry().unwrap();
     let revision = PreparedRevision::prepare_with_registries(
@@ -269,6 +598,15 @@ fn prepared_with_latency(
 
 #[test]
 fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
+    foreign_export_applies_authored_parameter_values_to_audio(false);
+}
+
+#[test]
+fn linear_foreign_export_applies_authored_parameter_values_to_audio() {
+    foreign_export_applies_authored_parameter_values_to_audio(true);
+}
+
+fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
     use hex_project::{
         AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
         BeatTime, DeviceAutomation, DeviceAutomationTarget,
@@ -358,9 +696,11 @@ fn finite_foreign_bounce_applies_authored_parameter_values_to_audio() {
         SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&revision), None, frames)
             .is_err()
     );
-    let mut bounce =
-        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames)
-            .unwrap();
+    let mut bounce = if linear {
+        SessionPlayback::new_linear_arrangement_export_with_foreign(revision, None).unwrap()
+    } else {
+        SessionPlayback::new_finite_arrangement_bounce_with_foreign(revision, None, frames).unwrap()
+    };
     bounce.apply(SessionPlaybackCommand::Play).unwrap();
     let mut effect = AutomatedEffect(effect);
     for block in output.chunks_mut(5) {
@@ -417,6 +757,86 @@ fn foreign_content_origin_routes_track_return_main_and_latency_preserving_bypass
             }
         }
     }
+}
+
+#[test]
+fn closed_stream_demand_refuses_unbound_return_to_track_feed() {
+    closed_stream_demand_refuses_unbound_return(true);
+}
+
+#[test]
+fn closed_stream_demand_refuses_unbound_return_send() {
+    closed_stream_demand_refuses_unbound_return(false);
+}
+
+fn closed_stream_demand_refuses_unbound_return(feed: bool) {
+    let mut f = fixture(&[&[], &[]], 64);
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    if feed {
+        f.editor
+            .execute(Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Return(bus),
+                destination: f.tracks[1],
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: None,
+        unbounded_tail: false,
+        instances: vec![(
+            ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Return(bus.value()),
+                device.value(),
+            )
+            .unwrap(),
+            3,
+        )],
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = PreparedRevision::prepare_with_registries(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+        &hex_devices::native_instrument_registry().unwrap(),
+    )
+    .unwrap();
+    let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        runtime
+            .visit_next_stream_chunk(16, None, &mut |_| Ok(()))
+            .is_err()
+    );
 }
 
 #[test]
@@ -509,6 +929,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     assert!(
         prepare(&BorrowedDefinition {
             binding_epoch: None,
+            unbounded_tail: false,
             instances: vec![(identities[0], 3)]
         })
         .is_err()
@@ -516,6 +937,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     assert!(
         prepare(&BorrowedDefinition {
             binding_epoch: None,
+            unbounded_tail: false,
             instances: vec![
                 (identities[0], 3),
                 (
@@ -532,6 +954,7 @@ fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
     );
     let project = prepare(&BorrowedDefinition {
         binding_epoch: None,
+        unbounded_tail: false,
         instances: vec![(identities[0], 3), (identities[1], 7)],
     })
     .unwrap();
@@ -667,6 +1090,2512 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
     );
 }
 
+struct QuietTrackEffect;
+
+#[test]
+fn confirmed_track_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    verify_effect_removal(0, false, false);
+}
+
+#[test]
+fn confirmed_main_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    verify_effect_removal(2, false, false);
+}
+
+#[test]
+fn confirmed_return_effect_removal_does_not_duplicate_the_remaining_hosted_worker() {
+    verify_effect_removal(1, false, false);
+}
+
+#[test]
+fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() {
+    verify_effect_removal(1, true, false);
+}
+
+#[test]
+fn confirmed_track_vst_removal_cuts_latency_without_running_the_old_endpoint() {
+    verify_effect_removal(0, true, false);
+}
+
+#[test]
+fn confirmed_main_vst_removal_cuts_latency_without_running_the_old_endpoint() {
+    verify_effect_removal(2, true, false);
+}
+
+#[test]
+fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
+    verify_latency_edit_worker_clock(1, false);
+}
+
+#[test]
+fn confirmed_main_latency_removal_retains_only_an_unshifted_worker() {
+    verify_latency_edit_worker_clock(2, false);
+}
+
+#[test]
+fn confirmed_track_latency_removal_retains_only_an_unshifted_worker() {
+    verify_latency_edit_worker_clock(0, false);
+}
+
+#[test]
+fn confirmed_track_latency_reorder_refuses_to_shift_the_worker() {
+    verify_latency_edit_worker_clock(0, true);
+}
+
+#[test]
+fn confirmed_return_latency_reorder_refuses_to_shift_the_worker() {
+    verify_latency_edit_worker_clock(1, true);
+}
+
+fn verify_latency_edit_worker_clock(location: usize, reorder: bool) {
+    use hex_devices::limiter::DEFINITION as LIMITER;
+
+    const CUT: usize = 128;
+    for trailing in [true, false] {
+        if trailing && reorder {
+            continue;
+        }
+        let mut f = fixture(&[&[]], 512);
+        for media in f.media.values_mut() {
+            *media = crate::Audio::new(
+                48_000,
+                (0..512)
+                    .map(|frame| [0.125 + frame as f32 / 4096.0, -0.0625])
+                    .collect(),
+            )
+            .unwrap();
+        }
+        let track = f.tracks[0];
+        let bus = if location != 1 {
+            None
+        } else {
+            let Created::ReturnTrack(bus) = f
+                .editor
+                .execute(Command::AddReturnTrack {
+                    name: "hosted return".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return bus");
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track: bus,
+                    gain: 0.5,
+                })
+                .unwrap();
+            Some(bus)
+        };
+        let mut insert = |state| {
+            let command = match (location, bus) {
+                (0, _) => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                (_, Some(bus)) => Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state,
+                },
+                (_, None) => Command::InsertMainDevice {
+                    before: None,
+                    state,
+                },
+            };
+            let Created::Device(id) = f.editor.execute(command).unwrap() else {
+                panic!("bus device");
+            };
+            id
+        };
+        let limiter = LIMITER.default_state().unwrap();
+        let (hosted, removed) = if trailing {
+            (insert(state(19).unwrap()), insert(limiter))
+        } else {
+            let removed = insert(limiter);
+            (insert(state(19).unwrap()), removed)
+        };
+        let owner = match (location, bus) {
+            (0, _) => ProcessorChainOwner::Track(track.value()),
+            (_, Some(bus)) => ProcessorChainOwner::Return(bus.value()),
+            (_, None) => ProcessorChainOwner::Main,
+        };
+        let binding = |playback: &SessionPlayback| {
+            let chain = match location {
+                0 => &playback.device_chains[0],
+                1 => &playback.return_chains[0],
+                _ => &playback.main_chain,
+            };
+            chain.foreign_bindings().flatten().next().unwrap()
+        };
+        let definition = BorrowedDefinition {
+            binding_epoch: Some(1),
+            instances: vec![(
+                ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+                3,
+            )],
+            unbounded_tail: false,
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &LIMITER];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let prepare = |project: &hex_project::Project| {
+            Arc::new(
+                PreparedRevision::prepare_with_effect_registry(
+                    project,
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &registry,
+                )
+                .unwrap(),
+            )
+        };
+        let before = prepare(f.editor.project());
+        let edit = if reorder {
+            Command::ReorderDevices {
+                owner: bus.map_or(
+                    hex_project::DeviceChainOwner::Track(track),
+                    hex_project::DeviceChainOwner::Return,
+                ),
+                selected: hex_project::DeviceSelectionIds::new(&[removed]).unwrap(),
+                before: None,
+            }
+        } else {
+            Command::RemoveDevice(removed)
+        };
+        f.editor.execute(edit).unwrap();
+        let after = prepare(f.editor.project());
+        assert_eq!(before.arrangement().main_latency_frames(), 91);
+        assert_eq!(
+            after.arrangement().main_latency_frames(),
+            if reorder { 91 } else { 19 }
+        );
+        let render = |runtime: &mut SessionPlayback, worker: &mut Borrowed, pcm: &mut [Frame]| {
+            worker.next_offset = 0;
+            runtime
+                .render_with_foreign_processors(pcm, None, None, None, worker)
+                .unwrap();
+            assert_eq!(worker.next_offset, pcm.len());
+        };
+        let mut donor = SessionPlayback::new(Arc::clone(&before)).unwrap();
+        let mut worker = Borrowed::new(owner, hosted.value());
+        worker.initial_unstamped_frames = if trailing { 0 } else { 72 };
+        donor.apply(SessionPlaybackCommand::Play).unwrap();
+        render(&mut donor, &mut worker, &mut [[0.0; 2]; CUT]);
+        let original_binding = binding(&donor);
+        let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        unapproved.require_continuous_insert = true;
+        let offer = unapproved.try_inherit_state_live_from(&mut donor);
+        assert!(
+            matches!(
+                offer,
+                Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+            ),
+            "location {location}, trailing {trailing}, reorder {reorder}, offer {offer:?}"
+        );
+        donor.set_playing_at_device_insert_cut(false);
+        let mut candidate = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        let approval = candidate.try_inherit_state_at_device_insert_cut(&mut donor);
+        if !trailing {
+            assert!(
+                matches!(approval, Err(SessionPlaybackError::LatencyLayoutChanged)),
+                "location {location}, reorder {reorder}, cut {approval:?}"
+            );
+            assert_eq!(donor.performance_frame, CUT as u64);
+            donor.set_playing_at_device_insert_cut(true);
+            let mut reference = SessionPlayback::new(before).unwrap();
+            let mut oracle = Borrowed::new(owner, hosted.value());
+            oracle.initial_unstamped_frames = 72;
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            render(&mut reference, &mut oracle, &mut [[0.0; 2]; CUT]);
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = actual;
+            render(&mut donor, &mut worker, &mut actual);
+            render(&mut reference, &mut oracle, &mut expected);
+            assert_eq!(actual, expected);
+            if location == 2 {
+                // Stop starts a new processing epoch, so the same hardware
+                // can take the shorter input clock after the reset.
+                donor.apply(SessionPlaybackCommand::Stop).unwrap();
+                let mut candidate = SessionPlayback::new(after).unwrap();
+                candidate.require_continuous_insert = true;
+                candidate.try_inherit_state_live_from(&mut donor).unwrap();
+                assert_eq!(candidate.arrangement_frame, 0);
+                assert_eq!(binding(&candidate), original_binding);
+            }
+            continue;
+        }
+        approval.unwrap_or_else(|error| panic!("location {location}: {error:?}"));
+        assert_eq!(candidate.arrangement_frame, CUT as u64);
+        assert_eq!(candidate.performance_frame, CUT as u64);
+        assert_eq!(binding(&candidate), original_binding);
+        candidate.set_playing_at_device_insert_cut(true);
+        // Advance a separate instance with the unchanged prefix. Then start
+        // only its new local compensation at the cut, keeping its worker ring.
+        let mut prefix = SessionPlayback::new(Arc::clone(&after)).unwrap();
+        let mut oracle = Borrowed::new(owner, hosted.value());
+        prefix.apply(SessionPlaybackCommand::Play).unwrap();
+        render(&mut prefix, &mut oracle, &mut [[0.0; 2]; CUT]);
+        let mut reference = if location == 2 {
+            // A Main-only edit leaves the pre-Main compensation map intact.
+            prefix
+        } else {
+            let mut reference = SessionPlayback::new(after).unwrap();
+            reference.play_from(CUT as u64).unwrap();
+            reference
+        };
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = actual;
+        render(&mut reference, &mut oracle, &mut expected);
+        render(&mut candidate, &mut worker, &mut actual);
+        assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+        for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+            assert_eq!(
+                actual, expected,
+                "post-cut sample {index}, location {location}"
+            );
+        }
+        assert_eq!(worker.processed, CUT + 64);
+    }
+}
+
+#[test]
+fn paused_device_removal_keeps_the_surviving_hosted_worker_and_cursor() {
+    for location in 0..=2 {
+        verify_effect_removal(location, false, true);
+    }
+}
+
+#[test]
+fn fitting_native_removal_keeps_a_running_hosted_return_on_one_route() {
+    use hex_devices::eq::EQ_DEFINITION;
+
+    let mut f = fixture(&[&[], &[]], 512);
+    let track = f.tracks[0];
+    for media in f.media.values_mut() {
+        let frames = (0..512)
+            .map(|frame| [((frame % 7) as f32 - 3.0) / 16.0, 0.125])
+            .collect();
+        *media = crate::Audio::new(48_000, frames).unwrap();
+    }
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return bus");
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let insert = |state| Command::InsertReturnDevice {
+        return_track: bus,
+        before: None,
+        state,
+    };
+    let Created::Device(eq) = f
+        .editor
+        .execute(insert(EQ_DEFINITION.default_state().unwrap()))
+        .unwrap()
+    else {
+        panic!("native effect");
+    };
+    let Created::Device(hosted) = f.editor.execute(insert(state(19).unwrap())).unwrap() else {
+        panic!("hosted effect");
+    };
+    let owner = ProcessorChainOwner::Return(bus.value());
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: true,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut old = prepare(f.editor.project());
+    let mut reference = prepare(f.editor.project());
+    f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+    let mut candidate = prepare(f.editor.project());
+    candidate.require_continuous_insert = true;
+    let mut endpoint = Borrowed::new(owner, hosted.value());
+    let mut oracle = Borrowed::new(owner, hosted.value());
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+
+    let render = |runtime: &mut SessionPlayback, endpoint: &mut Borrowed, count| {
+        endpoint.next_offset = 0;
+        let mut pcm = vec![[0.0; 2]; count];
+        runtime
+            .render_with_foreign_processors(&mut pcm, None, None, None, endpoint)
+            .unwrap();
+        assert_eq!(endpoint.next_offset, count);
+        pcm
+    };
+    assert_eq!(
+        render(&mut old, &mut endpoint, 64),
+        render(&mut reference, &mut oracle, 64)
+    );
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Fading)
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            render(&mut old, &mut endpoint, 120),
+            render(&mut reference, &mut oracle, 120)
+        );
+    }
+    assert_eq!(
+        candidate.advance_native_removal_from(&mut old),
+        Ok(NativeRemovalProgress::Ready)
+    );
+    candidate.try_inherit_state_live_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert_eq!(candidate.performance_frame, 304);
+    let actual = render(&mut candidate, &mut endpoint, 64);
+    assert_eq!(actual, render(&mut reference, &mut oracle, 64));
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(endpoint.processed, 368);
+}
+
+#[test]
+fn removing_compensated_track_keeps_the_hosted_return_worker_and_its_input_clock() {
+    use hex_devices::limiter::DEFINITION as LIMITER;
+
+    const CUT: usize = 512;
+    const ALIGNMENT: usize = 72;
+    const OUTPUT_LATENCY: usize = ALIGNMENT + 19;
+    const FADE: usize = 240;
+    const DRAIN: usize = FADE + OUTPUT_LATENCY - 1;
+    const FRAMES: usize = 2_048;
+    struct ClockedWorker(Borrowed);
+    impl ForeignProcessors for ClockedWorker {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let origin = self
+                .0
+                .processed
+                .checked_sub(ALIGNMENT)
+                .map(|frame| frame as u64);
+            assert_eq!(
+                clock.and_then(|clock| clock.performance_frame_at_offset(0)),
+                origin
+            );
+            self.0.process_segment(node, offset, frames, clock)
+        }
+
+        fn reject_callback(&mut self) {
+            self.0.reject_callback();
+        }
+    }
+    let mut f = fixture(&[&[], &[]], FRAMES);
+    let [removed, kept] = f.tracks[..] else {
+        panic!("two audio tracks");
+    };
+    let asset = f.editor.project().tracks()[0].clips()[0].asset();
+    let source: Vec<_> = (0..FRAMES)
+        .map(|i| [0.125 + (i % 17) as f32 / 256.0, -0.125])
+        .collect();
+    f.media
+        .insert(asset, crate::Audio::new(48_000, source.clone()).unwrap());
+    let kept_asset = f.editor.project().tracks()[1].clips()[0].asset();
+    f.media.insert(
+        kept_asset,
+        crate::Audio::new(48_000, vec![[-0.0625, 0.125]; FRAMES]).unwrap(),
+    );
+    f.editor
+        .execute(Command::InsertDevice {
+            track: kept,
+            before: None,
+            state: LIMITER.default_state().unwrap(),
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "shared".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    for track in [removed, kept] {
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted return effect");
+    };
+    let owner = ProcessorChainOwner::Return(bus.value());
+    let prepare =
+        |project: &hex_project::Project, media: &std::collections::BTreeMap<_, _>, epoch| {
+            let definition = BorrowedDefinition {
+                binding_epoch: Some(epoch),
+                instances: vec![(
+                    ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+                    3,
+                )],
+                unbounded_tail: true,
+            };
+            let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &LIMITER];
+            let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+            Arc::new(
+                PreparedRevision::prepare_with_effect_registry(
+                    project,
+                    media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &registry,
+                )
+                .unwrap(),
+            )
+        };
+    let old = prepare(f.editor.project(), &f.media, 1);
+    assert_eq!(
+        old.arrangement().main_latency_frames() as usize,
+        OUTPUT_LATENCY
+    );
+    let mut reference_media = f.media.clone();
+    let mut faded = source;
+    for (index, frame) in faded[CUT..].iter_mut().enumerate() {
+        let gain = FADE.saturating_sub(index + 1) as f32 / FADE as f32;
+        *frame = [frame[0] * gain, frame[1] * gain];
+    }
+    reference_media.insert(asset, crate::Audio::new(48_000, faded).unwrap());
+    let reference = prepare(f.editor.project(), &reference_media, 1);
+    f.editor.execute(Command::RemoveTrack(removed)).unwrap();
+    let next = prepare(f.editor.project(), &f.media, 1);
+    assert_eq!(
+        next.arrangement().main_latency_frames() as usize,
+        OUTPUT_LATENCY
+    );
+
+    let render =
+        |runtime: &mut SessionPlayback, endpoint: &mut ClockedWorker, output: &mut [Frame]| {
+            endpoint.0.next_offset = 0;
+            runtime
+                .render_with_foreign_processors(output, None, None, None, endpoint)
+                .unwrap();
+            assert_eq!(endpoint.0.next_offset, output.len());
+        };
+    let endpoint = || {
+        let mut worker = Borrowed::new(owner, device.value());
+        worker.initial_unstamped_frames = ALIGNMENT;
+        ClockedWorker(worker)
+    };
+    let mut oracle = SessionPlayback::new(reference).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0; 2]; CUT + DRAIN + 257];
+    render(&mut oracle, &mut endpoint(), &mut expected);
+
+    for partition in [1, 257] {
+        let mut worker = endpoint();
+        let mut running = SessionPlayback::new(Arc::clone(&old)).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&next)).unwrap();
+        candidate.require_continuous_insert = true;
+        running.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut before = [[0.0; 2]; CUT];
+        render(&mut running, &mut worker, &mut before);
+        assert_eq!(before, expected[..CUT]);
+        let mut pcm = [[0.0; 2]; DRAIN + 257];
+        for chunk in pcm[..DRAIN].chunks_mut(partition) {
+            assert_eq!(
+                candidate.advance_native_removal_from(&mut running),
+                Ok(NativeRemovalProgress::Fading)
+            );
+            render(&mut running, &mut worker, chunk);
+        }
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut running),
+            Ok(NativeRemovalProgress::Ready)
+        );
+        candidate.try_inherit_state_live_from(&mut running).unwrap();
+        assert_eq!(candidate.performance_frame, (CUT + DRAIN) as u64);
+        render(&mut candidate, &mut worker, &mut pcm[DRAIN..]);
+        assert_eq!(worker.0.processed, expected.len());
+        assert_eq!(worker.0.rejections, 0);
+        for (frame, (actual, expected)) in pcm.iter().zip(&expected[CUT..]).enumerate() {
+            assert!(
+                (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
+                "partition {partition}, frame {frame}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+
+    let mut running = SessionPlayback::new(old).unwrap();
+    let mut replaced = SessionPlayback::new(prepare(f.editor.project(), &f.media, 2)).unwrap();
+    replaced.require_continuous_insert = true;
+    running.apply(SessionPlaybackCommand::Play).unwrap();
+    render(&mut running, &mut endpoint(), &mut [[0.0; 2]; CUT]);
+    assert_eq!(
+        replaced.advance_native_removal_from(&mut running),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    );
+}
+
+fn verify_effect_removal(location: usize, remove_hosted: bool, paused: bool) {
+    use hex_devices::eq::EQ_DEFINITION;
+
+    let mut f = fixture(&[&[], &[]], 64);
+    let track = f.tracks[0];
+    let bus = (location == 1).then(|| {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "effect return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        bus
+    });
+    let owner = match location {
+        0 => ProcessorChainOwner::Track(track.value()),
+        1 => ProcessorChainOwner::Return(bus.unwrap().value()),
+        _ => ProcessorChainOwner::Main,
+    };
+    let insert = |state| match location {
+        0 => Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        },
+        1 => Command::InsertReturnDevice {
+            return_track: bus.unwrap(),
+            before: None,
+            state,
+        },
+        _ => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+    };
+    let Created::Device(eq) = f
+        .editor
+        .execute(insert(EQ_DEFINITION.default_state().unwrap()))
+        .unwrap()
+    else {
+        panic!("eq");
+    };
+    let Created::Device(hosted) = f.editor.execute(insert(state(19).unwrap())).unwrap() else {
+        panic!("hosted effect");
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut predecessor = prepare(f.editor.project());
+    let mut reference = prepare(f.editor.project());
+    f.editor
+        .execute(Command::RemoveDevice(if remove_hosted {
+            hosted
+        } else {
+            eq
+        }))
+        .unwrap();
+    let mut candidate = prepare(f.editor.project());
+
+    let mut endpoint = Borrowed::new(owner, hosted.value());
+    let mut oracle = Borrowed::new(owner, hosted.value());
+    predecessor.apply(SessionPlaybackCommand::Play).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 32];
+    reference
+        .render_with_foreign_processors(&mut expected, None, None, None, &mut oracle)
+        .unwrap();
+    let mut before_cut = [[0.0; 2]; 8];
+    let first_block = if paused { 8 } else { 7 };
+    predecessor
+        .render_with_foreign_processors(
+            &mut before_cut[..first_block],
+            None,
+            None,
+            None,
+            &mut endpoint,
+        )
+        .unwrap();
+    let chain = match location {
+        0 => &predecessor.device_chains[0],
+        1 => &predecessor.return_chains[0],
+        _ => &predecessor.main_chain,
+    };
+    assert!(!chain.committed_range_is_quiescent(0..chain.len()));
+    if paused {
+        predecessor.apply(SessionPlaybackCommand::Pause).unwrap();
+        assert!(predecessor.renders_no_device_chains());
+        assert_eq!(
+            candidate.try_inherit_state_live_from(&mut predecessor),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        );
+        candidate.require_continuous_insert = true;
+        candidate
+            .preview_stream_handoff_with_policy_and_report(
+                &mut predecessor,
+                24,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+            )
+            .unwrap();
+        let cursor = predecessor.arrangement_frame;
+        candidate
+            .try_inherit_state_live_from(&mut predecessor)
+            .unwrap();
+        assert!(!candidate.playing);
+        assert_eq!(candidate.arrangement_frame, cursor);
+        candidate.apply(SessionPlaybackCommand::Play).unwrap();
+    } else {
+        let mut unapproved = prepare(f.editor.project());
+        unapproved.require_continuous_insert = true;
+        assert_eq!(
+            unapproved.try_inherit_state_live_from(&mut predecessor),
+            Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+        );
+        assert_eq!(predecessor.performance_frame, 7);
+        endpoint.next_offset = 0;
+        predecessor
+            .render_with_foreign_processors(&mut before_cut[7..], None, None, None, &mut endpoint)
+            .unwrap();
+        assert_eq!(before_cut[7..], expected[7..8]);
+        predecessor.set_playing_at_device_insert_cut(false);
+        candidate
+            .try_inherit_state_at_device_insert_cut(&mut predecessor)
+            .unwrap();
+        candidate.set_playing_at_device_insert_cut(true);
+    }
+    assert_eq!(candidate.performance_frame, 8);
+    if remove_hosted {
+        let mut reference = prepare(f.editor.project());
+        reference.apply(SessionPlaybackCommand::Seek(8)).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut expected = [[0.0; 2]; 64];
+        reference.render(&mut expected).unwrap();
+        let mut actual = [[0.0; 2]; 64];
+        // Rendering without a foreign runner proves the retiring worker has
+        // no obligations, including zero-input tail work, on the successor.
+        candidate.render(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+        return;
+    }
+    endpoint.next_offset = 0;
+    let mut after_cut = [[0.0; 2]; 24];
+    candidate
+        .render_with_foreign_processors(&mut after_cut, None, None, None, &mut endpoint)
+        .unwrap();
+    assert_eq!(after_cut, expected[8..]);
+    assert!(after_cut.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(endpoint.next_offset, after_cut.len());
+}
+
+#[test]
+fn native_eq_append_keeps_live_foreign_track_and_delivers_eq_signal() {
+    use hex_devices::eq::{EQ_DEFINITION, EQ_TYPE_ID, EqState, Node, NodeId};
+
+    // The second track has pending PCM in the compensation ring when the EQ
+    // is inserted. The hosted effect still holds the first track's impulse.
+    let mut f = fixture(&[&[], &[]], 64);
+    let track = f.tracks[0];
+    let owner = ProcessorChainOwner::Track(track.value());
+    let Created::Device(hosted) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted effect");
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, hosted.value()).unwrap(),
+            3,
+        )],
+        unbounded_tail: false,
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let prepare = |project: &hex_project::Project| {
+        let revision = PreparedRevision::prepare_with_effect_registry(
+            project,
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut playing = prepare(f.editor.project());
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut foreign = Borrowed::new(owner, hosted.value());
+    let mut first = [[0.0; 2]; 7];
+    playing
+        .render_with_foreign_processors(&mut first, None, None, None, &mut foreign)
+        .unwrap();
+    assert_eq!(first, [[0.0; 2]; 7]);
+
+    let Created::Device(eq) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: EQ_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("eq");
+    };
+    let mut appended = prepare(f.editor.project());
+    appended
+        .preview_stream_handoff_with_policy_and_report(
+            &mut playing,
+            32,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+        )
+        .unwrap();
+    let report = appended.try_inherit_state_live_from(&mut playing).unwrap();
+    assert!(!report.running_audio_restart());
+
+    let mut output = [[0.0; 2]; 32];
+    let mut eq_output = [[0.0; 2]; 32];
+    let identity = crate::PostNodeIdentity::new(owner, eq.value(), EQ_TYPE_ID);
+    let mut observe = |node, phase, offset: usize, frames: &[Frame]| {
+        if node == identity && phase == crate::NodeSignalPhase::Output {
+            eq_output[offset..offset + frames.len()].copy_from_slice(frames);
+        }
+    };
+    foreign.next_offset = 0;
+    appended
+        .render_with_foreign_processors(&mut output, None, Some(&mut observe), None, &mut foreign)
+        .unwrap();
+    let impulse_index = 19 - first.len();
+    assert_eq!(
+        eq_output[impulse_index],
+        f.samples[0].map(|sample| sample * 0.25)
+    );
+    assert_eq!(
+        output[impulse_index],
+        f.samples[0].map(|sample| sample * 1.25)
+    );
+    assert_eq!(foreign.next_offset, output.len());
+
+    let mut settings = EqState::default();
+    settings
+        .add(Node::new(NodeId::new(1).unwrap(), 1_000.0, 6.0, 0).unwrap())
+        .unwrap();
+    f.editor
+        .execute(Command::ReplaceDeviceState {
+            device: eq,
+            state: settings.encode().unwrap(),
+        })
+        .unwrap();
+    let mut edited = prepare(f.editor.project());
+    let report = edited.try_inherit_state_live_from(&mut appended).unwrap();
+    assert!(!report.running_audio_restart());
+    foreign.next_offset = 0;
+    let mut output = [[0.0; 2]; 64];
+    edited
+        .render_with_foreign_processors(&mut output, None, None, None, &mut foreign)
+        .unwrap();
+    assert_eq!(foreign.next_offset, output.len());
+    let last_sample = f.samples.len() - 1;
+    assert_ne!(
+        output[last_sample + 19 - first.len() - 32],
+        f.samples[last_sample].map(|sample| sample * 1.25),
+        "the new band should affect the next impulse"
+    );
+}
+
+#[test]
+fn overlapping_foreign_tail_capacity_preserves_the_playing_owner() {
+    foreign_tail_capacity_preserves_the_playing_owner(false);
+}
+
+#[test]
+fn overlapping_unbounded_foreign_tails_refuse_at_capacity_and_stop_reopens_it() {
+    foreign_tail_capacity_preserves_the_playing_owner(true);
+}
+
+fn foreign_tail_capacity_preserves_the_playing_owner(unbounded: bool) {
+    struct NonQuiet {
+        frames: [usize; SESSION_TAIL_GROUP_CAPACITY + 1],
+    }
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            self.frames[index] += frames.len();
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut current =
+        SessionPlayback::new(prepared_with_tail(10, false, 512, Some(1), unbounded).0).unwrap();
+    let mut probe = NonQuiet {
+        frames: [0; SESSION_TAIL_GROUP_CAPACITY + 1],
+    };
+    current.apply(SessionPlaybackCommand::Play).unwrap();
+    current
+        .render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+        .unwrap();
+    for epoch in 2..=(SESSION_TAIL_GROUP_CAPACITY as u64 + 2) {
+        let mut next =
+            SessionPlayback::new(prepared_with_tail(10, false, 512, Some(epoch), unbounded).0)
+                .unwrap();
+        let previous_position = current.performance_frame;
+        let previous_tails = current.tail_groups.iter().flatten().count();
+        let before = if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
+            Some(probe.frames)
+        } else {
+            None
+        };
+        let result = next.try_inherit_state_from(&mut current);
+        if epoch == SESSION_TAIL_GROUP_CAPACITY as u64 + 2 {
+            let before = before.unwrap();
+            assert_eq!(previous_tails, SESSION_TAIL_GROUP_CAPACITY);
+            assert!(matches!(result, Err(SessionPlaybackError::ReleaseBankFull)));
+            assert!(current.playing);
+            assert_eq!(current.performance_frame, previous_position);
+            assert_eq!(current.tail_groups.iter().flatten().count(), previous_tails);
+            assert!(next.tail_groups.iter().all(Option::is_none));
+            assert_eq!(probe.frames, before);
+            current
+                .render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+                .unwrap();
+            assert_eq!(current.performance_frame, previous_position + 1);
+            for (after, before) in probe.frames.iter().zip(before) {
+                assert_eq!(*after, before + 1);
+            }
+            current.apply(SessionPlaybackCommand::Stop).unwrap();
+            assert!(next.try_inherit_state_from(&mut current).is_ok());
+        } else {
+            result.unwrap();
+            next.render_with_foreign_processors(&mut [[0.0; 2]; 1], None, None, None, &mut probe)
+                .unwrap();
+            current = next;
+        }
+    }
+}
+
+#[test]
+fn overlapping_foreign_tails_keep_grouped_send_and_feed_pcm() {
+    struct Probe {
+        rings: [[[f32; 2]; 128]; 3],
+        cursors: [usize; 3],
+        frames: [usize; 3],
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            self.frames[index] += frames.len();
+            for frame in frames {
+                std::mem::swap(frame, &mut self.rings[index][self.cursors[index]]);
+                self.cursors[index] = (self.cursors[index] + 1) % 128;
+            }
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in [10, 11] {
+        for partition in [1, 8, 64] {
+            let mut old =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(1)).0)
+                    .unwrap();
+            let mut current =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(2)).0)
+                    .unwrap();
+            let mut next =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(3)).0)
+                    .unwrap();
+            let mut reference =
+                SessionPlayback::new(prepared_with_latency(location, false, 112, Some(1)).0)
+                    .unwrap();
+            let mut probe = Probe {
+                rings: [[[0.0; 2]; 128]; 3],
+                cursors: [0; 3],
+                frames: [0; 3],
+            };
+            let mut reference_probe = Probe {
+                rings: [[[0.0; 2]; 128]; 3],
+                cursors: [0; 3],
+                frames: [0; 3],
+            };
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut expected = [[0.0; 2]; 320];
+            reference
+                .render_with_foreign_processors(
+                    &mut expected,
+                    None,
+                    None,
+                    None,
+                    &mut reference_probe,
+                )
+                .unwrap();
+            let mut actual = [[0.0; 2]; 320];
+            old.render_with_foreign_processors(&mut actual[..8], None, None, None, &mut probe)
+                .unwrap();
+            current.try_inherit_state_from(&mut old).unwrap();
+            current
+                .render_with_foreign_processors(&mut actual[8..68], None, None, None, &mut probe)
+                .unwrap();
+            next.try_inherit_state_from(&mut current).unwrap();
+            for chunk in actual[68..].chunks_mut(partition) {
+                next.render_with_foreign_processors(chunk, None, None, None, &mut probe)
+                    .unwrap();
+            }
+            assert_eq!(actual, expected);
+            assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+            assert!(probe.frames.iter().all(|&frames| frames > 0));
+            assert!(probe.frames[0] <= 320 && probe.frames[1] <= 312);
+            assert_eq!(probe.frames[2], 252);
+            assert_ne!(expected[128], [0.0; 2]);
+            assert_ne!(expected[191], [0.0; 2]);
+        }
+    }
+}
+
+#[test]
+fn active_foreign_tail_keeps_unchanged_compensated_group_pcm() {
+    struct Probe {
+        rings: [[[f32; 2]; 16]; 2],
+        cursors: [usize; 2],
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let index = (node.prepared.binding().unwrap().epoch - 1) as usize;
+            for frame in frames {
+                std::mem::swap(frame, &mut self.rings[index][self.cursors[index]]);
+                self.cursors[index] = (self.cursors[index] + 1) % 16;
+            }
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in [4, 5, 6, 8, 10, 11] {
+        for partition in [1, 8, 64] {
+            let mut old =
+                SessionPlayback::new(prepared_with_latency(location, false, 0, Some(1)).0).unwrap();
+            let mut next =
+                SessionPlayback::new(prepared_with_latency(location, false, 0, Some(2)).0).unwrap();
+            let mut reference =
+                SessionPlayback::new(prepared_with_latency(location, false, 0, Some(1)).0).unwrap();
+            assert_eq!(
+                old.revision.arrangement().signal_graph,
+                next.revision.arrangement().signal_graph
+            );
+            let mut probe = Probe {
+                rings: [[[0.0; 2]; 16]; 2],
+                cursors: [0; 2],
+            };
+            let mut reference_probe = Probe {
+                rings: [[[0.0; 2]; 16]; 2],
+                cursors: [0; 2],
+            };
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut oracle = [[0.0; 2]; 192];
+            reference
+                .render_with_foreign_processors(&mut oracle, None, None, None, &mut reference_probe)
+                .unwrap();
+            let mut before = [[0.0; 2]; 8];
+            old.render_with_foreign_processors(&mut before, None, None, None, &mut probe)
+                .unwrap();
+            assert_eq!(before, oracle[..8]);
+            assert!(old.revision.arrangement().main_latency_frames() > 0);
+            assert!(
+                old.revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .unwrap()
+                    .has_group_outputs()
+            );
+            next.try_inherit_state_from(&mut old).unwrap();
+            let mut output = [[0.0; 2]; 184];
+            for chunk in output.chunks_mut(partition) {
+                next.render_with_foreign_processors(chunk, None, None, None, &mut probe)
+                    .unwrap();
+            }
+            assert_eq!(output, oracle[8..]);
+            assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+        }
+    }
+}
+
+#[test]
+fn unsafe_grouped_tail_preserves_the_previous_playback() {
+    struct NonQuiet;
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    {
+        let (old_location, new_location) = (8, 9);
+        let mut old =
+            SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
+        let mut reference =
+            SessionPlayback::new(prepared_with_latency(old_location, false, 0, Some(1)).0).unwrap();
+        let mut next =
+            SessionPlayback::new(prepared_with_latency(new_location, false, 0, Some(2)).0).unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        let old_position = old.performance_frame;
+        assert_eq!(
+            old.revision.arrangement().signal_graph == next.revision.arrangement().signal_graph,
+            old_location == new_location
+        );
+        assert!(matches!(
+            next.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::Arrangement(
+                super::handoff::COMPENSATED_TAILS_CHANGED
+            ))
+        ));
+        assert!(old.playing);
+        assert_eq!(old.performance_frame, old_position);
+        let mut actual = [[0.0; 2]; 24];
+        let mut expected = [[0.0; 2]; 24];
+        old.render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    }
+
+    // A changed route or aliased endpoint must leave the old worker audible.
+    for (location, epoch, alias) in [(9, 3, false), (10, 1, true), (12, 3, false)] {
+        let mut old = SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+        let mut reference_old =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(1)).0).unwrap();
+        let mut current =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+        let mut reference =
+            SessionPlayback::new(prepared_with_latency(10, false, 0, Some(2)).0).unwrap();
+        let mut later =
+            SessionPlayback::new(prepared_with_latency(location, false, 0, Some(epoch)).0).unwrap();
+        if location == 12 {
+            assert_eq!(
+                current.revision.arrangement().signal_graph,
+                later.revision.arrangement().signal_graph
+            );
+            assert_ne!(current.loop_region(), later.loop_region());
+        }
+        for playback in [&mut old, &mut reference_old] {
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback
+                .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+                .unwrap();
+        }
+        current.try_inherit_state_from(&mut old).unwrap();
+        reference
+            .try_inherit_state_from(&mut reference_old)
+            .unwrap();
+        let refusal = later.try_inherit_state_from(&mut current);
+        if alias {
+            assert!(matches!(
+                refusal,
+                Err(SessionPlaybackError::ForeignTailSourceBusy)
+            ));
+        } else {
+            assert!(matches!(
+                refusal,
+                Err(SessionPlaybackError::Arrangement(
+                    super::handoff::COMPENSATED_TAILS_CHANGED
+                ))
+            ));
+        }
+        let mut actual = [[0.0; 2]; 24];
+        let mut expected = [[0.0; 2]; 24];
+        current
+            .render_with_foreign_processors(&mut actual, None, None, None, &mut NonQuiet)
+            .unwrap();
+        reference
+            .render_with_foreign_processors(&mut expected, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    }
+}
+
+#[test]
+fn retained_foreign_track_tail_renders_on_its_original_endpoint() {
+    struct Probe {
+        calls: Vec<(u64, usize)>,
+        drained: bool,
+        fail_tail: bool,
+        rejected: bool,
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let epoch = node.prepared.binding().unwrap().epoch;
+            assert_eq!(frames.len(), 1);
+            if epoch == 1 {
+                assert_eq!(frames, &[[0.0; 2]]);
+            }
+            self.calls.push((epoch, offset));
+            if epoch == 1 && self.fail_tail {
+                return Err(DeviceContractError::ForeignProcessingFailed);
+            }
+            frames.fill(if epoch == 1 && !self.drained {
+                [0.2, 0.2]
+            } else {
+                [0.0, 0.0]
+            });
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+            self.drained && node.prepared.binding().unwrap().epoch == 1
+        }
+        fn reject_callback(&mut self) {
+            self.rejected = true;
+        }
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(3, false, 0, Some(2)).0).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut probe = Probe {
+        calls: vec![],
+        drained: false,
+        fail_tail: false,
+        rejected: false,
+    };
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.tail_groups.iter().any(Option::is_some));
+    probe.calls.clear();
+    let mut output = [[0.0; 2]; 8];
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    assert_eq!(
+        probe.calls,
+        (0..8)
+            .flat_map(|offset| [(2, offset), (1, offset)])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(output, [[0.2, 0.2]; 8]);
+    probe.drained = true;
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    probe.calls.clear();
+    candidate
+        .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+        .unwrap();
+    assert!(probe.calls.iter().all(|(epoch, _)| *epoch == 2));
+
+    let mut old = SessionPlayback::new(prepared_with_latency(3, false, 0, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(3, false, 0, Some(2)).0).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    probe.drained = false;
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let previous_frame = candidate.performance_frame;
+    probe.fail_tail = true;
+    output.fill([9.0; 2]);
+    assert!(
+        candidate
+            .render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+            .is_err()
+    );
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert_eq!(candidate.performance_frame, previous_frame);
+    assert!(probe.rejected);
+}
+impl ForeignProcessors for QuietTrackEffect {
+    fn process_segment(
+        &mut self,
+        _: ForeignProcessorNode<'_>,
+        _: usize,
+        frames: &mut [Frame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
+        Ok(())
+    }
+    fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
+    fn reject_callback(&mut self) {
+        panic!("quiet planner fixture rejected");
+    }
+}
+
+#[test]
+fn completed_foreign_track_suffix_can_be_replaced_without_losing_history() {
+    let mut active = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let mut next = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(2)).0).unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(!active.device_chains[0].committed_range_is_quiescent(0..1));
+    match next.try_inherit_state_from(&mut active) {
+        Ok(_) => assert!(next.tail_groups.iter().any(Option::is_some)),
+        Err(_) => assert!(active.playing),
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(0, false, 3, Some(2)).0).unwrap();
+    let chain = &mut old.device_chains[0];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert!(candidate.tail_groups.iter().all(Option::is_none));
+    assert_eq!(
+        candidate.device_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+}
+
+#[test]
+fn completed_foreign_track_suffix_does_not_reuse_a_changed_endpoint() {
+    let mut old = SessionPlayback::new(prepared_with_latency(0, false, 3, Some(1)).0).unwrap();
+    let candidate = SessionPlayback::new(prepared_with_latency(0, false, 4, Some(1)).0).unwrap();
+    let chain = &mut old.device_chains[0];
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(
+            0..chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            None,
+            &mut QuietTrackEffect,
+        )
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..chain.len()));
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(matches!(
+        super::handoff::validate_foreign_tail_sources(&candidate, &old.device_chains[0], 0),
+        Err(SessionPlaybackError::ForeignTailSourceBusy)
+    ));
+    assert!(old.playing);
+    assert!(!candidate.playing);
+}
+
+#[test]
+fn completed_foreign_track_does_not_discard_native_suffix_history() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    let prepare = |epoch, gain_db| {
+        let mut f = fixture(&[&[]], 64);
+        let track = f.tracks[0];
+        let Created::Device(device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: state(19).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let utility = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: utility.with_output_gain_db(gain_db).unwrap(),
+            })
+            .unwrap();
+        let foreign = BorrowedDefinition {
+            binding_epoch: Some(epoch),
+            unbounded_tail: false,
+            instances: vec![(
+                ProcessorInstanceIdentity::new(
+                    ProcessorChainOwner::Track(track.value()),
+                    device.value(),
+                )
+                .unwrap(),
+                3,
+            )],
+        };
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&foreign, &UTILITY_DEFINITION];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let revision = PreparedRevision::prepare_with_registries(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+            &instruments,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    };
+    let mut old = prepare(1, 0.0);
+    let mut next = prepare(2, -12.0);
+    let mut reference = prepare(1, -12.0);
+    let mut matching_old = prepare(1, 0.0);
+    for runtime in [&mut old, &mut matching_old] {
+        let chain = &mut runtime.device_chains[0];
+        assert_eq!(chain.len(), 2);
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(
+                0..chain.len(),
+                &mut [[0.0; 2]; 64],
+                0,
+                None,
+                None,
+                &mut QuietTrackEffect,
+            )
+            .unwrap();
+        chain.commit_block();
+        assert!(chain.committed_range_is_quiescent(0..chain.len()));
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    reference.try_inherit_state_from(&mut matching_old).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    assert!(next.playing);
+    assert!(next.tail_groups.iter().all(Option::is_none));
+    assert_eq!(
+        next.device_chains[0]
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+
+    // Observe the continuing native gain ramp on fresh input. A discarded
+    // native history would start immediately at the new target gain.
+    let input = [[0.25; 2]; 8];
+    let render_native = |runtime: &mut SessionPlayback| {
+        let mut output = input;
+        let chain = &mut runtime.device_chains[0];
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(1..2, &mut output, 0, None, None, &mut QuietTrackEffect)
+            .unwrap();
+        chain.commit_block();
+        output
+    };
+    let fresh = render_native(&mut prepare(2, -12.0));
+    let expected = render_native(&mut reference);
+    assert_ne!(expected, fresh, "nontrivial native continuation");
+    assert_eq!(render_native(&mut next), expected);
+}
+
 mod shared_source_release;
 
 mod instruments;
+mod streamed_scope;
+
+fn foreign_chain_with_configuration(
+    owner: ProcessorChainOwner,
+    binding: hex_lattice_contract::ForeignProcessorBinding,
+    state: Arc<NativeDeviceState>,
+) -> hex_lattice::NativeRuntimeChain {
+    hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+        meter: Default::default(),
+        owner,
+        device_id: binding.instance,
+        device_type: Definition.type_id(),
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(state),
+        modulation: None,
+        automation: Default::default(),
+        definition: Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(8, 0, 16)
+                .unwrap()
+                .with_output_tail(hex_lattice::OutputTail::Finite {
+                    max_tail_frames: 16,
+                })
+                .with_binding(binding)
+                .unwrap(),
+        )),
+    }])
+    .unwrap()
+}
+
+#[test]
+fn exact_foreign_continuation_keeps_track_return_and_main_tail_in_the_running_chain() {
+    struct NonQuiet;
+    impl ForeignProcessors for NonQuiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            frames.fill([0.2, 0.2]);
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for location in 0..=2 {
+        let (revision, endpoint, _) = prepared_with_latency(location, false, 0, Some(1));
+        let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch: 1,
+        };
+        let previous = Arc::new(state(19).unwrap());
+        let candidate = Arc::new(state(20).unwrap());
+        let chain = |state| foreign_chain_with_configuration(endpoint.owner, binding, state);
+        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut refused = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        match location {
+            0 => {
+                old.device_chains[0] = chain(Arc::clone(&previous));
+                next.device_chains[0] = chain(Arc::clone(&candidate));
+                refused.device_chains[0] = chain(Arc::clone(&candidate));
+            }
+            1 => {
+                old.return_chains[0] = chain(Arc::clone(&previous));
+                next.return_chains[0] = chain(Arc::clone(&candidate));
+                refused.return_chains[0] = chain(Arc::clone(&candidate));
+            }
+            _ => {
+                old.main_chain = chain(Arc::clone(&previous));
+                next.main_chain = chain(Arc::clone(&candidate));
+                refused.main_chain = chain(Arc::clone(&candidate));
+            }
+        }
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        let old_frame = old.performance_frame;
+        assert!(matches!(
+            refused.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let wrong = Arc::new(state(21).unwrap());
+        old.apply(SessionPlaybackCommand::Pause).unwrap();
+        assert!(old.renders_no_device_chains());
+        let mut silence = [[1.0; 2]; 8];
+        old.render_with_foreign_processors(&mut silence, None, None, None, &mut NonQuiet)
+            .unwrap();
+        assert_eq!(silence, [[0.0; 2]; 8]);
+        assert_eq!(old.performance_frame, old_frame);
+        let paused_refusal = refused
+            .preview_stream_handoff_with_continuation_and_report(
+                &mut old,
+                8,
+                None,
+                &mut |_| Ok(()),
+                true,
+                false,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            paused_refusal,
+            SessionPlaybackError::ForeignTailSourcePaused
+        );
+        let refusal = crate::PlaybackHandoffError::Session(paused_refusal)
+            .rejection()
+            .unwrap();
+        assert_eq!(
+            refusal,
+            crate::PlaybackHandoffRejection::ForeignTailSourcePaused
+        );
+        assert_eq!(
+            crate::PlaybackHandoffRejection::from_code(refusal as u32),
+            Some(refusal)
+        );
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        let wrong_proof = hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &wrong,
+        )
+        .unwrap();
+        assert!(matches!(
+            refused.inherit_state_planned(&mut old, None, None, false, false, Some(&wrong_proof)),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        assert!(matches!(
+            refused.try_inherit_state_live_with_foreign_continuation_from(&mut old, &wrong_proof),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let wrong_binding = hex_lattice_contract::ForeignProcessorBinding {
+            epoch: binding.epoch + 1,
+            ..binding
+        };
+        let wrong_endpoint = hex_lattice::ForeignConfigurationContinuation::new(
+            identity,
+            wrong_binding,
+            &previous,
+            &candidate,
+        )
+        .unwrap();
+        assert!(matches!(
+            refused.inherit_state_planned(
+                &mut old,
+                None,
+                None,
+                false,
+                false,
+                Some(&wrong_endpoint)
+            ),
+            Err(SessionPlaybackError::ForeignTailSourceBusy)
+        ));
+        assert_eq!(old.performance_frame, old_frame);
+        let proof = hex_lattice::ForeignConfigurationContinuation::new(
+            identity, binding, &previous, &candidate,
+        )
+        .unwrap();
+        next.preview_stream_handoff_with_continuation_and_report(
+            &mut old,
+            8,
+            None,
+            &mut |_| Ok(()),
+            true,
+            false,
+            Some(&proof),
+        )
+        .unwrap();
+        assert_eq!(old.performance_frame, old_frame);
+        next.try_inherit_state_live_with_foreign_continuation_from(&mut old, &proof)
+            .unwrap();
+        assert_eq!(next.performance_frame, old_frame);
+        next.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+            .unwrap();
+        // Exercise the public ordinary playback preview and commit facades,
+        // with the same actual session graphs and original source pair.
+        let mut old_playback =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        let mut next_playback =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        {
+            let old_session = old_playback
+                .session_runtime_mut_for_stream_action()
+                .unwrap();
+            let next_session = next_playback
+                .session_runtime_mut_for_stream_action()
+                .unwrap();
+            match location {
+                0 => {
+                    old_session.device_chains[0] = chain(Arc::clone(&previous));
+                    next_session.device_chains[0] = chain(Arc::clone(&candidate));
+                }
+                1 => {
+                    old_session.return_chains[0] = chain(Arc::clone(&previous));
+                    next_session.return_chains[0] = chain(Arc::clone(&candidate));
+                }
+                _ => {
+                    old_session.main_chain = chain(Arc::clone(&previous));
+                    next_session.main_chain = chain(Arc::clone(&candidate));
+                }
+            }
+            old_session.apply(SessionPlaybackCommand::Play).unwrap();
+            old_session
+                .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut NonQuiet)
+                .unwrap();
+        }
+        assert!(
+            old_playback
+                .retain_foreign_continuation_states_on_control(
+                    identity,
+                    binding,
+                    (*previous).clone(),
+                    (*candidate).clone(),
+                )
+                .is_err()
+        );
+        assert!(!old_playback.has_foreign_continuation_states());
+        let baseline_bytes = next_playback
+            .resource_control_metadata_bytes_on_control()
+            .unwrap();
+        let previous_handles = previous.payload_storage_observation().1;
+        let candidate_handles = candidate.payload_storage_observation().1;
+        next_playback
+            .retain_foreign_continuation_states_on_control(
+                identity,
+                binding,
+                (*previous).clone(),
+                (*candidate).clone(),
+            )
+            .unwrap();
+        assert!(next_playback.foreign_continuation_states_match_on_control(
+            identity, binding, &previous, &candidate
+        ));
+        let copied_candidate = state(20).unwrap();
+        assert!(!next_playback.foreign_continuation_states_match_on_control(
+            identity,
+            binding,
+            &previous,
+            &copied_candidate
+        ));
+        assert_eq!(
+            previous.payload_storage_observation().1,
+            previous_handles + 1
+        );
+        assert_eq!(
+            candidate.payload_storage_observation().1,
+            candidate_handles + 1
+        );
+        assert!(
+            next_playback
+                .resource_control_metadata_bytes_on_control()
+                .unwrap()
+                > baseline_bytes
+        );
+        assert!(
+            next_playback
+                .retain_foreign_continuation_states_on_control(
+                    identity,
+                    binding,
+                    (*previous).clone(),
+                    (*candidate).clone(),
+                )
+                .is_err()
+        );
+        assert!(
+            next_playback
+                .visit_candidate_groups(&mut |_, _, _| Ok(()))
+                .is_err()
+        );
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 512,
+            root_rows: 64,
+            max_retained_bytes: 16 * 1024 * 1024,
+            max_construction_peak_bytes: 16 * 1024 * 1024,
+        };
+        let mut book =
+            crate::native_device_resources::DeviceResourcePublication::reserve_on_control(
+                limits, 8, 2,
+            )
+            .unwrap();
+        let mut next_playback = match book.publish_on_control(next_playback, Ok::<_, ()>) {
+            Ok(playback) => playback,
+            Err(_) => panic!("ordinary continuation resource admission refused"),
+        };
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(
+            next_playback
+                .visit_candidate_groups(&mut |_, _, _| Ok(()))
+                .is_err()
+        );
+        let context = crate::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        assert!(matches!(
+            next_playback
+                .stream_playback(context)
+                .preview_ordinary_with_foreign_continuation(
+                    &mut old_playback.stream_playback(context),
+                    8,
+                    None,
+                    &mut |_| Ok(()),
+                    &wrong_proof,
+                ),
+            Err(crate::playback::PlaybackHandoffError::Session(
+                SessionPlaybackError::ForeignTailSourceBusy
+            ))
+        ));
+        next_playback
+            .stream_playback(context)
+            .preview_ordinary_with_stored_foreign_continuation(
+                &mut old_playback.stream_playback(context),
+                8,
+                None,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(matches!(
+            next_playback.try_inherit_runtime_with_stored_foreign_continuation(
+                &mut old_playback,
+                Some(1),
+                Some(2),
+            ),
+            Err(crate::playback::PlaybackHandoffError::RuntimeFenceChanged)
+        ));
+        assert!(next_playback.has_foreign_continuation_states());
+        next_playback
+            .try_inherit_runtime_with_stored_foreign_continuation(
+                &mut old_playback,
+                Some(1),
+                Some(1),
+            )
+            .unwrap();
+        assert!(next_playback.has_foreign_continuation_states());
+        assert!(book.retire_on_control(Box::new(next_playback)).is_ok());
+        assert_eq!(previous.payload_storage_observation().1, previous_handles);
+        assert_eq!(candidate.payload_storage_observation().1, candidate_handles);
+    }
+}
+
+#[test]
+fn retained_foreign_continuation_is_charged_and_returned_when_capacity_refuses() {
+    use crate::native_device_resources::{DeviceResourcePublication, DeviceResourcePublishError};
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let state = |byte| {
+        NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![byte; 128 * 1024],
+        )
+        .unwrap()
+    };
+    let before = state(1);
+    let after = state(2);
+    let before_observer = before.clone();
+    let after_observer = after.clone();
+    let plain =
+        crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    let mut candidate =
+        crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    candidate
+        .retain_foreign_continuation_states_on_control(identity, binding, before, after)
+        .unwrap();
+    assert_eq!(before_observer.payload_storage_observation().1, 2);
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 16,
+        handle_rows: 16,
+        root_rows: 4,
+        max_retained_bytes: 100_000,
+        max_construction_peak_bytes: 100_000,
+    };
+    let mut book = DeviceResourcePublication::reserve_on_control(limits, 0, 2).unwrap();
+    let plain = match book.publish_on_control(plain, Ok::<_, ()>) {
+        Ok(playback) => playback,
+        Err(_) => panic!("same graph without continuation should fit the budget"),
+    };
+    assert!(book.retire_on_control(Box::new(plain)).is_ok());
+    let refused = book.publish_on_control(candidate, |_| -> Result<(), ()> {
+        panic!("enqueue must not run without storage")
+    });
+    let Err(DeviceResourcePublishError::Resources { playback, .. }) = refused else {
+        panic!("proof backing must be charged before publication")
+    };
+    assert!(playback.has_foreign_continuation_states());
+    assert_eq!(book.unreturned_graphs_on_control(), 0);
+    let generous = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: 16 * 1024 * 1024,
+        max_construction_peak_bytes: 16 * 1024 * 1024,
+        ..limits
+    };
+    let mut book = DeviceResourcePublication::reserve_on_control(generous, 0, 2).unwrap();
+    let refused = book.publish_on_control(playback, Err::<(), _>);
+    let Err(DeviceResourcePublishError::Publication(playback)) = refused else {
+        panic!("a queue refusal must return the candidate and its state")
+    };
+    assert!(playback.has_foreign_continuation_states());
+    assert_eq!(book.unreturned_graphs_on_control(), 0);
+    drop(playback);
+    assert_eq!(before_observer.payload_storage_observation().1, 1);
+    assert_eq!(after_observer.payload_storage_observation().1, 1);
+}
+
+#[test]
+fn unpublished_foreign_continuation_is_included_in_resource_union() {
+    use crate::native_device_resources::{
+        DeviceResourceAdmission, DeviceResourcePhase, inspect_device_resource_union,
+    };
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 256,
+        handle_rows: 256,
+        root_rows: 64,
+        max_retained_bytes: 16 * 1024 * 1024,
+        max_construction_peak_bytes: 16 * 1024 * 1024,
+    };
+    let inspect = |playback: &crate::playback::Playback, reservation| {
+        let selected = [DeviceResourceAdmission::unpublished_on_control(
+            playback, None,
+        )];
+        let phase = DeviceResourcePhase {
+            stores: &[],
+            registered: &selected,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        inspect_device_resource_union(&phase, &phase, reservation)
+    };
+    let baseline = inspect(&playback, limits).unwrap().retained;
+    let state = |value| {
+        NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![value; 128 * 1024],
+        )
+        .unwrap()
+    };
+    let before = state(1);
+    let after = state(2);
+    let required = before.retained_control_metadata_bytes().unwrap()
+        + after.retained_control_metadata_bytes().unwrap();
+    let budget = baseline.retained_bytes + required / 2;
+    let tight = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: budget,
+        max_construction_peak_bytes: budget,
+        ..limits
+    };
+    assert!(inspect(&playback, tight).is_ok());
+    playback
+        .retain_foreign_continuation_states_on_control(identity, binding, before, after)
+        .unwrap();
+    assert!(
+        inspect(&playback, limits).unwrap().retained.data_bytes >= baseline.data_bytes + required,
+        "pending graph must include its retained state backing"
+    );
+    assert!(
+        inspect(&playback, tight).is_err(),
+        "pending state must respect the actual union budget"
+    );
+}
+
+#[test]
+fn foreign_continuation_matches_only_the_original_predecessor_state() {
+    for location in 0..=2 {
+        let (revision, endpoint, _) = prepared_with_latency(location, false, 0, Some(1));
+        let old = crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .unwrap();
+        let mut next =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch: 1,
+        };
+        let previous = old
+            .foreign_nodes_on_control()
+            .find(|node| node.owner == endpoint.owner && node.device_id == endpoint.device)
+            .unwrap()
+            .configuration
+            .as_deref()
+            .unwrap()
+            .clone();
+        next.retain_foreign_continuation_states_on_control(
+            identity,
+            binding,
+            previous,
+            state(20).unwrap(),
+        )
+        .unwrap();
+        assert!(next.foreign_continuation_matches_predecessor_on_callback(&old, false));
+        let (other_revision, _, _) = prepared_with_latency(location, false, 0, Some(1));
+        let other =
+            crate::playback::Playback::try_from_prepared_with_session(other_revision).unwrap();
+        assert!(!next.foreign_continuation_matches_predecessor_on_callback(&other, false));
+    }
+}
+
+#[test]
+fn unbounded_foreign_tail_keeps_playing_with_its_original_endpoint_until_stop() {
+    struct Probe {
+        frames: [usize; 2],
+        old_level: f32,
+    }
+    impl ForeignProcessors for Probe {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let epoch = node.prepared.binding().unwrap().epoch;
+            self.frames[(epoch - 1) as usize] += frames.len();
+            frames.fill(if epoch == 1 {
+                [self.old_level; 2]
+            } else {
+                [0.4, 0.4]
+            });
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let (revision, endpoint, _) = prepared_with_latency(10, false, 512, Some(1));
+    let (next_revision, _, _) = prepared_with_latency(10, false, 512, Some(2));
+    let ProcessorChainOwner::Track(track) = endpoint.owner else {
+        panic!("track effect fixture");
+    };
+    let track_index = revision
+        .arrangement()
+        .tracks()
+        .iter()
+        .position(|row| {
+            row.canonical_track_id()
+                .is_some_and(|id| id.value() == track)
+        })
+        .unwrap();
+    let chain = |epoch| {
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
+            root: 1,
+            instance: endpoint.device,
+            graph: 1,
+            epoch,
+        };
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            meter: Default::default(),
+            owner: endpoint.owner,
+            device_id: endpoint.device,
+            device_type: Definition.type_id(),
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(state(19 + epoch as u32).unwrap())),
+            modulation: None,
+            automation: Default::default(),
+            definition: Some(PreparedProcessorFactory::Foreign(
+                PreparedForeignProcessor::new(8, 512, 16)
+                    .unwrap()
+                    .with_binding(binding)
+                    .unwrap(),
+            )),
+        }])
+        .unwrap()
+    };
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference_old = SessionPlayback::new(revision).unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&next_revision)).unwrap();
+    let mut reference_next = SessionPlayback::new(next_revision).unwrap();
+    old.device_chains[track_index] = chain(1);
+    reference_old.device_chains[track_index] = chain(1);
+    next.device_chains[track_index] = chain(2);
+    reference_next.device_chains[track_index] = chain(2);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    reference_old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut probe = Probe {
+        frames: [0; 2],
+        old_level: 0.2,
+    };
+    let mut reference = Probe {
+        frames: [0; 2],
+        old_level: 0.0,
+    };
+    old.render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut probe)
+        .unwrap();
+    reference_old
+        .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut reference)
+        .unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    reference_next
+        .try_inherit_state_from(&mut reference_old)
+        .unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let mut reference_output = output;
+    let mut audible_difference = false;
+    for _ in 0..80 {
+        next.render_with_foreign_processors(&mut output, None, None, None, &mut probe)
+            .unwrap();
+        reference_next
+            .render_with_foreign_processors(&mut reference_output, None, None, None, &mut reference)
+            .unwrap();
+        audible_difference |= output
+            .iter()
+            .zip(reference_output)
+            .any(|(actual, reference)| (actual[0] - reference[0]).abs() > 1.0e-6);
+    }
+    assert!(probe.frames[0] > 8 && probe.frames[1] > 0);
+    assert!(
+        audible_difference,
+        "original unbounded endpoint must contribute to output"
+    );
+    let active_old_endpoints: usize = next
+        .tail_groups
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, chain)| {
+            let chain = chain.as_ref()?;
+            next.tail_output_active[slot].then_some((slot, chain))
+        })
+        .map(|(slot, chain)| {
+            chain
+                .storage_view()
+                .entries()
+                .skip(next.tail_suffix_starts[slot])
+                .filter(|entry| {
+                    entry
+                        .foreign_processor()
+                        .and_then(|prepared| prepared.binding())
+                        .is_some_and(|binding| {
+                            binding.epoch == 1 && binding.instance == endpoint.device
+                        })
+                })
+                .count()
+        })
+        .sum();
+    assert_eq!(active_old_endpoints, 1);
+    reference_next
+        .apply(SessionPlaybackCommand::Seek(0))
+        .unwrap();
+    assert!(
+        !reference_next
+            .tail_output_active
+            .iter()
+            .any(|active| *active)
+    );
+    next.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(!next.tail_output_active.iter().any(|active| *active));
+}
+
+#[test]
+fn foreign_continuation_preserves_native_eq_history_in_the_same_chain() {
+    use hex_devices::eq8::{EQ8_DEFINITION, parameter};
+
+    struct PassThrough;
+    impl ForeignProcessors for PassThrough {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            false
+        }
+        fn reject_callback(&mut self) {}
+    }
+
+    let (revision, endpoint, _) = prepared_with_latency(0, false, 0, Some(1));
+    let identity = ProcessorInstanceIdentity::new(endpoint.owner, endpoint.device).unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: endpoint.device,
+        graph: 1,
+        epoch: 1,
+    };
+    let previous = Arc::new(state(19).unwrap());
+    let candidate = Arc::new(state(20).unwrap());
+    let mut eq = EQ8_DEFINITION.default_state().unwrap();
+    for (id, value) in [
+        (parameter::enabled(0, 0), ParameterValue::Bool(true)),
+        (parameter::frequency(0, 0), ParameterValue::Float(262.0)),
+        (parameter::gain(0, 0), ParameterValue::Float(12.0)),
+    ] {
+        eq = EQ8_DEFINITION.patch_parameter(&eq, id, value).unwrap();
+    }
+    let eq = Arc::new(eq);
+    let tuning = hex_lattice::TuningTable::default();
+    let context = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let eq_factory = EQ8_DEFINITION
+        .prepare_runtime_factory(&eq, &context)
+        .unwrap()
+        .unwrap();
+    let chain = |foreign_state: Arc<NativeDeviceState>| {
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![
+            hex_lattice::PreparedRuntimeInstance {
+                modulation: None,
+                automation: Default::default(),
+                meter: Default::default(),
+                owner: endpoint.owner,
+                device_id: endpoint.device + 100,
+                device_type: eq.type_id(),
+                matrix: StereoMatrix::identity(),
+                bypassed: false,
+                sample_rate: 48_000,
+                configuration: Some(Arc::clone(&eq)),
+                definition: Some(eq_factory.clone()),
+            },
+            hex_lattice::PreparedRuntimeInstance {
+                modulation: None,
+                automation: Default::default(),
+                meter: Default::default(),
+                owner: endpoint.owner,
+                device_id: endpoint.device,
+                device_type: Definition.type_id(),
+                matrix: StereoMatrix::identity(),
+                bypassed: false,
+                sample_rate: 48_000,
+                configuration: Some(foreign_state),
+                definition: Some(PreparedProcessorFactory::Foreign(
+                    PreparedForeignProcessor::new(8, 0, 16)
+                        .unwrap()
+                        .with_binding(binding)
+                        .unwrap(),
+                )),
+            },
+        ])
+        .unwrap()
+    };
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut cold = SessionPlayback::new(revision).unwrap();
+    old.device_chains[0] = chain(Arc::clone(&previous));
+    reference.device_chains[0] = chain(Arc::clone(&previous));
+    next.device_chains[0] = chain(Arc::clone(&candidate));
+    cold.device_chains[0] = chain(Arc::clone(&previous));
+    for playback in [&mut old, &mut reference, &mut cold] {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback
+            .render_with_foreign_processors(&mut [[0.0; 2]; 16], None, None, None, &mut PassThrough)
+            .unwrap();
+    }
+    let proof = hex_lattice::ForeignConfigurationContinuation::new(
+        identity, binding, &previous, &candidate,
+    )
+    .unwrap();
+    next.try_inherit_state_live_with_foreign_continuation_from(&mut old, &proof)
+        .unwrap();
+    let mut actual = [[0.0; 2]; 8];
+    let mut expected = [[0.0; 2]; 8];
+    next.render_with_foreign_processors(&mut actual, None, None, None, &mut PassThrough)
+        .unwrap();
+    reference
+        .render_with_foreign_processors(&mut expected, None, None, None, &mut PassThrough)
+        .unwrap();
+    assert_eq!(
+        actual, expected,
+        "the EQ filter state must continue with the foreign endpoint"
+    );
+    assert!(
+        expected
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1.0e-6)
+    );
+    // Preserve the same transport and input, but deliberately replace the
+    // stateful chain without inheriting it to prove the oracle detects a reset.
+    cold.device_chains[0] = chain(Arc::clone(&candidate));
+    let mut without_history = [[0.0; 2]; 8];
+    cold.render_with_foreign_processors(&mut without_history, None, None, None, &mut PassThrough)
+        .unwrap();
+    assert_ne!(
+        without_history, expected,
+        "the oracle must detect lost EQ history"
+    );
+}
+
+#[test]
+fn live_track_audio_reaches_borrowed_foreign_effect() {
+    let (revision, mut effect, samples) = prepared(0, false);
+    let track = revision.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 64];
+    playback
+        .render_with_live_track_audio(&mut output, track, &samples, None, None, None, &mut effect)
+        .unwrap();
+    assert_eq!(effect.processed, 64);
+    assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
+}
+
+#[test]
+fn playback_wrapper_delivers_live_audio_to_borrowed_foreign_effect() {
+    let (revision, mut effect, samples) = prepared(0, false);
+    let track = revision.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(crate::PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 64];
+    playback
+        .render_with_live_track_audio(&mut output, track, &samples, None, None, None, &mut effect)
+        .unwrap();
+    assert_eq!(effect.processed, 64);
+    assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
+}
+
+#[test]
+fn delayed_hosted_output_keeps_native_eq_history_across_arrangement_wraps() {
+    use hex_devices::eq::{EQ_DEFINITION, EqState, Node, NodeId, NodeKind};
+
+    const CYCLE: usize = 601;
+    const DELAY: usize = 19;
+    const DC: Frame = [0.25, -0.125];
+    // Model retained output from a hosted saturator after its declared bridge
+    // latency. The authored source can reach zero without ending this signal.
+    struct Endpoint {
+        processed: usize,
+    }
+    impl ForeignProcessors for Endpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            for frame in frames {
+                *frame = if self.processed < DELAY { [0.0; 2] } else { DC };
+                self.processed += 1;
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+    let mut f = fixture(&[&[]], 64);
+    let track = f.tracks[0];
+    let Created::Device(hosted) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted effect");
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: Some(1),
+        instances: vec![(
+            ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Track(track.value()),
+                hosted.value(),
+            )
+            .unwrap(),
+            3,
+        )],
+        unbounded_tail: true,
+    };
+    let mut eq = EqState::default();
+    let mut node = Node::new(NodeId::new(1).unwrap(), 750.0, 9.0, 0).unwrap();
+    node.kind = NodeKind::LowShelf;
+    eq.add(node).unwrap();
+    let eq = eq.encode().unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: eq.clone(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: CYCLE as u64,
+            enabled: true,
+        })
+        .unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &EQ_DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_effect_registry(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    let tuning = hex_lattice::TuningTable::default();
+    let factory = EQ_DEFINITION
+        .prepare_runtime_factory(
+            &eq,
+            &DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &tuning,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let mut oracle = factory.legacy().unwrap().create_runtime();
+    let mut expected = vec![DC; CYCLE * 2 + DELAY + 128];
+    expected[..DELAY].fill([0.0; 2]);
+    oracle.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    for block in [1, 127, 257, 512] {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut endpoint = Endpoint { processed: 0 };
+        let mut output = vec![[0.0; 2]; expected.len()];
+        for chunk in output.chunks_mut(block) {
+            runtime
+                .render_with_foreign_processors(chunk, None, None, None, &mut endpoint)
+                .unwrap();
+        }
+        let mismatch = output.iter().zip(&expected).position(|(a, b)| a != b);
+        assert!(
+            mismatch.is_none(),
+            "callback partition {block}, mismatch={mismatch:?}"
+        );
+    }
+}

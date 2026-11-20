@@ -26,7 +26,10 @@ impl RootResourceWitness {
             && self.native_workers <= hex_lattice::MAX_STATEFUL_PROCESSORS
             && self.native_children <= hex_lattice::MAX_STATEFUL_PROCESSORS
             && self.native_ipc.checked_add(self.native_children).is_some()
-            && self.source_workers <= 2 && self.catalog_channels <= 2
+            // Two N2 domains each retain one ordinary worker and, when
+            // granular sources are present, one dedicated rendering worker.
+            && self.catalog_channels <= 2
+            && (self.catalog_channels..=2 * self.catalog_channels).contains(&self.source_workers)
             // Counts are retained until actual source-pair/report closure;
             // zero sources legitimately need no reader or kernel handles.
             && self.source_readers.checked_add(self.kernel_handles).is_some()
@@ -40,11 +43,17 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     // the actual callback constructor visitor, independently of queue occupancy.
     // Observer Status handles outside this publication Root own no graph or
     // source lease; no process-wide Arc/RSS bound is claimed.
+    let insert_receipts = if bank.publication.stream_extents.is_some() {
+        bank.publication.slots.len().checked_add(1)?
+    } else {
+        0
+    };
     bank.publication
         .slots
         .len()
         .checked_mul(5)?
         .checked_add(28)?
+        .checked_add(insert_receipts)?
         .checked_add(
             bank.native
                 .as_ref()
@@ -93,11 +102,19 @@ pub(super) fn for_candidate(
     summary: AudioCandidateConstructorSummary,
     excluded_preparation: Option<usize>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))] source_work: &native_sources::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_refs: native_sources::References,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let native_sources = bank
         .sources
-        .inventory(source_work)
+        .inventory(
+            source_work,
+            bank.publication
+                .stream_extents
+                .is_some()
+                .then_some(native_refs),
+        )
         .ok_or("native source construction is not sealed")?;
     if bank
         .domains

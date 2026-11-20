@@ -2,6 +2,7 @@
 use super::*;
 mod authored_reopen;
 mod batch;
+mod pressure;
 mod reopen;
 
 #[test]
@@ -84,6 +85,11 @@ fn native_effect_save_keeps_pending_mix_publication_and_metadata_alias() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_after_stop_preserves_original_source_for_later_playback() {
+    use hex_session::service::{
+        DeviceAutomationTakeProgress, PluginEditorCloseAdmission as Admission,
+        PluginEditorCloseAttempt,
+    };
+
     let _native = native_fixture();
     let (mut h, files, before) = fixture(Start::Saved);
     let (applied, _) = h.applied(0);
@@ -111,13 +117,72 @@ fn native_effect_save_after_stop_preserves_original_source_for_later_playback() 
         u32::from_le_bytes(captured.component.unwrap()[4..8].try_into().unwrap()),
         4
     );
+    let context = saved
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let original = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let mut next_request = 1;
+    let mut poll_close = |h: &mut ResidentHarness, close: &Arc<PluginEditorCloseAttempt>| {
+        let request_id = next_request;
+        next_request += 1;
+        let event = h.run(Request::PreparePluginEditorClose {
+            request_id,
+            context,
+            attempt: Arc::downgrade(close),
+        });
+        let result = event.device_automation_take_complete.unwrap();
+        assert_eq!(result.request_id, request_id);
+        let DeviceAutomationTakeProgress::ClosePluginEditor(admission) = result.progress else {
+            panic!("unexpected close observation: {:?}", result.progress);
+        };
+        admission
+    };
+    let mut wait_for_hold = |h: &mut ResidentHarness, close: &Arc<PluginEditorCloseAttempt>| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match poll_close(h, close) {
+                Admission::Held {
+                    admitted_edits: false,
+                } => return,
+                Admission::Pending => {}
+                other => panic!("fresh original controller hold: {other:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original editor admission did not become available"
+            );
+        }
+    };
+    let close = Arc::new(PluginEditorCloseAttempt::default());
+    wait_for_hold(&mut h, &close);
+    assert!(close.is_valid());
+
     let mut restored = h.run(Request::RestoreStoppedPlayback);
+    assert!(
+        !close.is_valid(),
+        "admitting stopped restoration invalidates the pre-renewal close"
+    );
     if !restored.stopped_playback_restore_complete {
         restored = restored_terminal(&mut h);
     }
     assert!(restored.error.is_none(), "{:?}", restored.error);
     assert_eq!(restored.state.project, before.project);
     h.applied(applied);
+    let renewed = h.plugin_progress.lock().unwrap().binding.unwrap();
+    assert_ne!(original, renewed);
+    assert_eq!(
+        (original.root, original.instance),
+        (renewed.root, renewed.instance)
+    );
+    let retry = Arc::new(PluginEditorCloseAttempt::default());
+    // The old attempt remains alive. The renewed binding must nevertheless
+    // accept a new token, which proves the old SDK hold was released.
+    wait_for_hold(&mut h, &retry);
+    drop(retry);
+    assert!(!close.is_valid());
     wait(|| h.plugin_completed.load(Acquire) == 0);
     wait(|| {
         h.audio
@@ -138,6 +203,104 @@ fn native_effect_save_after_stop_preserves_original_source_for_later_playback() 
         }
     }
     assert_eq!(h.plugin_records.load(Acquire), 1);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn stopped_save_includes_vst3_editor_input_admitted_during_save() {
+    const CHILD: &str = "HEX_DESKTOP_STOPPED_SAVE_EDITOR_CHILD";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        for mode in ["stopped", "play_and_retry"] {
+            let files = Files::new();
+            let test = std::thread::current().name().unwrap().to_owned();
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test, "--ignored", "--nocapture"])
+                .env(CHILD, mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", files.0.join("trace"))
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", files.0.join("release"))
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+        }
+        return;
+    };
+    let revocation = mode == "play_and_retry";
+
+    let _native = native_fixture();
+    let (mut h, files, before) = fixture(Start::Saved);
+    let original = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let path = files.0.join("idle-editor.hex");
+    let (ready, resume) = h.probe_next_save_capture();
+    h.service.submit(Request::SaveNew(path.clone())).unwrap();
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"edit",
+    )
+    .unwrap();
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    wait(|| fs::read(&trace).is_ok_and(|data| data.starts_with(&25_i32.to_le_bytes())));
+    if revocation {
+        h.plugin_progress.lock().unwrap().hold_pending_read = Some(original);
+    }
+    resume.send(()).unwrap();
+    if revocation {
+        wait(|| h.plugin_progress.lock().unwrap().held_pending_read == Some(original));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render_plugin_block();
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        let refused = h.next();
+        assert!(refused.save_complete);
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("transport changed while preparing vst3 save · retry save")
+        );
+        assert_eq!(refused.state.project, before.project);
+        assert!(!path.exists());
+
+        h.audio.as_ref().unwrap().control.stop();
+        h.render_plugin_block();
+        h.plugin_progress.lock().unwrap().hold_pending_read = None;
+        h.service.submit(Request::SaveNew(path.clone())).unwrap();
+    }
+    let saved = h.next();
+    assert!(
+        saved.save_complete && saved.error.is_none(),
+        "{:?}",
+        saved.error
+    );
+    assert_eq!(saved.state.revision, before.revision);
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(original));
+    let loaded = hex_storage::load(&path).unwrap();
+    let captured = hex_plugin_state::decode(loaded.main_devices()[0].state()).unwrap();
+    if !revocation {
+        assert_eq!(h.plugin_completed.load(Acquire), 0, "no PCM was processed");
+    }
+    assert_eq!(&captured.component.unwrap()[8..12], &3.0_f32.to_le_bytes());
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(path));
+    assert!(reopened.open_complete && reopened.project_replaced);
+    assert_eq!(*reopened.state.project, loaded);
+    super::super::super::resident_lifecycle::finish_replacement(&mut h, &reopened, old_output);
 }
 
 #[test]

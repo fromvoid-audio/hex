@@ -109,7 +109,7 @@ fn painted_range(visual: &mut VisualTestContext) -> Bounds<gpui::Pixels> {
 fn assert_loop_paint(visual: &mut VisualTestContext, enabled: Option<bool>, message: &str) {
     let expected_fill: Option<gpui::Background> = enabled.map(|enabled| {
         let (role, opacity) = if enabled {
-            (theme::PaletteRole::Text, 0.94)
+            (theme::PaletteRole::Primary, 0.94)
         } else {
             (theme::PaletteRole::Muted, 0.62)
         };

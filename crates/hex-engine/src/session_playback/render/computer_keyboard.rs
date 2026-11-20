@@ -115,6 +115,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        live_audio: Option<LiveTrackAudio<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.begin_block();
@@ -133,7 +134,7 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.begin_block();
+            tail.begin_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.begin_block();
@@ -188,6 +189,7 @@ impl SessionPlayback {
                     foreign,
                     None,
                     None,
+                    live_audio,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails
@@ -261,6 +263,7 @@ impl SessionPlayback {
                         parameter_block
                             .as_ref()
                             .map(|values| values as &dyn hex_lattice::NativeParameterAutomation),
+                        None,
                     )?;
                 } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
@@ -346,6 +349,20 @@ impl SessionPlayback {
                         frames,
                     )?;
                 }
+                if let Some(slot) = self.receiver_power_off_slots[index].map(usize::from)
+                    && let Some(tail) = self.tail_mutable_instruments[slot].as_mut()
+                    && !tail.speculative_is_quiescent()
+                {
+                    process_mutable_tail(
+                        tail,
+                        &mut self.mutable_onsets,
+                        &mut self.mutable_events,
+                        self.performance_frame,
+                        frames,
+                        &timing,
+                        false,
+                    )?;
+                }
                 if self.source_effects.has_chain(index) {
                     let clock = crate::effect_clock::ArrangementEffectClock::session(
                         self.revision.session().timing(),
@@ -359,6 +376,14 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 }
                 track.apply_instrument_output_gain(frames);
+                if let Some(input) =
+                    live_audio.filter(|input| input.track == self.route_scratch[index].id)
+                {
+                    for (frame, source) in frames.iter_mut().zip(&input.frames[offset..end]) {
+                        frame[0] += source[0];
+                        frame[1] += source[1];
+                    }
+                }
                 let chain = &mut self.device_chains[index];
                 if chain.is_empty() {
                     track.apply_ordered_suffix(frames);
@@ -422,7 +447,15 @@ impl SessionPlayback {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
+            self.render_detached_tails(
+                self.performance_frame,
+                chunk,
+                offset,
+                capture,
+                None,
+                None,
+                foreign,
+            )?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }
@@ -458,7 +491,7 @@ impl SessionPlayback {
             runtime.commit_block();
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.commit_block();
+            tail.commit_block();
         }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.commit_block();

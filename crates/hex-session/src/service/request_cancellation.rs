@@ -4,7 +4,7 @@
 //! Fresh catalog requests also retain their configured data directory at accepted
 //! submission; later configuration never changes an already queued construction.
 use super::*;
-use std::sync::atomic::AtomicU64;
+use std::{sync::atomic::AtomicU64, time::Instant};
 
 pub(super) struct QueuedRequest {
     /// Frozen application configuration for fresh catalog creation only.
@@ -44,6 +44,7 @@ pub struct RequestCancellation {
     expected_intent: u64,
     publication_waited: bool,
     bounce: Option<hex_export::ExportControl>,
+    preparation_deadline: Option<Instant>,
 }
 impl RequestCancellation {
     pub(super) fn new(
@@ -57,6 +58,7 @@ impl RequestCancellation {
             expected_intent,
             publication_waited: false,
             bounce: None,
+            preparation_deadline: None,
         }
     }
     pub(super) fn with_bounce(mut self, control: &hex_export::ExportControl) -> Self {
@@ -75,6 +77,20 @@ impl RequestCancellation {
     pub fn is_shutting_down(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
     }
+    /// Limit control-side preparation using the owning attempt's deadline.
+    /// A scoped copy retains the request's shutdown and document intent.
+    pub fn with_preparation_deadline(mut self, deadline: Instant) -> Self {
+        self.preparation_deadline = Some(
+            self.preparation_deadline
+                .map_or(deadline, |earlier| earlier.min(deadline)),
+        );
+        self
+    }
+    /// Whether the scoped preparation budget has elapsed.
+    pub fn preparation_expired(&self) -> bool {
+        self.preparation_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
     pub fn is_cancelled(&self) -> bool {
         self.is_shutting_down()
             || self.document_intent.load(Ordering::Acquire) != self.expected_intent
@@ -82,6 +98,7 @@ impl RequestCancellation {
                 .bounce
                 .as_ref()
                 .is_some_and(hex_export::ExportControl::is_cancelled)
+            || self.preparation_expired()
     }
 }
 
@@ -153,6 +170,7 @@ impl Sender {
                 | Request::ReplaceNativeDevice { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::LoadTrackCatalogDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::DropNativeDevice {
                     source: NativeDeviceDropSource::Browser { .. },

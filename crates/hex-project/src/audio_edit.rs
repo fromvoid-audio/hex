@@ -4,6 +4,9 @@ use crate::{BeatTime, Clip, ClipFade, Invalid, TempoMap, TrimEdge};
 use std::sync::Arc;
 
 mod content;
+mod outer_fade;
+pub use outer_fade::ProjectedOuterAudioFade;
+pub(crate) use outer_fade::retain_outer_fade_crop_context;
 mod prefix;
 pub(crate) use prefix::extend_frame_left;
 mod timing;
@@ -17,31 +20,31 @@ pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
 pub const MAX_SPARSE_AUDIO_TIMELINE_FRAMES: u64 = 1 << 36;
 
 /// Refusal for an edit whose whole root must fit the bounded resident transform
-/// workspace (reverse, pitch, warp and stretch; #4145). Durations are
+/// workspace (processed reverse, pitch, warp and stretch; #4145). Durations are
 /// `MAX_AUDIO_DOMAIN_FRAMES / rate` rounded down for common project rates, so
 /// the static message stays exact; other rates name the frame cap instead.
 pub(crate) fn transform_domain_limit(sample_rate: u32) -> Invalid {
     Invalid(match sample_rate {
         44_100 => {
-            "reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
         }
         48_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
         }
         88_200 => {
-            "reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
         }
         96_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
         }
         176_400 => {
-            "reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
         }
         192_000 => {
-            "reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
         }
         _ => {
-            "reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
+            "processed reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
         }
     })
 }
@@ -195,7 +198,12 @@ impl AudioDomainClock {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioFadeProjection {
     pub tempo: TempoMap,
+    /// Outer retains this original author reference through crops and prefixes.
+    /// LegacyRoot keeps its historical captured-root projection semantics.
     pub origin_beat_raw: i128,
+    /// LegacyRoot: root-local fade start. Outer: full consumed raw beat ticks;
+    /// subtract domain.fade_start to get signed unwrapped displacement. For
+    /// Outer at most one of these two unsigned distances may be nonzero.
     pub local_start_raw: u64,
 }
 /// Finite musical source read retained independently of event destinations.
@@ -234,6 +242,25 @@ impl AudioClipContent {
     }
 }
 
+/// Clock that authors an instance-owned clip fade. Historical projects keep
+/// their retained-root law. An Outer fade uses unwrapped destination age.
+/// Commands adopting the new law and the saved-format marker are separate
+/// from the validity checks for restored Outer shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AudioClipFadeClock {
+    LegacyRoot,
+    Outer,
+}
+impl AudioClipFadeClock {
+    /// Refuse Outer at a consumer that only owns the legacy processing-root law.
+    pub fn require_supported(self) -> Result<(), Invalid> {
+        match self {
+            Self::LegacyRoot => Ok(()),
+            Self::Outer => Err(Invalid("outer clip fades are not supported yet")),
+        }
+    }
+}
+
 /// Effective processing domain with instance-owned loop and fade settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipDomain {
@@ -241,6 +268,10 @@ pub struct AudioClipDomain {
     pub source_phase: u64,
     pub looping: bool,
     pub fade: ClipFade,
+    pub fade_clock: AudioClipFadeClock,
+    /// LegacyRoot: retained root fade start. Outer: before-envelope distance,
+    /// in frames for a frame domain or raw beat ticks for a musical domain.
+    /// An Outer frame domain never combines a nonzero offset and prefix.
     pub fade_start: u64,
     pub fade_projection: Option<AudioFadeProjection>,
 }
@@ -273,8 +304,12 @@ pub struct AudioProcessingProjection {
 /// With an outer placement, the retained projection also owns its full repeat/
 /// directed read clock. Live musical endpoints plus residuals remain validated
 /// independently; translating a saved frame clock never re-quantizes its seams.
+/// A longer `repeat_period` adds silence after the audible crop. It is valid
+/// only for an undirected frame-clock repeat; the retained source is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipEdit {
+    /// Complete frame-clock repeat period when longer than the retained audible span.
+    pub repeat_period: Option<u64>,
     /// Directed finite outer read law; source processing and editable settings stay live.
     pub content_view: Option<AudioContentView>,
     /// Complete source processing retained after structural song relocation.
@@ -462,6 +497,138 @@ fn signed_round(numerator: i128, denominator: u128) -> Result<i128, Invalid> {
 }
 
 impl AudioClipEdit {
+    /// Reconstruct an exact V2 plain-pitch edit from a plain clip. This does not
+    /// establish asset extent or source custody; normal project validation does.
+    pub fn reconstruct_plain_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
+        if !clip.fade.is_neutral() {
+            return Err(Invalid(
+                "plain pitch reconstruction requires a neutral fade",
+            ));
+        }
+        Self::reconstruct_faded_pitch(clip, cents)
+    }
+
+    /// Reconstruct the full-source frame-clock pitch and retained fade from a plain clip.
+    pub fn reconstruct_faded_pitch(clip: &Clip, cents: i16) -> Result<Self, Invalid> {
+        if clip.audio_edit().is_some() || cents == 0 || !(-4_800..=4_800).contains(&cents) {
+            return Err(Invalid("invalid plain pitch reconstruction"));
+        }
+        let mut edit = Self::capture(clip);
+        let domain = Arc::make_mut(&mut edit.domain);
+        domain.pitch_cents = cents;
+        domain.warp_resampler = WarpResampler::V2;
+        let mut projected = clip.clone();
+        projected.fade = ClipFade::neutral(clip.duration)?;
+        if !edit.is_plain_pitch_capture(&projected) {
+            return Err(Invalid(
+                "plain pitch requires a complete neutral frame clip",
+            ));
+        }
+        Ok(edit)
+    }
+
+    /// Exact V2 full-frame pitch and frame-clock fade captured from an unlooped clip.
+    /// Callers must also establish that the clip covers the complete asset.
+    pub fn is_plain_pitch_capture(&self, clip: &Clip) -> bool {
+        self.domain.fade_clock == AudioClipFadeClock::LegacyRoot && self.is_plain_pitch_source(clip)
+    }
+
+    /// Exact full-asset pitch processing shape for source selection. The
+    /// caller separately checks the asset and any destination-only fade slot.
+    pub fn is_plain_pitch_source(&self, clip: &Clip) -> bool {
+        let outer = self.domain.fade_clock == AudioClipFadeClock::Outer;
+        if self.domain.pitch_cents == 0
+            || clip.source_offset != 0
+            || clip.source_length != clip.duration
+            || clip.looping
+            || clip.source_phase != 0
+            || !clip.fade.is_neutral()
+            || (!outer && self.domain.fade.validate_segment(clip.duration).is_err())
+            || (outer && self.domain.fade.offset() != 0 && self.domain.fade_start != 0)
+        {
+            return false;
+        }
+        let mut expected = Self::capture(clip);
+        let domain = Arc::make_mut(&mut expected.domain);
+        domain.pitch_cents = self.domain.pitch_cents;
+        domain.warp_resampler = WarpResampler::V2;
+        domain.fade = self.domain.fade;
+        if outer {
+            domain.fade_clock = AudioClipFadeClock::Outer;
+            domain.fade_start = self.domain.fade_start;
+        }
+        self == &expected
+    }
+
+    /// Whether this is exactly the reversal created from an unedited clip.
+    /// Unlike the playback shape query, this proves that removing and then
+    /// recreating the edit preserves every authored field.
+    pub fn is_plain_reversed_capture(&self, clip: &Clip) -> bool {
+        let Some((_, length)) = self.plain_reversed_source(clip) else {
+            return false;
+        };
+        let Ok(window) = crate::ContentWindow::new(0, length, true) else {
+            return false;
+        };
+        let mut expected = Self::capture(clip);
+        expected.content_view = Some(AudioContentView {
+            restore_plain: true,
+            base_view_start: 0,
+            base_view_end: length,
+            base_placement: None,
+            base_start_delta: 0,
+            window,
+            read_resampler: WarpResampler::default(),
+        });
+        self == &expected
+    }
+
+    /// Return the source offset and length of an unprocessed, full-frame
+    /// reversal. This is a shape query only: callers still validate the clip
+    /// and establish source availability and custody before reading it.
+    pub fn plain_reversed_source(&self, clip: &Clip) -> Option<(u64, u64)> {
+        let view = self.content_view?;
+        let AudioDomainClock::Frames(length) = self.domain.clock else {
+            return None;
+        };
+        (view.restore_plain
+            && view.window.reversed
+            && view.window.start == 0
+            && view.window.end == length
+            && view.base_view_start == 0
+            && view.base_view_end == length
+            && view.base_placement.is_none()
+            && view.base_start_delta == 0
+            && self.view_start == 0
+            && self.view_end == length
+            && self.placement.is_none()
+            && self.processing_projection.is_none()
+            && matches!(self.timing, AudioClipTiming::Frames)
+            && self.placement_start_offset == 0
+            && self.placement_end_offset == 0
+            && clip.duration() == length
+            && length <= self.domain.source_length
+            && !self.domain.looping
+            && self.domain.source_phase == 0
+            && self.domain.pitch_cents == 0
+            && !self.domain.warp_enabled
+            && self.domain.warp.is_none()
+            && self.domain.sample_bpm.is_none()
+            && self.domain.events.is_none()
+            && self.domain.musical_event_source.is_none()
+            && self.domain.source_gain.is_empty()
+            && match self.domain.fade_clock {
+                AudioClipFadeClock::LegacyRoot => {
+                    self.domain.fade.is_neutral() && self.domain.fade_start == 0
+                }
+                AudioClipFadeClock::Outer => {
+                    self.domain.fade.offset() == 0 || self.domain.fade_start == 0
+                }
+            }
+            && self.domain.fade_projection.is_none())
+        .then_some((self.domain.source_offset, length))
+    }
+
     pub fn processing_tempo<'a>(&'a self, current: &'a TempoMap) -> &'a TempoMap {
         self.processing_projection.as_ref().map_or_else(
             || self.effective_tempo(current),
@@ -589,6 +756,7 @@ impl AudioClipEdit {
         &'a self,
         tempo: &'a TempoMap,
     ) -> Result<ProjectedAudioFade<'a>, Invalid> {
+        self.domain.fade_clock.require_supported()?;
         let tempo = self.processing_tempo(tempo);
         let (first, length, _, _) = self.projected_domain(tempo)?;
         let origin = if self.reference_start_raw().is_some() {
@@ -606,6 +774,7 @@ impl AudioClipEdit {
     }
     pub(crate) fn capture(clip: &Clip) -> Self {
         Self {
+            repeat_period: None,
             content_view: None,
             processing_projection: None,
             placement_start_offset: 0,
@@ -627,6 +796,7 @@ impl AudioClipEdit {
                 source_phase: clip.source_phase,
                 looping: clip.looping,
                 fade: clip.fade,
+                fade_clock: AudioClipFadeClock::LegacyRoot,
                 fade_start: 0,
                 fade_projection: None,
             }),
@@ -858,22 +1028,107 @@ impl AudioClipEdit {
             && self.domain.source_gain.is_empty()
     }
 
-    pub(crate) fn accepts_projected_extent(&self, length: u64) -> bool {
+    /// The full-source Re-Pitch root supported by bounded verified streaming.
+    /// This is a shape check only: callers must validate complete asset extent,
+    /// the projected map and actual file/page ownership independently.
+    pub fn is_streamed_repitch_root(&self) -> bool {
+        let domain = &self.domain;
+        domain.source_offset == 0
+            && domain.source_length > 0
+            && domain.source_length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && domain.source_phase == 0
+            && !domain.looping
+            && domain.fade.is_neutral()
+            && domain.pitch_cents == 0
+            && domain.source_gain.is_empty()
+            && domain.events.is_none()
+            && domain.warp_enabled
+            && domain
+                .warp
+                .as_ref()
+                .is_some_and(|warp| matches!(warp.mode, WarpMode::RePitch))
+            && self.content_view.is_none()
+            && self.placement.is_none()
+    }
+
+    /// Shape supported by bounded Tones/Texture source workers. This grants no
+    /// resident expansion or file/page custody; consumers validate the exact map,
+    /// source extent and rendering identity independently.
+    pub fn is_streamed_granular_root(&self) -> bool {
+        let domain = &self.domain;
+        domain.source_length > 0
+            && domain.source_length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && domain.fade.is_neutral()
+            && domain.events.is_none()
+            && domain.musical_event_source.is_none()
+            && domain.source_gain.len() <= MAX_AUDIO_POINTS
+            && domain.warp_enabled
+            && domain.warp.as_ref().is_some_and(|warp| {
+                matches!(warp.mode, WarpMode::Tones { .. } | WarpMode::Texture { .. })
+            })
+            && self.content_view.is_none()
+            && self.placement.is_none()
+            && self.repeat_period.is_none()
+    }
+
+    /// A full-view inactive Warp edit whose audio can read directly from the
+    /// original source at unity speed. The musical placement still owns the
+    /// clip extent. Retained mode and markers participate only when enabled.
+    /// Supply the projected domain length; a validated full-view clip has the
+    /// same duration. Asset identity and full-file extent are checked separately.
+    pub fn is_long_inactive_warp_root(&self, length: u64) -> bool {
+        let domain = &self.domain;
+        length > MAX_AUDIO_DOMAIN_FRAMES
+            && length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && !domain.warp_enabled
+            && domain.warp.as_ref().is_some_and(|warp| {
+                matches!(
+                    warp.mode,
+                    WarpMode::RePitch | WarpMode::Tones { .. } | WarpMode::Texture { .. }
+                )
+            })
+            && matches!(domain.clock, AudioDomainClock::Beats(_))
+            && matches!(self.timing, AudioClipTiming::Musical(_))
+            && self.view_start == 0
+            && self.view_end == domain.clock.length()
+            && self.repeat_period.is_none()
+            && self.placement.is_none()
+            && self.content_view.is_none()
+            && self.processing_projection.is_none()
+            && domain.source_offset == 0
+            && (1..=MAX_SPARSE_AUDIO_TIMELINE_FRAMES).contains(&domain.source_length)
+            && domain.source_phase == 0
+            && !domain.looping
+            && domain.pitch_cents == 0
+            && domain.events.is_none()
+            && domain.musical_event_source.is_none()
+            && domain.source_gain.is_empty()
+            && domain.fade.is_neutral()
+    }
+
+    pub(crate) fn accepts_projected_extent(&self, length: u64, clip: &Clip) -> bool {
         if length <= MAX_AUDIO_DOMAIN_FRAMES {
             return true;
         }
         length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
-            && self.plain_frame_event_root()
-            && self.domain.events.as_ref().is_some_and(|events| {
-                events
-                    .events
-                    .iter()
-                    .try_fold(0u64, |n, event| {
-                        n.checked_add(event.end.checked_sub(event.start)?)
-                            .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
-                    })
-                    .is_some()
-            })
+            && (self.is_plain_reversed_capture(clip)
+                || (self.domain.fade_clock == AudioClipFadeClock::Outer
+                    && self.plain_reversed_source(clip).is_some())
+                || self.is_plain_pitch_source(clip)
+                || self.is_streamed_repitch_root()
+                || self.is_streamed_granular_root()
+                || self.is_long_inactive_warp_root(length)
+                || (self.plain_frame_event_root()
+                    && self.domain.events.as_ref().is_some_and(|events| {
+                        events
+                            .events
+                            .iter()
+                            .try_fold(0u64, |n, event| {
+                                n.checked_add(event.end.checked_sub(event.start)?)
+                                    .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
+                            })
+                            .is_some()
+                    })))
     }
 
     pub fn validate(
@@ -882,6 +1137,27 @@ impl AudioClipEdit {
         tempo: &TempoMap,
         asset_frames: u64,
     ) -> Result<(), Invalid> {
+        let outer_fade = self.domain.fade_clock == AudioClipFadeClock::Outer;
+        if let Some(period) = self.repeat_period
+            && (self
+                .view_end
+                .checked_sub(self.view_start)
+                .is_none_or(|span| period <= span)
+                || !matches!(self.domain.clock, AudioDomainClock::Frames(_))
+                || !matches!(self.timing, AudioClipTiming::Frames)
+                || self.content_view.is_some()
+                || self.processing_projection.is_some()
+                || self.placement.is_none_or(|placement| {
+                    placement.mode != AudioViewMode::Repeat
+                        || period
+                            .checked_sub(placement.cycle_phase)
+                            .is_none_or(|first| {
+                                first == 0 || first >= placement.outer_length.length()
+                            })
+                }))
+        {
+            return Err(Invalid("invalid silent audio repeat period"));
+        }
         if let Some(view) = self.content_view {
             view.validate(self)?;
         }
@@ -982,7 +1258,7 @@ impl AudioClipEdit {
         if self.view_start >= self.view_end || self.view_end > domain.clock.length() {
             return Err(Invalid("audio crop must be inside its retained domain"));
         }
-        if domain.fade_start >= domain.clock.length() {
+        if !outer_fade && domain.fade_start >= domain.clock.length() {
             return Err(Invalid("audio fade starts outside its domain"));
         }
         if matches!(domain.clock, AudioDomainClock::Beats(_))
@@ -1029,8 +1305,25 @@ impl AudioClipEdit {
             return Err(Invalid("active warp needs settings and markers"));
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if !self.accepts_projected_extent(length) {
+        if !self.accepts_projected_extent(length, clip) {
             return Err(transform_domain_limit(tempo.sample_rate()));
+        }
+        if length > MAX_AUDIO_DOMAIN_FRAMES
+            && self.is_plain_pitch_source(clip)
+            && clip.source_length != asset_frames
+        {
+            return Err(Invalid("long pitch requires the complete audio source"));
+        }
+        if length > MAX_AUDIO_DOMAIN_FRAMES
+            && self.is_streamed_repitch_root()
+            && clip.source_length != asset_frames
+        {
+            return Err(Invalid("long repitch requires the complete audio source"));
+        }
+        if self.is_long_inactive_warp_root(length) && clip.source_length != asset_frames {
+            return Err(Invalid(
+                "long inactive warp requires the complete audio source",
+            ));
         }
         if length == 0 || view_start >= view_end {
             return Err(EMPTY_DOMAIN_CROP);
@@ -1120,6 +1413,9 @@ impl AudioClipEdit {
         } else if clip.duration != view_end - view_start {
             return Err(Invalid("audio crop duration differs from frame placement"));
         }
+        if outer_fade {
+            return outer_fade::validate_context(clip, self, tempo);
+        }
         if matches!(domain.clock, AudioDomainClock::Beats(_)) != domain.fade_projection.is_some() {
             return Err(Invalid("audio fade projection and domain clock disagree"));
         }
@@ -1172,7 +1468,21 @@ impl AudioClipEdit {
         let length = beat_at(self.domain.clock.length())?;
         let start = beat_at(self.view_start)?;
         let end = beat_at(self.view_end)?;
-        let fade_start = beat_at(self.domain.fade_start)?;
+        let (fade_start, author_origin, local_start) = if self.domain.fade_clock
+            == AudioClipFadeClock::Outer
+        {
+            // The selected source and its cycle phase do not move an
+            // already authored destination envelope.
+            let first = i128::from(clip_start);
+            let origin = audio_projection_beat(tempo, first)?;
+            let author = audio_projection_beat(tempo, first + i128::from(self.domain.fade_start))?;
+            let prefix = u64::try_from(author - origin)
+                .map_err(|_| Invalid("outer fade prefix exceeds musical clock"))?;
+            (prefix, author, 0)
+        } else {
+            let start = beat_at(self.domain.fade_start)?;
+            (start, origin_beat + i128::from(start), start)
+        };
         let events = self
             .domain
             .events
@@ -1246,8 +1556,8 @@ impl AudioClipEdit {
         domain.fade_start = fade_start;
         domain.fade_projection = Some(AudioFadeProjection {
             tempo: tempo.clone(),
-            origin_beat_raw: origin_beat + i128::from(fade_start),
-            local_start_raw: fade_start,
+            origin_beat_raw: author_origin,
+            local_start_raw: local_start,
         });
         self.view_start = start;
         self.view_end = end;
@@ -1423,13 +1733,14 @@ mod commands;
 pub use commands::default_audio_warp;
 mod view;
 pub(crate) use commands::{
-    apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
-    set_fades, source_policy, trim_view, validate_clip,
+    DEFAULT_WARP_MODE, apply, initial_audio_warp, move_clip, project_clip, reset_region,
+    set_clip_fade_envelope, set_fade_envelope, set_fades, source_policy, trim_view, validate_clip,
 };
 pub(crate) use view::resize_view;
 pub use view::{
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
-    AudioViewResizeOperation, ProjectedAudioCycles, preview_audio_view_resize, preview_view_resize,
+    AudioViewResizeOperation, DirectedFadeClock, ProjectedAudioCycles, preview_audio_view_resize,
+    preview_view_resize,
 };
 
 mod stretch;
@@ -1445,6 +1756,8 @@ pub(crate) fn offset_frame(frame: u64, offset: i8) -> Result<u64, Invalid> {
 
 #[cfg(test)]
 mod content_tests;
+#[cfg(test)]
+mod fade_clock_tests;
 
 #[cfg(test)]
 mod limit_tests {
@@ -1476,3 +1789,9 @@ mod limit_tests {
 #[path = "audio_edit/aliases.rs"]
 mod aliases;
 pub(crate) use aliases::rebase_alias_content;
+
+#[cfg(test)]
+mod long_pitch_tests;
+
+#[cfg(test)]
+mod long_granular_tests;

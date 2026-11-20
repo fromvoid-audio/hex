@@ -695,7 +695,7 @@ impl Session {
             decoded.audio().frames().len(),
         )?;
         let destination = crate::native_assets::NativeAssetDestination::ExistingInstrument {
-            track: edit.track,
+            owner: edit.owner,
             device: edit.device,
             expected_state: edit.expected_state.clone(),
             state,

@@ -211,6 +211,7 @@ pub(crate) fn record_group_selection(cx: &App, route: &str) {
 pub(crate) struct PluginLoad {
     handle: DiagnosticsHandle,
     details: String,
+    feedback_painted: std::cell::Cell<bool>,
 }
 
 impl PluginLoad {
@@ -229,7 +230,23 @@ impl PluginLoad {
             "class={name:?} generation={} revision={} rate_hz={rate} destination={destination:?}",
             context.project_generation, context.editor_revision,
         );
-        Some(Self { handle, details })
+        Some(Self {
+            handle,
+            details,
+            feedback_painted: std::cell::Cell::new(false),
+        })
+    }
+
+    pub(crate) fn feedback_painted(&self) -> bool {
+        self.feedback_painted.get()
+    }
+
+    /// GPUI reached paint with the loading status inside the window mask.
+    /// Physical presentation and the native editor window are observed separately.
+    pub(crate) fn record_feedback_paint(&self) {
+        if !self.feedback_painted.replace(true) {
+            self.record("loading_feedback_painted");
+        }
     }
 
     pub(crate) fn submitted(&self) {
@@ -463,11 +480,21 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
     };
     let level = match event {
         E::Unavailable { .. }
+        | E::PluginEditorRetirementIssue {
+            issue:
+                crate::PluginEditorRetirementIssue::NeedsDisposition
+                | crate::PluginEditorRetirementIssue::Failure(_),
+            ..
+        }
         | E::Publication {
             state: P::Fault(_), ..
         } => Level::Error,
         E::PluginParameterTouched { .. } => Level::Debug,
         E::DegradedPlugins { .. }
+        | E::PluginEditorRetirementIssue {
+            issue: crate::PluginEditorRetirementIssue::TailLatencyPending,
+            ..
+        }
         | E::Publication {
             state: P::Refused(_) | P::Busy,
             ..
@@ -514,6 +541,13 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         E::NativeLatencyRestart { source } => {
             format!("stage=native_latency_restart source={source:?}")
         }
+        E::PluginEditorRetirementIssue {
+            project_generation,
+            device,
+            issue,
+        } => format!(
+            "stage=plugin_editor_retirement_issue generation={project_generation} device={device} issue={issue:?}"
+        ),
         E::PluginParameterTouched {
             source,
             binding,
@@ -524,6 +558,18 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         } => {
             format!(
                 "stage=plugin_parameter_touched source={source:?} binding={binding:?} device={device} parameter={parameter} sequence={sequence}"
+            )
+        }
+        E::PluginTransportToggle { project_generation } => {
+            format!("stage=plugin_transport_toggle generation={project_generation}")
+        }
+        E::PluginEditorWindows {
+            project_generation,
+            output_identity,
+            devices,
+        } => {
+            format!(
+                "stage=plugin_editor_windows generation={project_generation} output={output_identity} devices={devices:?}"
             )
         }
         E::DegradedPlugins {
@@ -543,12 +589,16 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
                 P::Busy => "backpressure",
                 P::Submitted { .. }
                 | P::VerifiedPreviewSubmitted { .. }
+                | P::VerifiedArrangementGainSubmitted { .. }
                 | P::ResidentSubmitted { .. } => "submitted",
-                P::Refused(_) => "refused",
+                P::Refused(_) | P::VerifiedArrangementGainRefused(_) => "refused",
                 P::Fault(_) => "fault",
             };
             let (revision, preview, seek) = match state {
-                P::Submitted { audio_revision } => (Some(*audio_revision), None, None),
+                P::Submitted { audio_revision }
+                | P::VerifiedArrangementGainSubmitted { audio_revision } => {
+                    (Some(*audio_revision), None, None)
+                }
                 P::VerifiedPreviewSubmitted {
                     audio_revision,
                     identity,

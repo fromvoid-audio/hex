@@ -1,0 +1,281 @@
+//! Retain one staged edit on the existing verified constructor pipeline.
+//! Session commits only after the exact audio receipt is installed.
+use super::*;
+use hex_audio::prepared::{
+    AppliedAudioSource, CancellablePublicationReceipt, DeviceInsertConsent, FreshRuntimeFence,
+    PublicationControl,
+};
+use hex_session::service::{RequestCancellation, VerifiedGraphEditAttempt};
+
+pub(super) const TEMPO_CUT_LEAD_FRAMES: u64 = 1024;
+
+#[derive(Clone)]
+pub(super) struct Edit {
+    pub(super) attempt: VerifiedGraphEditAttempt,
+    pub(super) predecessor: AppliedAudioSource,
+    transition: Transition,
+    stopped_history_epoch: Option<u64>,
+    pub(super) cancellation: Option<RequestCancellation>,
+}
+
+#[derive(Clone, Copy)]
+enum Transition {
+    DeviceInsert(Option<DeviceInsertConsent>),
+    TempoCut(FreshRuntimeFence),
+}
+
+impl Edit {
+    pub(super) fn stage(
+        &self,
+        control: &mut PublicationControl,
+        token: hex_audio::AudioCandidatePreparationToken,
+        context: AudioSourceContext,
+    ) -> Result<
+        (
+            hex_audio::AudioCandidateTicket,
+            CancellablePublicationReceipt,
+        ),
+        &'static str,
+    > {
+        match self.transition {
+            Transition::DeviceInsert(approval) => {
+                let stopped = self
+                    .stopped_history_epoch
+                    .map(|epoch| (Arc::clone(&control.status), epoch));
+                control.stage_verified_device_insert(
+                    token,
+                    context,
+                    self.predecessor,
+                    approval,
+                    self.attempt.preparation_deadline(),
+                    |receipt| {
+                        // The Root has captured its runtime fence and has not
+                        // published the queue entry yet. Validate the same Stop
+                        // interval here; a later transport change trips its fence.
+                        if stopped.as_ref().is_some_and(|(status, epoch)| {
+                            status.paused_input_interval() != Some((self.predecessor, *epoch))
+                        }) {
+                            receipt.cancel();
+                            self.attempt
+                                .refused("verified vst3 history lost its stopped transport".into());
+                            return;
+                        }
+                        let submission = hex_session::service::ResidentGraphSubmission {
+                            context,
+                            audio_revision: receipt.revision(),
+                            output_identity: receipt.output_identity(),
+                        };
+                        self.attempt.bind_proposal_receipt(|| {
+                            Box::new(resident::InsertReceipt::new(submission, receipt.clone()))
+                        });
+                        // A timeout or cancellation winning the Session state
+                        // drops this receipt and fences it before queue visibility.
+                        self.attempt
+                            .submitted(Box::new(resident::InsertReceipt::new(
+                                submission,
+                                receipt.clone(),
+                            )));
+                    },
+                )
+            }
+            Transition::TempoCut(fence) => {
+                let (observation, _) = control
+                    .capture_running_transport_fence()
+                    .filter(|(_, current)| *current == fence)
+                    .ok_or("tempo edit lost its running transport")?;
+                // Let the page worker service up to four callback quanta
+                // before the scheduled performance-frame cut.
+                let frame = observation
+                    .performance_frame
+                    .checked_add(TEMPO_CUT_LEAD_FRAMES)
+                    .ok_or("tempo cut performance frame exhausted")?;
+                control.stage_verified_tempo_cut(token, context, self.predecessor, fence, frame)
+            }
+        }
+    }
+}
+
+/// A preview can share the editor context. Only the exact callback receipt
+/// and its submitted candidate establish which graph is installed.
+fn installed_predecessor(
+    submitted: &[Option<Submitted>],
+    control: &PublicationControl,
+    canonical: &Arc<CanonicalAudioSourceSnapshot>,
+    retiring_key: Option<VerifiedKey>,
+) -> Option<AppliedAudioSource> {
+    let canonical_key = VerifiedKey::canonical(canonical.context());
+    control.status.applied_audio_source().filter(|applied| {
+        control.output_identity() == Some(applied.output_identity)
+            && submitted.iter().flatten().any(|submission| {
+                submission.source == *applied
+                    && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(canonical))
+                    && (submission.key == canonical_key || Some(submission.key) == retiring_key)
+            })
+    })
+}
+
+impl NativeAudioSink {
+    pub(super) fn verified_edit_predecessor_ready(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<bool, &'static str> {
+        let canonical = self
+            .desired
+            .as_ref()
+            .ok_or("vst3 insertion source unavailable")?;
+        if canonical.audio_mode() != DocumentAudioMode::VerifiedStreaming {
+            return Ok(true);
+        }
+        if canonical.context() != context {
+            return Err("vst3 insertion cancelled · source changed");
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 insertion cancelled · audio output changed")?;
+        if control.output_identity().is_none()
+            || control.status.device_fault.load(Acquire)
+            || control.status.render_fault.load(Acquire)
+        {
+            return Err("vst3 insertion cancelled · audio output fault");
+        }
+        let key = VerifiedKey::canonical(context);
+        if self.verified_blocked == Some(key)
+            || control
+                .status
+                .rejected_revision()
+                .is_some_and(|(revision, _)| {
+                    self.submitted.iter().flatten().any(|submission| {
+                        submission.key == key
+                            && submission.source.audio_revision == revision
+                            && control.output_identity() == Some(submission.source.output_identity)
+                    })
+                })
+        {
+            return Err("vst3 insertion cancelled · accepted audio publication refused");
+        }
+        Ok(self.verified_preview.is_none()
+            && installed_predecessor(&self.submitted, control, canonical, None).is_some())
+    }
+
+    pub(super) fn begin_verified_edit(
+        &mut self,
+        attempt: VerifiedGraphEditAttempt,
+    ) -> Result<(), String> {
+        let canonical = self
+            .desired
+            .as_ref()
+            .filter(|source| {
+                source.context() == attempt.predecessor()
+                    && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+            })
+            .ok_or("verified graph edit needs the installed canonical source")?;
+        // Retain the owned gain preview until the removal actually installs.
+        // A refused graph edit leaves that preview and its gesture intact.
+        let retiring_key = match self.verified_preview.as_ref() {
+            None => None,
+            Some(preview @ VerifiedSource::Gain(gain))
+                if attempt.retiring_gain().is_some_and(|identity| {
+                    gain.preview_identity() == Some(identity)
+                        && Arc::ptr_eq(gain.canonical(), canonical)
+                }) =>
+            {
+                Some(preview.key())
+            }
+            Some(_) => {
+                return Err("verified graph edit needs the installed canonical source".into());
+            }
+        };
+        if self.sampler.is_some() {
+            return Err("verified graph edit needs the installed canonical source".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("audio output is unavailable")?;
+        let predecessor = installed_predecessor(&self.submitted, control, canonical, retiring_key)
+            .ok_or("verified graph edit needs the installed canonical source")?;
+        let stopped_history_epoch = if attempt.stages_hosted_history() {
+            Some(
+                control
+                    .status
+                    .paused_input_interval()
+                    .filter(|(source, _)| *source == predecessor)
+                    .ok_or("stop playback to undo or redo this vst3 edit")?
+                    .1,
+            )
+        } else {
+            None
+        };
+        let transition = match (attempt.confirmation(), self.verified_edit.as_ref()) {
+            (None, None) if attempt.needs_tempo_cut() => {
+                let (_, fence) = control
+                    .capture_running_transport_fence()
+                    .filter(|(observation, _)| {
+                        observation.audio_revision == predecessor.audio_revision
+                    })
+                    .ok_or("tempo edit needs the running canonical arrangement")?;
+                Transition::TempoCut(fence)
+            }
+            (None, None) => Transition::DeviceInsert(None),
+            (Some(submission), Some(old))
+                if old.attempt.submission() == Some(submission)
+                    && old.predecessor == predecessor
+                    && Arc::ptr_eq(old.attempt.source(), attempt.source()) =>
+            {
+                Transition::DeviceInsert(Some(
+                    resident::resident_insert_consent(control, submission)
+                        .ok_or("device insert confirmation is stale")?,
+                ))
+            }
+            _ => return Err("verified graph edit preparation changed".into()),
+        };
+        self.verified_edit = Some(Edit {
+            attempt,
+            predecessor,
+            transition,
+            stopped_history_epoch,
+            cancellation: self.request_cancellation.clone(),
+        });
+        Ok(())
+    }
+
+    pub(super) fn finish_verified_edit(
+        &mut self,
+        attempt: &VerifiedGraphEditAttempt,
+        installed: bool,
+    ) {
+        if self
+            .verified_edit
+            .as_ref()
+            .is_none_or(|insert| !insert.attempt.same_attempt(attempt))
+        {
+            return;
+        }
+        self.verified_edit = None;
+        if attempt.prepares_hosted_sources() {
+            self.plugins
+                .finish_edit(attempt.source().context(), installed);
+        }
+        if installed && let Some(submission) = attempt.submission() {
+            // Session saw this exact constructor receipt before committing.
+            // Retire the absent sources through the existing Root return path.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            self.plugins.retire_absent_catalog_sources(attempt.source());
+            self.verified_last =
+                Some(VerifiedSource::Canonical(Arc::clone(attempt.source())).key());
+            self.last_context = Some(attempt.source().context());
+            // Session publishes this same snapshot when it emits the committed edit.
+            self.desired = Some(Arc::clone(attempt.source()));
+            self.observe(
+                submission.context,
+                "submitted",
+                EditorPublicationState::Submitted {
+                    audio_revision: submission.audio_revision,
+                },
+            );
+        }
+    }
+}

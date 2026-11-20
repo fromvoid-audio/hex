@@ -7,8 +7,10 @@ use hex_plugin_host::transport::{
 };
 use std::num::NonZeroU64;
 
-struct OtherLane;
-impl AuthoredParameterProgram for OtherLane {
+struct TestProgram {
+    emit_other_lane: bool,
+}
+impl AuthoredParameterProgram for TestProgram {
     fn quantum_program_key(&self) -> NonZeroU64 {
         NonZeroU64::MIN
     }
@@ -18,11 +20,14 @@ impl AuthoredParameterProgram for OtherLane {
         _: &TimingChanges,
         output: &mut Parameters,
     ) -> Result<(), Fault> {
-        output.push(ParameterPoint {
-            frame: 0,
-            id: 11,
-            normalized: 0.5,
-        })
+        if self.emit_other_lane {
+            output.push(ParameterPoint {
+                frame: 0,
+                id: 11,
+                normalized: 0.5,
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -50,7 +55,12 @@ fn holds_restore_and_release_before_the_first_target_programme() {
     owner.revoke_on_control();
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
-    for other_lane in [false, true] {
+    // An empty, revision-bearing program is distinct from no program: the
+    // worker must process that exact revision without changing either target.
+    for (program_present, other_lane) in [(false, false), (true, true), (true, false)] {
+        let program = TestProgram {
+            emit_other_lane: other_lane,
+        };
         let mut instance = original_instance();
         let class = instance.configuration().identity.class;
         let metadata = instance
@@ -65,7 +75,7 @@ fn holds_restore_and_release_before_the_first_target_programme() {
             let mut accepted = None;
             let stage = || {
                 endpoint.begin_physical_callback(8).unwrap();
-                if other_lane {
+                if program_present {
                     endpoint
                         .stage_segment_with_authored_parameters(
                             0,
@@ -77,7 +87,7 @@ fn holds_restore_and_release_before_the_first_target_programme() {
                                 at: |_| None,
                             },
                             AuthoredSegment {
-                                program: &OtherLane,
+                                program: &program,
                                 origin: &|frame| Some(sequence * 8 + frame as u64),
                             },
                         )
@@ -177,6 +187,12 @@ fn holds_restore_and_release_before_the_first_target_programme() {
         );
         render(&owner, 3, 0.75, Some((1, Some(0.75))));
         processed(&mut owner, &change, 0.5);
+        if program_present && !other_lane {
+            let received = owner.processed_program_on_control().unwrap();
+            assert_eq!(received.binding, owner.binding());
+            assert_eq!(received.program, Some(NonZeroU64::MIN));
+            assert!(received.sequence >= 3);
+        }
         // Exercise existing cleanup and the atomic recording end. Another
         // lane keeps supplying its independent value during restoration.
         let release = if other_lane {

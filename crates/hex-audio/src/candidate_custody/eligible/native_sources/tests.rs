@@ -89,6 +89,7 @@ pub(super) fn start(root: &Custody) -> Binding {
         preparation,
         None,
         native::TrustUserCode::Acknowledged,
+        None,
     )
     .unwrap()
 }
@@ -228,6 +229,7 @@ fn actual_input_over_native_allowance_refuses_before_cancellation_or_child_const
         preparation,
         None,
         native::TrustUserCode::Acknowledged,
+        None,
         || panic!("over-budget input must not construct a cancellation pair"),
         || panic!("over-budget input must not reserve a source"),
     );
@@ -274,6 +276,7 @@ fn actual_preparation_retained_bound_is_checked_before_reservation_or_child() {
         preparation,
         None,
         native::TrustUserCode::Acknowledged,
+        None,
         || panic!("preparation over budget must not construct cancellation or child"),
         || panic!("preparation over budget must not reserve a slot"),
     );
@@ -312,6 +315,7 @@ fn actual_protocol_peak_is_reserved_before_cancellation_or_child() {
         preparation,
         None,
         native::TrustUserCode::Acknowledged,
+        None,
         || panic!("protocol peak over budget must not construct cancellation or child"),
         || panic!("protocol peak over budget must not reserve a slot"),
     );
@@ -357,6 +361,7 @@ fn actual_revalidation_workspace_is_charged_before_cancellation_or_child() {
         preparation,
         None,
         native::TrustUserCode::Acknowledged,
+        None,
         || panic!("revalidation workspace over budget must not construct cancellation or child"),
         || panic!("revalidation workspace over budget must not reserve a slot"),
     );
@@ -419,6 +424,7 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
             || panic!("unreserved cancellation pair must not be constructed"),
             || {},
         )
@@ -452,6 +458,51 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn independent_publication_accounts_for_the_original_child_before_processor_sealing() {
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    let verify = || {
+        assert_eq!(root.actual_control_backing_bytes(), None);
+        let work = lock(&root.work);
+        let bank = lock(&root.bank);
+        let inventory = bank
+            .sources
+            .inventory(&work.sources, Some(References::default()))
+            .unwrap();
+        assert_eq!(
+            (inventory.workers, inventory.children, inventory.ipc),
+            (0, 1, 2)
+        );
+        assert!(
+            inventory.data > 0 && inventory.data <= source_reservation().max_retained_data_bytes
+        );
+    };
+    verify();
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 0,
+            output_frames: 8,
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Prepared { .. })
+    ));
+    verify();
+    assert!(root.retire_native_source(binding));
+    dispose(&root, binding);
+    assert_eq!(
+        root.recover_native_source(binding).unwrap().binding,
+        binding
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_close_during_reserved_construction_keeps_custody_without_starting_an_instance() {
     for close_before_pair in [false, true] {
         let root = root();
@@ -467,6 +518,7 @@ fn actual_root_close_during_reserved_construction_keeps_custody_without_starting
                 preparation,
                 None,
                 native::TrustUserCode::Acknowledged,
+                None,
                 || {
                     if close_before_pair {
                         root.close();
@@ -520,6 +572,7 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     assert_eq!(
@@ -600,6 +653,7 @@ fn actual_root_preserves_host_asset_state_refusal_after_input_accounting() {
             preparation,
             Some(state),
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     assert_eq!(
@@ -653,6 +707,7 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     assert_eq!(binding.root, original.root_id());
@@ -691,6 +746,7 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -717,6 +773,7 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     retained
@@ -747,6 +804,7 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     retained.abandon_control(None, None);
@@ -781,6 +839,7 @@ fn root_cancellation_descriptor_does_not_outlive_exact_disposal() {
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     let descriptor = lock(&root.bank).sources.slots[0]
@@ -846,6 +905,7 @@ fn root_cancellation_creation_refusal_is_original_pre_spawn_failure() {
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
             || Err(hex_plugin_host::Error::Io(original)),
             || panic!("native preparation must not start after cancellation creation refusal"),
         )
@@ -1036,6 +1096,12 @@ fn failed_effect_requests_original_cancellation_without_claiming_disposal() {
 }
 
 #[cfg(feature = "allocation-probe")]
+pub(crate) fn with_source_bank_held_for_test(root: &CandidateRoot, run: impl FnOnce()) {
+    let _bank = lock(&root.0.eligible.bank);
+    run();
+}
+
+#[cfg(feature = "allocation-probe")]
 pub(crate) fn original_worker_awaits_endpoint(root: &CandidateRoot, binding: Binding) -> bool {
     let work = lock(&root.0.eligible.work);
     let bank = lock(&root.0.eligible.bank);
@@ -1072,4 +1138,29 @@ pub(crate) fn original_worker_transport_live(
         Owner::Loaned(control) => Some(control.transport_is_live_on_control()),
         _ => None,
     }
+}
+
+#[test]
+fn endpoint_return_reservation_orders_decisions_without_delaying_return_requests() {
+    let signal = EndpointSignal::new();
+    let mut fence = signal.reserve().unwrap();
+    assert!(signal.reserve().is_none());
+    std::thread::scope(|scope| {
+        scope.spawn(|| signal.request_return()).join().unwrap();
+    });
+    assert!(!fence.is_live());
+    assert!(!fence.try_order_before_return());
+    drop(fence);
+    assert!(signal.load(Ordering::Acquire));
+    assert!(signal.reserve().is_none());
+
+    let signal = EndpointSignal::new();
+    let mut fence = signal.reserve().unwrap();
+    assert!(fence.try_order_before_return());
+    assert!(!fence.try_order_before_return());
+    signal.request_return();
+    assert!(!fence.is_live());
+    drop(fence);
+    assert!(signal.load(Ordering::Acquire));
+    assert!(signal.reserve().is_none());
 }

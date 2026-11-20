@@ -15,12 +15,23 @@ use crate::{
 use hex_project::{BeatTime, ClipId, TrackId};
 use std::sync::Arc;
 
+/// Resource-free processing selection from one exact prepared graph.
+/// Consumers must correlate this observation with its installed output/revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedDeviceProcessing {
+    Native,
+    Foreign,
+    PoweredOff,
+    Unavailable,
+}
+
 #[derive(Debug)]
 struct Meter {
     id: u64,
     kind: hex_lattice_contract::DeviceTypeId,
     meter: Arc<hex_lattice::DeviceMeter>,
-    foreign: bool,
+    processing: PreparedDeviceProcessing,
+    latency: Option<crate::ProcessorGraphLatency>,
 }
 #[derive(Debug)]
 struct TrackGates {
@@ -202,20 +213,21 @@ impl PreparedPlaybackObservation {
     ) -> Result<Self, Invalid> {
         let quote = Self::storage_quote(revision, midi)?;
         let mut meters = reserved(meter_sources(revision).count())?;
-        for (id, kind, meter, foreign) in meter_sources(revision) {
+        let arrangement = revision.arrangement();
+        let graph = arrangement.signal_graph.as_deref();
+        for (id, kind, meter, processing, generator_track) in meter_sources(revision) {
             meters.push(Meter {
                 id,
                 kind,
                 meter: Arc::clone(meter),
-                foreign,
+                processing,
+                latency: graph.and_then(|graph| graph.processor_latency(id, generator_track)),
             });
         }
         meters.sort_unstable_by_key(|meter| meter.id);
         if meters.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(Invalid("observation device identity is duplicated"));
         }
-        let arrangement = revision.arrangement();
-        let graph = arrangement.signal_graph.as_deref();
         let mut tracks = reserved(arrangement.tracks().len())?;
         let mut returns = reserved(arrangement.return_buses().len())?;
         for (index, bus) in arrangement.return_buses().iter().enumerate() {
@@ -309,6 +321,23 @@ impl PreparedPlaybackObservation {
     pub fn return_latency(&self, id: hex_project::ReturnId) -> Option<OutputLatency> {
         self.returns.iter().find(|item| item.id == id)?.latency
     }
+    /// Graph-only transit for an exact canonical device and type. Match this
+    /// observation to the applied output/context/audio revision. Missing stages
+    /// or graphs are unavailable, not zero. These scalar facts retain no graph
+    /// and cannot authorize native preparation or publication; hardware I/O and
+    /// foreign bridge placement must be resolved before reporting SDK timing.
+    pub fn processor_latency(
+        &self,
+        device_id: u64,
+        device_type: hex_lattice_contract::DeviceTypeId,
+    ) -> Option<crate::ProcessorGraphLatency> {
+        self.meters
+            .binary_search_by_key(&device_id, |meter| meter.id)
+            .ok()
+            .and_then(|index| self.meters.get(index))
+            .filter(|meter| meter.kind == device_type)?
+            .latency
+    }
     pub fn main_latency(&self) -> Option<OutputLatency> {
         self.main_latency
     }
@@ -342,12 +371,23 @@ impl PreparedPlaybackObservation {
         device_id: u64,
         device_type: hex_lattice_contract::DeviceTypeId,
     ) -> Option<bool> {
+        self.processor_status(device_id, device_type)
+            .map(|status| status == PreparedDeviceProcessing::Foreign)
+    }
+
+    /// Explicit Off is distinct from native processing and unavailable hosting.
+    /// This scalar observation grants no source or installation authority.
+    pub fn processor_status(
+        &self,
+        device_id: u64,
+        device_type: hex_lattice_contract::DeviceTypeId,
+    ) -> Option<PreparedDeviceProcessing> {
         self.meters
             .binary_search_by_key(&device_id, |meter| meter.id)
             .ok()
             .and_then(|index| self.meters.get(index))
             .filter(|meter| meter.kind == device_type)
-            .map(|meter| meter.foreign)
+            .map(|meter| meter.processing)
     }
     pub fn retained_bytes_on_control(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<Self>()
@@ -538,7 +578,8 @@ fn meter_sources(
         u64,
         hex_lattice_contract::DeviceTypeId,
         &Arc<hex_lattice::DeviceMeter>,
-        bool,
+        PreparedDeviceProcessing,
+        Option<TrackId>,
     ),
 > + Clone {
     revision
@@ -554,7 +595,16 @@ fn meter_sources(
                         id.value(),
                         state.type_id(),
                         &track.instrument_meter,
-                        track.foreign_instrument.is_some(),
+                        if track.foreign_instrument.is_some() {
+                            PreparedDeviceProcessing::Foreign
+                        } else if state.type_id()
+                            == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+                        {
+                            PreparedDeviceProcessing::Unavailable
+                        } else {
+                            PreparedDeviceProcessing::Native
+                        },
+                        track.canonical_track_id(),
                     )
                 })
                 .into_iter()
@@ -563,10 +613,8 @@ fn meter_sources(
                         device.device_id,
                         device.device_type,
                         &device.meter,
-                        matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        ),
+                        processor_kind(device),
+                        None,
                     )
                 }))
         })
@@ -582,14 +630,29 @@ fn meter_sources(
                         device.device_id,
                         device.device_type,
                         &device.meter,
-                        matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        ),
+                        processor_kind(device),
+                        None,
                     )
                 }),
         )
 }
+fn processor_kind(device: &hex_lattice::PreparedRuntimeInstance) -> PreparedDeviceProcessing {
+    match device.definition.as_ref() {
+        Some(hex_lattice::PreparedProcessorFactory::PoweredOff) => {
+            PreparedDeviceProcessing::PoweredOff
+        }
+        Some(hex_lattice::PreparedProcessorFactory::Foreign(_)) => {
+            PreparedDeviceProcessing::Foreign
+        }
+        None if device.device_type
+            == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3") =>
+        {
+            PreparedDeviceProcessing::Unavailable
+        }
+        _ => PreparedDeviceProcessing::Native,
+    }
+}
+
 fn add(total: &mut usize, bytes: Option<usize>) -> Result<(), Invalid> {
     *total = total
         .checked_add(bytes.ok_or(Invalid("observation storage overflow"))?)
@@ -607,4 +670,66 @@ fn copy<T: Clone>(source: &[T]) -> Result<Vec<T>, Invalid> {
     let mut result = reserved(source.len())?;
     result.extend_from_slice(source);
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal_graph::tests::{fixture, prepare};
+    use hex_project::Command;
+
+    #[test]
+    fn processor_observation_resolves_generator_identity_and_charges_scalar_storage() {
+        let mut f = fixture(&[&[3]], 32);
+        f.editor
+            .execute(Command::InsertInstrument {
+                track: f.tracks[0],
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        let instrument = f
+            .editor
+            .project()
+            .track(f.tracks[0])
+            .unwrap()
+            .instrument()
+            .unwrap();
+        let id = instrument.id();
+        let kind = instrument.state().type_id();
+        let revision = prepare(&f).unwrap();
+        let quote =
+            PreparedPlaybackObservation::preparation_storage_quote_on_control(&revision).unwrap();
+        let observation = PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        assert!(observation.retained_bytes_on_control().unwrap() <= quote);
+        drop(revision);
+        assert_eq!(
+            observation.processor_latency(id.value(), kind),
+            Some(crate::ProcessorGraphLatency {
+                upstream_frames: 0,
+                stage_frames: 0,
+                downstream_frames: 3,
+            })
+        );
+        assert_eq!(
+            observation.processor_latency(
+                id.value(),
+                hex_lattice_contract::DeviceTypeId::from_static("wrong.type")
+            ),
+            None
+        );
+        assert_eq!(observation.processor_latency(u64::MAX, kind), None);
+        f.editor
+            .execute(Command::SetDeviceBypass {
+                device: id,
+                bypassed: true,
+            })
+            .unwrap();
+        let bypassed =
+            PreparedPlaybackObservation::prepare_on_control(&prepare(&f).unwrap()).unwrap();
+        assert_eq!(
+            bypassed.processor_latency(id.value(), kind),
+            None,
+            "an absent generator is unavailable, not zero latency"
+        );
+    }
 }

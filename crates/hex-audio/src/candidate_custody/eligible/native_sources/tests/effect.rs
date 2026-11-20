@@ -211,6 +211,7 @@ fn actual_root_effect_constructor_refusal_retains_the_source_until_observed_disp
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
+            None,
         )
         .unwrap();
     root.complete_native_source(binding, None).unwrap();

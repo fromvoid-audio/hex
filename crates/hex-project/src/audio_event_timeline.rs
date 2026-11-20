@@ -15,8 +15,8 @@
 //! destination grows. One-shot frame roots have a separate sparse timeline
 //! horizon. Other transform roots keep the dense processing cap.
 use crate::{
-    AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioEventEdit, AudioEvents, BeatTime, Clip,
-    ClipFade, ClipGain, ClipId, Invalid, MusicalEventSource, Project,
+    AudioClipEdit, AudioClipFadeClock, AudioClipTiming, AudioDomainClock, AudioEventEdit,
+    AudioEvents, BeatTime, Clip, ClipFade, ClipGain, ClipId, Invalid, MusicalEventSource, Project,
     audio_edit::{MAX_AUDIO_DOMAIN_FRAMES, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, project_clip},
 };
 use std::sync::Arc;
@@ -113,11 +113,13 @@ pub(crate) fn prepare(
         Arc::make_mut(projection).origin_beat_raw -= i128::from(lead);
     }
     let domain = Arc::make_mut(&mut edit.domain);
-    domain.fade_start += lead;
-    if musical {
+    if domain.fade_clock == AudioClipFadeClock::LegacyRoot {
+        domain.fade_start += lead;
         if let Some(fade) = &mut domain.fade_projection {
             fade.local_start_raw += lead;
         }
+    }
+    if musical {
         let source = domain
             .musical_event_source
             .get_or_insert(MusicalEventSource {
@@ -254,7 +256,7 @@ impl Clip {
         let root = self.audio_event_root();
         check_timeline(&root).ok()?;
         if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES
-            && !root.accepts_projected_extent(root.domain.clock.length())
+            && !root.accepts_projected_extent(root.domain.clock.length(), self)
         {
             return None;
         }

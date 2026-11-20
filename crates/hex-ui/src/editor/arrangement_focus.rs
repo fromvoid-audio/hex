@@ -12,7 +12,7 @@
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Focusable, Subscription, Window, div, prelude::*, px};
-use hex_project::{ClipId, Project, SectionId, Track, TrackId};
+use hex_project::{ClipId, Project, SectionId, TrackId};
 use hex_widgets::{Toggle, ToggleAppearance, ToggleChanged, ToggleConfig};
 use std::rc::Rc;
 
@@ -91,17 +91,6 @@ impl EditorView {
         !self.arrangement_focus.projection.filtering()
             || self.arrangement_focus.projection.tracks.contains(&id)
     }
-    pub(super) fn arrangement_tracks<'a>(
-        &'a self,
-        project: &'a Project,
-    ) -> impl Iterator<Item = (usize, &'a Track)> {
-        self.arrangement_focus
-            .projection
-            .indices
-            .iter()
-            .copied()
-            .filter_map(move |index| project.tracks().get(index).map(|track| (index, track)))
-    }
     /// Canonical indices in visible row order; borrowed for pointer geometry.
     pub(super) fn arrangement_track_indices(&self) -> &[usize] {
         &self.arrangement_focus.projection.indices
@@ -171,7 +160,7 @@ impl EditorView {
         } else {
             let top = self.track_scroll.list.logical_scroll_top();
             self.arrangement_focus.restore_scroll = self
-                .arrangement_track_index(top.item_ix)
+                .arrangement_list_track_index(top.item_ix)
                 .and_then(|index| self.state.as_ref()?.project.tracks().get(index))
                 .map(|t| (t.id(), top.offset_in_item));
             self.arrangement_focus.projection.enabled = true;

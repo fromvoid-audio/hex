@@ -15,6 +15,20 @@ impl NativeEffectEntry {
     pub(crate) fn transport_is_live(&self) -> bool {
         !self.callback.transport.is_revoked()
     }
+
+    /// The next physical callback may be open before this endpoint stages any
+    /// PCM. Its dry cursor still represents the last accepted block until then.
+    pub(crate) fn settled_main_pass_delay(
+        &self,
+    ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
+        if !self.transport_is_live() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        if self.staged {
+            return Ok(None);
+        }
+        self.callback.settled_main_pass_delay()
+    }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,
@@ -99,8 +113,8 @@ impl NativeEffectEntry {
     ) -> Option<hex_plugin_host::transport::AcceptedManualParameter> {
         self.callback.take_accepted_manual_parameter()
     }
-    pub(crate) fn end_staging_at_pause(&mut self, frame: usize) {
-        self.callback.end_staging_at_pause(frame);
+    pub(crate) fn end_staging_at_rendered_prefix(&mut self, frame: usize) {
+        self.callback.end_staging_at_rendered_prefix(frame);
     }
     pub(crate) fn reject(&mut self) {
         self.callback.reject_callback();

@@ -100,6 +100,21 @@ impl NativeAudioSink {
             if let Err(error) = self.check_replacement_deadline() {
                 break Err(error);
             }
+            // The old Root needs the existing desktop receipt reader before
+            // releasing its native output lease. This synchronous preflight
+            // owns the Session worker, so its ordinary poll cannot run here.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                self.plugins.poll_retiring_edits();
+                if self.plugins.retiring_editor_close_blocker()
+                    == Some(hex_session::service::RetiringEditorCloseBlocker::Unresolved)
+                {
+                    break Err(
+                        "resolve the retiring vst3 editor changes before replacing the project"
+                            .into(),
+                    );
+                }
+            }
             self.flush_events();
             self.poll_open();
             if let Some(error) = self.open_error.take() {
@@ -175,6 +190,14 @@ impl NativeAudioSink {
         // A private candidate's identity never crossed the Client boundary.
         self.output_identity = None;
         self.relinquish_output();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.plugins.retiring_editor_close_blocker()
+            == Some(hex_session::service::RetiringEditorCloseBlocker::Unresolved)
+        {
+            self.open_error =
+                Some("project open refused · original vst3 editor changes retained".into());
+            return;
+        }
         self.open_error = Some(
             format!(
                 "project open failed: {reason}; use restart audio to restore the current project"

@@ -1,6 +1,9 @@
 //! Rendered velocity gestures through canonical worker/history and saved playback.
 use super::super::{
-    midi_canvas::creation_tests::{fixture, pump},
+    midi_canvas::{
+        NOTE_ROW_INSET,
+        creation_tests::{fixture, pump},
+    },
     test_environment::Environment,
 };
 use super::*;
@@ -755,8 +758,12 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
         "baseline and both intersected stems must preview together"
     );
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
-    let rows = editor.read_with(&visual, |v, _| v.piano_pitch_rows);
-    let height = ((f32::from(roll.size.height) - 2.0) / f32::from(rows) - 2.0).max(1.0);
+    let row_height = editor.read_with(&visual, |v, _| {
+        v.piano_pitch
+            .row_height_pixels(f32::from(roll.size.height) - 2.0)
+            .unwrap()
+    });
+    let height = (row_height - 2.0 * NOTE_ROW_INSET).max(1.0);
     assert!(
         visual
             .rendered_filled_quads("midi-note-roll")

@@ -2,7 +2,8 @@
 //! the bounded note ledger. The audio host owns the worker and accepts or
 //! revokes staged events with the complete physical callback.
 use super::{
-    MAX_TRACKS, MidiSpanBuffer, PreparedRevision, RouteOwner, SessionPlaybackError, TrackRoute,
+    MAX_TRACKS, MidiSpanBuffer, PreparedRevision, RouteOwner, SessionPlayback,
+    SessionPlaybackError, TrackRoute, effective_midi_route,
 };
 use crate::computer_keyboard::{
     COMPUTER_KEY_COUNT, ComputerKeyboardInput, KeyboardActivationClock,
@@ -17,9 +18,13 @@ use hex_lattice::{
     ForeignNote, ForeignProcessorNode, ForeignProcessors, NativeInstrumentClock,
     PreparedForeignProcessor, PreparedProcessorFactory,
 };
+use hex_lattice_contract::ForeignProcessorBinding;
 use hex_project::TrackId;
 use std::{mem::size_of, num::NonZeroU32, sync::Arc};
 
+pub(super) mod held_removal;
+
+mod authored_clock;
 mod hardware;
 mod live_keys;
 use live_keys::Input;
@@ -45,9 +50,11 @@ struct Ledger {
     loop_pass: Option<u64>,
     route: Option<RouteOwner>,
     cut: bool,
+    retimed_cursor: bool,
     live: live_keys::Gates,
     hardware: hardware::Gates,
     quantum_offset: u16,
+    authored_quantum: authored_clock::Quantum,
 }
 
 impl Ledger {
@@ -101,12 +108,83 @@ impl Generator {
     }
 }
 
-/// Index mapping only. No borrowed or owned endpoint crosses this boundary.
+/// Maps retained generators and identifies deadlines staged in candidate scratch.
+/// No borrowed or owned endpoint crosses this boundary.
 pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
+    held_session_for_old: [bool; MAX_TRACKS],
+    retired_instrument: Option<ForeignProcessorBinding>,
+    retimed_cursor: bool,
     pub(super) requires_clock_continuity: bool,
     pub(super) keeps_first_pass_loop_clock: bool,
     pub(super) keeps_unautomated_loop_clock: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum HeldInstrumentCut {
+    Unsupported,
+    Offer,
+    Confirmed,
+}
+
+impl Handoff {
+    pub(super) fn carries_held_session_from(&self, old_index: usize) -> bool {
+        self.held_session_for_old[old_index]
+    }
+
+    pub(super) fn has_held_session(&self) -> bool {
+        self.held_session_for_old.contains(&true)
+    }
+
+    /// Check the effective route after all candidate route ownership is staged.
+    /// With the same clock, origin, and complete MIDI source, the donor's gate
+    /// identity and deadline remain valid at the candidate's first frame.
+    pub(super) fn validate_held_session_sources(
+        &self,
+        previous: &SessionPlayback,
+        candidate: &SessionPlayback,
+    ) -> Result<(), SessionPlaybackError> {
+        let old_midi = EffectiveSessionMidi::new(
+            previous.revision.session(),
+            previous.midi_admission.as_ref(),
+        );
+        let new_midi = EffectiveSessionMidi::new(
+            candidate.revision.session(),
+            candidate.midi_admission.as_ref(),
+        );
+        for (new_index, old_index) in self.old_indices.iter().copied().enumerate() {
+            let Some(old_index) = old_index.filter(|&index| self.carries_held_session_from(index))
+            else {
+                continue;
+            };
+            let old = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            let new =
+                effective_midi_route(&candidate.revision, &candidate.route_scratch, new_index)?;
+            let RouteOwner::Session { clip, .. } = old.owner else {
+                return Err(INCOMPATIBLE_HANDOFF);
+            };
+            let held_owner = previous.foreign_arrangement.generators[old_index]
+                .as_ref()
+                .and_then(|generator| generator.committed.route);
+            if old.id != new.id
+                || held_owner != Some(old.owner)
+                || old.owner != new.owner
+                || old.current_incarnation != new.current_incarnation
+                || old.current_first_frame != new.current_first_frame
+                || !old_midi
+                    .midi_clip_for_track(clip, old.id)
+                    .zip(new_midi.midi_clip_for_track(clip, new.id))
+                    .is_some_and(|(old, new)| {
+                        old.source_content_matches(&new)
+                            && old.instrument_retarget_compatible(&new)
+                            && new.instrument_enabled()
+                    })
+            {
+                return Err(INCOMPATIBLE_HANDOFF);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) const INCOMPATIBLE_HANDOFF: SessionPlaybackError =
@@ -120,6 +198,7 @@ pub(super) struct ForeignArrangement {
     events: Vec<ForeignNote>,
     keyboard: Option<live_keys::Input>,
     hardware_batch: hardware::Batch,
+    retired_instrument: Option<ForeignProcessorBinding>,
 }
 
 fn has_generator(track: &Track) -> bool {
@@ -127,6 +206,37 @@ fn has_generator(track: &Track) -> bool {
         .foreign_instrument
         .as_ref()
         .is_some_and(|node| !node.bypassed)
+}
+
+fn direct_replacement_predecessor<'a>(
+    track: TrackId,
+    index: usize,
+    tracks: &[Track],
+    old_tracks: &'a [Track],
+) -> Option<&'a Track> {
+    let (next, old) = tracks.get(index).zip(
+        old_tracks
+            .iter()
+            .find(|old| old.canonical_track_id() == Some(track)),
+    )?;
+    let source = old.source_id()?;
+    (old.instrument_slot_enabled()
+        && next.instrument_id.is_some()
+        && next.instrument_id != old.instrument_id
+        && old.midi_source_index.is_none()
+        && next.midi_source_index.is_none()
+        && next.source_id() == Some(source)
+        && old.receives_source_audio()
+        && next.receives_source_audio()
+        && [old_tracks, tracks].into_iter().all(|members| {
+            members
+                .iter()
+                .filter(|member| member.source_id() == Some(source))
+                .take(2)
+                .count()
+                == 1
+        }))
+    .then_some(old)
 }
 
 impl ForeignArrangement {
@@ -161,6 +271,7 @@ impl ForeignArrangement {
             events,
             keyboard: None,
             hardware_batch: hardware::Batch::default(),
+            retired_instrument: None,
         })
     }
 
@@ -287,22 +398,34 @@ impl ForeignArrangement {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // Transport retiming and parameter continuation have distinct proofs.
     pub(super) fn plan_handoff(
-        &self,
+        &mut self,
         old: &Self,
-        tracks: &[Track],
+        tracks: [&[Track]; 2],
         cut: FrameContext,
         fresh: Option<TrackId>,
+        may_offer_device_cut: bool,
+        hosted_cut: HeldInstrumentCut,
+        held_removal: Option<TrackId>,
         loops: [Option<hex_project::LoopRegion>; 2],
+        tempo_cut: Option<(u64, u64)>,
+        parameter_continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
     ) -> Result<Handoff, SessionPlaybackError> {
+        let [tracks, old_tracks] = tracks;
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
+            held_session_for_old: [false; MAX_TRACKS],
+            retired_instrument: None,
+            retimed_cursor: tempo_cut.is_some(),
             requires_clock_continuity: false,
             keeps_first_pass_loop_clock: true,
             keeps_unautomated_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
-        for (index, candidate) in self.generators.iter().enumerate() {
+        let mut held_edit_needs_cut = false;
+        let mut displaced_index = None;
+        for (index, candidate) in self.generators.iter_mut().enumerate() {
             let Some(candidate) = candidate else { continue };
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
                 let old = old.as_ref()?;
@@ -310,8 +433,56 @@ impl ForeignArrangement {
                     .then_some((index, old))
             });
             let Some((old_index, donor)) = matched else {
-                if cut.playing && fresh != Some(candidate.track) {
-                    return Err(INCOMPATIBLE_HANDOFF);
+                let replacement = (!held_edit_needs_cut
+                    && displaced_index.is_none()
+                    && fresh.is_none()
+                    && tempo_cut.is_none()
+                    && (may_offer_device_cut || hosted_cut == HeldInstrumentCut::Confirmed))
+                    .then(|| {
+                        direct_replacement_predecessor(candidate.track, index, tracks, old_tracks)
+                    })
+                    .flatten();
+                if hosted_cut != HeldInstrumentCut::Unsupported
+                    && replacement.is_some_and(|track| track.foreign_instrument.is_some())
+                    && let Some(next_binding) = candidate.processor.binding()
+                    && let Some((index, binding)) =
+                        old.generators.iter().enumerate().find_map(|(index, old)| {
+                            let old = old.as_ref()?;
+                            let binding = old.processor.binding()?;
+                            let ledger = &old.committed;
+                            (old.track == candidate.track
+                                && next_binding.root == binding.root
+                                && next_binding.instance != binding.instance
+                                && ledger.route == Some(RouteOwner::Arrangement)
+                                && ledger.has_held_notes()
+                                && !ledger.live.held()
+                                && !ledger.hardware.held())
+                            .then_some((index, binding))
+                        })
+                {
+                    displaced_index = Some(index);
+                    held_edit_needs_cut = cut.playing;
+                    if hosted_cut == HeldInstrumentCut::Confirmed && !cut.playing {
+                        plan.retired_instrument = Some(binding);
+                    }
+                    continue;
+                }
+                if cut.playing && (tempo_cut.is_some() || fresh != Some(candidate.track)) {
+                    if !may_offer_device_cut
+                        || !replacement.is_some_and(|track| {
+                            track.instrument_enabled()
+                                && !track.has_mutable_instrument()
+                                && track.foreign_instrument.is_none()
+                                && track.instrument_state.as_ref().is_some_and(|state| {
+                                    state.type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+                                })
+                        })
+                    {
+                        return Err(INCOMPATIBLE_HANDOFF);
+                    }
+                    // No generator or ledger transfers here. The audio owner
+                    // can offer a cut and repeat the proof at its silent hold.
+                    held_edit_needs_cut = true;
                 }
                 continue;
             };
@@ -354,9 +525,66 @@ impl ForeignArrangement {
                 && matches!(ledger.route, Some(RouteOwner::Session { .. }))
                 && ledger.has_held_notes()
             {
-                return Err(INCOMPATIBLE_HANDOFF);
+                let proof = parameter_continuation.ok_or(INCOMPATIBLE_HANDOFF)?;
+                if candidate.has_authored_automation || donor.has_authored_automation {
+                    let next = tracks
+                        .get(index)
+                        .and_then(|track| track.foreign_instrument.as_ref());
+                    let old = old_tracks
+                        .get(old_index)
+                        .and_then(|track| track.foreign_instrument.as_ref());
+                    let (old, next) = old
+                        .zip(next)
+                        .filter(|(old, next)| proof.matches_instrument(old, next))
+                        .ok_or(INCOMPATIBLE_HANDOFF)?;
+                    let (old_program, next_program) = old
+                        .automation
+                        .foreign()
+                        .zip(next.automation.foreign())
+                        .ok_or(INCOMPATIBLE_HANDOFF)?;
+                    if !ledger.authored_quantum.retains_open_programs(
+                        ledger.quantum_offset,
+                        next_program.borrow(),
+                        old_program.borrow(),
+                    ) {
+                        return Err(INCOMPATIBLE_HANDOFF);
+                    }
+                }
+                plan.held_session_for_old[old_index] = true;
             }
-            if !ledger.cut
+            if let Some((arrangement, pass)) = tempo_cut {
+                let prepared_track = tracks
+                    .get(index)
+                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
+                let next_program = prepared_track
+                    .foreign_instrument
+                    .as_ref()
+                    .and_then(|node| node.automation.foreign())
+                    .map(hex_lattice::PreparedForeignAutomation::borrow);
+                let old_program = old_tracks
+                    .get(old_index)
+                    .and_then(|track| track.foreign_instrument.as_ref())
+                    .and_then(|node| node.automation.foreign())
+                    .map(hex_lattice::PreparedForeignAutomation::borrow);
+                match (next_program, old_program) {
+                    (Some(next), Some(old)) => {
+                        ledger
+                            .authored_quantum
+                            .preflight(ledger.quantum_offset, next, old)?;
+                    }
+                    (None, None) => {}
+                    _ => return Err(INCOMPATIBLE_HANDOFF),
+                }
+                let notes = &mut candidate.scratch.notes;
+                notes.clear();
+                notes.extend_from_slice(&ledger.notes);
+                if !ledger.cut
+                    && ledger.route == Some(RouteOwner::Arrangement)
+                    && ledger.loop_pass == Some(pass)
+                {
+                    retime_held_gates(prepared_track, candidate.track, notes, &cut, arrangement)?;
+                }
+            } else if !ledger.cut
                 && ledger.route == Some(RouteOwner::Arrangement)
                 && ledger.loop_pass == Some(cut.loop_pass)
             {
@@ -369,11 +597,37 @@ impl ForeignArrangement {
         for (index, generator) in old.generators.iter().enumerate() {
             if let Some(generator) = generator
                 && !retained.get(index).copied().unwrap_or(false)
+                && displaced_index != Some(index)
                 && generator.committed.loop_pass.is_some()
                 && (cut.playing || generator.committed.has_any_held_notes())
             {
+                let ledger = &generator.committed;
+                if held_removal == Some(generator.track)
+                    && displaced_index.is_none()
+                    && !held_edit_needs_cut
+                    && ledger.route == Some(RouteOwner::Arrangement)
+                    && ledger.has_held_notes()
+                    && !ledger.live.held()
+                    && !ledger.hardware.held()
+                    && let Some(binding) = generator.processor.binding()
+                {
+                    match hosted_cut {
+                        HeldInstrumentCut::Offer if cut.playing => {
+                            held_edit_needs_cut = true;
+                            continue;
+                        }
+                        HeldInstrumentCut::Confirmed if !cut.playing => {
+                            plan.retired_instrument = Some(binding);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
                 return Err(INCOMPATIBLE_HANDOFF);
             }
+        }
+        if held_edit_needs_cut {
+            return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         Ok(plan)
     }
@@ -381,6 +635,7 @@ impl ForeignArrangement {
     /// Commit only after the graph preflight. Both graphs keep their reserved
     /// buffers, and the host retains the exact worker on its existing binding.
     pub(super) fn inherit_handoff(&mut self, old: &mut Self, plan: Handoff, keep_clock: bool) {
+        old.retired_instrument = plan.retired_instrument;
         let same_keyboard = self
             .keyboard
             .as_ref()
@@ -396,6 +651,13 @@ impl ForeignArrangement {
             ) {
                 if keep_clock {
                     std::mem::swap(&mut candidate.committed, &mut donor.committed);
+                    if plan.retimed_cursor {
+                        std::mem::swap(
+                            &mut candidate.committed.notes,
+                            &mut candidate.scratch.notes,
+                        );
+                        candidate.committed.retimed_cursor = true;
+                    }
                     if !same_keyboard {
                         candidate.committed.live.disconnect();
                         candidate.committed.hardware.disconnect();
@@ -404,6 +666,7 @@ impl ForeignArrangement {
                     // Restart arrangement history while retaining worker note IDs.
                     candidate.committed.next_id = donor.committed.next_id;
                     candidate.committed.quantum_offset = donor.committed.quantum_offset;
+                    candidate.committed.authored_quantum = donor.committed.authored_quantum;
                     // The retained worker still owns monitor notes even when the
                     // arrangement clock restarts. Preserve them to release safely.
                     candidate.committed.live = donor.committed.live;
@@ -419,6 +682,10 @@ impl ForeignArrangement {
         }
     }
 
+    pub(super) fn retired_instrument(&self) -> Option<ForeignProcessorBinding> {
+        self.retired_instrument
+    }
+
     pub(super) fn begin(&mut self) {
         self.hardware_batch.begin(self.keyboard.as_ref());
         for generator in self.generators.iter_mut().flatten() {
@@ -431,9 +698,11 @@ impl ForeignArrangement {
             scratch.loop_pass = committed.loop_pass;
             scratch.route = committed.route;
             scratch.cut = committed.cut;
+            scratch.retimed_cursor = committed.retimed_cursor;
             scratch.live = committed.live;
             scratch.hardware = committed.hardware;
             scratch.quantum_offset = committed.quantum_offset;
+            scratch.authored_quantum = committed.authored_quantum;
         }
     }
 
@@ -545,6 +814,7 @@ impl ForeignArrangement {
             && ledger
                 .loop_pass
                 .is_some_and(|pass| pass != context.loop_pass);
+        let retimed_cursor = std::mem::take(&mut ledger.retimed_cursor);
         if ledger.cut || wrapped || route_changed {
             for occurrence in ledger.notes.drain(..).filter(|note| !note.note_off_sent) {
                 emit(AuthoredGate::release_now(occurrence))
@@ -569,20 +839,35 @@ impl ForeignArrangement {
                     let mut overflow = false;
                     track
                         .for_each_mutable_midi_span(context.arrangement, end, |span| {
+                            if !span.admitted_at_interactive_start(context.interactive_onset_floor)
+                            {
+                                return;
+                            }
                             if span.start < context.arrangement
                                 && !(chase || wrapped || first_route)
                             {
                                 return;
                             }
+                            let key = MutableOccurrenceKey::new(
+                                id,
+                                span.clip,
+                                span.note,
+                                span.iteration,
+                                context.loop_pass,
+                            );
+                            // A faster tempo can round a held occurrence's
+                            // start to the new cursor. It already has a gate.
+                            if retimed_cursor
+                                && ledger
+                                    .notes
+                                    .iter()
+                                    .any(|note| !note.note_off_sent && note.signature.key() == key)
+                            {
+                                return;
+                            }
                             overflow |= onsets
                                 .push(MutableNoteOnset {
-                                    key: MutableOccurrenceKey::new(
-                                        id,
-                                        span.clip,
-                                        span.note,
-                                        span.iteration,
-                                        context.loop_pass,
-                                    ),
+                                    key,
                                     onset_beat: span.onset_beat,
                                     gate_end_beat: span.gate_end_beat,
                                     source_start: span.start.max(context.arrangement),
@@ -590,6 +875,7 @@ impl ForeignArrangement {
                                     pitch: span.pitch,
                                     channel: span.channel,
                                     velocity: span.velocity,
+                                    contributor_fade_in: false,
                                 })
                                 .is_err();
                         })
@@ -619,6 +905,7 @@ impl ForeignArrangement {
                     source_start,
                     width: 1,
                     source_age: None,
+                    contributor_fade_rate: None,
                     tail_frames: 0,
                     max_active: MAX_FOREIGN_NOTES,
                     steals_releasing: true,
@@ -649,6 +936,14 @@ impl ForeignArrangement {
                 )
                 .map_err(|error| error.render_error())?;
         }
+        let automation = node.automation.foreign().map(|automation| {
+            let mut view = automation.borrow();
+            view.authored_clock_epoch = clock.authored_clock_epoch_at_offset(0);
+            view
+        });
+        ledger
+            .authored_quantum
+            .observe(ledger.quantum_offset, context.playing, automation)?;
         ledger.quantum_offset += 1;
         if ledger.quantum_offset == prepared.quantum_frames() {
             ledger.quantum_offset = 0;
@@ -663,10 +958,7 @@ impl ForeignArrangement {
             sample_rate: node.sample_rate,
             configuration,
             prepared,
-            automation: node
-                .automation
-                .foreign()
-                .map(hex_lattice::PreparedForeignAutomation::borrow),
+            automation,
             bypassed: false,
             // The compensated generator merge owns the instrument output gain.
             input_gain: 1.0,
@@ -705,20 +997,7 @@ fn validate_held_gates(
         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
     track
         .for_each_mutable_midi_span(cut.arrangement, end, |span| {
-            let signature = MutableOccurrenceSignature::from_parts(
-                MutableOccurrenceKey::new(
-                    track_id,
-                    span.clip,
-                    span.note,
-                    span.iteration,
-                    cut.loop_pass,
-                ),
-                span.onset_beat,
-                span.gate_end_beat,
-                span.pitch,
-                span.channel,
-                span.velocity,
-            );
+            let signature = arrangement_signature(track_id, cut.loop_pass, span);
             let deadline = span
                 .gate_end
                 .checked_sub(cut.arrangement)
@@ -736,10 +1015,74 @@ fn validate_held_gates(
     Ok(())
 }
 
+fn arrangement_signature(
+    track: TrackId,
+    loop_pass: u64,
+    span: &crate::midi_compile::CompiledNoteSpan,
+) -> MutableOccurrenceSignature {
+    MutableOccurrenceSignature::from_parts(
+        MutableOccurrenceKey::new(track, span.clip, span.note, span.iteration, loop_pass),
+        span.onset_beat,
+        span.gate_end_beat,
+        span.pitch,
+        span.channel,
+        span.velocity,
+    )
+}
+
+fn retime_held_gates(
+    track: &Track,
+    track_id: TrackId,
+    notes: &mut [MutableOccurrence],
+    cut: &FrameContext,
+    arrangement: u64,
+) -> Result<(), SessionPlaybackError> {
+    let mut unmatched = [false; MAX_FOREIGN_NOTES];
+    for (flag, note) in unmatched.iter_mut().zip(notes.iter()) {
+        *flag = !note.note_off_sent && note.gate_end_frame >= cut.performance;
+    }
+    if !unmatched.contains(&true) {
+        return Ok(());
+    }
+    let end = arrangement
+        .checked_add(1)
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    // Include the preceding frame so a note ending exactly at the new
+    // cursor can send its original NoteOff at the first candidate sample.
+    track
+        .for_each_mutable_midi_span(arrangement.saturating_sub(1), end, |span| {
+            let signature = arrangement_signature(track_id, cut.loop_pass, span);
+            if let Some(deadline) = span
+                .gate_end
+                .checked_sub(arrangement)
+                .and_then(|remaining| cut.performance.checked_add(remaining))
+            {
+                for (flag, note) in unmatched.iter_mut().zip(notes.iter_mut()) {
+                    if *flag && note.signature == signature {
+                        note.gate_end_frame = deadline;
+                        // Foreign authored gates have no engine release tail.
+                        note.quiet_deadline_frame = deadline;
+                        *flag = false;
+                    }
+                }
+            }
+        })
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?;
+    if unmatched
+        .iter()
+        .zip(notes)
+        .any(|(unmatched, note)| *unmatched && note.gate_end_frame > cut.performance)
+    {
+        return Err(INCOMPATIBLE_HANDOFF);
+    }
+    Ok(())
+}
+
 pub(super) struct FrameContext {
     pub(super) performance: u64,
     pub(super) arrangement: u64,
     pub(super) loop_pass: u64,
     pub(super) playing: bool,
     pub(super) chase: bool,
+    pub(super) interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
 }

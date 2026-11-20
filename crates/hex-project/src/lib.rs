@@ -87,14 +87,16 @@ mod content_window;
 mod selection_fades;
 mod source_ranges;
 pub use audio_edit::{
-    AudioClipContent, AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView,
-    AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
-    AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
-    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioCycles,
-    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpResampler,
-    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
-    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    AudioClipContent, AudioClipDomain, AudioClipEdit, AudioClipFadeClock, AudioClipTiming,
+    AudioContentView, AudioDomainClock, AudioFadeProjection, AudioImportWarp,
+    AudioProcessingProjection, AudioViewMode, AudioViewOccurrence, AudioViewPlacement,
+    AudioViewProjection, AudioViewResize, AudioViewResizeOperation, BeatsPreserve, BeatsTail,
+    DirectedFadeClock, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN,
+    MAX_SPARSE_AUDIO_TIMELINE_FRAMES, MusicalEventSource, ProjectedAudioCycles, ProjectedAudioFade,
+    ProjectedOuterAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
+    WarpResampler, WarpSettings, audio_projection_beat, audio_projection_frame,
+    audio_projection_frame_q32, default_audio_warp, preview_audio_clip_stretch,
+    preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 pub use content_window::{ContentWindow, RepeatBoundaryPlan, RepeatCycles};
@@ -222,12 +224,15 @@ pub use session::{
 };
 pub mod timebase;
 pub use edit::{
-    Command, Created, InstrumentLoadPlacement, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+    Command, Created, InstrumentAssetOwner, InstrumentLoadPlacement, MidiNoteInsert,
+    MidiNoteUpdate, TrackDeviceSlot,
 };
-pub use history::{Editor, SampleRateHistoryAction};
+pub use history::{Editor, SampleRateHistoryAction, StagedProjectEdit, StagedProjectHistory};
 mod import_existing;
 pub use import_existing::ExistingAudioPlacement;
-pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
+pub use instrument_history::{
+    InstrumentAssetHistoryDelta, InstrumentHistoryDelta, InstrumentHistoryOwner,
+};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,
     MidiSourceIdentity, MidiSourceWeakIdentity, TrackContent,

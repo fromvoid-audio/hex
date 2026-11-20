@@ -121,6 +121,7 @@ impl Plugins {
             self.poll_restore(control, Some(query.context));
         }
         if self.parameters.is_some()
+            || self.parameter_conversion.is_some()
             || self.editor.is_some()
             || self.restore.is_some()
             || self.parameter_gesture.is_some()
@@ -643,8 +644,12 @@ mod tests {
             observes_latency: false,
             editor_open: false,
             editor_transfer: false,
+            editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            open_editor_group: None,
+            provider: None,
+            editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,

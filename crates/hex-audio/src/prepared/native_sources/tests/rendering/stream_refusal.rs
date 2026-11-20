@@ -1,10 +1,10 @@
-//! Preserve the existing compensated-stream refusal until its owning PDC
-//! contract supports native bridge latency. No fake native epoch ACK is allowed.
+//! A candidate waiting for verified pages has no authority to dispatch its
+//! native endpoint or admit a native epoch renewal.
 use super::*;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_native_streamed_effect_refusal_never_dispatches_or_admits_an_epoch() {
+fn actual_native_streamed_effect_waits_for_pages_without_dispatch_or_epoch_renewal() {
     let _serial = serial();
     let PreparedFixture {
         mut control,
@@ -24,28 +24,25 @@ fn actual_native_streamed_effect_refusal_never_dispatches_or_admits_an_epoch() {
     let wav = crate::prepared::eligible_publication::tests::stream_fixture::Wav::with_frames(32);
     let definition = wav.definition(project.assets().next().unwrap().id(), 12);
     let metadata = definition.metadata.clone();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: metadata.key(),
+        page_index: 0,
+    });
+    let mut stream = hex_stream::StreamRuntime::new_with_page_gate(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        vec![definition],
+        gate,
+    )
+    .unwrap();
+    stream.wait_until_ready(Duration::from_secs(2)).unwrap();
     let domain = control
-        .begin_audio_candidate_domain_preparation(
-            hex_stream::StreamConfig::with_pool_pages(4),
-            vec![definition],
+        .register_audio_candidate_domain_with_readiness(
+            stream.split().ok().unwrap(),
             hex_stream::StreamReadinessReservation {
                 extents_per_role: 3,
             },
         )
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match control
-            .poll_audio_candidate_domain_preparation(domain)
-            .unwrap()
-        {
-            crate::AudioCandidateDomainPreparationProgress::Ready => break,
-            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
-            other => panic!("actual N2 preparation: {other:?}"),
-        }
-        assert!(Instant::now() < deadline, "actual N2 readiness");
-        std::thread::yield_now();
-    }
+        .unwrap_or_else(|error| panic!("{}", error.reason));
     allocation_free(|| {
         data.owner_mut()
             .unwrap()
@@ -80,14 +77,10 @@ fn actual_native_streamed_effect_refusal_never_dispatches_or_admits_an_epoch() {
             ));
         })
     });
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(output, [[0.0; 2]; 8]);
-    assert_eq!(
-        control.status.rejected_revision(),
-        Some((
-            1,
-            hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady
-        ))
-    );
+    assert!(control.status.publication_in_flight());
+    assert_eq!(control.status.rejected_revision(), None);
     assert_eq!(control.status.applied_audio_source(), None);
     let root = control.native_candidate_root();
     assert_eq!(
@@ -108,13 +101,18 @@ fn actual_native_streamed_effect_refusal_never_dispatches_or_admits_an_epoch() {
         Err("native epoch renewal requires resident playback")
     );
     assert!(!control.status.stopped_edit_pending());
+    assert_eq!(
+        control.cancel_audio_candidate(&ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
+    drop(release);
+    let mut retirement = close_backend(data, errors, retirement);
     let returned = crate::prepared::candidate_tests::recover(&mut control, &ticket);
     assert_eq!(
         returned.return_kind,
         crate::AudioCandidateReturnKind::NeverInstalled
     );
     drop(returned);
-    let mut retirement = close_backend(data, errors, retirement);
     let returned = recover(&mut control, binding);
     assert!(returned.error.is_none() && returned.cleanup_error.is_none());
     assert!(

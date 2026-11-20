@@ -39,15 +39,42 @@ impl Prepared {
         &mut self,
         parameters: &crate::transport::Parameters,
     ) -> Result<protocol::FlushedParameters> {
+        self.flush_idle_parameters(parameters, None)
+    }
+
+    /// Conditionally apply a nonempty parameter batch at this original
+    /// worker's current PCM prefix. Newer editor admission or pending input
+    /// returns a healthy conflict terminal, leaving the worker usable.
+    pub fn flush_editor_parameters_on_worker(
+        &mut self,
+        parameters: &crate::transport::Parameters,
+        expected_editor_admission: u64,
+    ) -> Result<protocol::FlushedParameters> {
+        if !protocol::valid_editor_flush_extent(parameters)
+            || parameters.as_slice().iter().any(|point| point.frame != 0)
+        {
+            return Err(Error::Protocol("invalid guarded editor parameter flush"));
+        }
+        self.flush_idle_parameters(parameters, Some(expected_editor_admission))
+    }
+
+    fn flush_idle_parameters(
+        &mut self,
+        parameters: &crate::transport::Parameters,
+        expected_editor_admission: Option<u64>,
+    ) -> Result<protocol::FlushedParameters> {
         let result = (|| {
             let operation = self
                 .idle_flush_sequence
                 .checked_add(1)
                 .ok_or(Error::Protocol("idle flush operation exhausted"))?;
-            let values =
-                self.exchange_parameter_flush(operation, parameters, self.limits.exchange, || {
-                    false
-                })?;
+            let values = self.exchange_parameter_flush(
+                operation,
+                parameters,
+                expected_editor_admission,
+                self.limits.exchange,
+                || false,
+            )?;
             self.idle_flush_sequence = operation;
             Ok(values)
         })();
@@ -62,11 +89,21 @@ impl Prepared {
         &mut self,
         operation: u64,
         parameters: &crate::transport::Parameters,
+        expected_editor_admission: Option<u64>,
         timeout: std::time::Duration,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<protocol::FlushedParameters> {
         self.require_live_epoch()?;
-        let request = protocol::flush_request(&self.config, self.sequence, operation, parameters)?;
+        let request = match expected_editor_admission {
+            Some(expected) => protocol::guarded_flush_request(
+                &self.config,
+                self.sequence,
+                operation,
+                parameters,
+                expected,
+            )?,
+            None => protocol::flush_request(&self.config, self.sequence, operation, parameters)?,
+        };
         let until = end_after(timeout)?;
         let token = self.lease.cancellation.clone();
         let mut check = || {
@@ -90,7 +127,12 @@ impl Prepared {
         if self.packet.magic() != b"HXVIFL01" {
             return Err(Error::Protocol("missing parameter flush acknowledgement"));
         }
-        let values = protocol::flushed_parameters(
+        let decode = if expected_editor_admission.is_some() {
+            protocol::guarded_flushed_parameters
+        } else {
+            protocol::flushed_parameters
+        };
+        let values = decode(
             self.packet.body()?,
             &self.config,
             self.sequence,
@@ -381,6 +423,7 @@ impl Quiescent {
             let values = self.instance.exchange_parameter_flush(
                 operation,
                 parameters,
+                None,
                 self.instance.limits.startup,
                 is_cancelled,
             )?;
@@ -440,12 +483,33 @@ impl Quiescent {
     /// original cancelled lease in PreparationFailure for control-side polling;
     /// it cannot yield another Quiescent or a reusable Prepared instance.
     pub fn resume_retained_on_control(
-        mut self,
+        self,
         next: Binding,
         presentation: impl Into<protocol::PresentationPlan>,
     ) -> std::result::Result<Prepared, PreparationFailure> {
-        let presentation = presentation.into();
+        self.resume_retained_while_on_control(next, presentation.into(), || false)
+    }
+    /// Joined completion that also checks the private export's cancellation
+    /// during existing bounded I/O waits. Refusal retains the same native lease.
+    pub fn resume_with_plan_while_on_control(
+        self,
+        next: Binding,
+        presentation: protocol::PresentationPlan,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<Prepared> {
+        self.resume_retained_while_on_control(next, presentation, is_cancelled)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    fn resume_retained_while_on_control(
+        mut self,
+        next: Binding,
+        presentation: protocol::PresentationPlan,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<Prepared, PreparationFailure> {
         let result = (|| {
+            if is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             self.instance.require_live_epoch()?;
             if self.instance.parameter_page.is_some() {
                 return Err(Error::Protocol("controller page is still pending"));
@@ -456,14 +520,22 @@ impl Quiescent {
             config.binding = next;
             let until = end_after(self.instance.limits.startup)?;
             let token = self.instance.lease.cancellation.clone();
+            let mut check = || {
+                token.check()?;
+                if is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
             self.instance
                 .lease
                 .channel
-                .send(&request, until, &mut || token.check())?;
+                .send(&request, until, &mut check)?;
             self.instance
                 .lease
                 .channel
-                .read(&mut self.instance.packet, until, &mut || token.check())?;
+                .read(&mut self.instance.packet, until, &mut check)?;
             if self.instance.packet.magic() == b"HXVIER01" {
                 // A refusal can precede binding installation or follow restart.
                 // Either actual stamped error is terminal, never resume proof.

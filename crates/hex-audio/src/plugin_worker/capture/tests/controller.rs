@@ -217,3 +217,696 @@ fn retirement_cancels_held_controller_getter_without_normal_stop() {
         Some(hex_plugin_host::Error::Cancelled)
     ));
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn revoked_worker_never_starts_a_queued_guarded_editor_write_during_stopped_reads() {
+    use crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress as Progress;
+    const NAME: &str = "plugin_worker::capture::tests::controller::revoked_worker_never_starts_a_queued_guarded_editor_write_during_stopped_reads";
+    if fixture_child(140, NAME) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    endpoint
+        .stage(&[[0.5, -0.25]; 8], &[], &mut output)
+        .unwrap();
+    endpoint.finish(true).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|bytes| bytes.get(..4) != Some(&27_i32.to_le_bytes()))
+    {
+        assert!(
+            Instant::now() < until,
+            "the SDK must hold the original process call"
+        );
+        thread::yield_now();
+    }
+    let token = owner
+        .begin_guarded_editor_write_on_control(0, &[(7, 0.75)])
+        .unwrap();
+    owner.revoke_on_control();
+    assert_eq!(
+        owner.poll_guarded_editor_write_on_control(&token),
+        Ok(Progress::Failed)
+    );
+    assert!(
+        owner
+            .begin_guarded_editor_write_on_control(0, &[(7, 0.75)])
+            .is_err()
+    );
+    fs::write(
+        PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()),
+        b"release original SDK process",
+    )
+    .unwrap();
+
+    // An exact stopped metadata read is allowed after join. Running the
+    // stale write here would hit this fixture's deliberate flush refusal.
+    let read = query(&mut owner);
+    let rows = page(&mut owner, &read);
+    assert_eq!(
+        (rows.as_slice()[0].id, rows.as_slice()[0].normalized),
+        (7, 0.25)
+    );
+    assert!(owner.poll_guarded_editor_write_on_control(&token).is_err());
+    let result = owner.retire_on_control().unwrap();
+    assert!(result.failure.is_none() && result.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn guarded_capture_follows_only_the_latest_applied_write_on_the_original_worker() {
+    use crate::plugin_worker::NativeWorkerGuardedEditorWriteProgress as Write;
+    use NativeWorkerGuardedCaptureProgress as Capture;
+
+    const NAME: &str = "plugin_worker::capture::tests::controller::guarded_capture_follows_only_the_latest_applied_write_on_the_original_worker";
+    if fixture_child(147, NAME) {
+        return;
+    }
+
+    fn retry<T>(mut operation: impl FnMut() -> Result<T, &'static str>) -> T {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match operation() {
+                Ok(value) => return value,
+                Err(
+                    "native controller mailbox is busy"
+                    | "native capture mailbox is busy"
+                    | "native parameter mailbox is busy",
+                ) => {}
+                Err(reason) => panic!("{reason}"),
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+    }
+
+    let instance = original_instance();
+    let child = instance.child_id_on_control();
+    let (mut owner, endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    let (mut other, _other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let guarded = |owner: &mut NativeWorker, expected| {
+        let token = retry(|| owner.begin_guarded_editor_write_on_control(expected, &[(7, 0.75)]));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let terminal = owner.poll_guarded_editor_write_on_control(&token).unwrap();
+            if terminal != Write::Pending {
+                break (token, terminal);
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+    };
+
+    let (conflict, terminal) = guarded(&mut owner, 1);
+    assert_eq!(terminal, Write::Conflict);
+    assert!(
+        owner
+            .begin_state_capture_after_guarded_write_on_control(&conflict)
+            .is_err()
+    );
+    let (applied, terminal) = guarded(&mut owner, 0);
+    assert_eq!(terminal, Write::Applied);
+    assert!(
+        other
+            .begin_state_capture_after_guarded_write_on_control(&applied)
+            .is_err()
+    );
+    let read = query(&mut owner);
+    assert_eq!(page(&mut owner, &read).as_slice()[0].normalized, 0.75);
+    let request = retry(|| owner.begin_state_capture_after_guarded_write_on_control(&applied));
+    assert!(owner.poll_state_capture_on_control(&request).is_err());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let fact = loop {
+        match owner
+            .poll_state_capture_after_guarded_write_on_control(&request)
+            .unwrap()
+        {
+            Capture::Captured(fact) => break fact,
+            Capture::Pending => {}
+            Capture::Failed => panic!("guarded capture failed"),
+            Capture::Refused(reason) => panic!("guarded capture refused: {reason}"),
+        }
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    };
+    let component = hex_plugin_state::decode(fact.state())
+        .unwrap()
+        .component
+        .unwrap();
+    assert_eq!(
+        f32::from_le_bytes(component[8..12].try_into().unwrap()),
+        3.0
+    );
+    assert!(
+        owner
+            .observe_guarded_capture_input_on_control(&fact)
+            .is_some()
+    );
+    assert!(
+        other
+            .observe_guarded_capture_input_on_control(&fact)
+            .is_none()
+    );
+    let (new_conflict, terminal) = guarded(&mut owner, 1);
+    assert_eq!(terminal, Write::Conflict);
+    let restore_refusal =
+        retry(
+            || match owner.begin_guarded_editor_write_after(0, &[(7, 0.25)], Some(&applied)) {
+                Err(reason @ "native controller mailbox is busy") => Err(reason),
+                result => Ok(result.err()),
+            },
+        );
+    assert_eq!(
+        restore_refusal,
+        Some("native guarded editor write was superseded")
+    );
+    let read = query(&mut owner);
+    assert_eq!(page(&mut owner, &read).as_slice()[0].normalized, 0.75);
+    assert!(
+        owner
+            .observe_guarded_capture_input_on_control(&fact)
+            .is_none()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_guarded_write_on_control(&applied)
+            .is_err()
+    );
+    assert!(
+        owner
+            .begin_state_capture_after_guarded_write_on_control(&new_conflict)
+            .is_err()
+    );
+    owner.revoke_on_control();
+    let original = owner
+        .into_quiescent_on_control(endpoint)
+        .unwrap_or_else(|failure| panic!("original source: {}", failure.finish_on_control()));
+    assert_eq!(original.child_id_on_control(), child);
+    assert!(original.retire_on_control().unwrap().status.success());
+    assert!(other.retire_on_control().unwrap().native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn original_worker_holds_editor_admission_without_parking_the_callback() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorAdmissionState};
+    use std::num::NonZeroU64;
+
+    const NAME: &str = "plugin_worker::capture::tests::controller::original_worker_holds_editor_admission_without_parking_the_callback";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let token = NonZeroU64::new(12).unwrap();
+    for (request, expected) in [
+        (
+            ControllerRequest::HoldEditorAdmission(token),
+            EditorAdmissionState::Held {
+                admitted_through: 0,
+            },
+        ),
+        (
+            ControllerRequest::ReleaseEditorAdmission(token),
+            EditorAdmissionState::Released,
+        ),
+    ] {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let query = loop {
+            match owner.begin_controller_query_on_control(request) {
+                Ok(query) => break query,
+                Err("native controller mailbox is busy") => {}
+                Err(reason) => panic!("editor admission request refused: {reason}"),
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        };
+        loop {
+            match owner.poll_controller_query_on_control(&query).unwrap() {
+                NativeWorkerControllerProgress::Pending => {}
+                NativeWorkerControllerProgress::EditorAdmission(observed) => {
+                    assert_eq!(observed, expected);
+                    break;
+                }
+                other => panic!("invalid native admission terminal: {other:?}"),
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        assert!(owner.poll_controller_query_on_control(&query).is_err());
+        let sequence = if matches!(expected, EditorAdmissionState::Held { .. }) {
+            0
+        } else {
+            1
+        };
+        callback_block(&owner, &mut endpoint, sequence);
+    }
+    assert!(owner.owns_callback(&endpoint));
+    owner.revoke_on_control();
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_worker_preserves_unread_editor_hold_terminal_until_exact_release() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorAdmissionState};
+    use std::num::NonZeroU64;
+
+    const NAME: &str = "plugin_worker::capture::tests::controller::stopped_worker_preserves_unread_editor_hold_terminal_until_exact_release";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let instance = original_instance();
+    let child = instance.child_id_on_control();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    callback_block(&owner, &mut endpoint, 0);
+    let token = NonZeroU64::new(12).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let hold = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::HoldEditorAdmission(token))
+        {
+            Ok(query) => break query,
+            Err("native controller mailbox is busy") => {}
+            Err(reason) => panic!("editor hold admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    // The real SDK has applied the hold, but the client has not read its reply.
+    while owner.reaper.completed.controller_requested.load(Acquire) {
+        assert!(Instant::now() < until, "native editor hold completed");
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::ReadEditorFrontier) {
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err("native controller query is already pending") => break,
+            Err(reason) => panic!("stopped controller admission: {reason}"),
+            Ok(_) => panic!("a new query replaced the unread editor hold"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    loop {
+        match owner.poll_controller_query_on_control(&hold).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorAdmission(EditorAdmissionState::Held {
+                admitted_through: 0,
+            }) => break,
+            other => panic!("unread exact editor hold after stop: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&hold).is_err());
+    let release = owner
+        .begin_controller_query_on_control(ControllerRequest::ReleaseEditorAdmission(token))
+        .unwrap();
+    loop {
+        match owner.poll_controller_query_on_control(&release).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorAdmission(EditorAdmissionState::Released) => {
+                break;
+            }
+            other => panic!("stopped editor hold release: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&release).is_err());
+    assert!(owner.owns_callback(&endpoint));
+    let quiescent = owner.quiesce_on_control().unwrap();
+    assert_eq!(quiescent.child_id_on_control(), child);
+    assert!(quiescent.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn editor_seal_requires_stopped_original_worker_and_exact_completion() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
+    const NAME: &str = "plugin_worker::capture::tests::controller::editor_seal_requires_stopped_original_worker_and_exact_completion";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let (mut other, _other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    assert!(matches!(
+        owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits),
+        Err("native editor seal requires a stopped source")
+    ));
+    let until = Instant::now() + Duration::from_millis(750);
+    let observation = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::ReadEditorFrontier) {
+            Ok(observation) => break observation,
+            Err("native controller mailbox is busy") => {}
+            Err(reason) => panic!("editor admission observation: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    assert!(
+        other
+            .poll_controller_query_on_control(&observation)
+            .is_err()
+    );
+    loop {
+        match owner
+            .poll_controller_query_on_control(&observation)
+            .unwrap()
+        {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorFrontier(0) => break,
+            other => panic!("live editor admission observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .poll_controller_query_on_control(&observation)
+            .is_err()
+    );
+    owner.revoke_on_control();
+    let until = Instant::now() + Duration::from_millis(750);
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("stopped seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    assert!(other.poll_controller_query_on_control(&request).is_err());
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("stopped seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&request).is_err());
+    assert!(owner.retire_on_control().unwrap().native.status.success());
+    other.revoke_on_control();
+    assert!(other.retire_on_control().unwrap().native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_worker_cannot_return_a_reusable_epoch() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
+    const NAME: &str =
+        "plugin_worker::capture::tests::controller::sealed_worker_cannot_return_a_reusable_epoch";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    owner.revoke_on_control();
+    let until = Instant::now() + Duration::from_secs(2);
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("stopped seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    let completion = Arc::clone(&owner.reaper.completed);
+    let held = completion.capture.lock().unwrap();
+    assert!(matches!(
+        owner.quiesce_on_control(),
+        Err(hex_plugin_host::Error::Protocol(
+            "native controller mailbox is busy"
+        ))
+    ));
+    drop(held);
+    assert!(matches!(
+        owner.quiesce_on_control(),
+        Err(hex_plugin_host::Error::Protocol(
+            "native editor seal query is pending"
+        ))
+    ));
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("stopped seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(matches!(
+        owner.quiesce_on_control(),
+        Err(hex_plugin_host::Error::Protocol(
+            "sealed editor source cannot resume"
+        ))
+    ));
+    assert!(owner.poll_sealed_edits_on_control().is_ok());
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn refused_seal_does_not_make_worker_permanently_sealed() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
+    const CHILD: &str = "HEX_REFUSED_EDITOR_SEAL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let root =
+            std::env::temp_dir().join(format!("hex-refused-editor-seal-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "147")
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", root.join("trace"))
+            .env("HEX_ORIGINAL_INSTANCE_RELEASE", root.join("release"))
+            .env("HEX_ORIGINAL_EDITOR_END_RELEASE", root.join("end"))
+            .output()
+            .unwrap();
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"begin",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&25_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::NotSealed) => break,
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let stopped = owner
+        .quiesce_on_control()
+        .expect("a refused seal must not forbid quiescence");
+    assert!(stopped.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_stopped_worker_drains_original_editor_burst_in_order() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState, ParameterEditKind};
+    const NAME: &str = "plugin_worker::capture::tests::controller::sealed_stopped_worker_drains_original_editor_burst_in_order";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    assert!(owner.poll_sealed_edits_on_control().is_err());
+    let (mut other, _other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    other.revoke_on_control();
+    assert!(other.poll_sealed_edits_on_control().is_err());
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&25_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until, "SDK burst did not finish");
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    assert!(owner.poll_sealed_edits_on_control().is_err());
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let controller = query(&mut owner);
+    assert!(matches!(
+        owner.poll_sealed_edits_on_control(),
+        Err("native stopped control operation is busy")
+    ));
+    let _ = page(&mut owner, &controller);
+    let mut edits = Vec::new();
+    while edits.len() < 14 {
+        let batch = owner.poll_sealed_edits_on_control().unwrap();
+        edits.extend_from_slice(batch.edits.as_slice());
+        assert!(Instant::now() < until, "sealed burst did not drain");
+    }
+    assert_eq!(edits.len(), 14);
+    for (index, edit) in edits.iter().enumerate() {
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id),
+            (index as u64 + 1, 1, 7)
+        );
+    }
+    assert_eq!(edits.first().unwrap().kind, ParameterEditKind::Begin);
+    assert_eq!(edits.last().unwrap().kind, ParameterEditKind::End);
+    assert!(
+        owner
+            .poll_sealed_edits_on_control()
+            .unwrap()
+            .edits
+            .as_slice()
+            .is_empty()
+    );
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    assert!(owner.retire_on_control().unwrap().failure.is_none());
+    assert!(other.retire_on_control().unwrap().failure.is_none());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sealed_worker_delivers_admitted_read_before_fresh_batches() {
+    use crate::plugin_worker::StoppedEditProgress;
+    use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
+    const NAME: &str = "plugin_worker::capture::tests::controller::sealed_worker_delivers_admitted_read_before_fresh_batches";
+    if fixture_child(116, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    fs::write(
+        std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+        b"emit",
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    while fs::read(trace_path())
+        .ok()
+        .is_none_or(|trace| trace.get(..4) != Some(&25_i32.to_le_bytes()))
+    {
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .poll_recovery_edits_on_control(true)
+            .unwrap()
+            .is_none()
+    );
+    owner.revoke_on_control();
+    let request = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::SealEditorEdits) {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("seal admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    loop {
+        match owner.poll_controller_query_on_control(&request).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed) => break,
+            other => panic!("seal terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(matches!(
+        owner.poll_sealed_edits_on_control(),
+        Err("native prior edit read remains")
+    ));
+    let first = loop {
+        match owner.poll_stopped_edits_on_control(true) {
+            Ok(StoppedEditProgress::Completed(batch)) => break batch,
+            Ok(StoppedEditProgress::Pending) | Err("native edit observation is busy") => {}
+            Err(reason) => panic!("prior read: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    let mut edits = first.edits.as_slice().to_vec();
+    while edits.len() < 14 {
+        edits.extend_from_slice(
+            owner
+                .poll_sealed_edits_on_control()
+                .unwrap()
+                .edits
+                .as_slice(),
+        );
+        assert!(Instant::now() < until);
+    }
+    assert_eq!(edits.len(), 14);
+    assert!(
+        edits
+            .iter()
+            .enumerate()
+            .all(|(index, edit)| edit.sequence == index as u64 + 1)
+    );
+    owner.reaper.worker.as_mut().unwrap().native_error = Some(hex_plugin_host::Error::Protocol(
+        "injected failure before sealed drain",
+    ));
+    assert!(matches!(
+        owner.poll_sealed_edits_on_control(),
+        Err("native stopped edit source failed")
+    ));
+    assert!(owner.retire_on_control().unwrap().failure.is_some());
+}

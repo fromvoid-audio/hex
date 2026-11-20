@@ -50,6 +50,8 @@ pub struct ResponseGraphNode {
     pub position: [f32; 2],
     pub enabled: bool,
     pub selected: bool,
+    /// Optional node-specific color. Disabled overrides render at lower opacity.
+    pub accent: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1524,15 +1526,23 @@ fn paint_graph(
         marker.line_to(point(center.x, center.y + radius));
         marker.line_to(point(center.x - radius, center.y));
         if let Ok(marker) = marker.build() {
-            window.paint_path(
-                marker,
-                rgb(if node.enabled {
-                    style.accent
-                } else {
-                    style.muted
-                }),
-            );
+            window.paint_path(marker, node_color(*node, style));
         }
+    }
+}
+
+fn node_color(node: ResponseGraphNode, style: ControlStyle) -> gpui::Hsla {
+    match node.accent {
+        Some(accent) => {
+            let color: gpui::Hsla = rgb(accent).into();
+            color.opacity(if node.enabled { 1.0 } else { 0.55 })
+        }
+        None => rgb(if node.enabled {
+            style.accent
+        } else {
+            style.muted
+        })
+        .into(),
     }
 }
 
@@ -1543,13 +1553,9 @@ fn circular_node_quad(
     hovered_node: Option<u32>,
     style: ControlStyle,
 ) -> gpui::PaintQuad {
-    let color = if node.enabled {
-        style.accent
-    } else {
-        style.muted
-    };
-    let fill: gpui::Hsla = if node.selected || hovered_node == Some(node.id) {
-        rgb(color).into()
+    let color = node_color(node, style);
+    let fill = if node.selected || hovered_node == Some(node.id) {
+        color
     } else {
         gpui::transparent_black()
     };
@@ -1561,7 +1567,7 @@ fn circular_node_quad(
         radius,
         fill,
         px(1.0),
-        rgb(color),
+        color,
         Default::default(),
     )
 }
@@ -1713,6 +1719,7 @@ mod tests {
             input_analyzer: None,
             analyzer_peak: None,
             nodes: vec![ResponseGraphNode {
+                accent: None,
                 id: 3,
                 position: [0.5, 0.5],
                 enabled: true,
@@ -1745,6 +1752,7 @@ mod tests {
         assert!(invalid.validate().is_err());
         let mut invalid = model();
         invalid.nodes.push(ResponseGraphNode {
+            accent: None,
             id: invalid.nodes[0].id,
             position: [0.75, 0.5],
             enabled: true,

@@ -3,6 +3,7 @@
 use super::EditorView;
 use crate::{UpdateAction, UpdateCommand, UpdateReady, UpdateStatus};
 use gpui::{Context, Window};
+use hex_engine::AudioSourceContext;
 use hex_session::service::{Request, SaveCorrelation};
 
 #[derive(Default)]
@@ -10,6 +11,7 @@ pub(super) struct State {
     next_id: u64,
     phase: Phase,
     ready: Option<UpdateReady>,
+    save_under_close_hold: Option<SaveCorrelation>,
     available: bool,
     reported_result: bool,
 }
@@ -69,6 +71,7 @@ impl EditorView {
             let _ = client.send(UpdateCommand::Cancel(id));
         }
         self.update_flow.ready.take();
+        self.update_flow.save_under_close_hold = None;
         self.update_flow.phase = Phase::Idle;
         // An OS termination waiting on this preparation does not quit.
         super::close::quit_refused(cx);
@@ -244,6 +247,26 @@ impl EditorView {
         confirmation_required: bool,
         cx: &mut Context<Self>,
     ) {
+        if let Some(expected) = self.update_flow.save_under_close_hold
+            && correlation == Some(expected)
+        {
+            self.update_flow.save_under_close_hold = None;
+            let context = AudioSourceContext {
+                project_generation: expected.project_generation,
+                editor_revision: expected.revision,
+            };
+            if success
+                && self
+                    .automation_close_preflight
+                    .update_safe(expected.request_id, context)
+            {
+                self.automation_close_preflight.mark_vst3_edits_saved();
+            } else {
+                self.cancel_update(expected.request_id, cx);
+                self.error = Some("vst3 state save did not complete · update cancelled".into());
+            }
+            return;
+        }
         let Phase::Saving {
             id,
             correlation: Some(expected),
@@ -357,7 +380,9 @@ impl EditorView {
     }
 
     pub(super) fn reconcile_update_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.automation_close_preflight.awaiting_update() {
+        if self.automation_close_preflight.awaiting_update()
+            || self.update_flow.save_under_close_hold.is_some()
+        {
             return;
         }
         let Some(ready) = self.update_flow.ready.take() else {
@@ -425,11 +450,15 @@ impl EditorView {
             if !view.prepare_theme_window_close(window, cx) {
                 drop(ready);
                 view.cancel_update(id, cx);
-                view.error = Some("theme save in progress · update cancelled".into());
+                view.error = Some("settings change in progress · update cancelled".into());
                 cx.notify();
                 return;
             }
-            if !view.automation_close_preflight.update_safe(id) {
+            let context = AudioSourceContext {
+                project_generation: generation,
+                editor_revision: revision,
+            };
+            if !view.automation_close_preflight.update_safe(id, context) {
                 view.update_flow.ready = Some(ready);
                 if let Err(reason) = view.begin_update_automation_close(id, window, cx) {
                     view.cancel_update(id, cx);
@@ -438,10 +467,34 @@ impl EditorView {
                 }
                 return;
             }
+            if !discard && view.automation_close_preflight.admitted_vst3_edits() {
+                // Save and Restart may have captured state before a late SDK
+                // callback. Save through the existing projector again while
+                // this source's admission holds are still in force.
+                if let Some(correlation) = saved
+                    && view
+                        .service
+                        .submit_correlated_save(Request::SaveCurrent, correlation)
+                        .is_ok()
+                {
+                    view.worker_submitted();
+                    view.saving_project = true;
+                    view.update_flow.save_under_close_hold = Some(correlation);
+                    view.update_flow.ready = Some(ready);
+                    view.wake_poll();
+                } else {
+                    drop(ready);
+                    view.cancel_update(id, cx);
+                    view.error = Some("vst3 editor changes need a save · update cancelled".into());
+                }
+                cx.notify();
+                return;
+            }
             view.cancel_browser_sample_playback();
             view.stop();
             match ready.approval.approve() {
                 Ok(()) => {
+                    view.shutdown_service_for_quit(cx);
                     window.remove_window();
                     super::close::quit_confirmed(cx);
                 }
@@ -747,10 +800,41 @@ mod tests {
             "helper approval waits for custody read"
         );
         cx.run_until_parked();
+        editor.update(cx, |view, cx| {
+            view.tick_automation_close(cx);
+        });
+        let mut event = loop {
+            if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {
+                break event;
+            }
+            assert!(Instant::now() < deadline, "close hold observation missing");
+            std::thread::yield_now();
+        };
+        // Drive the real close and save paths. The signed Desktop fixture
+        // verifies the native producer data at the Session boundary.
+        event
+            .device_automation_take_complete
+            .as_mut()
+            .unwrap()
+            .progress = hex_session::service::DeviceAutomationTakeProgress::ClosePluginEditor(
+            hex_session::service::PluginEditorCloseAdmission::Held {
+                admitted_edits: true,
+            },
+        );
+        editor.update(cx, |view, cx| {
+            view.receive(event);
+            view.tick_automation_close(cx);
+        });
+        cx.run_until_parked();
+        assert!(editor.read_with(cx, |view, _| {
+            view.update_flow.save_under_close_hold.is_some()
+        }));
+        assert!(!approved.load(Ordering::SeqCst));
         while !approved.load(Ordering::SeqCst) {
-            cx.update_window(handle, |_, _, cx| {
+            cx.update_window(handle, |_, window, cx| {
                 editor.update(cx, |view, cx| {
                     view.tick(cx);
+                    view.reconcile_update_ready(window, cx);
                 });
             })
             .unwrap();

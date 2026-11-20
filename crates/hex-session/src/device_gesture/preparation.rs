@@ -28,29 +28,8 @@ pub(crate) fn command_for_snapshot(
         };
         return creation.command(session, device, snapshot.sequence);
     }
-    if let Some(parameters) = snapshot.parameters {
-        let GestureTarget::DeviceParameterSnapshot { device } = snapshot.target else {
-            return Err(SessionError::Invalid("snapshot target changed"));
-        };
-        let current = session
-            .project()
-            .device(device)
-            .ok_or(SessionError::Invalid("device no longer exists"))?;
-        let state = hex_engine::patch_native_device_snapshot_for_class(
-            session.native_device_class(device)?,
-            current.state(),
-            &parameters,
-        )?;
-        return Ok(manual_device_edit(
-            session,
-            device,
-            state,
-            snapshot
-                .touched_parameters
-                .ids(&parameters)
-                .map_err(SessionError::Invalid)?,
-            snapshot.manual_edit,
-        ));
+    if snapshot.parameters.is_some() {
+        return existing_device_command(session.project(), snapshot);
     }
     match snapshot.target {
         GestureTarget::PluginParameter { .. } => Err(SessionError::Invalid(
@@ -79,8 +58,49 @@ pub(crate) fn command_for_snapshot(
             return_track,
             gain: send_gain(snapshot.value)?,
         }),
+        GestureTarget::DeviceParameter { .. } | GestureTarget::DeviceParameterPair { .. } => {
+            existing_device_command(session.project(), snapshot)
+        }
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterSnapshot { .. }
+        | GestureTarget::EqNodeCreation { .. } => {
+            Err(SessionError::Invalid("snapshot parameters are missing"))
+        }
+    }
+}
+
+/// Reapply one validated existing-device gesture to an authoritative Project.
+/// Shared by canonical commits and the Verified Streaming preview projection.
+pub(crate) fn existing_device_command(
+    project: &Project,
+    snapshot: GestureSnapshot,
+) -> Result<Command, SessionError> {
+    if let Some(parameters) = snapshot.parameters {
+        let GestureTarget::DeviceParameterSnapshot { device } = snapshot.target else {
+            return Err(SessionError::Invalid("snapshot target changed"));
+        };
+        let current = project
+            .device(device)
+            .ok_or(SessionError::Invalid("device no longer exists"))?;
+        let state = hex_engine::patch_native_device_snapshot_for_class(
+            Session::native_device_class_for_project(project, device)?,
+            current.state(),
+            &parameters,
+        )?;
+        return Ok(manual_device_edit_for_project(
+            project,
+            device,
+            state,
+            snapshot
+                .touched_parameters
+                .ids(&parameters)
+                .map_err(SessionError::Invalid)?,
+            snapshot.manual_edit,
+        ));
+    }
+    match snapshot.target {
         GestureTarget::DeviceParameter { device, parameter } => device_parameter_command(
-            session.project(),
+            project,
             device,
             parameter,
             snapshot.value,
@@ -99,11 +119,10 @@ pub(crate) fn command_for_snapshot(
             let second_value = snapshot
                 .secondary_value
                 .ok_or(SessionError::Invalid("paired gesture value is missing"))?;
-            let current = session
-                .project()
+            let current = project
                 .device(device)
                 .ok_or(SessionError::Invalid("device no longer exists"))?;
-            let class = session.native_device_class(device)?;
+            let class = Session::native_device_class_for_project(project, device)?;
             let state = hex_engine::patch_native_device_parameter_for_class(
                 class,
                 current.state(),
@@ -116,25 +135,21 @@ pub(crate) fn command_for_snapshot(
                 second,
                 second_value,
             )?;
-            Ok(manual_device_edit(
-                session,
+            Ok(manual_device_edit_for_project(
+                project,
                 device,
                 state,
                 [first, second],
                 snapshot.manual_edit,
             ))
         }
-        GestureTarget::TrackGains { .. }
-        | GestureTarget::DeviceParameterSnapshot { .. }
-        | GestureTarget::EqNodeCreation { .. } => {
-            Err(SessionError::Invalid("snapshot parameters are missing"))
-        }
+        _ => Err(SessionError::Invalid("snapshot parameters are missing")),
     }
 }
 
 /// Reconstruct the same single-parameter intent against an authoritative
 /// snapshot. This owns validated command construction, never source facts.
-pub(crate) fn device_parameter_command(
+fn device_parameter_command(
     project: &Project,
     device: DeviceId,
     parameter: ParameterId,

@@ -7,6 +7,10 @@ use crate::{
 };
 mod modulation;
 impl SessionPlayback {
+    #[cfg(test)]
+    pub(crate) fn test_main_chain(&self) -> &hex_lattice::NativeRuntimeChain {
+        &self.main_chain
+    }
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,
@@ -14,11 +18,14 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            paused_source_monitor,
+            defer_paused_source_monitor: _,
             current_sampler_keyboards,
             current_sampler_keyboard_epoch: _,
             current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
+            authored_clock_epoch: _,
             gain_recording_override: _,
             live_gain: _,
             live_gain_scratch: _,
@@ -33,6 +40,9 @@ impl SessionPlayback {
             periodic_tempo: _,
             anchor: _,
             interactive_start_frame: _,
+            interactive_onset_floor: _,
+            pending_shared_chase: _, // inline and charged by size_of::<Self>()
+            pending_shared_live: _,
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
@@ -56,12 +66,17 @@ impl SessionPlayback {
             current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
+            tail_route_sends: _,
+            has_tail_route_sends: _,
+            tail_proven_grouped: _,
             tail_mutable_instruments,
+            receiver_power_off_slots: _,
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
             tail_output_active: _,
             tail_output_scratch: _,
+            detached_tail_group_limit: _,
             releases,
             release_scratch,
             retained_contexts,
@@ -80,20 +95,31 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             monitor_source_releases: _,
+            stopped_input: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
             live_restart: _,
+            native_removal,
+            main_pass_delay,
+            foreign_continuation,
+            require_continuous_insert: _,
+            return_fade: _,
+            return_fade_scratch: _,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
-        if !source_effects.is_empty()
+        if native_removal.is_some()
+            || main_pass_delay.is_some()
+            || !source_effects.is_empty()
             || !foreign_arrangement.is_empty()
             || midi_admission.is_some()
             || live_expression.is_some()
             || computer_keyboard.is_some()
+            || paused_source_monitor.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
+            || foreign_continuation.is_some()
             || mutable_instruments
                 .iter()
                 .flatten()
@@ -254,8 +280,14 @@ fn chain_storage<'a>(
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,
         };
+        let powered_off = prepared
+            .definition
+            .as_ref()
+            .is_some_and(hex_lattice::PreparedProcessorFactory::is_powered_off);
         if (foreign.is_none()
+            && !powered_off
             && !crate::native_effect_storage::is_closed_type(prepared.device_type))
+            || entry.is_powered_off() != powered_off
             || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
@@ -289,7 +321,7 @@ fn chain_storage<'a>(
                 crate::native_effect_storage::pair_bytes(&entry)?,
                 prepared.definition.is_some(),
             ) {
-                (None, true) if foreign.is_some() => {}
+                (None, true) if foreign.is_some() || powered_off => {}
                 (Some((primary, scratch)), true) if foreign.is_none() => {
                     l.bytes(
                         Owner::exclusive(chain),
@@ -305,6 +337,11 @@ fn chain_storage<'a>(
                 (None, false) => {}
                 _ => return Err(AudioStorageError::UnknownStorage),
             }
+        }
+        // These allocations belong to the host, outside the provider payload.
+        // Borrowing their actual Vecs observes capacity without moving custody.
+        for frames in entry.reserved_dry_storage().into_iter().flatten() {
+            l.vec(frames)?;
         }
         l.existing_shared(
             &prepared.meter,

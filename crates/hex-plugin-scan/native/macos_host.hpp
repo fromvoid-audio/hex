@@ -115,6 +115,7 @@ struct EditEvent {
     bool grouped_gesture=false;
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
+enum class EditorDetachAdmission { Granted, GestureActive, Refused };
 struct HostDispatch {
     uint64 sequence=0, metadata_revision=0;
     int32 flags=0;
@@ -156,6 +157,9 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     // Main publishes accepted editor edits; the worker samples this frontier
     // before a host-authored SDK exchange. No controller pointer crosses lanes.
     std::atomic<uint64> editor_frontier{0};
+    // Editor admission also orders gesture and group boundaries. DSP feedback
+    // retains its separate fence for the last meaningful value transition.
+    std::atomic<uint64> editor_admission_sequence{0};
     const bool advertises_editor_groups;
     uint64 cohort=0;
     bool refused_cohort=false;
@@ -165,6 +169,15 @@ class Host final : public IHostApplication, public IComponentHandler, public ICo
     size_t cohort_value_count=0;
     size_t end_reservations() const { return active_count+(cohort?1:0); }
     std::atomic<bool> accepting{true};
+    // Main-lane editor admission can close while accepted work continues to
+    // dispatch and the worker drains the exact ordered receipt prefix.
+    bool editor_edits_sealed=false;
+    bool editor_detaching=false;
+    uint64 editor_hold_ordinal=0;
+    bool editor_admission_held=false;
+    bool editor_admission_closed() const {
+        return editor_edits_sealed || editor_detaching || editor_admission_held;
+    }
     std::atomic<pthread_t> processing_thread{nullptr};
     bool dispatching=false, recursive=false, applying_feedback=false, applying_saved_state=false;
     ParameterSnapshot metadata{};
@@ -224,6 +237,46 @@ public:
     const HostMessageDiagnostics& message_diagnostics() const { return message_trace; }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
+    // Do not invent an End or split an atomic group. The caller retains the
+    // original source if closing the editor leaves an open gesture/cohort.
+    // Normal dispatch, feedback and latency observations stay live.
+    bool seal_editor_edits_on_control() {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            active_count || cohort || editor_detaching) return false;
+        editor_edits_sealed=true;
+        return true;
+    }
+    // A temporary hold preserves already admitted edits and the live
+    // processor. Only its exact owner can release it, even across retries.
+    bool hold_editor_admission_on_control(uint64 ordinal) {
+        if(![NSThread isMainThread] || !ordinal || !accepting || dispatching ||
+            applying_saved_state || active_count || cohort || editor_edits_sealed || editor_detaching)
+            return false;
+        if(editor_admission_held) return ordinal==editor_hold_ordinal;
+        if(ordinal<=editor_hold_ordinal) return false;
+        editor_hold_ordinal=ordinal;
+        editor_admission_held=true;
+        return true;
+    }
+    bool release_editor_admission_on_control(uint64 ordinal) {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            editor_edits_sealed || editor_detaching ||
+            !editor_admission_held || ordinal!=editor_hold_ordinal) return false;
+        editor_admission_held=false;
+        return true;
+    }
+    // A live processor may still own an audible tail. Fence editor callbacks
+    // only for the synchronous window detach, without sealing that processor.
+    EditorDetachAdmission begin_editor_detach_on_control() {
+        if(![NSThread isMainThread] || !accepting || dispatching || applying_saved_state ||
+            editor_edits_sealed || editor_detaching) return EditorDetachAdmission::Refused;
+        if(active_count || cohort) return EditorDetachAdmission::GestureActive;
+        editor_detaching=true;
+        return EditorDetachAdmission::Granted;
+    }
+    void end_editor_detach_on_control() { editor_detaching=false; }
+    // The helper's main lane owns the editor seal and resume transition.
+    bool editor_edits_sealed_on_control() const { return editor_edits_sealed; }
     void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
     // A synchronous SDK state setter may echo parameter edits. The saved
     // bytes already define the processor state and the controller inventory
@@ -306,6 +359,7 @@ public:
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(cohort) {poison_cohort();return kResultFalse;}
@@ -315,12 +369,14 @@ public:
         cohort=++sequence;refused_cohort=false;cohort_gestures.fill(0);cohort_value_count=0;
         requests[(first+count++)%requests.size()]={sequence,cohort,0,0,GroupBegin,false,cohort};
         pending_edits.fetch_add(1,std::memory_order_release);
+        editor_admission_sequence.store(sequence,std::memory_order_release);
         return kResultOk;
     }
     tresult PLUGIN_API finishGroupEdit() override {
         if(!advertises_editor_groups) return kNotImplemented;
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         if(applying_saved_state) return kResultOk;
         if(!cohort) {refuse(InvalidEdit);return kResultFalse;}
@@ -341,6 +397,7 @@ public:
         requests[(first+count++)%requests.size()]={sequence,cohort,0,0,terminal,false,cohort};
         cohort=0;refused_cohort=false;
         pending_edits.fetch_add(1,std::memory_order_release);
+        editor_admission_sequence.store(sequence,std::memory_order_release);
         return terminal==GroupEnd?kResultOk:kResultFalse;
     }
 private:
@@ -475,14 +532,17 @@ private:
         info.feedback_floor=gesture+2;
         editor_frontier.store(info.feedback_floor,std::memory_order_release);
         if(has_room) pending_edits.fetch_add(records,std::memory_order_release);
+        editor_admission_sequence.store(sequence,std::memory_order_release);
         return kResultOk;
     }
     tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
         if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
         if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(editor_admission_closed() && !applying_saved_state) return kResultFalse;
         if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
         const bool valid_value=kind!=Perform || (std::isfinite(value) && value>=0 && value<=1);
         if(applying_saved_state && id<=0x7FFFFFFFu && valid_value) return kResultOk;
+        if(editor_admission_closed()) return kResultFalse;
         ParameterSnapshot::Parameter* info=nullptr;
         for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
         if(!info) {refuse_editor_edit(InvalidEdit|UnknownEditParameter);return kInvalidArgument;}
@@ -518,6 +578,7 @@ private:
                 info->editor_sequence=next;
                 editor_frontier.store(next,std::memory_order_release);
                 sequence=next;
+                editor_admission_sequence.store(next,std::memory_order_release);
                 return kResultOk;
             }
             if(!cohort_room(1) || !make_edit_room(1)) {refuse_editor_edit(QueueFull);return kResultFalse;}
@@ -536,6 +597,7 @@ private:
             info->feedback_floor=next;
             editor_frontier.store(next,std::memory_order_release);
         }
+        editor_admission_sequence.store(next,std::memory_order_release);
         return kResultOk;
     }
 public:
@@ -579,9 +641,9 @@ public:
         if(flags & kLatencyChanged) pending_latency_restart.store(ordinal,std::memory_order_release);
         return kResultOk;
     }
-    // At most one request and 128 info/value reads per call. A complete staged
-    // snapshot publishes once on main; malformed/reentrant reads keep the prior
-    // accepted snapshot. Stable ParamIDs cannot be silently remapped by a refresh.
+    // At most one request and HOST_PARAMETER_COUNT value reads per call.
+    // Only descriptor invalidations also query parameter info. A malformed or
+    // reentrant read keeps the last accepted snapshot and stable ParamIDs.
     HostDispatch dispatch(IEditController* controller) {
         HostDispatch result{}; result.metadata_revision=metadata.revision;
         if (![NSThread isMainThread]) { refuse(WrongThread); result.disposition=HostDisposition::WrongThread; return result; }
@@ -626,13 +688,36 @@ public:
         return refresh_controller_on_control(controller,result);
     }
 private:
+    HostDispatch refresh_values_on_control(IEditController& controller,HostDispatch result) {
+        // A value invalidation uses the admitted IDs and leaves the processing
+        // descriptors intact. Validate the entire observation before publishing.
+        std::array<ParamValue,HOST_PARAMETER_COUNT> values;
+        for(uint32 n=0;n<metadata.count;++n) {
+            const auto value=controller.getParamNormalized(metadata.parameters[n].info.id);
+            if(recursive) {result.disposition=HostDisposition::Recursive;return result;}
+            if(!std::isfinite(value) || value<0 || value>1) {
+                refuse(InvalidMetadata);result.disposition=HostDisposition::InvalidMetadata;return result;
+            }
+            values[n]=value;
+        }
+        for(uint32 n=0;n<metadata.count;++n) metadata.parameters[n].value=values[n];
+        result.metadata_revision=++metadata.revision;
+        result.disposition=HostDisposition::Refreshed;
+        return result;
+    }
+
     HostDispatch refresh_controller_on_control(IEditController* controller,HostDispatch result) {
         if (![NSThread isMainThread]) { refuse(WrongThread);result.disposition=HostDisposition::WrongThread;return result; }
         if (!accepting) { result.disposition=HostDisposition::Retiring;return result; }
         if (dispatching) { recursive=true;refuse(RecursiveRestart);result.disposition=HostDisposition::Recursive;return result; }
         if (!controller) { refuse(UnsupportedCapability); result.disposition=HostDisposition::NoController; return result; }
+        if (metadata.revision==std::numeric_limits<uint64>::max()) {
+            refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
+        }
         dispatching=true; recursive=false;
         struct Leave { bool& flag; ~Leave() { flag=false; } } leave{dispatching};
+        if(result.flags==kParamValuesChanged && metadata.revision)
+            return refresh_values_on_control(*controller,result);
         ParameterSnapshot staged{};
         const auto total=controller->getParameterCount();
         if (total>static_cast<int32>(HOST_PARAMETER_COUNT)) {
@@ -679,9 +764,6 @@ private:
         if (metadata.revision && staged.count!=metadata.count) valid=false;
         if (recursive) { result.disposition=HostDisposition::Recursive; return result; }
         if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
-        if (metadata.revision==std::numeric_limits<uint64>::max()) {
-            refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
-        }
         staged.revision=metadata.revision+1;
         const auto next=compact(staged);
         const auto same_id=[](const auto& left,const auto& right) { return left.id==right.id; };
@@ -759,15 +841,20 @@ public:
             uint32 index=0;
             while(index<metadata.count && metadata.parameters[index].info.id!=value.id) ++index;
             if(index==metadata.count) {refuse(FeedbackParameterMissing);return false;}
-            // DSP can finish long after the controller has moved
-            // on to a newer drag position. Its DSP receipt remains valid.
+            // During a drag, only the exact latest native input can mirror
+            // back to its controller. A deferred controller still needs this
+            // value even when the processor finishes before End.
+            const auto& parameter=metadata.parameters[index];
+            const bool current_native=value.editor_input && parameter.editor_sequence==value.editor_sequence;
             bool editing=false;
             for(size_t i=0;i<active_tokens.size();++i)
                 if(active_tokens[i] && active_ids[i]==value.id) {editing=true;break;}
-            if(editing || metadata.parameters[index].editor_sequence>value.editor_sequence ||
-                (metadata.parameters[index].feedback_floor>value.editor_sequence &&
-                    !(value.editor_input && metadata.parameters[index].editor_sequence==value.editor_sequence))) continue;
-            auto normalized=value.editor_sequence?controller->getParamNormalized(value.id):-1.0;
+            if(!current_native && (editing || parameter.editor_sequence>value.editor_sequence ||
+                parameter.feedback_floor>value.editor_sequence)) continue;
+            // Even before the first editor gesture, an equal value needs no
+            // setter. Setters can repaint or notify the vendor's editor.
+            auto normalized=controller->getParamNormalized(value.id);
+            if(recursive) return false;
             if(normalized!=value.normalized) {
                 applying_feedback=true;
                 const auto updated=controller->setParamNormalized(value.id,value.normalized);
@@ -805,6 +892,9 @@ public:
     // Main-only monotonic admission revision also detects an edit that the
     // worker has already completed during a foreign state-read callback.
     uint64 callback_revision_on_control() const { return sequence; }
+    uint64 editor_admission_sequence_on_worker() const {
+        return editor_admission_sequence.load(std::memory_order_acquire);
+    }
     uint64 editor_frontier_on_worker() const { return editor_frontier.load(std::memory_order_acquire); }
     void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {

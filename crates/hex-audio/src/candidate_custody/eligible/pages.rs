@@ -25,6 +25,9 @@ pub(super) struct DomainPages {
     // Last exact worker receipt, retained as bounded diagnostic metadata. Its
     // consumption releases a failed pending request, never readiness authority.
     pub(super) last_failure: Option<hex_stream::StreamFailure>,
+    // One speculative read can be in flight on this loan at a time. Retain
+    // its exact terminal for the waiting graph without altering active roles.
+    pub(super) outgoing_failure: Option<(u64, hex_stream::StreamFailure)>,
 }
 impl DomainEnvelope {
     pub(super) fn new(
@@ -39,6 +42,7 @@ impl DomainEnvelope {
                 signal,
                 epoch: 0,
                 last_failure: None,
+                outgoing_failure: None,
             }),
         }
     }
@@ -60,6 +64,17 @@ impl DomainEnvelope {
     }
     pub(crate) fn return_requested(&self) -> bool {
         self.inner.signal.return_requested.load(Ordering::Acquire)
+    }
+
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_page_loan(
+        &mut self,
+        token: AudioCandidateDomainToken,
+    ) -> Option<&mut hex_stream::ConstructorPageLoan> {
+        if self.inner.token != token {
+            return None;
+        }
+        self.inner.loan.as_mut()
     }
 }
 impl Custody {

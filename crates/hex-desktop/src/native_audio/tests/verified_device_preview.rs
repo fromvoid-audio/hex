@@ -1,9 +1,227 @@
-//! The existing bound Utility-width gesture contract through the real Verified
-//! reader, worker, closed publication and callback, with only output substituted.
+//! Native effect gestures through the actual Verified reader, worker, closed
+//! publication and callback, with only the physical output substituted.
 use super::*;
 use hex_session::device_gesture::{
     GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
 };
+
+#[test]
+fn verified_arrangement_track_removal_fades_before_one_exact_commit() {
+    verified_arrangement_track_removal(false);
+}
+
+#[test]
+fn verified_compensated_track_removal_drains_a_shared_return_feed() {
+    verified_arrangement_track_removal(true);
+}
+
+fn verified_arrangement_track_removal(compensated: bool) {
+    use hex_project::{Command, Created};
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let first = Files::new();
+    let second = Files::new();
+    let mut h = super::verified_gain::actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let first = h.run(Request::Import(first.wav(48_000, 32_768)));
+    let track = first.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let mut before = h.run(Request::Import(second.wav(48_000, 32_768)));
+    let level = if compensated {
+        h.applied(h.context.unwrap());
+        let binding = before.state.canonical_audio_source.as_ref().unwrap();
+        assert_eq!(
+            binding
+                .required_sources()
+                .filter(|(_, source)| matches!(
+                    source,
+                    hex_session::AudioSourceBinding::VerifiedFile(_)
+                ))
+                .count(),
+            2
+        );
+        let kept = before.state.project.tracks()[1].id();
+        let bus = h.run(Request::Edit(Command::AddReturnTrack {
+            name: "shared".into(),
+        }));
+        let Some(Created::ReturnTrack(bus)) = bus.created else {
+            panic!("shared Return");
+        };
+        h.applied(h.context.unwrap());
+        for source in [track, kept] {
+            let sent = h.run(Request::Edit(Command::SetReturnSend {
+                track: source,
+                return_track: bus,
+                gain: 0.5,
+            }));
+            assert!(sent.error.is_none(), "{:?}", sent.error);
+            h.applied(h.context.unwrap());
+        }
+        let limiter = hex_engine::default_native_device_state(
+            hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        before = h.run_verified_device_insert(Command::InsertDevice {
+            track: kept,
+            before: None,
+            state: limiter,
+        });
+        assert!(before.error.is_none(), "{:?}", before.error);
+        0.375
+    } else {
+        0.25
+    };
+    let source = h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[2.0 * level; 2]; 64] {
+        assert!(Instant::now() < deadline, "both tracks must be playing");
+        std::thread::yield_now();
+    }
+    let pending = h.run(Request::Edit(Command::RemoveTrack(track)));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, before.state.project);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let deadline = Instant::now() + Duration::from_millis(350);
+    while !status.publication_in_flight() {
+        assert!(Instant::now() < deadline, "removal was not queued");
+        std::thread::yield_now();
+    }
+    let (clock, mut block) = loop {
+        let start = status.position.load(Acquire);
+        let block = h.render();
+        assert_eq!(status.applied_audio_source(), Some(source));
+        if block != [[2.0 * level; 2]; 64] {
+            break (start, block);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the queued track fade did not begin"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    const FADE: usize = 240;
+    let mut elapsed = 0;
+    let mut fading = false;
+    for part in 0..4 {
+        if part != 0 {
+            block = h.render();
+            assert_eq!(status.applied_audio_source(), Some(source));
+        }
+        for (index, frame) in block.iter().enumerate() {
+            fading |= *frame != [2.0 * level; 2];
+            elapsed += usize::from(fading);
+            let gain = FADE.saturating_sub(elapsed) as f32 / FADE as f32;
+            let expected = level + level * gain;
+            assert!(
+                frame.iter().all(|sample| (*sample - expected).abs() < 1e-6),
+                "frame {}: {frame:?}, expected {expected}",
+                part * block.len() + index
+            );
+        }
+    }
+    assert!(elapsed >= FADE);
+    assert_eq!(status.position.load(Acquire), clock + 256);
+    let removed = h.next_with_audio();
+    assert!(
+        removed.request_complete && removed.error.is_none(),
+        "{:?}",
+        removed.error
+    );
+    assert!(removed.device_insert_confirmation.is_none());
+    let receipt = removed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(removed.state.revision, before.state.revision + 1);
+    assert!(removed.state.project.track(track).is_none());
+    let active = h.applied(h.context.unwrap());
+    assert_eq!(active.audio_revision, receipt.submission.audio_revision);
+    assert_eq!(active.output_identity, source.output_identity);
+    assert_eq!(h.render(), [[level; 2]; 64]);
+}
+
+#[test]
+fn verified_native_removal_commits_the_normal_edit_without_consent() {
+    use hex_project::{Command, Created};
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = super::verified_gain::actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    h.run(Request::Import(files.wav(48_000, 32_768)));
+    h.applied(h.context.unwrap());
+    let utility = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.utility",
+    ))
+    .unwrap();
+    let state = hex_engine::patch_native_device_parameter(
+        &utility,
+        ParameterId::from_static(5), // Utility left polarity.
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    let inserted = h.run_verified_device_insert(Command::InsertMainDevice {
+        before: None,
+        state,
+    });
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("utility");
+    };
+    let old = h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.render() != [[-0.25, 0.25]; 64] {
+        assert!(
+            Instant::now() < deadline,
+            "the verified file did not play through Utility"
+        );
+        std::thread::yield_now();
+    }
+
+    let pending = h.run(Request::Edit(Command::RemoveDevice(device)));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, inserted.state.project);
+    assert_eq!(pending.state.revision, inserted.state.revision);
+    let removed = h.next_with_audio();
+    assert!(removed.request_complete);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    assert!(removed.device_insert_confirmation.is_none());
+    assert_eq!(
+        removed.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Installed
+    );
+    assert!(removed.state.project.device(device).is_none());
+    assert_eq!(removed.state.revision, inserted.state.revision + 1);
+    let new = h.applied(h.context.unwrap());
+    assert_eq!(new.output_identity, old.output_identity);
+    assert!(new.audio_revision > old.audio_revision);
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+}
 
 #[test]
 fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm() {
@@ -18,6 +236,159 @@ fn verified_width_preserves_non_neutral_balance_automation_through_cancel_and_hi
 #[test]
 fn verified_width_preserves_dc_filter_history_through_preview_terminals_and_undo() {
     width_preview(true, true);
+}
+
+#[test]
+fn verified_eq_node_drag_previews_cancels_and_commits_with_one_undo() {
+    use hex_engine::eq::{EqState, Node, NodeId, NodeParameter};
+    use hex_session::device_gesture::{DeviceParameterSnapshot, ParameterPairValue};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.wav(48_000, 131_072);
+    let mut wav = fs::read(&path).unwrap();
+    let period: [i16; 64] = std::array::from_fn(|i| {
+        (4096.0 * (i as f64 * std::f64::consts::TAU / 64.0).sin()).round() as i16
+    });
+    for (index, sample) in wav[44..].chunks_exact_mut(2).enumerate() {
+        sample.copy_from_slice(&period[index % period.len()].to_le_bytes());
+    }
+    fs::write(&path, wav).unwrap();
+
+    let mut h = super::verified_gain::actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let id = NodeId::new(7).unwrap();
+    let mut eq = EqState::default();
+    eq.add(Node::new(id, 320.0, 0.0, 0).unwrap()).unwrap();
+    let inserted = h.run_verified_device_insert(hex_project::Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    });
+    let Some(hex_project::Created::Device(device)) = inserted.created else {
+        panic!("sparse EQ")
+    };
+    let first = id.parameter(NodeParameter::Frequency).unwrap();
+    let second = id.parameter(NodeParameter::Gain).unwrap();
+    let base = DeviceParameterSnapshot::new(&[
+        (first, ParameterValue::Float(320.0)),
+        (second, ParameterValue::Float(0.0)),
+    ])
+    .unwrap();
+    let changed = ParameterPairValue {
+        first: ParameterValue::Float(750.0),
+        second: ParameterValue::Float(20.0 * 2.0_f32.log10()),
+    };
+    let snapshot =
+        DeviceParameterSnapshot::new(&[(first, changed.first), (second, changed.second)]).unwrap();
+    let canonical = inserted.state.project.clone();
+    let context = h.context.unwrap();
+    let applied = h.applied(context);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let wait_tone = |h: &Harness, minimum_revision: u64, amplitude: f32| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let block = h.render();
+            let source = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source()
+                .unwrap();
+            // 64 samples at 48 kHz cover one full 750 Hz cycle. At a bell's
+            // center frequency a 6.0206 dB boost doubles its steady amplitude.
+            let actual = (block.iter().map(|f| f[0] * f[0]).sum::<f32>() / 32.0).sqrt();
+            if source.context == h.context.unwrap()
+                && source.audio_revision >= minimum_revision
+                && (actual - amplitude).abs() < 0.0002
+            {
+                return source.audio_revision;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {amplitude}, got {actual}, source {source:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let applied = wait_tone(&h, applied.audio_revision, 0.125_f32);
+    let key = GestureKey {
+        generation: context.project_generation,
+        token: 1,
+    };
+    h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameterPair {
+            device,
+            first,
+            second,
+        },
+    }));
+    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangePair {
+        key,
+        sequence: 1,
+        value: changed,
+    }));
+    assert!(preview.gesture_ack.unwrap().accepted);
+    assert_eq!(preview.state.project, canonical);
+    let audible = wait_tone(&h, applied + 1, 0.25);
+    let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+    assert!(cancelled.gesture_ack.unwrap().accepted);
+    assert_eq!(cancelled.state.project, canonical);
+    let restored = wait_tone(&h, audible + 1, 0.125);
+
+    let key = GestureKey { token: 2, ..key };
+    h.run(Request::DeviceGesture(GestureRequest::BeginSnapshot {
+        key,
+        device,
+        snapshot: base,
+    }));
+    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeSnapshot {
+        key,
+        sequence: 1,
+        snapshot,
+        touched_parameters: Default::default(),
+    }));
+    assert!(preview.gesture_ack.unwrap().accepted);
+    assert_eq!(preview.state.project, canonical);
+    let audible = wait_tone(&h, restored + 1, 0.25);
+    let committed = h.run(Request::DeviceGesture(GestureRequest::CommitSnapshot {
+        key,
+        sequence: 1,
+        snapshot,
+        touched_parameters: Default::default(),
+    }));
+    assert!(committed.gesture_ack.unwrap().accepted);
+    let state = committed.state.project.device(device).unwrap().state();
+    assert_eq!(
+        hex_engine::native_device_parameter(state, first).unwrap(),
+        changed.first
+    );
+    assert_eq!(
+        hex_engine::native_device_parameter(state, second).unwrap(),
+        changed.second
+    );
+    let committed = wait_tone(&h, audible + 1, 0.25);
+    let restored = h.run(Request::Undo);
+    assert_eq!(restored.state.project, canonical);
+    wait_tone(&h, committed + 1, 0.125);
 }
 
 fn width_preview(automated_balance: bool, dc_remove: bool) {
@@ -47,14 +418,14 @@ fn width_preview(automated_balance: bool, dc_remove: bool) {
     ));
     h.applied(h.context.unwrap());
     let track = imported.state.project.tracks()[0].id();
-    let inserted = h.run(Request::Edit(hex_project::Command::InsertDevice {
+    let inserted = h.run_verified_device_insert(hex_project::Command::InsertDevice {
         track,
         before: None,
         state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
             "hex.utility",
         ))
         .unwrap(),
-    }));
+    });
     let Some(hex_project::Created::Device(device)) = inserted.created else {
         panic!("utility")
     };

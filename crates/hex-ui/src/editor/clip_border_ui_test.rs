@@ -93,7 +93,6 @@ fn pixel_ghosts_keep_authored_endpoints_on_shared_physical_columns(cx: &mut Test
                         outline: 0x222222,
                         hover_outline: 0x222222,
                         stroke,
-                        bottom_radius: 0.0,
                         header_height: 14.0,
                         header_gradient: None,
                         notch: super::Notch::new(native),
@@ -642,7 +641,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
     let separator_selector =
         Box::leak(format!("lane-separator-{}", track.value()).into_boxed_str());
-    for target_height in [44.0, 88.0, 23.0] {
+    for target_height in [44.0, 88.0, 22.0] {
         let current_height = f32::from(visual.debug_bounds(lane_selector).unwrap().size.height);
         if current_height != target_height {
             let selector =
@@ -1322,7 +1321,6 @@ fn resolved_backdrop_edge_follows_hover_without_capturing_input(cx: &mut TestApp
                 outline: 0xf003a7,
                 hover_outline: 0x03f0a7,
                 stroke: 1.0 / window.scale_factor(),
-                bottom_radius: 2.0,
                 header_height: 12.0,
                 header_gradient: None,
                 notch: super::Notch::new(true),
@@ -1388,7 +1386,6 @@ fn profile_clip_edge_paint_composition(cx: &mut TestAppContext) {
                         outline: 0x99aabb,
                         hover_outline: 0x99aabb,
                         stroke,
-                        bottom_radius: 0.0,
                         header_height: 18.0,
                         header_gradient: None,
                         notch: notch.clone(),

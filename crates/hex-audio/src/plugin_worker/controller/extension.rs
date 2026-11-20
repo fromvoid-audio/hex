@@ -1,10 +1,20 @@
 //! Capability requests share the original controller mailbox and SDK reader.
 //! Copied completion is not Root capability publication or a canonical base.
+use super::guarded_write::GuardedWrite;
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Observe,
+    Extension,
+    GuardedWrite,
+}
+
 #[derive(Clone, Copy)]
+#[allow(clippy::large_enum_variant)] // One fixed native controller slot includes the bounded input batch.
 pub(super) enum Operation {
     Observe(ControllerRequest),
+    Guarded(GuardedWrite),
     Extend {
         class: hex_plugin_state::ClassId,
         id: u32,
@@ -18,11 +28,16 @@ impl Default for Operation {
     }
 }
 impl Operation {
-    pub(super) fn extension(self) -> bool {
-        matches!(self, Self::Extend { .. })
+    pub(super) fn kind(&self) -> Kind {
+        match self {
+            Self::Observe(_) => Kind::Observe,
+            Self::Extend { .. } => Kind::Extension,
+            Self::Guarded(_) => Kind::GuardedWrite,
+        }
     }
     pub(super) fn validate(self) -> Result<(), &'static str> {
         match self {
+            Self::Guarded(_) => Ok(()),
             Self::Observe(query) => query
                 .validate()
                 .map_err(|_| "invalid native controller query"),
@@ -43,6 +58,7 @@ impl Operation {
         instance: &mut hex_plugin_host::native::Prepared,
     ) -> Result<Option<Reply>, Error> {
         match self {
+            Self::Guarded(input) => input.apply(instance).map(Reply::guarded),
             Self::Observe(query) => {
                 instance.begin_controller_request_on_worker(query)?;
                 Ok(None)
@@ -135,7 +151,7 @@ impl NativeWorker {
         &mut self,
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerAuthoredParameterProgress, &'static str> {
-        if !request.extension {
+        if request.kind != Kind::Extension {
             return Err("native controller operation kind differs");
         }
         match self.poll_reply(request)? {

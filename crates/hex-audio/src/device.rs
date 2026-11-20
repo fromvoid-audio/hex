@@ -6,6 +6,7 @@
 //! preserves finite range, integer output uses the native conversion law, and extra channels
 //! receive silence. Stream setup, reopen and final teardown stay on the lifecycle/control lane,
 //! not the callback.
+use crate::audio_diagnostics::AudioDiagnosticsFlags;
 use crate::open_outcome::{BACKEND_CONVERTS_OUTPUT_RATE, OutputOpenError, negotiate_stream_rate};
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
@@ -23,6 +24,11 @@ use std::{
     },
     time::Instant,
 };
+
+#[cfg(target_os = "macos")]
+mod output_presentation;
+#[cfg(target_os = "macos")]
+pub use output_presentation::PluginOutputObservation;
 
 pub struct PreparedOutput {
     _stream: lifecycle::StreamOwner,
@@ -154,7 +160,10 @@ impl WorkerPreparedOutput {
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
-        client.activate();
+        if !client.activate() {
+            self.client = Some(client);
+            return None;
+        }
         Some(client)
     }
 }
@@ -426,13 +435,19 @@ where
     let rate = config.sample_rate;
     let bounded_bridge =
         bridge.and_then(|plan| Some((plan.converting_device_rate?, plan.project_quantum)));
-    let data_callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+    let mut previous_callback_start = None;
+    let data_callback = move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
         let Some(owner) = data_guard.owner_mut() else {
             data.fill(T::from_sample(0.0));
             return;
         };
         owner.run(|callback, status| {
             let start = Instant::now();
+            let timing = status
+                .audio_diagnostics_flags()
+                .contains(AudioDiagnosticsFlags::TIMING);
+            let start_interval_ns =
+                callback_start_interval(&mut previous_callback_start, timing.then_some(start));
             callback.begin_block();
             if status.device_fault.load(Acquire) {
                 callback.fence_device_fault();
@@ -466,10 +481,15 @@ where
                 callback.report_render_fault(Some(&error), status.position.load(Relaxed));
                 return;
             }
-            for chunk in data[..complete].chunks_mut(channels * block.len()) {
+            for (index, chunk) in data[..complete]
+                .chunks_mut(channels * block.len())
+                .enumerate()
+            {
                 let frames = chunk.len() / channels;
                 let block_start_frame = status.position.load(Relaxed);
                 let rendered = callback.render(&mut block[..frames]);
+                let clock = sample_output_clock(info, index, block.len());
+                callback.set_sample_recording_output_clock(clock);
                 finish_host_chunk(
                     callback,
                     chunk,
@@ -496,7 +516,14 @@ where
             if elapsed > deadline {
                 status.deadline_misses.fetch_add(1, Relaxed);
             }
-            callback.trace_callback_timing(elapsed, deadline, data.len() / channels);
+            if timing {
+                callback.trace_callback_timing(
+                    elapsed,
+                    deadline,
+                    data.len() / channels,
+                    start_interval_ns,
+                );
+            }
         });
     };
     let error_callback = move |_| {
@@ -522,6 +549,76 @@ where
         }
     }
     device.build_output_stream(config, data_callback, error_callback, None)
+}
+
+fn callback_start_interval(
+    previous: &mut Option<Instant>,
+    observed: Option<Instant>,
+) -> Option<u64> {
+    let before = std::mem::replace(previous, observed);
+    let elapsed = observed?.checked_duration_since(before?)?;
+    u64::try_from(elapsed.as_nanos()).ok()
+}
+
+fn sample_output_clock(
+    info: &cpal::OutputCallbackInfo,
+    chunk: usize,
+    chunk_frames: usize,
+) -> Option<crate::sample_recording::OutputClock> {
+    Some(crate::sample_recording::OutputClock {
+        playback: info.timestamp().playback,
+        offset_frames: u32::try_from(chunk.checked_mul(chunk_frames)?).ok()?,
+        graph_latency_frames: None,
+        origin: if cfg!(target_os = "macos") {
+            crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        } else {
+            crate::sample_recording::OutputClockOrigin::Unknown
+        },
+    })
+}
+
+#[cfg(test)]
+mod output_clock_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_native_playback_instant_and_checked_chunk_offsets() {
+        let playback = cpal::StreamInstant::new(25, 123);
+        let info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
+            callback: cpal::StreamInstant::new(25, 100),
+            playback,
+        });
+        assert_eq!(sample_output_clock(&info, 0, 256).unwrap().offset_frames, 0);
+        let second = sample_output_clock(&info, 1, 256).unwrap();
+        assert_eq!((second.playback, second.offset_frames), (playback, 256));
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            second.origin,
+            crate::sample_recording::OutputClockOrigin::CoreAudioHostTime
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            second.origin,
+            crate::sample_recording::OutputClockOrigin::Unknown
+        );
+        assert!(sample_output_clock(&info, usize::MAX, 256).is_none());
+        assert!(sample_output_clock(&info, u32::MAX as usize, 2).is_none());
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                assert!(sample_output_clock(&info, 1, 256).is_some());
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+    }
 }
 
 pub(crate) fn valid_transport_buffer(
@@ -746,7 +843,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_host_chunk, finish_host_chunk, mono_mean};
+    use super::{callback_start_interval, copy_host_chunk, finish_host_chunk, mono_mean};
     use crate::gain_recording::{AbortReason, Receipt, Target};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
@@ -756,6 +853,22 @@ mod tests {
         sync::{Arc, atomic::Ordering::Acquire},
         time::Instant,
     };
+
+    #[test]
+    fn callback_timing_reports_start_intervals_and_resets_when_disabled() {
+        use std::time::Duration;
+
+        let start = Instant::now();
+        let later = start + Duration::from_micros(5_805);
+        let mut previous = None;
+        assert_eq!(callback_start_interval(&mut previous, Some(start)), None);
+        assert_eq!(
+            callback_start_interval(&mut previous, Some(later)),
+            Some(5_805_000)
+        );
+        assert_eq!(callback_start_interval(&mut previous, None), None);
+        assert_eq!(callback_start_interval(&mut previous, Some(later)), None);
+    }
 
     #[test]
     fn finite_mono_extrema_have_representable_symmetric_means() {

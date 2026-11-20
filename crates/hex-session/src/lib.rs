@@ -53,6 +53,7 @@ mod comparison_transition;
 mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
+mod export_error;
 pub mod import_batch;
 pub mod import_batch_decode;
 mod import_reuse;
@@ -61,7 +62,9 @@ mod resident_import;
 pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
 pub mod service;
 pub mod tuning_gesture;
-pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
+pub use hex_media::waveform::{
+    Overrange as CachedOverrange, Peak as CachedPeak, Waveform as CachedWaveform,
+};
 
 #[derive(Debug)]
 pub enum SessionError {
@@ -913,12 +916,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
-        validate_command_media(&command)?;
-        if let Command::PlaceClip { asset, .. } = &command
-            && self.native_assets.contains(*asset)
-        {
-            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
-        }
+        self.validate_prepared_command(&command)?;
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor
@@ -939,6 +937,16 @@ impl Session {
                 let completed = finish(source, candidate, &prepared)?;
                 Ok((prepared, completed))
             })
+    }
+
+    fn validate_prepared_command(&self, command: &Command) -> Result<(), SessionError> {
+        validate_command_media(command)?;
+        if let Command::PlaceClip { asset, .. } = command
+            && self.native_assets.contains(*asset)
+        {
+            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+        }
+        Ok(())
     }
 
     /// Prepare a project-tuning overlay without changing canonical project
@@ -2070,7 +2078,18 @@ fn prepare_with_waveforms_using(
         type Shape = Option<(waveform::Repeat, usize)>;
         let mut roots: Vec<(Audio, Shape, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
+        let mut musical_tempo = None;
+        let mut event_roots = Vec::new();
+        let mut grouped_roots = Vec::new();
         for view in prepared.arrangement().audio_clip_views() {
+            let group_event_sources = view.group_event_sources.as_ref().and_then(|prepared| {
+                group_event_waveforms(
+                    prepared,
+                    old.get(&view.clip)
+                        .and_then(|entry| entry.group_event_sources.as_ref()),
+                    &mut grouped_roots,
+                )
+            });
             if let Some(map) = &view.sparse {
                 let waveform = if let Some(existing) = old.get(&view.clip).filter(|entry| {
                     entry.waveform.bins().len() <= requested_bins
@@ -2092,6 +2111,9 @@ fn prepare_with_waveforms_using(
                         offset: view.offset,
                         length: view.length,
                         preview_root: None,
+                        neutral_musical: None,
+                        event_source: None,
+                        group_event_sources,
                     },
                 );
                 continue;
@@ -2154,6 +2176,9 @@ fn prepare_with_waveforms_using(
                 roots.push((view.audio.clone(), shape, Arc::clone(&waveform)));
                 waveform
             };
+            let event_occurrences = view.event_source_occurrences.as_ref();
+            let first_occurrence = event_occurrences.and_then(|table| table.reads().first());
+            let mut event_peaks = view.event_source_peaks.clone();
             let preview_root = if let Some(clip) = project.clip(view.clip)
                 && clip
                     .audio_edit()
@@ -2164,6 +2189,9 @@ fn prepare_with_waveforms_using(
                         media.resident.get(&asset)
                     })?
                     .map(|root| {
+                        if view.event_source_repeat.is_none() && root.event_source_peaks.is_some() {
+                            event_peaks = root.event_source_peaks;
+                        }
                         // A placement-only change can leave a large preview
                         // root byte-for-byte identical even when it differs
                         // from the outer clip waveform. Keep its exact peaks.
@@ -2200,6 +2228,35 @@ fn prepare_with_waveforms_using(
             } else {
                 None
             };
+            let neutral_musical = musical_waveform(
+                view,
+                old.get(&view.clip),
+                project.tempo_map(),
+                &mut musical_tempo,
+            );
+            let previous_event = old
+                .get(&view.clip)
+                .and_then(|entry| entry.event_source.as_ref());
+            let event_source = event_peaks
+                .or_else(|| first_occurrence.map(|read| Arc::clone(&read.source)))
+                .and_then(|peaks| {
+                    let first_matches =
+                        first_occurrence.is_some_and(|read| Arc::ptr_eq(&read.source, &peaks));
+                    let mut source = event_source_waveform(
+                        peaks,
+                        view.event_source_repeat,
+                        previous_event.map(|entry| &entry.waveform),
+                        &mut event_roots,
+                    )?;
+                    source.occurrences = event_occurrences.and_then(|table| {
+                        event_occurrence_waveforms(
+                            table,
+                            first_matches.then_some(&source.waveform),
+                            previous_event.and_then(|event| event.occurrences.as_ref()),
+                        )
+                    });
+                    Some(source)
+                });
             next.insert(
                 view.clip,
                 service::AudioClipWaveform {
@@ -2207,6 +2264,9 @@ fn prepare_with_waveforms_using(
                     offset: if shape.is_some() { 0 } else { view.offset },
                     length: view.length,
                     preview_root,
+                    neutral_musical,
+                    event_source,
+                    group_event_sources,
                 },
             );
         }
@@ -2214,6 +2274,149 @@ fn prepare_with_waveforms_using(
     })?;
     *old = next;
     Ok(prepared)
+}
+
+fn musical_waveform(
+    view: &hex_engine::PreparedAudioClipView,
+    previous: Option<&service::AudioClipWaveform>,
+    tempo: &hex_project::TempoMap,
+    shared_tempo: &mut Option<Arc<hex_project::TempoMap>>,
+) -> Option<service::AudioMusicalWaveform> {
+    let peaks = &view.neutral_musical_peaks;
+    if peaks.is_empty() {
+        return None;
+    }
+    let length = usize::try_from(view.length).ok()?;
+    let previous = previous.and_then(|entry| entry.neutral_musical.as_ref());
+    let waveform =
+        prepared_peak_waveform(length, peaks, previous.map(|previous| &previous.waveform))?;
+    let tempo = shared_tempo.get_or_insert_with(|| {
+        previous
+            .filter(|previous| previous.tempo.as_ref() == tempo)
+            .map_or_else(
+                || Arc::new(tempo.clone()),
+                |previous| Arc::clone(&previous.tempo),
+            )
+    });
+    Some(service::AudioMusicalWaveform {
+        waveform,
+        tempo: Arc::clone(tempo),
+    })
+}
+
+type EventWaveformRoot = (
+    Arc<hex_engine::audio_transform::PreparedEventSourcePeaks>,
+    Arc<Waveform>,
+);
+
+fn event_source_waveform(
+    source: Arc<hex_engine::audio_transform::PreparedEventSourcePeaks>,
+    repeat: Option<hex_engine::PreparedAudioRepeat>,
+    previous: Option<&Arc<Waveform>>,
+    roots: &mut Vec<EventWaveformRoot>,
+) -> Option<service::AudioEventSourceWaveform> {
+    let musical_clock = source.musical_clock().cloned();
+    let waveform =
+        if let Some((_, waveform)) = roots.iter().find(|(other, _)| Arc::ptr_eq(other, &source)) {
+            Arc::clone(waveform)
+        } else {
+            let waveform = prepared_peak_waveform(source.source_frames(), source.bins(), previous)?;
+            roots.try_reserve(1).ok()?;
+            roots.push((source, Arc::clone(&waveform)));
+            waveform
+        };
+    Some(service::AudioEventSourceWaveform {
+        waveform,
+        musical_clock,
+        repeat,
+        occurrences: None,
+    })
+}
+
+fn event_occurrence_waveforms(
+    prepared: &Arc<hex_engine::audio_transform::PreparedEventOccurrences>,
+    first_waveform: Option<&Arc<Waveform>>,
+    previous: Option<&Arc<service::AudioEventOccurrenceWaveforms>>,
+) -> Option<Arc<service::AudioEventOccurrenceWaveforms>> {
+    if let Some(previous) = previous.filter(|old| Arc::ptr_eq(prepared, &old.prepared)) {
+        return Some(Arc::clone(previous));
+    }
+    let mut waveforms = Vec::new();
+    waveforms.try_reserve_exact(prepared.reads().len()).ok()?;
+    for (index, read) in prepared.reads().iter().enumerate() {
+        if let Some(first) = first_waveform.filter(|_| index == 0) {
+            waveforms.push(Arc::clone(first));
+        } else {
+            waveforms.push(prepared_peak_waveform(
+                read.source.source_frames(),
+                read.source.bins(),
+                previous.and_then(|old| old.waveform(index)),
+            )?);
+        }
+    }
+    Some(Arc::new(service::AudioEventOccurrenceWaveforms {
+        prepared: Arc::clone(prepared),
+        waveforms,
+    }))
+}
+
+fn group_event_waveforms(
+    prepared: &Arc<hex_engine::audio_transform::PreparedGroupEventSources>,
+    previous: Option<&Arc<service::AudioGroupEventWaveforms>>,
+    shared: &mut Vec<Arc<service::AudioGroupEventWaveforms>>,
+) -> Option<Arc<service::AudioGroupEventWaveforms>> {
+    let same =
+        |entry: &&Arc<service::AudioGroupEventWaveforms>| Arc::ptr_eq(prepared, &entry.prepared);
+    if let Some(entry) = shared.iter().find(same) {
+        return Some(Arc::clone(entry));
+    }
+    shared.try_reserve(1).ok()?;
+    let entry = if let Some(entry) = previous.filter(same) {
+        Arc::clone(entry)
+    } else {
+        let mut waveforms = Vec::new();
+        waveforms.try_reserve_exact(prepared.sources().len()).ok()?;
+        for (id, source) in prepared.sources() {
+            waveforms.push(prepared_peak_waveform(
+                source.source_frames(),
+                source.bins(),
+                previous.and_then(|entry| entry.waveform(*id)),
+            )?);
+        }
+        Arc::new(service::AudioGroupEventWaveforms {
+            prepared: Arc::clone(prepared),
+            waveforms,
+        })
+    };
+    shared.push(Arc::clone(&entry));
+    Some(entry)
+}
+
+fn prepared_peak_waveform(
+    length: usize,
+    peaks: &[hex_engine::PreparedAudioPeak],
+    previous: Option<&Arc<Waveform>>,
+) -> Option<Arc<Waveform>> {
+    let as_peaks = |peak: &hex_engine::PreparedAudioPeak| {
+        std::array::from_fn(|channel| CachedPeak {
+            min: peak.min[channel],
+            max: peak.max[channel],
+        })
+    };
+    if let Some(previous) = previous.filter(|previous| {
+        previous.source_frames() == length
+            && previous
+                .bins()
+                .iter()
+                .copied()
+                .eq(peaks.iter().map(as_peaks))
+    }) {
+        return Some(Arc::clone(previous));
+    }
+    let mut bins = Vec::new();
+    bins.try_reserve_exact(peaks.len()).ok()?;
+    bins.extend(peaks.iter().map(as_peaks));
+    Waveform::from_peaks(length, bins).ok().map(Arc::new)
 }
 
 #[cfg(test)]

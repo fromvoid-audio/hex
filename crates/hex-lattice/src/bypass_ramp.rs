@@ -2,6 +2,56 @@
 use hex_lattice_contract::DeviceContractError;
 
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
+// The fixed 1.5 ms native path at the maximum 192 kHz output rate.
+const MAX_NATIVE_MAIN_PASS_DRY_FRAMES: usize = 288;
+// Covers the short native stages and the admitted two-quantum Main bridge.
+const MAX_MAIN_PASS_DRY_FRAMES: usize = 512;
+
+/// Value-only aligned PCM after the original Main processor has retired.
+pub type MainPassDelay = InlineDryDelay<MAX_MAIN_PASS_DRY_FRAMES>;
+
+/// Inline aligned dry history can outlive the processor that filled it.
+/// It contains only PCM and a cursor, with no owned DSP or allocation.
+#[derive(Clone, Copy, Debug)]
+pub struct InlineDryDelay<const CAPACITY: usize> {
+    frames: [[f32; 2]; CAPACITY],
+    len: usize,
+    next: usize,
+}
+
+impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
+    /// Copy a committed ring without transferring its allocation or provider.
+    pub fn copy_committed_ring(frames: &[[f32; 2]], next: usize) -> Option<Self> {
+        let mut delay = Self {
+            frames: [[0.0; 2]; CAPACITY],
+            len: frames.len(),
+            next,
+        };
+        if next >= frames.len() {
+            return None;
+        }
+        delay
+            .frames
+            .get_mut(..frames.len())?
+            .copy_from_slice(frames);
+        Some(delay)
+    }
+
+    pub fn latency_frames(&self) -> u32 {
+        self.len as u32
+    }
+
+    pub fn process(&mut self, frames: &mut [[f32; 2]]) {
+        for frame in frames {
+            *frame = advance(&mut self.frames[..self.len], &mut self.next, *frame);
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.frames[..self.len].fill([0.0; 2]);
+        self.next = 0;
+    }
+}
 
 /// Dry input has one control-allocated owner per committed/speculative history.
 /// Short legacy delays remain inline. The separately admitted owned lookahead
@@ -12,25 +62,18 @@ pub(crate) struct AlignedDry {
 }
 // Keep lengths and cursor construction private to this history owner.
 enum DryStorage {
-    Inline {
-        frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
-        len: usize,
-        next: usize,
-    },
-    Reserved {
-        frames: Vec<[f32; 2]>,
-        next: usize,
-    },
+    Inline(InlineDryDelay<MAX_ALIGNED_DRY_FRAMES>),
+    Reserved { frames: Vec<[f32; 2]>, next: usize },
 }
 impl AlignedDry {
     pub(crate) fn new(latency: Option<u32>) -> Option<Self> {
         let len = usize::try_from(latency?).ok()?;
         (1..=MAX_ALIGNED_DRY_FRAMES).contains(&len).then_some(Self {
-            storage: DryStorage::Inline {
+            storage: DryStorage::Inline(InlineDryDelay {
                 frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
                 len,
                 next: 0,
-            },
+            }),
         })
     }
     pub(crate) fn reserved(frames: u32) -> Result<Self, DeviceContractError> {
@@ -53,15 +96,21 @@ impl AlignedDry {
             storage: DryStorage::Reserved { frames, next: 0 },
         })
     }
+    pub(crate) fn reserved_storage(&self) -> Option<&Vec<[f32; 2]>> {
+        match &self.storage {
+            DryStorage::Reserved { frames, .. } => Some(frames),
+            DryStorage::Inline(_) => None,
+        }
+    }
     fn parts(&self) -> (&[[f32; 2]], usize) {
         match &self.storage {
-            DryStorage::Inline { frames, len, next } => (&frames[..*len], *next),
+            DryStorage::Inline(dry) => (&dry.frames[..dry.len], dry.next),
             DryStorage::Reserved { frames, next } => (frames, *next),
         }
     }
     fn parts_mut(&mut self) -> (&mut [[f32; 2]], &mut usize) {
         match &mut self.storage {
-            DryStorage::Inline { frames, len, next } => (&mut frames[..*len], next),
+            DryStorage::Inline(dry) => (&mut dry.frames[..dry.len], &mut dry.next),
             DryStorage::Reserved { frames, next } => (frames, next),
         }
     }
@@ -81,12 +130,17 @@ impl AlignedDry {
     }
     pub(crate) fn advance(&mut self, input: [f32; 2]) -> [f32; 2] {
         let (frames, next) = self.parts_mut();
-        let dry = std::mem::replace(&mut frames[*next], input);
-        *next += 1;
-        if *next == frames.len() {
-            *next = 0;
-        }
-        dry
+        advance(frames, next, input)
+    }
+    pub(crate) fn main_pass_latency_frames(&self) -> Option<u32> {
+        let len = self.parts().0.len();
+        (1..=MAX_NATIVE_MAIN_PASS_DRY_FRAMES)
+            .contains(&len)
+            .then_some(len as u32)
+    }
+    pub(crate) fn main_pass_delay(&self) -> Option<MainPassDelay> {
+        let (frames, next) = self.parts();
+        MainPassDelay::copy_committed_ring(frames, next)
     }
     pub(crate) fn is_quiet(&self) -> bool {
         self.parts().0.iter().all(|f| *f == [0.0; 2])
@@ -97,6 +151,16 @@ impl AlignedDry {
         *next = 0;
     }
 }
+
+fn advance(frames: &mut [[f32; 2]], next: &mut usize, input: [f32; 2]) -> [f32; 2] {
+    let dry = std::mem::replace(&mut frames[*next], input);
+    *next += 1;
+    if *next == frames.len() {
+        *next = 0;
+    }
+    dry
+}
+
 /// Both options have the same prepared layout within one transaction. A
 /// cross-owner caller must preflight compatibility; mismatch never mutates.
 pub(crate) fn copy_dry(
@@ -115,6 +179,7 @@ pub(crate) struct BypassRamp {
     from: f32,
     elapsed: u32,
     total: u32,
+    dry_lead: u32,
 }
 
 impl BypassRamp {
@@ -122,6 +187,7 @@ impl BypassRamp {
         from: 0.0,
         elapsed: 0,
         total: 0,
+        dry_lead: 0,
     };
 
     pub(crate) fn is_active(self) -> bool {
@@ -149,14 +215,31 @@ impl BypassRamp {
             from,
             elapsed: 0,
             total: rate.div_ceil(200).max(1),
+            dry_lead: 0,
+        }
+    }
+
+    /// A settled power-off already reset DSP. Keep the outgoing aligned dry
+    /// tap until fresh wet samples arrive, then de-click over half a millisecond.
+    /// The longer reversal ramp remains for a still-running wet history.
+    pub(crate) fn fresh_power_on(latency_frames: u32, sample_rate: u32) -> Self {
+        Self {
+            from: 0.0,
+            elapsed: 0,
+            total: sample_rate.div_ceil(2000).max(1),
+            dry_lead: latency_frames,
         }
     }
 
     pub(crate) fn remaining(self) -> usize {
-        self.total.saturating_sub(self.elapsed) as usize
+        (self.total.saturating_sub(self.elapsed) + self.dry_lead) as usize
     }
 
     pub(crate) fn next(&mut self, bypassed: bool) -> f32 {
+        if self.dry_lead > 0 {
+            self.dry_lead -= 1;
+            return self.from;
+        }
         self.elapsed = self.elapsed.saturating_add(1).min(self.total);
         self.current(if bypassed { 0.0 } else { 1.0 })
     }
@@ -169,6 +252,59 @@ mod tests {
         ProcessorChainOwner, StereoMatrix,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn committed_main_pass_copy_preserves_the_cursor_and_rejects_bad_extent() {
+        use super::MainPassDelay;
+
+        let mut ring = [[0.0; 2]; 512];
+        ring[511] = [0.25, -0.25];
+        ring[0] = [0.5, -0.5];
+        let mut delay = MainPassDelay::copy_committed_ring(&ring, 511).unwrap();
+        let mut frames = [[0.0; 2]; 2];
+        delay.process(&mut frames);
+        assert_eq!(frames, [ring[511], ring[0]]);
+        assert!(MainPassDelay::copy_committed_ring(&ring, 512).is_none());
+        assert!(MainPassDelay::copy_committed_ring(&[], 0).is_none());
+        assert!(MainPassDelay::copy_committed_ring(&[[0.0; 2]; 513], 0).is_none());
+    }
+
+    #[test]
+    fn dry_lead_continues_across_an_equivalent_publication_and_can_reverse() {
+        use super::BypassRamp;
+
+        let mut first = BypassRamp::fresh_power_on(3, 8_000);
+        assert_eq!(first.next(false), 0.0);
+        let mut next = BypassRamp::inherited(first, false, false, 8_000);
+        assert_eq!(next.remaining(), 6);
+        assert_eq!(next.next(false), 0.0);
+        assert_eq!(next.next(false), 0.0);
+        let mut cancelled = BypassRamp::inherited(next, false, true, 8_000);
+        assert!(!cancelled.is_active());
+        assert_eq!(cancelled.next(true), 0.0);
+        assert_eq!(next.next(false), 1.0 / 4.0);
+    }
+
+    #[test]
+    fn cold_power_on_keeps_exact_latency_then_finishes_its_short_declick() {
+        use super::BypassRamp;
+
+        for rate in [8_000_u32, 44_100, 48_000, 192_000] {
+            for latency in [0, 11, 2366] {
+                let mut ramp = BypassRamp::fresh_power_on(latency, rate);
+                for _ in 0..latency {
+                    assert_eq!(ramp.next(false), 0.0);
+                }
+                let frames = rate.div_ceil(2000);
+                for frame in 1..=frames {
+                    assert_eq!(ramp.next(false), frame as f32 / frames as f32);
+                }
+                assert!(!ramp.is_active());
+                assert_eq!(ramp.remaining(), 0);
+                assert_eq!(ramp.next(false), 1.0);
+            }
+        }
+    }
 
     #[test]
     fn reserved_dry_is_bounded_and_copies_only_into_existing_storage() {
@@ -259,6 +395,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn memoryless_removal_fades_and_preserves_the_authored_bypass() {
+        const RATE: u32 = 8_000;
+        const FADE: usize = 40;
+        let candidate = NativeRuntimeChain::empty();
+        for partition in [1, 13, 257] {
+            let mut running = chain(RATE, false);
+            let removal = candidate.native_removal_transition_from(&running).unwrap();
+            assert!(running.begin_native_removal(removal));
+            assert!(!running.native_removal_ready(removal));
+            let output = render(&mut running, FADE + 1, partition);
+            assert!(running.native_removal_ready(removal));
+            assert_eq!(output[FADE..], [[0.25; 2]]);
+            for (index, sample) in output[..FADE].iter().enumerate() {
+                let wet = 1.0 - (index + 1) as f32 / FADE as f32;
+                assert_eq!(*sample, [0.25 + 0.25 * wet; 2]);
+            }
+        }
+
+        let mut already_dry = chain(RATE, true);
+        let removal = candidate
+            .native_removal_transition_from(&already_dry)
+            .unwrap();
+        assert!(already_dry.begin_native_removal(removal));
+        assert!(already_dry.native_removal_ready(removal));
+        already_dry.cancel_native_removal(removal);
+        assert_eq!(render(&mut already_dry, 1, 1), [[0.25; 2]]);
+
+        let mut bypassing = switched(RATE, false);
+        let mut reference = switched(RATE, false);
+        let removal = candidate
+            .native_removal_transition_from(&bypassing)
+            .unwrap();
+        assert!(bypassing.begin_native_removal(removal));
+        assert!(!bypassing.native_removal_ready(removal));
+        let before_cancel = render(&mut bypassing, 11, 7);
+        assert!(!bypassing.native_removal_ready(removal));
+        bypassing.cancel_native_removal(removal);
+        let after_cancel = render(&mut bypassing, FADE - 11, 7);
+        assert!(bypassing.native_removal_ready(removal));
+        let actual: Vec<_> = before_cancel.into_iter().chain(after_cancel).collect();
+        assert_eq!(actual, render(&mut reference, FADE, 1));
     }
 
     #[test]

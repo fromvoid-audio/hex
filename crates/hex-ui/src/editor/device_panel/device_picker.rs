@@ -92,6 +92,9 @@ fn close(view: &mut EditorView, window: &mut Window, cx: &mut Context<EditorView
     cx.notify();
 }
 fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entry>, Vec<String>) {
+    if matches!(owner, DevicePanelOwner::Source(_)) {
+        return (Vec::new(), Vec::new());
+    }
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     let query = query.trim().to_lowercase();
@@ -133,6 +136,7 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
                         DevicePanelOwner::Track(_) => "native",
                         DevicePanelOwner::Main => "main",
                         DevicePanelOwner::Return(_) => "return",
+                        DevicePanelOwner::Source(_) => continue,
                     };
                     rows.push(Entry {
                         class,
@@ -159,6 +163,8 @@ fn activate(
     window: &mut Window,
     cx: &mut Context<EditorView>,
 ) {
+    use hex_session::service::{PluginEffectControl, TrackCatalogPlacement};
+
     let Some(before) = device_add::before(view, owner) else {
         view.device_panel.message = Some("device insertion cancelled · chain changed".into());
         close(view, window, cx);
@@ -168,26 +174,28 @@ fn activate(
         return;
     };
     let request = match owner {
-        DevicePanelOwner::Track(track) => match (
-            class,
-            state
+        DevicePanelOwner::Track(track) => {
+            let instrument = state
                 .project
                 .track(track)
                 .and_then(|track| track.instrument())
-                .map(hex_project::Device::id),
-        ) {
-            (NativeDeviceClass::Instrument, Some(device)) => Request::ReplaceNativeDevice {
-                device,
-                class,
-                type_id: Box::new(type_id),
-            },
-            _ => Request::AddNativeDevice {
+                .map(hex_project::Device::id);
+            let placement = match (class, instrument) {
+                (NativeDeviceClass::Instrument, Some(device)) => {
+                    TrackCatalogPlacement::ReplaceInstrument(device)
+                }
+                _ => TrackCatalogPlacement::Insert { before },
+            };
+            Request::LoadTrackCatalogDevice {
+                project_generation: view.project_generation,
+                revision: state.revision,
                 track,
                 class,
-                type_id: Box::new(type_id),
-                before,
-            },
-        },
+                type_id,
+                placement,
+                control: std::sync::Arc::new(PluginEffectControl::default()),
+            }
+        }
         DevicePanelOwner::Main | DevicePanelOwner::Return(_) => {
             if class != NativeDeviceClass::Effect {
                 return;
@@ -196,12 +204,13 @@ fn activate(
                 DevicePanelOwner::Main => EffectBusOwner::Main,
                 DevicePanelOwner::Return(id) => EffectBusOwner::Return(id),
                 // The outer match arm excludes Track.
-                DevicePanelOwner::Track(_) => unreachable!(),
+                DevicePanelOwner::Track(_) | DevicePanelOwner::Source(_) => return,
             };
             bus.insert_request(view.project_generation, state.revision, before, type_id)
         }
+        DevicePanelOwner::Source(_) => return,
     };
-    if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
+    if finalize_controls(view, cx) && view.enqueue_catalog_device(request) {
         view.device_panel.message = None;
         close(view, window, cx);
     }

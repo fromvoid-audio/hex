@@ -1,10 +1,10 @@
-//! Routed bypass through the session worker, publication and native callback.
+//! Routed Reverb power through Session, publication and the native callback.
 use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_session::{device_gesture::ParameterValue, service::EffectBusDestination};
 
 #[test]
-fn frozen_reverb_bypass_undo_redo_publishes_without_a_pcm_step_on_all_routes() {
+fn frozen_reverb_power_undo_redo_fades_and_restarts_empty_on_all_routes() {
     let _native = native_fixture();
     for location in 0..3 {
         check(location);
@@ -48,6 +48,7 @@ fn check(location: usize) {
                 class: hex_engine::NativeDeviceClass::Effect,
                 type_id,
                 before: None,
+                control: None,
             })
         }
         _ => h.run(Request::InsertEffectBusDevice {
@@ -57,6 +58,7 @@ fn check(location: usize) {
             class: hex_engine::NativeDeviceClass::Effect,
             type_id,
             before: None,
+            control: None,
         }),
     };
     let device = match location {
@@ -190,17 +192,11 @@ fn check(location: usize) {
             );
         } else {
             assert!(
-                settled
-                    .iter()
-                    .all(|sample| (sample - dry_track).abs() < 0.2),
-                "room endpoint: {settled:?}"
-            );
-            assert!(
                 frames[frames.len() - 512..]
                     .iter()
                     .flatten()
-                    .any(|v| (v - dry_track).abs() > 1e-8),
-                "frozen history lost"
+                    .all(|sample| (*sample - dry_track).abs() < 1e-8),
+                "authored freeze must start with an empty room after power-off"
             );
         }
     }

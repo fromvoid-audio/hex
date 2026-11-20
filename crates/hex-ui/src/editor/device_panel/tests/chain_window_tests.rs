@@ -188,7 +188,7 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
                 return_destination: std::rc::Rc::new(std::cell::Cell::new(return_id.map(
                     |owner| drag::ReturnDeviceDropTarget {
                         owner: EffectBusOwner::Return(owner),
-                        before: Some(ids[8]),
+                        slot: drag::EffectBusDropSlot::Before(Some(ids[8])),
                     },
                 ))),
             });

@@ -31,7 +31,26 @@ pub(in crate::editor::device_panel) struct GraphControl {
 struct ModelInput {
     values: [f32; 6],
     selected: u32,
+    accents: [Option<u32>; 4],
     style: hex_widgets::ControlStyle,
+}
+
+impl ModelInput {
+    fn model(self) -> ResponseGraphModel {
+        let mut model = graph_model(self.values, self.selected);
+        for (node, accent) in model.nodes.iter_mut().zip(self.accents) {
+            node.accent = accent;
+        }
+        model
+    }
+}
+
+fn envelope_accents(view: &EditorView, key: GraphKey) -> [Option<u32>; 4] {
+    let base = 33 + key.operator as u32 * 6;
+    let device = automation_tint::native_device(view, key.device, NativeDeviceClass::Instrument);
+    [&[0][..], &[1, 3], &[2, 4], &[5]].map(|fields| {
+        automation_tint::graph_accent(device, fields.iter().map(|field| id(base + field)))
+    })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -91,6 +110,7 @@ pub(super) fn graph(
     let input = ModelInput {
         values,
         selected,
+        accents: envelope_accents(view, key),
         style: super::display_style(),
     };
     let others: [usize; 3] =
@@ -123,7 +143,7 @@ pub(super) fn graph(
     };
     let graph_entity = control.entity.clone();
     if control.model_input != Some(input) {
-        let model = graph_model(values, selected);
+        let model = input.model();
         let updated = graph_entity.update(cx, |graph, cx| {
             graph.set_model(model, input.style, cx).is_ok()
         });
@@ -273,6 +293,7 @@ fn append_decay(points: &mut Vec<[f32; 2]>, start: f32, end: f32, from: f32, to:
 
 fn node(id: u32, position: [f32; 2], selected: u32) -> ResponseGraphNode {
     ResponseGraphNode {
+        accent: None,
         id,
         position: [position[0].clamp(0.0, 1.0), position[1].clamp(0.0, 1.0)],
         enabled: true,
@@ -380,14 +401,16 @@ fn update_drag_display(
             });
         }
     }
+    let accents = envelope_accents(view, key);
     if let Some(control) = view.device_panel.operator_envelope_graphs.get_mut(&key) {
         let input = ModelInput {
             values,
             selected: control.selected_node,
+            accents,
             style: super::display_style(),
         };
         if control.model_input != Some(input) {
-            let model = graph_model(values, input.selected);
+            let model = input.model();
             if control.entity.update(cx, |graph, cx| {
                 graph.set_model(model, input.style, cx).is_ok()
             }) {

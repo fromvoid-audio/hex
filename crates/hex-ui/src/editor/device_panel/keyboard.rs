@@ -20,6 +20,8 @@ gpui::actions!(
         CutDevices,
         PasteDevices,
         DuplicateDevices,
+        CollapseSelectedDevices,
+        ExpandSelectedDevices,
         SelectPreviousDevice,
         SelectNextDevice
     ]
@@ -96,6 +98,16 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
             DuplicateDevices,
             Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
         ),
+        KeyBinding::new(
+            "-",
+            CollapseSelectedDevices,
+            Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
+        ),
+        KeyBinding::new(
+            "+",
+            ExpandSelectedDevices,
+            Some("hex_device_selection && !hex_text_editing && !hex_text_input"),
+        ),
         // Deeper than the editor's clip/session arrows; nested controls that
         // own focus receive them through propagation.
         KeyBinding::new("left", SelectPreviousDevice, Some("hex_device_selection")),
@@ -131,6 +143,9 @@ fn clipboard(
     if selected_owner(view, state) != Some(owner) {
         return;
     }
+    let Some(project_owner) = project_owner(owner) else {
+        return;
+    };
     let order = chain_ids(&state.project, owner);
     let selected: Vec<_> = order
         .iter()
@@ -153,18 +168,18 @@ fn clipboard(
             };
             match intent {
                 ClipboardIntent::Copy => Action::Copy {
-                    owner: project_owner(owner),
+                    owner: project_owner,
                     selected,
                 },
                 ClipboardIntent::Cut => Action::Cut {
-                    owner: project_owner(owner),
+                    owner: project_owner,
                     selected,
                 },
                 ClipboardIntent::Paste => return,
             }
         }
         ClipboardIntent::Paste => Action::Paste {
-            owner: project_owner(owner),
+            owner: project_owner,
             before,
         },
     };
@@ -291,20 +306,18 @@ fn duplicate(
                 .is_some_and(|device| device.parent().is_none())
         })
     });
-    let action = match duplicate_device_action(
-        &state.project,
-        stamp.owner,
-        selected,
-        project_owner(stamp.owner),
-        before,
-    ) {
-        Ok(action) => action,
-        Err(reason) => {
-            view.error = Some(reason.into());
-            cx.notify();
-            return;
-        }
+    let Some(destination) = project_owner(stamp.owner) else {
+        return;
     };
+    let action =
+        match duplicate_device_action(&state.project, stamp.owner, selected, destination, before) {
+            Ok(action) => action,
+            Err(reason) => {
+                view.error = Some(reason.into());
+                cx.notify();
+                return;
+            }
+        };
     view.device_panel.pending_duplicate = Some(PendingDuplicate {
         stamp,
         action: action.clone(),
@@ -577,6 +590,7 @@ fn owned_device(
             .devices()
             .iter()
             .find(|item| item.id() == device),
+        DevicePanelOwner::Source(_) => None,
     }
 }
 
@@ -700,7 +714,31 @@ pub(super) fn card(
     let painted = ChainStamp::current(view);
     let previous_focus = focus.clone();
     let next_focus = focus.clone();
+    let collapse_focus = focus.clone();
+    let expand_focus = focus.clone();
     card.key_context("hex_device_selection")
+        .on_action(
+            cx.trace(move |view, _: &CollapseSelectedDevices, window, cx| {
+                if collapse_focus.is_focused(window) {
+                    if generation == view.project_generation && owner == view.device_panel.owner {
+                        fold::set_selected(view, device, true, cx);
+                    }
+                } else {
+                    cx.propagate();
+                }
+            }),
+        )
+        .on_action(
+            cx.trace(move |view, _: &ExpandSelectedDevices, window, cx| {
+                if expand_focus.is_focused(window) {
+                    if generation == view.project_generation && owner == view.device_panel.owner {
+                        fold::set_selected(view, device, false, cx);
+                    }
+                } else {
+                    cx.propagate();
+                }
+            }),
+        )
         .on_action(cx.trace(move |view, _: &SelectPreviousDevice, window, cx| {
             if previous_focus.is_focused(window) {
                 step(view, false, window, cx);

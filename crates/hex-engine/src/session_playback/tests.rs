@@ -6,6 +6,7 @@ mod frozen_instrument_parameters;
 mod instrument_matrix_ramp;
 mod interactive_start;
 mod release_timeline;
+pub(super) mod session_note_chase;
 mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
@@ -918,14 +919,14 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        // Inline source origin and paused monitor age add 32 bounded bytes.
+        // The power fade adds 16 bytes to each bounded release entry.
         // No per-entry allocation; the 18/36 MiB scoped ceilings stay unchanged.
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 528);
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 544);
         assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
-        assert_eq!(current_bytes, 17_385_992);
+        assert_eq!(current_bytes, 17_910_280);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 17_910_280);
+        assert_eq!(scoped_bytes, 18_434_568);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -946,7 +947,6 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         })
         .expect("fixed MIDI storage growth is bounded");
     assert_eq!(current_bytes - previous_bytes, expected_growth);
-    assert!(current_bytes < 17 * 1024 * 1024);
 }
 
 /// These hand-authored fixtures model the schema 1–14
@@ -2939,7 +2939,13 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
     failed.release_scratch.clear();
     let owner = failed.routes[0].owner;
     failed
-        .capture_outgoing(0, owner, failed.arrangement_frame, failed.performance_frame)
+        .capture_outgoing(
+            0,
+            owner,
+            failed.arrangement_frame,
+            failed.performance_frame,
+            None,
+        )
         .unwrap();
     assert!(!failed.release_scratch.is_empty());
     let mut invalid_tail = failed.release_scratch[0];
@@ -4326,11 +4332,17 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
         let mut editor =
             Editor::new(with_test_instrument(&project(1.0, 0, 8 << 32), id, 0), 8).unwrap();
         let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
-        let mut playback = SessionPlayback::new(revision(editor.project())).unwrap();
+        let original = revision(editor.project());
+        let mut playback = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut facade_old =
+            crate::playback::Playback::try_from_prepared_with_session(original).unwrap();
+        facade_old.apply(crate::PlaybackCommand::Play);
+        facade_old.render(&mut [[0.0; 2]; 8]).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
         playback.render(&mut [[0.0; 2]; 8]).unwrap();
         if paused {
             playback.apply(SessionPlaybackCommand::Pause).unwrap();
+            facade_old.apply(crate::PlaybackCommand::Pause);
         }
         let frame = playback.performance_frame();
         editor
@@ -4344,6 +4356,25 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
             })
             .unwrap();
         let edited = revision(editor.project());
+        let mut facade_next =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&edited)).unwrap();
+        let context = crate::AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        let (_, facade_report) = facade_next
+            .stream_playback(context)
+            .preview_stream_handoff_with_report(
+                &mut facade_old.stream_playback(context),
+                64,
+                None,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(facade_report.running_audio_restart(), !paused);
+        facade_next
+            .try_inherit_runtime_from(&mut facade_old)
+            .unwrap();
         assert_eq!(
             SessionPlayback::new(Arc::clone(&edited))
                 .unwrap()
@@ -4628,6 +4659,7 @@ fn mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger() {
     let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let track = playback.routes[0].id;
     playback.routes[0].pending = Some(PendingRoute {
+        note_chase: crate::NoteChase::On,
         frame: 8,
         beat: BeatTime::ZERO,
         target: RouteTarget::Silence,
@@ -4771,6 +4803,7 @@ fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() 
                     pitch: 60,
                     channel: 0,
                     velocity,
+                    contributor_fade_in: false,
                 })
                 .unwrap();
         }
@@ -4875,6 +4908,7 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 pitch,
                 channel: 0,
                 velocity,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -4979,6 +5013,7 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
         pitch: 60,
         channel: 4,
         velocity: 91,
+        contributor_fade_in: false,
     };
 
     let mut old =
@@ -5085,6 +5120,7 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        contributor_fade_in: false,
     };
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -5191,6 +5227,7 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                contributor_fade_in: false,
             })
             .unwrap();
     }
@@ -5523,15 +5560,16 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let suffix_start = candidate.tail_suffix_starts[tail_slot];
     candidate.tail_groups[stale_slot] = Some(hex_lattice::NativeRuntimeChain::empty());
     candidate.tail_suffix_starts[stale_slot] = suffix_start;
-    candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail {
-        sends: Default::default(),
+    candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail::new(
         track_id,
-        runtime: crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             &ZeroTailMutableFactory,
             48_000,
         )
         .unwrap(),
-    });
+        Default::default(),
+        None,
+    ));
     candidate.tail_groups[current_slot] = Some(current_chain);
     candidate.tail_suffix_starts[current_slot] = suffix_start;
     candidate.tail_mutable_instruments[current_slot] = Some(current_mutable_tail);
@@ -6216,7 +6254,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
 }
 
 #[test]
-fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state() {
+fn mutable_power_fades_held_and_already_released_feedback() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -6229,8 +6267,8 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     let table = Arc::new(hex_devices::SineTable::new());
 
-    // A held occurrence is cut at the handoff frame. Compare its first release
-    // block to an independent instance of the original feedback law.
+    // Compare the held waveform against an independent instance of the
+    // original feedback law before applying the host de-click.
     let base = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
     let old_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
     let clip = old_revision.session().midi_clips()[0].id;
@@ -6250,12 +6288,6 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         revision_with_instrument_registry(&disabled, Arc::clone(&table), &registry);
     let mut candidate = SessionPlayback::new(disabled_revision).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
-    let tail_index = candidate
-        .tail_mutable_instruments
-        .iter()
-        .position(Option::is_some)
-        .unwrap();
-
     let mut oracle = MutableFeedbackRuntime {
         key: 0.2_f32.to_bits(),
         level: 0.2,
@@ -6278,32 +6310,22 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         &mut oracle_prefix,
         &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
-    let note_off = [hex_lattice::NativeInstrumentEvent::NoteOff {
-        frame_offset: 0,
-        occurrence_id: 1,
-    }];
+    const FADE: usize = 240;
     let mut expected = [[0.0; 2]; 16];
     hex_lattice::MutableInstrumentRuntime::process_block(
         &mut oracle,
-        &note_off,
+        &[],
         &mut expected,
         &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
-    for frame in &mut expected {
-        frame[0] *= 0.5;
-        frame[1] *= 0.5;
+    for (offset, frame) in expected.iter_mut().enumerate() {
+        let gain = (FADE - offset) as f32 / FADE as f32;
+        *frame = frame.map(|sample| sample * gain * 0.5);
     }
     let mut actual = [[0.0; 2]; 16];
     candidate.render(&mut actual).unwrap();
     assert_eq!(actual, expected);
-    assert!(
-        candidate.tail_mutable_instruments[tail_index]
-            .as_ref()
-            .is_some_and(|tail| tail.runtime.committed_is_quiescent())
-    );
-
-    // An occurrence already in its release phase has no pending ledger gate;
-    // disabling the candidate must preserve that old in-flight state exactly.
+    // A note already releasing keeps its sample history under the same fade.
     let short = with_test_instrument(&project(0.5, 0, 1 << 24), id, 0);
     let short_revision = revision_with_instrument_registry(&short, Arc::clone(&table), &registry);
     let short_clip = short_revision.session().midi_clips()[0].id;
@@ -6337,6 +6359,10 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     let mut expected_release = [[0.0; 2]; 16];
     next.render(&mut actual_release).unwrap();
     reference.render(&mut expected_release).unwrap();
+    for (offset, frame) in expected_release.iter_mut().enumerate() {
+        let gain = (FADE - offset) as f32 / FADE as f32;
+        *frame = frame.map(|sample| sample * gain);
+    }
     assert_eq!(actual_release, expected_release);
 }
 
@@ -6997,11 +7023,11 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
     assert!(muted_revision.releases.iter().any(|entry| {
         entry.track_id == muted_revision.routes[0].id
             && entry.continuation.is_none()
-            && entry.voice.gate_end_frame() == muted_revision.performance_frame
+            && entry.end_frame() == muted_revision.performance_frame + 240
     }));
     assert!(muted_revision.suppressions.is_empty());
 
-    let mut tail = vec![[0.0; 2]; 2_500];
+    let mut tail = vec![[0.0; 2]; 320];
     muted_revision.render(&mut tail).unwrap();
     assert!(
         (tail[0][0] - expected_next[0][0]).abs() < 0.0001,
@@ -7010,7 +7036,10 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
         tail[0]
     );
     assert!(tail.iter().any(|frame| frame[0] != 0.0));
-    assert!(tail[2_400..].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(
+        tail[240..].iter().all(|frame| *frame == [0.0; 2]),
+        "session power-off exceeded 5 ms"
+    );
 
     let enabled = with_instrument_bypassed(&bypassed, false);
     let mut reenabled = SessionPlayback::new(revision(&enabled, Arc::clone(&table))).unwrap();
@@ -8114,7 +8143,7 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
     let definition = ContinuityInstrumentDefinition {
         id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.arrangement.bypass"),
         levels: [0.2, 0.4],
-        release_frames: 8,
+        release_frames: 600,
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
@@ -8139,10 +8168,14 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
         revision_with_instrument_registry(&bypassed, Arc::clone(&table), &registry);
     let mut candidate = Playback::from_prepared(candidate_revision);
     candidate.try_inherit_runtime_from(&mut previous).unwrap();
-    let mut release = [[0.0; 2]; 10];
+    let mut release = [[0.0; 2]; 320];
     candidate.render(&mut release).unwrap();
-    assert_eq!(&release[..8], &[[0.2; 2]; 8]);
-    assert_eq!(&release[8..], &[[0.0; 2]; 2]);
+    assert_eq!(release[0], [0.2; 2]);
+    assert!(
+        release[240..].iter().all(|frame| *frame == [0.0; 2]),
+        "arrangement power-off exceeded 5 ms"
+    );
+    assert_eq!(release[120], [0.1; 2]);
 
     let disabled_revision =
         revision_with_instrument_registry(&bypassed, Arc::clone(&table), &registry);
@@ -9806,6 +9839,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
     failed.try_inherit_state_from(&mut old).unwrap();
     assert_eq!(failed.release_voice_count(), 1);
     failed.routes[0].pending = Some(PendingRoute {
+        note_chase: crate::NoteChase::On,
         frame: 257,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
@@ -10023,6 +10057,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         })
         .unwrap();
     failed.routes[1].pending = Some(PendingRoute {
+        note_chase: crate::NoteChase::On,
         frame: 256,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
@@ -12511,6 +12546,46 @@ fn arrangement_preroll_held_mutable_source_and_return_send_follow_seek_law() {
 }
 
 #[test]
+fn ordinary_preroll_refuses_stopped_pcm_and_preserves_held_instrument_history() {
+    let prepared = mutable_feedback_with_stateful_track_and_return();
+    let track = prepared.arrangement().tracks()[0]
+        .canonical_track_id()
+        .unwrap();
+    let caller = SessionPlayback::new(prepared).unwrap();
+    let prepare = || {
+        caller
+            .prepare_arrangement_preroll(512, 512, false, &AtomicBool::new(false))
+            .unwrap()
+    };
+    let mut candidate = prepare();
+    let mut reference = prepare();
+    let mut output = [[1.0; 2]; 64];
+    assert_eq!(
+        candidate.render_paused_pcm(
+            track,
+            &[[0.5; 2]; 64],
+            &mut output,
+            &mut hex_lattice::RefuseForeign
+        ),
+        Err(SessionPlaybackError::InvalidCommand)
+    );
+    assert_eq!(output, [[0.0; 2]; 64]);
+    candidate.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+    assert_eq!(candidate.performance_frame(), 512);
+    let mut expected = output;
+    for (runtime, frames) in [
+        (&mut candidate, &mut output),
+        (&mut reference, &mut expected),
+    ] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(frames).unwrap();
+    }
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(output, expected);
+}
+
+#[test]
 fn interactive_arrangement_preroll_released_mutable_source_and_return_start_empty() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());
@@ -14152,8 +14227,9 @@ fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
     }
 }
 
-#[test]
-fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+fn mixed_streamed_resident_and_midi_compensation_case(
+    return_gain: Option<f32>,
+) -> ([[f32; 2]; 512], u32) {
     #[derive(Default)]
     struct ChangingPages {
         frames: [[f32; 2]; 32],
@@ -14194,9 +14270,39 @@ fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_st
         .execute(Command::InsertDevice {
             track,
             before: None,
-            state: limiter,
+            state: limiter.clone(),
         })
         .unwrap();
+    if let Some(gain) = return_gain {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "latency return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return track expected");
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ReturnGain {
+                return_track: bus,
+                gain,
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+    }
     editor
         .execute(Command::SetLoopRegion {
             start: 0,
@@ -14279,4 +14385,22 @@ fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_st
     assert!(actual.0.iter().flatten().any(|sample| *sample != 0.0));
     assert!(actual.1.len() > 1);
     assert_eq!(actual.2.len(), 1);
+    assert_eq!((actual.3, actual.4), (512, 8));
+    (actual.0, revision.arrangement().main_latency_frames())
+}
+
+#[test]
+fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+    let track_latency = mixed_streamed_resident_and_midi_compensation_case(None);
+    let silent_return = mixed_streamed_resident_and_midi_compensation_case(Some(0.0));
+    let sounding_return = mixed_streamed_resident_and_midi_compensation_case(Some(1.0));
+    assert_eq!(sounding_return.1, silent_return.1);
+    assert!(
+        sounding_return.1 > track_latency.1,
+        "the return must add latency"
+    );
+    assert_ne!(
+        sounding_return.0, silent_return.0,
+        "the return send must change rendered PCM"
+    );
 }

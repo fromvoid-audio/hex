@@ -26,15 +26,23 @@ fn position(
             roll.origin.y
                 + px(1.0)
                 + (roll.size.height - px(2.0))
-                    * ((f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - pitch) + 0.5)
-                        / f32::from(v.piano_pitch_rows)),
+                    * ((f32::from(
+                        v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count()
+                            - 1
+                            - pitch,
+                    ) + 0.5)
+                        / f32::from(v.piano_pitch.test_row_count())),
         )
     })
 }
 fn bodies(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<[i32; 4]> {
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
-    let rows = editor.read_with(&*visual, |v, _| v.piano_pitch_rows);
-    let body_height = (f32::from(roll.size.height) - 2.0) / f32::from(rows) - 2.0;
+    let row_height = editor.read_with(&*visual, |v, _| {
+        v.piano_pitch
+            .row_height_pixels(f32::from(roll.size.height) - 2.0)
+            .unwrap()
+    });
+    let body_height = (row_height - 2.0 * super::NOTE_ROW_INSET).max(1.0);
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
     let primary: gpui::Background =
         gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into();

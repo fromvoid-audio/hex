@@ -7,6 +7,7 @@ use hex_lattice::{
 };
 use hex_project::{Command, Created, Editor, Project};
 
+mod closed_hosted;
 mod deadlines;
 mod epoch;
 mod ordinary;
@@ -14,6 +15,7 @@ mod ordinary;
 mod profile;
 mod reorder;
 mod replacement;
+#[cfg(feature = "stream-test-support")]
 mod stream_refusal;
 
 fn close_backend(
@@ -751,11 +753,10 @@ fn replacement_preparation_inner(
 ) -> crate::AudioCandidateTicket {
     let quote = control
         .with_native_effect_definition(bindings, |definition| {
-            let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
-            let registry = NativeDeviceRegistry::new(&definitions).unwrap();
-            Ok(hex_engine::AudioCandidateEffects::new(&registry)
-                .quote(project, 1)
-                .unwrap())
+            hex_engine::AudioCandidateEffects::with_host_definitions(&[definition], |effects| {
+                Ok(effects.quote(project, 1).unwrap())
+            })
+            .map_err(|error| error.to_string())
         })
         .unwrap();
     let token = control
@@ -791,7 +792,9 @@ fn replacement_preparation_inner(
         );
     }
     let asset = project.assets().next().unwrap().id();
-    let source = hex_engine::Audio::new(48_000, samples.to_vec()).unwrap();
+    let source = streamed
+        .is_none()
+        .then(|| hex_engine::Audio::new(48_000, samples.to_vec()).unwrap());
     let mut preparation_error = None;
     assert_eq!(
         control
@@ -802,7 +805,7 @@ fn replacement_preparation_inner(
                     if let Some(metadata) = streamed.as_ref() {
                         cell.add_streamed_source_on_control(metadata.clone())?;
                     } else {
-                        cell.copy_resident_source_on_control(asset, &source)?;
+                        cell.copy_resident_source_on_control(asset, source.as_ref().unwrap())?;
                     }
                     effects
                         .prepare(
@@ -844,6 +847,138 @@ fn replacement_preparation_inner(
             .is_err()
     );
     ticket
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn closed_streamed_candidate_renders_eq8_through_the_original_vst3_worker() {
+    use hex_engine::MediaPages;
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    let _serial = serial();
+    let PreparedFixture {
+        mut control,
+        mut data,
+        errors,
+        retirement,
+        binding,
+        mut owner,
+        project,
+        samples,
+        ..
+    } = prepared_fixture_with_profile(2, false, "processing", 8, false);
+    owner.dispose_on_control().unwrap();
+    owner.dispose_original_inputs_on_control().unwrap();
+    drop(owner);
+    let mut editor = Editor::new(project, 8).unwrap();
+    let plugin = editor.project().main_devices()[0].id();
+    let eq = &hex_devices::eq8::EQ8_DEFINITION;
+    let state = eq
+        .patch_parameter(
+            &eq.default_state().unwrap(),
+            hex_devices::eq8::parameter::OUTPUT_GAIN,
+            ParameterValue::Float(0.5),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: Some(plugin),
+            state,
+        })
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let wav = crate::prepared::eligible_publication::tests::stream_fixture::Wav::with_frames(
+        samples.len() as u32,
+    );
+    let definition = wav.definition(editor.project().assets().next().unwrap().id(), 12);
+    let metadata = definition.metadata.clone();
+    let key = metadata.key();
+    let mut stream = hex_stream::StreamRuntime::new(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        vec![definition],
+    )
+    .unwrap();
+    stream.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (stream_control, mut pages) = stream.split().ok().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    pages.request_page(key, 0);
+    while pages.page(key, 0).is_none() {
+        pages.pump_ready(2);
+        assert!(Instant::now() < deadline, "verified page readiness");
+        std::thread::yield_now();
+    }
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            (stream_control, pages),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{}", error.reason));
+    allocation_free(|| {
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    let ticket = replacement_preparation_inner(
+        &mut control,
+        &[binding],
+        editor.project(),
+        &[],
+        None,
+        vec![domain],
+        Some(metadata),
+    );
+    let root = control.native_candidate_root();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 64];
+    for (block, chunk) in output.chunks_mut(8).enumerate() {
+        allocation_free(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                callback.begin_native_effect_callback(8).unwrap();
+                let rendered = callback.render(chunk);
+                assert!(rendered.is_ok());
+                assert!(crate::device::finish_host_chunk(
+                    callback,
+                    &mut [0.0; 16],
+                    chunk,
+                    2,
+                    &rendered,
+                    block as u64 * 8,
+                    Instant::now(),
+                ));
+            });
+        });
+        assert_eq!(control.status.applied_revision.load(Acquire), 1);
+        replacement::wait_for_blocks(&root, binding, block as u64 + 1);
+    }
+    let mut expected = [[0.0; 2]; 64];
+    for index in 0..samples.len() {
+        let gain = 0.5 * (0.5 + (index / 8) as f32 * 0.125);
+        expected[index + 16] = [0.25 * gain; 2];
+    }
+    for (index, (output, expected)) in output.into_iter().zip(expected).enumerate() {
+        for (sample, reference) in output.into_iter().zip(expected) {
+            assert!(
+                (sample - reference).abs() < 1e-5,
+                "frame {index}: {output:?} != {expected:?}"
+            );
+        }
+    }
+    let mut retirement = close_backend(data, errors, retirement);
+    let returned = crate::prepared::candidate_tests::recover(&mut control, &ticket);
+    assert_eq!(
+        returned.return_kind,
+        crate::AudioCandidateReturnKind::FinalActive
+    );
+    drop(returned);
+    let returned = recover(&mut control, binding);
+    assert!(
+        matches!(returned.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    drop(control);
+    finish(&mut retirement);
 }
 
 #[test]

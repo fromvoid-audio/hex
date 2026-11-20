@@ -6,12 +6,18 @@
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include "pluginterfaces/base/iplugincompatibility.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <fcntl.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#include <pthread.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <optional>
 #include <os/log.h>
 #include <thread>
@@ -19,6 +25,73 @@
 namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
+// The processing lane alone owns this policy. Standby header reads, editor
+// and state control, startup, and teardown run with ordinary scheduling.
+class WorkerDeadline {
+    thread_time_constraint_policy_data_t policy_{};
+    std::chrono::milliseconds idle_{};
+    std::chrono::steady_clock::time_point live_until_{};
+    bool active_=false;
+public:
+    WorkerDeadline(const wire::Config& config,bool enabled) {
+        if(!enabled) return;
+        const double period_ns=1e9*config.maximum/config.rate;
+        // Only admit the hardware periods under qualification. In particular,
+        // the scheduler's minimum computation budget must fit this interval.
+        if(period_ns<4e6 || period_ns>8e6) return;
+        mach_timebase_info_data_t clock{};
+        if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer || !clock.denom) return;
+        const double ticks_per_ns=static_cast<double>(clock.denom)/clock.numer;
+        if(period_ns*ticks_per_ns>std::numeric_limits<uint32_t>::max() ||
+            300'000*ticks_per_ns<1) return;
+        const auto ticks=[&](double ns) { return static_cast<uint32_t>(ns*ticks_per_ns); };
+        policy_={ticks(period_ns),ticks(300'000),ticks(4'000'000),true};
+        idle_=std::chrono::milliseconds(static_cast<int>(std::ceil(2*period_ns/1e6)));
+    }
+    WorkerDeadline(const WorkerDeadline&)=delete;
+    WorkerDeadline& operator=(const WorkerDeadline&)=delete;
+    ~WorkerDeadline() { leave(); }
+
+    void enter() {
+        if(idle_.count()==0 || active_) return;
+        const auto thread=pthread_mach_thread_np(pthread_self());
+        active_=thread_policy_set(thread,THREAD_TIME_CONSTRAINT_POLICY,
+            reinterpret_cast<thread_policy_t>(&policy_),THREAD_TIME_CONSTRAINT_POLICY_COUNT)==KERN_SUCCESS;
+        if(!active_) idle_={};
+    }
+
+    void pcm_replied() {
+        if(active_) live_until_=std::chrono::steady_clock::now()+idle_;
+    }
+
+    void end_stream() { live_until_={}; }
+
+    bool before_read(int channel) {
+        if(idle_.count()==0) return true;
+        const auto remaining=live_until_-std::chrono::steady_clock::now();
+        if(remaining<=std::chrono::steady_clock::duration::zero()) return leave();
+        // Control packets run at ordinary priority. If one completes inside
+        // the current PCM interval, resume the remaining wait for audio.
+        enter();
+        if(!active_) return true;
+        const auto wait=std::chrono::ceil<std::chrono::milliseconds>(remaining);
+        pollfd input{channel,POLLIN,0};
+        const int ready=::poll(&input,1,static_cast<int>(wait.count()));
+        return (ready>0 && (input.revents&POLLIN)) || leave();
+    }
+
+    bool leave() {
+        if(!active_) return true;
+        thread_standard_policy_data_t standard{};
+        const auto thread=pthread_mach_thread_np(pthread_self());
+        if(thread_policy_set(thread,THREAD_STANDARD_POLICY,
+            reinterpret_cast<thread_policy_t>(&standard),THREAD_STANDARD_POLICY_COUNT)!=KERN_SUCCESS)
+            return false;
+        active_=false;
+        return true;
+    }
+};
+
 void report_message_activity(const wire::Config& config,bool editor_open,
     const hex_instance::HostMessageDiagnostics& trace,uint64_t pcm_blocks,uint64_t nonzero_input_blocks) {
     static const auto log=os_log_create("org.portalsurfer.hex.vst3","messages");
@@ -95,15 +168,21 @@ bool send_state_overflow(int channel,const wire::Config& config,uint64_t blocks,
     wire::number(body,1,1);wire::number(body,observed,4);
     return wire::send(channel,"HXVICR02",body);
 }
+// The processing lane owns reads, including EOF. On macOS a concurrent
+// MSG_PEEK can consume its wakeup and leave a partial-frame read blocked.
+// poll and FIONREAD observe closure without becoming another socket reader.
+bool peer_closed(int channel) {
+    pollfd descriptor{channel,POLLIN,0};
+    const int ready=::poll(&descriptor,1,0);
+    if(ready<=0 || !(descriptor.revents&POLLHUP)) return false;
+    int available=0;
+    return ::ioctl(channel,FIONREAD,&available)==0 && available==0;
+}
 bool wait_for_peer_close(int channel) {
     pollfd descriptor{channel,POLLIN,0};
     const int ready=::poll(&descriptor,1,failed_main_wait_ms);
     if(ready==0) return false;
-    if(ready>0) {
-        uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-        // A closed peer with unread bytes still reports hangup.
-        if(peer==0 || (descriptor.revents&POLLHUP)) return true;
-    }
+    if(ready>0 && (descriptor.revents&POLLHUP)) return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
     return false;
 }
@@ -185,8 +264,10 @@ public:
     bool start() {
         channel=::dup(STDOUT_FILENO);if(channel<0) return false;
         int kind=0;socklen_t size=sizeof kind;
+        const int enabled=1;
         if(::fcntl(channel,F_SETFD,FD_CLOEXEC)<0 ||
-            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM) {
+            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM ||
+            ::setsockopt(channel,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof enabled)!=0) {
             ::close(channel);channel=-1;return false;
         }
         try {
@@ -197,6 +278,12 @@ public:
             });
         } catch(...) { ::close(channel);channel=-1;return false; }
         return true;
+    }
+    // Reverse direction only. Never stall the AppKit lane or encode a
+    // transport key as a cancellation, controller or audio message.
+    void send_transport_press() const {
+        const uint8_t press=1;
+        if(channel>=0) (void)::send(channel,&press,1,MSG_DONTWAIT);
     }
     ~CancellationGuardian() {
         if(channel<0) return;
@@ -240,13 +327,15 @@ std::optional<uint8_t> apply_presentation(hex_instance::Instance& instance,bool 
     if(!plan.known && !available) return 0;
     if(!plan.known && !plan.allow_unknown) return std::nullopt;
     const auto values=plan.known.value_or(wire::Presentation{});
-    const auto result=instance.set_presentation_latency(values.input,values.output);
+    const auto input=plan.known && plan.known_mode!=4?values.input:0;
+    const auto output=plan.known && plan.known_mode!=3?values.output:0;
+    const auto result=instance.set_presentation_latency(input,output);
     if(!available && result==Result::Absent) return 0;
-    if(available && result==Result::Applied) return plan.known?1:2;
+    if(available && result==Result::Applied) return plan.known?plan.known_mode:2;
     return std::nullopt;
 }
 void presentation_receipt(wire::Bytes& out,uint8_t mode,const wire::PresentationPlan& plan) {
-    wire::number(out,mode,1);wire::number(out,plan.known?1:0,1);
+    wire::number(out,mode,1);wire::number(out,plan.known?plan.known_mode:0,1);
     if(plan.known) { wire::number(out,plan.known->input,4);wire::number(out,plan.known->output,4); }
 }
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
@@ -272,7 +361,13 @@ int main(int argc,char** argv) {
     const bool editor_groups=argc==3 && !std::strcmp(argv[2],"--test-grouped-editor");
     const bool supervised=(argc==2 || offline || editor_groups) && !std::strcmp(argv[1],"--supervised");
     if(argc!=1 && !supervised) return Configuration;
+    const auto* transport_space=std::getenv("HEX_VST3_TRANSPORT_SPACE");
+    const bool reserve_space=supervised && !offline && transport_space && !std::strcmp(transport_space,"1");
     const auto process_mode=offline?kOffline:kRealtime;
+    // The joining host reserves one paired slot for this native child.
+    const auto* deadline_admitted=std::getenv("HEX_VST3_WORKER_DEADLINE_ADMITTED");
+    const bool try_worker_deadline=supervised && !offline && deadline_admitted
+        && !std::strcmp(deadline_admitted,"1");
     // Static lifetime keeps cancellation live through main-thread TLS/atexit
     // cleanup registered by subsequently loaded SDK modules, not just main.
     static CancellationGuardian guardian;
@@ -358,6 +453,7 @@ int main(int argc,char** argv) {
             hex_instance::ParameterFeedback parameter_feedback;
             std::atomic<uint64_t> diagnostic_pcm_blocks{0},diagnostic_nonzero_input_blocks{0};
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
+            std::atomic<bool> worker_retiring{false};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             const auto control_failure=[&](uint32_t code) {
                 // Share the epoch wait mutex so failure publication cannot
@@ -375,7 +471,8 @@ int main(int argc,char** argv) {
             uint64_t next_graph=0,next_epoch=0;
             uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0;
             hex_instance::ParameterFeedback flushed_values;
-            bool flush_applied=false,flush_while_idle=false;
+            uint8_t flush_disposition=0;
+            bool flush_while_idle=false;
             wire::PresentationPlan next_presentation;
             // Single live capture slot. Main exclusively writes its result
             // after Requested/acquire, then Complete/release transfers it back
@@ -394,8 +491,32 @@ int main(int argc,char** argv) {
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
+            bool editor_edits_sealed=false;
+            bool editor_admission_changed=false;
+            uint64_t editor_frontier=0;
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
+            std::atomic<bool> pcm_since_main_pump{false};
+            auto observe_editor_visibility=[&] {
+                if(page_stage.load(std::memory_order_acquire)!=PageRequested ||
+                   page_query.kind!=hex_instance::EDITOR_VISIBILITY) return false;
+                detached_editor_position.reset();
+                editor_state=editor.is_open()?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
+                page_stage.store(PageComplete,std::memory_order_release);
+                return true;
+            };
+            auto service_modal_editor_request=[&] {
+                if(observe_editor_visibility()) return;
+                const auto stage=page_stage.load(std::memory_order_acquire);
+                if((stage==PageRequested || stage==PageFeedbackPending) &&
+                   hex_instance::closes_open_editor(page_query.kind) && editor.is_open()) {
+                    // Leave the request pending. The existing turn owns the
+                    // detach and its ACK after AppKit and foreign code return.
+                    hex_instance::ModalEditorRequest::cancel_file_picker(NSApp);
+                }
+            };
+            hex_instance::ModalEditorRequest modal_editor_request(service_modal_editor_request);
+            if(!modal_editor_request) { failure=HostControl;throw Refusal{}; }
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -461,7 +582,11 @@ int main(int argc,char** argv) {
                     };
                     // An output-only observation can echo a preceding quantum.
                     // Keep the sequence of the last input for each parameter
-                    // until a later input replaces it. Inventory refreshes
+                    // until a later input replaces it. Native editor input owns
+                    // its controller target: processor smoothing/echo must not
+                    // replay over it, including after End or in output-only blocks.
+                    // Authored host input resumes ordinary processor feedback.
+                    // Inventory refreshes
                     // preserve the sorted ID set, including across epochs.
                     struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
                     std::array<FeedbackOrigin,hex_instance::HOST_PARAMETER_COUNT> feedback_sequences{};
@@ -478,7 +603,8 @@ int main(int argc,char** argv) {
                     };
                     enum class BatchFit { Ready, Wait, Invalid };
                     const auto preflight_group=[&](const hex_instance::EditEvent& first,size_t later_points,
-                            const hex_instance::ParameterPoint* later,const hex_instance::EditorTouch* touch) {
+                            const hex_instance::ParameterPoint* later,const hex_instance::EditorTouch* touch,
+                            std::optional<ParamID> dense) {
                         constexpr auto maximum=hex_instance::PARAMETER_POINT_COUNT;
                         std::array<hex_instance::ParameterPoint,maximum> points{};
                         auto count=parameter_input.size();
@@ -491,10 +617,12 @@ int main(int argc,char** argv) {
                                     event.batch_remaining!=first.batch_remaining-n)
                                 return BatchFit::Invalid;
                             if(preview && !preview->can_stage(event)) return BatchFit::Wait;
-                            if(event.kind==hex_instance::Perform) {
-                                // Each ParamID has one sample-zero input per quantum.
-                                // A later SDK cohort must never erase an earlier one.
-                                if(conflicts_with_prior_cohort(event)) return BatchFit::Wait;
+                            // A later cohort cannot erase an earlier one. The
+                            // dense owner supplies PCM for its ID, while its
+                            // editor values remain in the ordered receipt batch.
+                            if(event.kind==hex_instance::Perform && conflicts_with_prior_cohort(event))
+                                return BatchFit::Wait;
+                            if(event.kind==hex_instance::Perform && event.id!=dense) {
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)))
                                     return BatchFit::Invalid;
@@ -521,14 +649,15 @@ int main(int argc,char** argv) {
                         return BatchFit::Ready;
                     };
                     const auto stage_edits=[&](size_t later_points=0,
-                            const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr) {
+                            const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr,
+                            std::optional<ParamID> dense=std::nullopt) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
                         size_t remaining_group=0;
                         while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
                             if(!remaining_group && event.cohort) {
                                 const auto available=completed_edits.size()-completed_edit_count-applying_edit_count;
                                 if(event.batch_remaining>available) break;
-                                switch(preflight_group(event,later_points,later,touch)) {
+                                switch(preflight_group(event,later_points,later,touch,dense)) {
                                     case BatchFit::Wait: return true;
                                     case BatchFit::Invalid: return false;
                                     case BatchFit::Ready: remaining_group=event.batch_remaining;break;
@@ -538,8 +667,9 @@ int main(int argc,char** argv) {
                                 if(remaining_group) return false;
                                 break;
                             }
-                            if(event.kind==hex_instance::Perform) {
-                                if(!remaining_group && conflicts_with_prior_cohort(event)) break;
+                            if(event.kind==hex_instance::Perform && !remaining_group && conflicts_with_prior_cohort(event))
+                                break;
+                            if(event.kind==hex_instance::Perform && event.id!=dense) {
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
                                 const bool captures=touch && touch->would_capture(event);
@@ -584,7 +714,9 @@ int main(int argc,char** argv) {
                                 const auto sequence=feedback_sequence(point.id,is_input?
                                     std::optional<uint64>{editor_sequence?editor_sequence:host_frontier}:std::nullopt,
                                     is_input && editor_sequence);
-                                if(!sequence || !feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
+                                if(!sequence) return false;
+                                if(!is_input && sequence->editor_input) continue;
+                                if(!feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                             }
                         }
                         return true;
@@ -617,6 +749,15 @@ int main(int argc,char** argv) {
                     // exchange in both epochs. Only the non-PCM request waits
                     // for the main lane to mirror values before acknowledging.
                     const auto flush_parameters=[&](const wire::Packet& packet,bool idle)->uint32_t {
+                        const auto acknowledge=[&](uint8_t disposition) {
+                            std::unique_lock<std::mutex> lock(startup_mutex);
+                            flush_operation=packet.capture_operation;flush_disposition=disposition;
+                            flush_while_idle=idle;epoch_stage=FlushRequested;
+                            startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
+                            if(idle) epoch_stage=Idle;
+                            return worker_failure.load();
+                        };
+                        const auto expected=packet.expected_editor_admission;
                         instance.refresh_processing_parameters(processing_parameters);
                         if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true)) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         bool valid=true;
@@ -625,12 +766,21 @@ int main(int argc,char** argv) {
                             if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
                                 !parameter_input.input(point.id,0,point.normalized)) valid=false;
                         }
-                        if(!valid || !stage_edits()) return ProtocolFailure;
+                        // A guarded batch has one admission point. A callback
+                        // admitted afterward remains queued for a later SDK
+                        // turn and wins over feedback stamped at this point.
+                        if(expected && (!valid || instance.pending_parameter_edits() ||
+                                        instance.editor_admission_sequence_on_worker()!=*expected)) {
+                            flushed_values={};
+                            return acknowledge(2);
+                        }
+                        if(!valid || (!expected && !stage_edits())) return ProtocolFailure;
+                        if(expected) applying_edit_count=0;
                         if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
                         ProcessData flush{};flush.processMode=process_mode;flush.symbolicSampleSize=kSample32;
                         flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
                         phase.store(2,std::memory_order_release);
-                        const auto host_frontier=instance.editor_frontier_on_worker();
+                        const auto host_frontier=expected.value_or(instance.editor_frontier_on_worker());
                         const auto result=idle?instance.flush_idle(flush):instance.flush_stopped(flush);
                         const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                         if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
@@ -638,14 +788,7 @@ int main(int argc,char** argv) {
                         flushed_values={};
                         if(!mirror_flushed_parameters(flushed_values,host_frontier)) return ProtocolFailure;
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
-                        {
-                            std::unique_lock<std::mutex> lock(startup_mutex);
-                            flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;
-                            flush_while_idle=idle;epoch_stage=FlushRequested;
-                            startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
-                            if(idle) epoch_stage=Idle;
-                        }
-                        return worker_failure.load();
+                        return acknowledge(result==hex_instance::FlushResult::Applied?1:0);
                     };
                     uint64_t idle_flushes=0;
                     uint64_t page_operation=0;
@@ -655,17 +798,32 @@ int main(int argc,char** argv) {
                             if(state!=PageIdle || page_operation==std::numeric_limits<uint64_t>::max() ||
                                 request.capture_operation!=page_operation+1) return false;
                             page_query=request.parameter_query;
-                            // A previous PCM result may still be waiting for
-                            // the main-lane feedback slot. Publish it before
-                            // allowing the controller to answer this query.
-                            ++page_operation;page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            ++page_operation;
+                            // Only visibility can finish before preceding PCM
+                            // feedback is published. Cancellation may unblock
+                            // that publication but does not complete a close.
+                            const bool visibility=page_query.kind==hex_instance::EDITOR_VISIBILITY;
+                            const bool needs_feedback=!visibility && parameter_feedback.count;
+                            page_stage.store(needs_feedback?PageFeedbackPending:PageRequested,std::memory_order_release);
+                            if(visibility || hex_instance::closes_open_editor(page_query.kind))
+                                modal_editor_request.notify();
                         } else if(state==PageIdle || request.capture_operation!=page_operation ||
                                   !(request.parameter_query==page_query)) return false;
                         if(state==PageFailed) {worker_failure.store(page_failure);return false;}
                         const bool complete=poll && state==PageComplete;
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,page_operation,8);
-                        if(complete && hex_instance::editor_request(page_query.kind)) {
+                        if(complete && page_query.kind==hex_instance::SEAL_EDITOR_EDITS) {
+                            wire::number(body,5,1);wire::number(body,editor_edits_sealed?1:0,1);
+                        } else if(complete && page_query.kind==hex_instance::READ_EDITOR_FRONTIER) {
+                            wire::number(body,6,1);wire::number(body,editor_frontier,8);
+                        } else if(complete && hex_instance::editor_admission_request(page_query.kind)) {
+                            wire::number(body,7,1);wire::number(body,page_query.kind,1);
+                            wire::number(body,page_query.revision,8);
+                            wire::number(body,editor_admission_changed?1:0,1);
+                            if(editor_admission_changed && page_query.kind==hex_instance::HOLD_EDITOR_ADMISSION)
+                                wire::number(body,editor_frontier,8);
+                        } else if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
                             if(detached_editor_position) {
                                 wire::number(body,3,1);
@@ -749,7 +907,9 @@ int main(int argc,char** argv) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
                             const auto sequence=feedback_sequence(point.id,std::nullopt);
-                            if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
+                            if(!sequence) return false;
+                            if(sequence->editor_input) continue;
+                            if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) return false;
                         }
                         return true;
                     };
@@ -757,9 +917,13 @@ int main(int argc,char** argv) {
                     // request to report its error, without another DSP call.
                     // This keeps the failure reply paired with that exchange
                     // instead of racing a later write against child exit.
+                    WorkerDeadline deadline(*config,try_worker_deadline);
                     while(started && (!worker_failure.load() || live_stage.load(std::memory_order_acquire)==LiveFailed || page_stage.load(std::memory_order_acquire)==PageFailed)) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
+                        if(!deadline.before_read(channel)) {worker_failure.store(Processing);break;}
                         const auto received=packet.read(channel,*config,blocks,frames);
+                        if(received!=1 && !deadline.leave()) {worker_failure.store(Processing);break;}
+                        if(received==2 || received==3) deadline.end_stream();
                         if(worker_failure.load()) break;
                         // A late End is not DSP work. Retire its pending
                         // custody even when the next request is save capture;
@@ -824,7 +988,7 @@ int main(int argc,char** argv) {
                         if((received==2 || received==3) && live_stage.load(std::memory_order_acquire)!=LiveIdle) {
                             worker_failure.store(ProtocolFailure);break;
                         }
-                        if(received==2) { normal_stop=true;break; }
+                        if(received==2) { worker_retiring.store(true,std::memory_order_release);normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
                         if(received==3) {
                             if(packet.release_gates) {
@@ -912,7 +1076,8 @@ int main(int argc,char** argv) {
                             if(worker_failure.load()) break;
                             continue;
                         }
-                        if(received!=1) { worker_failure.store(ProtocolFailure);break; }
+                        if(received!=1) { worker_retiring.store(true,std::memory_order_release);worker_failure.store(ProtocolFailure);break; }
+                        deadline.enter();
                         bool valid=true;output_right.fill(0);input.silenceFlags=input_silence;output.silenceFlags=0;
                         bool nonzero_input=false;
                         for(size_t n=0;n<packet.frames;++n) {
@@ -971,6 +1136,7 @@ int main(int argc,char** argv) {
                         }
                         // Each transport context starts an SDK call, but the
                         // copied exchange and its reply remain one quantum.
+                        const auto dense=packet.dense_parameter?std::optional{packet.dense_id}:std::nullopt;
                         packet.reply_parameter_count=0;
                         size_t next_note=0,next_parameter=0;
                         for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
@@ -990,7 +1156,7 @@ int main(int argc,char** argv) {
                                 if(!parameter_input.input(point.id,0,point.normalized)) valid=false;
                             }
                             if(!valid || (!slice && !stage_edits(packet.parameter_count-next_parameter,
-                                packet.parameters.data()+next_parameter,touch))) {
+                                packet.parameters.data()+next_parameter,touch,dense))) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
                             if(packet.dense_parameter &&
@@ -1018,7 +1184,7 @@ int main(int argc,char** argv) {
                             window.processContext=slice?&packet.timing_changes[slice-1].context:(packet.context?&*packet.context:nullptr);
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
-                            const bool processed=instance.process(window);
+                            const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr);
                             // No SDK stop/unload beneath a retained borrowed queue.
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             const bool notes_returned=!event_channels || input_notes.end();
@@ -1044,12 +1210,14 @@ int main(int argc,char** argv) {
                                 std::optional<uint64> input_sequence;
                                 bool editor_input=false;
                                 if(use_input) {
-                                    const auto editor_sequence=first || point.offset?0:staged_editor_sequence(point.id);
+                                    const auto editor_sequence=first || point.offset || point.id==dense?0:staged_editor_sequence(point.id);
                                     input_sequence=editor_sequence?editor_sequence:host_frontier;
                                     editor_input=editor_sequence!=0;
                                 }
                                 const auto sequence=feedback_sequence(point.id,input_sequence,editor_input);
-                                if(!sequence || !parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
+                                if(!sequence) {valid=false;break;}
+                                if(!use_input && sequence->editor_input) continue;
+                                if(!parameter_feedback.put(point.id,point.normalized,sequence->sequence,sequence->editor_input)) valid=false;
                             }
                             if(!valid || !packet.append_parameter_reply(first,parameter_output)) {
                                 worker_failure.store(ProtocolFailure);break;
@@ -1067,7 +1235,7 @@ int main(int argc,char** argv) {
                             // the SDK, even though its editor callback was consumed.
                             for(size_t n=0;n<applying_edit_count;++n) {
                                 const auto& edit=applying_edits[n];
-                                if(edit.kind==hex_instance::Perform && last_editor_edit(edit.id)==n &&
+                                if(edit.kind==hex_instance::Perform && edit.id!=dense && last_editor_edit(edit.id)==n &&
                                     (!group || editor_capture[n]) && !packet.append_editor_perform(edit)) {
                                     worker_failure.store(ProtocolFailure);break;
                                 }
@@ -1077,11 +1245,17 @@ int main(int argc,char** argv) {
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
+                        deadline.pcm_replied();
                         ++blocks;frames+=packet.frames;
+                        pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
                             diagnostic_pcm_blocks.store(blocks,std::memory_order_relaxed);
                             if(nonzero_input) diagnostic_nonzero_input_blocks.fetch_add(1,std::memory_order_relaxed);
                         }
+                    }
+                    if(!deadline.leave()) {
+                        error(channel,&*config,Processing);
+                        std::_Exit(Processing);
                     }
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     // Never stop/deactivate/unload beneath a main-lane capture,
@@ -1100,8 +1274,7 @@ int main(int argc,char** argv) {
             // Ready means the actual worker's fallible setProcessing succeeded,
             // not merely that a control-side configuration was copied.
             while(!startup.load(std::memory_order_acquire)) {
-                uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-                if(peer==0) std::_Exit(Cancelled);
+                if(peer_closed(channel)) std::_Exit(Cancelled);
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
@@ -1113,6 +1286,19 @@ int main(int argc,char** argv) {
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
             auto next_message_report=std::chrono::steady_clock::time_point::min();
+            constexpr auto quiet_pcm_window=std::chrono::milliseconds(40);
+            constexpr double quiet_main_wait=0.008;
+            const double pcm_only_wait=std::clamp(config->maximum/config->rate/3.0,0.001,0.002);
+            auto active_pcm_until=std::chrono::steady_clock::now()+quiet_pcm_window;
+            std::optional<std::chrono::steady_clock::time_point> retirement_deadline;
+            const auto may_cancel_closed_peer=[&] {
+                if(!worker_retiring.load(std::memory_order_acquire)) return true;
+                const auto now=std::chrono::steady_clock::now();
+                // Give an already admitted terminal reply a bounded chance to
+                // finish; a hung foreign stop cannot hold a closed peer forever.
+                if(!retirement_deadline) retirement_deadline=now+std::chrono::milliseconds(250);
+                return now>=*retirement_deadline;
+            };
             while(!done.load(std::memory_order_acquire)) @autoreleasepool {
                 try {
                     if(trace_messages) {
@@ -1132,7 +1318,10 @@ int main(int argc,char** argv) {
                         // unless the worker itself is receiving (it then sees
                         // EOF and finishes); a hung DSP/stop never returns.
                         if(wait_for_peer_close(channel) && phase.load(std::memory_order_acquire)!=1 &&
-                            !done.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+                            !done.load(std::memory_order_acquire)) {
+                            if(may_cancel_closed_peer()) std::_Exit(Cancelled);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
+                        }
                         continue;
                     }
                     // The worker owns active response framing. Publishing a
@@ -1146,24 +1335,47 @@ int main(int argc,char** argv) {
                     if(const auto flags=instance.host_refusals()) {
                         control_failure(runtime_host_failure(flags,false));continue;
                     }
-                    if(page_stage.load(std::memory_order_acquire)==PageRequested) {
+                    if(page_stage.load(std::memory_order_acquire)==PageRequested &&
+                       !observe_editor_visibility()) {
                         page_failure=0;
                         try {
                             // Acquire the exact prior worker publication even
                             // if it arrived after this main iteration's sync.
                             if(!instance.synchronize_parameter_feedback_on_control()) page_failure=HostControl;
+                            else if(page_query.kind==hex_instance::READ_EDITOR_FRONTIER)
+                                editor_frontier=instance.editor_admission_sequence_on_worker();
+                            else if(page_query.kind==hex_instance::HOLD_EDITOR_ADMISSION) {
+                                editor_admission_changed=instance.hold_editor_admission_on_control(page_query.revision);
+                                if(editor_admission_changed) editor_frontier=instance.editor_admission_sequence_on_worker();
+                            } else if(page_query.kind==hex_instance::RELEASE_EDITOR_ADMISSION)
+                                editor_admission_changed=instance.release_editor_admission_on_control(page_query.revision);
                             else if(hex_instance::editor_request(page_query.kind)) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();
                                     const auto kind=page_query.kind;
-                                    detached_editor_position=kind==hex_instance::DETACH_EDITOR?editor.position():std::nullopt;
+                                    const bool guarded=kind==hex_instance::DETACH_EDITOR_WHEN_IDLE;
+                                    const auto admission=guarded?instance.begin_editor_detach_on_control():hex_instance::EditorDetachAdmission::Granted;
+                                    const bool allowed=admission==hex_instance::EditorDetachAdmission::Granted;
+                                    struct DetachGuard {
+                                        decltype(instance)& owner;
+                                        bool held;
+                                        ~DetachGuard() { if(held) owner.end_editor_detach_on_control(); }
+                                    } guard{instance,guarded && allowed};
+                                    detached_editor_position=allowed &&
+                                        (kind==hex_instance::DETACH_EDITOR || guarded)?editor.position():std::nullopt;
                                     const auto placement=kind==hex_instance::REOPEN_EDITOR && page_query.id==1?
                                         std::optional<hex_instance::EditorPosition>(hex_instance::editor_reopen_position(page_query)):
                                         std::nullopt;
-                                    if(kind==hex_instance::REOPEN_EDITOR && was_open)
+                                    if(admission==hex_instance::EditorDetachAdmission::Refused)
+                                        page_failure=HostControl;
+                                    else if(!allowed)
+                                        editor_state=hex_instance::EditorState::GestureActive;
+                                    else if(kind==hex_instance::SEAL_EDITOR_EDITS)
+                                        editor_edits_sealed=instance.seal_editor_edits_on_control();
+                                    else if(kind==hex_instance::REOPEN_EDITOR && was_open)
                                         editor_state=hex_instance::EditorState::Open;
                                     else if(!editor.close()) page_failure=Teardown;
-                                    else if(kind==hex_instance::DETACH_EDITOR)
+                                    else if(kind==hex_instance::DETACH_EDITOR || guarded)
                                         editor_state=was_open?hex_instance::EditorState::Open:hex_instance::EditorState::Closed;
                                     else if(was_open || kind==hex_instance::CLOSE_EDITOR)
                                         editor_state=hex_instance::EditorState::Closed;
@@ -1271,7 +1483,7 @@ int main(int argc,char** argv) {
                         }
                         const auto* snapshot=instance.parameter_snapshot();
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
-                        wire::number(body,flush_operation,8);wire::number(body,flush_applied?1:0,1);wire::number(body,flushed_values.count,2);
+                        wire::number(body,flush_operation,8);wire::number(body,flush_disposition,1);wire::number(body,flushed_values.count,2);
                         for(uint32 n=0;n<flushed_values.count;++n) {
                             const auto id=flushed_values.at(n).id;
                             const hex_instance::ParameterSnapshot::Parameter* value=nullptr;
@@ -1320,6 +1532,9 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
+                        // An editor seal is terminal for this actual helper.
+                        // Never acknowledge an epoch that cannot accept edits.
+                        if(instance.editor_edits_sealed_on_control()) { error(channel,&*config,Resume);std::_Exit(Resume); }
                         if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         supplied=next_presentation;
                         presentation=apply_presentation(instance,*available,supplied);
@@ -1344,20 +1559,31 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
                     }
-                    uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
-                    if(peer==0 && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire)) {
+                    if(peer_closed(channel) && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire) && may_cancel_closed_peer()) {
                         // EOF is cancellation, not the graceful HXVE terminal.
                         // Retire the isolated process rather than wait on hung DSP
                         // or unload code beneath its processing thread.
                         std::_Exit(Cancelled);
                     }
                     try {
-                        if(!editor.pump()) control_failure(Teardown);
+                        if(!editor.pump(reserve_space,[&] { guardian.send_transport_press(); }))
+                            control_failure(Teardown);
                     } catch(...) {
                         editor.quarantine();
                         control_failure(Unexpected);
                     }
-                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
+                    // AppKit and admitted control work use the fast cadence.
+                    // With PCM only, bound the main-lane wait relative to the
+                    // admitted quantum. The worker still receives PCM directly.
+                    const auto now=std::chrono::steady_clock::now();
+                    if(pcm_since_main_pump.exchange(false,std::memory_order_relaxed))
+                        active_pcm_until=now+quiet_pcm_window;
+                    const bool busy=editor.is_open() || stage!=Idle ||
+                        page_stage.load(std::memory_order_acquire)!=PageIdle ||
+                        live_stage.load(std::memory_order_acquire)!=LiveIdle;
+                    const double wait=busy ? 0.001 :
+                        (now<active_pcm_until ? pcm_only_wait : quiet_main_wait);
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode,wait,true);
                 } catch(...) { control_failure(Unexpected); }
             }
             worker.join();failure=worker_failure.load()&0xFF;
@@ -1381,7 +1607,7 @@ int main(int argc,char** argv) {
             ::close(channel);
             std::_Exit(sent?0:ProtocolFailure);
         }
-        try { if(editor.close()) closing=instance.close_for_retirement(); } catch(...) {}
+        try { if(editor.close()) closing=instance.close_for_retirement(normal_stop && !failure); } catch(...) {}
     }
     @autoreleasepool {
         bool unloaded=false;

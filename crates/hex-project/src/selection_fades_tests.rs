@@ -550,3 +550,36 @@ fn crossfade_preparation_refusal_preserves_both_clips_history_and_redo() {
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), admitted);
 }
+
+#[test]
+fn explicit_fade_keeps_the_ramp_proof_on_a_retained_legacy_crossfade() {
+    let (mut editor, track, [clip, _]) = adjacent_looping_clips();
+    editor
+        .execute(Command::CreateArrangementFades {
+            range: TimeRange::new(vec![track], 92_000, 100_000).unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 300 })
+        .unwrap();
+    let before = editor.project().clone();
+    let target = before.clip(clip).unwrap();
+    assert!(!before.arrangement_fade_edit_uses_outer(target));
+    let fade = target
+        .retained_fade()
+        .with_curve_positions(460, 510)
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    let actual = editor.project().clip(clip).unwrap();
+    assert_eq!(actual.retained_fade(), fade);
+    assert!(
+        actual
+            .projected_outer_fade(editor.project().tempo_map())
+            .unwrap()
+            .is_none()
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+}

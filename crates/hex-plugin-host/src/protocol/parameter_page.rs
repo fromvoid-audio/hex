@@ -3,6 +3,7 @@
 //! source custody or publication authority. Values describe a main-lane read,
 //! not a sample-exact processing or final audio-delivery acknowledgement.
 use super::*;
+use std::num::NonZeroU64;
 mod conversion;
 pub use conversion::{ParameterConversion, ParameterConversionResult, ParameterConversionStatus};
 
@@ -11,6 +12,8 @@ pub const PARAMETER_PAGE_SIZE: usize = 4;
 /// page and the processing edit/feedback queues keep their own fixed limits.
 pub const MAX_CONTROLLER_PARAMETERS: u16 = 2_624;
 const TEXT_UNITS: usize = 128;
+const HOLD_EDITOR_ADMISSION_KIND: u8 = 17;
+const RELEASE_EDITOR_ADMISSION_KIND: u8 = 18;
 const PARAMETER_FLAGS: u32 = 0x0001_801f;
 const CAN_AUTOMATE: u32 = 1;
 const IS_READ_ONLY: u32 = 1 << 1;
@@ -177,6 +180,13 @@ impl ParameterPage {
 pub enum ParameterPageProgress {
     Pending,
     Editor(PluginEditorState),
+    /// The exact original controller sealed editor admission, or did not
+    /// seal and remains responsible for its input. Neither result drains receipts.
+    EditorSeal(EditorSealState),
+    /// Latest editor callback admitted on this binding. Zero means none.
+    /// This observes admission order before any DSP or project disposition.
+    EditorFrontier(u64),
+    EditorAdmission(EditorAdmissionState),
     /// One bounded control-side allocation; never decoded on the callback.
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
@@ -200,8 +210,24 @@ pub enum ControllerRequest {
     },
     ToggleEditor,
     CloseEditor,
+    /// Observe the logical AppKit editor attachment without altering focus or custody.
+    EditorVisibility,
+    /// Seal editor callback admission on the stopped original worker. Accepted
+    /// callbacks and their receipts remain owned until separately drained.
+    SealEditorEdits,
+    /// Read the original helper’s global editor admission sequence without
+    /// consuming receipts or changing whether the helper accepts input.
+    ReadEditorFrontier,
+    /// Hold new editor callbacks at the producer. Refuses an open gesture
+    /// or cohort so their actual terminal can still arrive.
+    HoldEditorAdmission(NonZeroU64),
+    /// Release only the exact temporary holder. A permanent seal stays closed.
+    ReleaseEditorAdmission(NonZeroU64),
     /// Detach the predecessor and capture the latest AppKit placement.
     DetachEditor,
+    /// Detach on the original live source only when no editor gesture is active.
+    /// `Open` means the editor was detached without a usable saved position.
+    DetachEditorWhenIdle,
     /// Reopen on the successor without activating its helper application.
     ReopenEditor(Option<PluginEditorPosition>),
 }
@@ -225,9 +251,24 @@ impl ControllerRequest {
                 }
                 Ok(())
             }
-            Self::ToggleEditor | Self::CloseEditor | Self::DetachEditor | Self::ReopenEditor(_) => {
-                Ok(())
-            }
+            Self::ToggleEditor
+            | Self::CloseEditor
+            | Self::EditorVisibility
+            | Self::SealEditorEdits
+            | Self::ReadEditorFrontier
+            | Self::HoldEditorAdmission(_)
+            | Self::ReleaseEditorAdmission(_)
+            | Self::DetachEditor
+            | Self::DetachEditorWhenIdle
+            | Self::ReopenEditor(_) => Ok(()),
+        }
+    }
+
+    fn editor_admission_command(self) -> Option<(u8, NonZeroU64)> {
+        match self {
+            Self::HoldEditorAdmission(token) => Some((HOLD_EDITOR_ADMISSION_KIND, token)),
+            Self::ReleaseEditorAdmission(token) => Some((RELEASE_EDITOR_ADMISSION_KIND, token)),
+            _ => None,
         }
     }
 }
@@ -252,11 +293,27 @@ impl PluginEditorPosition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorSealState {
+    Sealed,
+    NotSealed,
+}
+
+/// Producer result for the exact temporary hold or release. Existing accepted
+/// input remains in the source-owned queue independently of this receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorAdmissionState {
+    Held { admitted_through: u64 },
+    Released,
+    Refused,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginEditorState {
     Closed,
     Open,
     Unavailable,
     Detached(PluginEditorPosition),
+    GestureActive,
 }
 
 pub fn parameter_page_request(
@@ -281,9 +338,21 @@ pub fn parameter_page_request(
         }
         ControllerRequest::ToggleEditor => out[82] = 6,
         ControllerRequest::CloseEditor => out[82] = 7,
+        ControllerRequest::EditorVisibility => out[82] = 15,
+        ControllerRequest::SealEditorEdits => out[82] = 13,
+        ControllerRequest::ReadEditorFrontier => out[82] = 16,
+        ControllerRequest::HoldEditorAdmission(token) => {
+            out[74..82].copy_from_slice(&token.get().to_le_bytes());
+            out[82] = HOLD_EDITOR_ADMISSION_KIND;
+        }
+        ControllerRequest::ReleaseEditorAdmission(token) => {
+            out[74..82].copy_from_slice(&token.get().to_le_bytes());
+            out[82] = RELEASE_EDITOR_ADMISSION_KIND;
+        }
         // New kinds prevent a pre-placement helper from closing the old
         // window and returning a positionless legacy acknowledgement.
         ControllerRequest::DetachEditor => out[82] = 11,
+        ControllerRequest::DetachEditorWhenIdle => out[82] = 14,
         ControllerRequest::ReopenEditor(position) => {
             out[82] = 12;
             if let Some(position) = position {
@@ -327,6 +396,46 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::Pending);
     }
+    if request == ControllerRequest::SealEditorEdits {
+        if status != 5 {
+            return Err(Error::Protocol("missing editor seal acknowledgement"));
+        }
+        let result = match reader.byte()? {
+            0 => EditorSealState::NotSealed,
+            1 => EditorSealState::Sealed,
+            _ => return Err(Error::Protocol("invalid editor seal acknowledgement")),
+        };
+        reader.end()?;
+        return Ok(ParameterPageProgress::EditorSeal(result));
+    }
+    if request == ControllerRequest::ReadEditorFrontier {
+        if status != 6 {
+            return Err(Error::Protocol("missing editor admission sequence"));
+        }
+        let frontier = u64::from_le_bytes(reader.array()?);
+        reader.end()?;
+        return Ok(ParameterPageProgress::EditorFrontier(frontier));
+    }
+    if let Some((kind, token)) = request.editor_admission_command() {
+        if status != 7
+            || reader.byte()? != kind
+            || u64::from_le_bytes(reader.array()?) != token.get()
+        {
+            return Err(Error::Protocol("editor admission acknowledgement differs"));
+        }
+        let observed = match reader.byte()? {
+            0 => EditorAdmissionState::Refused,
+            1 if matches!(request, ControllerRequest::HoldEditorAdmission(_)) => {
+                EditorAdmissionState::Held {
+                    admitted_through: u64::from_le_bytes(reader.array()?),
+                }
+            }
+            1 => EditorAdmissionState::Released,
+            _ => return Err(Error::Protocol("invalid editor admission acknowledgement")),
+        };
+        reader.end()?;
+        return Ok(ParameterPageProgress::EditorAdmission(observed));
+    }
     let query = match request {
         ControllerRequest::Parameters(query) => Some(query),
         ControllerRequest::SelectedParameters { first } => Some(ParameterPageQuery {
@@ -336,7 +445,13 @@ pub fn parameter_page(
         }),
         ControllerRequest::ToggleEditor
         | ControllerRequest::CloseEditor
+        | ControllerRequest::EditorVisibility
+        | ControllerRequest::SealEditorEdits
+        | ControllerRequest::ReadEditorFrontier
+        | ControllerRequest::HoldEditorAdmission(_)
+        | ControllerRequest::ReleaseEditorAdmission(_)
         | ControllerRequest::DetachEditor
+        | ControllerRequest::DetachEditorWhenIdle
         | ControllerRequest::ReopenEditor(_) => None,
     };
     let Some(query) = query else {
@@ -347,18 +462,29 @@ pub fn parameter_page(
             0 => PluginEditorState::Closed,
             1 => PluginEditorState::Open,
             2 => PluginEditorState::Unavailable,
-            3 if request == ControllerRequest::DetachEditor => {
+            3 if matches!(
+                request,
+                ControllerRequest::DetachEditor | ControllerRequest::DetachEditorWhenIdle
+            ) =>
+            {
                 let x = f64::from_le_bytes(reader.array()?);
                 let y = f64::from_le_bytes(reader.array()?);
                 let position = PluginEditorPosition::new(x, y)
                     .ok_or(Error::Protocol("invalid native editor placement"))?;
                 PluginEditorState::Detached(position)
             }
+            4 if request == ControllerRequest::DetachEditorWhenIdle => {
+                PluginEditorState::GestureActive
+            }
             _ => return Err(Error::Protocol("invalid native editor state")),
         };
         let valid = match request {
             ControllerRequest::CloseEditor => state == PluginEditorState::Closed,
+            ControllerRequest::EditorVisibility => {
+                matches!(state, PluginEditorState::Open | PluginEditorState::Closed)
+            }
             ControllerRequest::DetachEditor => state != PluginEditorState::Unavailable,
+            ControllerRequest::DetachEditorWhenIdle => state != PluginEditorState::Unavailable,
             ControllerRequest::ReopenEditor(_) => state != PluginEditorState::Closed,
             _ => true,
         };

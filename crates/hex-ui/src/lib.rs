@@ -32,7 +32,10 @@ mod editor;
 mod editor_backend;
 #[cfg(feature = "ui-test-support")]
 mod test_wait;
-pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
+pub use editor_backend::{
+    EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState,
+    PluginEditorRetirementIssue,
+};
 mod layout;
 mod log_viewer;
 mod section_appearance;
@@ -125,6 +128,19 @@ pub fn exercise_midi_receipt_pressure(
     render: impl FnMut(&mut [[f32; 2]], &mut [f32]) -> Result<(), hex_engine::Invalid>,
 ) {
     editor::midi_pressure_fixture(cx, root, reservation, output, render)
+}
+
+/// Exercise the real recorder header with native text shaping and a private fixture root.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_sample_recorder_layout(cx: &mut gpui::TestAppContext, root: std::path::PathBuf) {
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    editor::sample_recorder_layout_fixture(cx, root);
+}
+
+/// Exercise real rendered Operator focus and verify that traversal leaves the project intact.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_operator_focus(cx: &mut gpui::TestAppContext) {
+    editor::operator_focus_fixture(cx);
 }
 
 /// Read-only browser insertion evidence. Neither the view nor this query owns

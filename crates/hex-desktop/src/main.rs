@@ -21,6 +21,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 mod audio_policy;
+mod granular_sources;
 mod native_audio;
 mod native_sources;
 mod startup_failure;

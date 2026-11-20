@@ -390,3 +390,103 @@ fn operator_filter_does_not_import_an_active_analytic_enable_continuation() {
     assert_eq!(active.performance_frame(), before);
     assert!(active.mutable_instruments[0].is_none());
 }
+
+#[test]
+fn note_chase_off_imports_only_the_admitted_analytic_voice() {
+    let run = |keep_historical: bool| {
+        let mut snapshot = fixture_duration(1 << 30).snapshot();
+        let id = snapshot.next_id;
+        snapshot.next_id += 1;
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Instrument(clips)
+            | TrackContentSnapshot::Hybrid {
+                midi_clips: clips, ..
+            } => clips,
+            TrackContentSnapshot::Audio(_) => panic!("midi fixture"),
+        };
+        clips[0].notes.push(MidiNoteSnapshot {
+            active: true,
+            id,
+            start_raw: 1 << 27,
+            duration_raw: 1 << 29,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        });
+        if !keep_historical {
+            clips[0].notes.remove(0);
+        }
+        let source = Project::from_snapshot(snapshot).unwrap();
+        let table = Arc::new(hex_devices::SineTable::new());
+        let mut old = SessionPlayback::new(revision(&source, Arc::clone(&table))).unwrap();
+        old.play_from_with_note_chase(750, crate::NoteChase::Off)
+            .unwrap();
+        old.render(&mut [[0.0; 2]; 17]).unwrap();
+        let custom = enable(&source);
+        let prepared = Arc::new(
+            PreparedRevision::prepare(
+                &custom,
+                &BTreeMap::new(),
+                table,
+                Some(old.revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut next = SessionPlayback::new(prepared).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(
+            next.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .count(),
+            1
+        );
+        render_checkpoint_partitioned(&mut next, &[1, 7, 64], 128)
+    };
+    let expected = run(false);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    assert_eq!(run(true), expected);
+}
+
+#[test]
+fn selected_session_off_imports_only_the_admitted_boundary_voice() {
+    let run = |oracle| {
+        let source = super::session_note_chase::with_window(&fixture_duration(1 << 30), oracle);
+        let table = Arc::new(hex_devices::SineTable::new());
+        let original = revision(&source, Arc::clone(&table));
+        assert!(
+            !original.session().midi_clips()[0]
+                .instrument_template()
+                .is_event_source(),
+            "the donor must use the analytic class"
+        );
+        let mut old = super::session_note_chase::start(Arc::clone(&original));
+        let prefix = super::session_note_chase::render(&mut old, 16);
+        assert!(prefix.iter().flatten().any(|s| *s != 0.0));
+        let changed = enable(&source);
+        let candidate = Arc::new(
+            PreparedRevision::prepare(&changed, &BTreeMap::new(), table, Some(original.session()))
+                .unwrap(),
+        );
+        assert!(
+            candidate.session().midi_clips()[0]
+                .instrument_template()
+                .is_event_source(),
+            "the receiver must exercise mutable import"
+        );
+        let mut next = Playback::try_from_prepared_with_session(candidate).unwrap();
+        next.try_inherit_runtime_from(&mut old).unwrap();
+        super::session_note_chase::render(&mut next, 128)
+    };
+    let expected = run(true);
+    assert!(
+        expected.iter().flatten().any(|s| *s != 0.0),
+        "the real boundary gate must import and remain audible"
+    );
+    assert_eq!(
+        run(false),
+        expected,
+        "import must not reconstruct the skipped clipped intro"
+    );
+}

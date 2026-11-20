@@ -11,6 +11,7 @@ fn chain(view: &EditorView, owner: DevicePanelOwner) -> Vec<DeviceId> {
             .find(|track| track.id() == owner)
             .expect("return")
             .devices(),
+        DevicePanelOwner::Source(_) => panic!("source view has no reorder chain"),
     }
     .iter()
     .map(|device| device.id())
@@ -31,6 +32,7 @@ pub(super) fn drag_title(
         DevicePanelOwner::Main => "main-device-drop-card",
         DevicePanelOwner::Track(_) => "device-drop-card",
         DevicePanelOwner::Return(_) => "return-device-drop-card",
+        DevicePanelOwner::Source(_) => panic!("source view has no reorder card"),
     };
     let target_selector = Box::leak(format!("{prefix}-{}", target.value()).into_boxed_str());
     let title = visual
@@ -198,6 +200,7 @@ fn plain_drag_reorders_the_whole_selection_in_each_chain(cx: &mut TestAppContext
                     before: None,
                     state: state_for_effect(),
                 },
+                DevicePanelOwner::Source(_) => panic!("source view does not insert devices"),
             };
             service.submit(Request::Edit(command)).unwrap();
             state = receive_service_event(&service).state;
@@ -213,6 +216,7 @@ fn plain_drag_reorders_the_whole_selection_in_each_chain(cx: &mut TestAppContext
                     view.device_panel.main_selected = Some(view.project_generation)
                 }
                 DevicePanelOwner::Return(id) => view.focused_return = Some(id),
+                DevicePanelOwner::Source(_) => panic!("source view is not a reorder owner"),
             }
             cx.notify();
         });

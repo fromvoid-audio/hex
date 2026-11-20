@@ -121,6 +121,7 @@ fn fixture(release_frames: u64) -> (hex_project::Project, [Arc<PreparedRevision>
     let revisions = [1, 2, 3].map(|epoch| {
         let effect = BorrowedDefinition {
             binding_epoch: Some(epoch),
+            unbounded_tail: false,
             instances: vec![(
                 ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, main.value()).unwrap(),
                 3,

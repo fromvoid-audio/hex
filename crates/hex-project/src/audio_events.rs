@@ -808,11 +808,10 @@ pub(crate) fn apply(
         )?;
     }
     Arc::make_mut(&mut edit.domain).events = Some(Arc::new(next));
-    let asset = project
-        .asset(original.asset())
-        .ok_or(Invalid("audio event source missing"))?;
-    edit.validate(original, project.tempo_map(), asset.playback_frames())?;
-    project.clip_mut(clip)?.edit = Some(Arc::new(edit));
+    let mut candidate = original.clone();
+    candidate.edit = Some(Arc::new(edit));
+    crate::audio_edit::validate_clip(project, &candidate)?;
+    *project.clip_mut(clip)? = candidate;
     Ok(())
 }
 

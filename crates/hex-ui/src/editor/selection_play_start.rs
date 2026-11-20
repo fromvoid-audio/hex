@@ -221,12 +221,15 @@ mod tests {
                 "old Main ownership cannot select reused section IDs"
             );
             view.device_panel.main_selected = Some(view.project_generation);
-            view.install_drop_cursor(super::super::edit_cursor::DropCursor {
-                track,
-                frame: 48_000,
-                generation: view.project_generation,
-                epoch: view.selection_intent_epoch.unwrap(),
-            });
+            view.install_drop_cursor(
+                super::super::edit_cursor::DropCursor {
+                    track,
+                    frame: 48_000,
+                    generation: view.project_generation,
+                    epoch: view.selection_intent_epoch.unwrap(),
+                },
+                None,
+            );
             assert_eq!(view.playback_start_frame(), 48_000);
             assert_eq!(view.sections.selected_ids().len(), 2);
             view.advance_selection_intent();

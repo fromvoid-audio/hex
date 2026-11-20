@@ -118,9 +118,18 @@ pub(super) fn live_tracks_with_notes(
     count: usize,
     notes: u8,
 ) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
-    use hex_session::service::{Request, Service};
+    let service = hex_session::service::Service::new(48000, 32, 8000000).unwrap();
+    live_tracks_on_service(cx, count, notes, service)
+}
+
+pub(super) fn live_tracks_on_service(
+    cx: &mut TestAppContext,
+    count: usize,
+    notes: u8,
+    service: hex_session::service::Service,
+) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
+    use hex_session::service::Request;
     cx.update(super::bind_editor_keys);
-    let service = Service::new(48000, 32, 8000000).unwrap();
     let mut state = next(&service).state;
     for i in 0..count {
         service

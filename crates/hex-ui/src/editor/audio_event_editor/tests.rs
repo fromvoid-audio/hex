@@ -1905,6 +1905,21 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
     let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let painted_span = |visual: &mut VisualTestContext| {
+        let bounds = visual.debug_bounds("audio-event-waveform-1").unwrap();
+        editor.read_with(visual, |view, _| {
+            let cache = view.clip_waveform_geometry_cache.borrow();
+            let paint = cache
+                .painted_waveforms()
+                .iter()
+                .rev()
+                .find(|paint| paint.bounds == bounds)
+                .expect("completed event waveform paint");
+            let (top, bottom) = paint.ordinates[0];
+            bottom - top
+        })
+    };
+    let original_span = painted_span(&mut visual);
     let handle = visual
         .debug_bounds("audio-event-gain-1")
         .expect("event gain handle");
@@ -1929,6 +1944,8 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
         },
     );
     visual.run_until_parked();
+    let held_span = painted_span(&mut visual);
+    assert!(held_span > 0.0 && held_span < original_span * 0.9);
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.audio_event_editor.gesture.as_ref().and_then(|g| g.operation.as_ref()), Some(AudioEventEdit::SetGain { event: 1, gain }) if gain.millidb() == -2100));
     });
@@ -1942,6 +1959,7 @@ fn event_gain_drag_keeps_preview_until_receipt(cx: &mut TestAppContext) {
     );
     visual.run_until_parked();
     visual.run_until_parked();
+    assert!((painted_span(&mut visual) - held_span).abs() < 0.01);
     editor.read_with(cx, |view, _| {
         let pending = view.audio_event_editor.pending.as_ref().expect("pending event gain");
         assert!(matches!(pending.operation, AudioEventEdit::SetGain { event: 1, gain } if gain.millidb() == -2100));
@@ -2043,4 +2061,67 @@ fn middle_drag_pans_source_and_releases_on_view_change(cx: &mut TestAppContext) 
         assert!(view.audio_event_editor.pan.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.1);
     });
+}
+
+#[gpui::test]
+fn event_fade_shading_survives_idle_selection_and_viewport_repaints(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    hex_project::AudioEventFade::new(
+                        0,
+                        hex_project::ClipFade::new(96_000, 0, 48_000, 24_000).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            },
+        })
+        .unwrap();
+    let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        model.project().clone(),
+        std::sync::Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    let shade: gpui::Background = gpui::rgba(crate::theme::CLIP_FADE_SHADE).into();
+    for start in [0, 12_000] {
+        for selected in [true, false] {
+            editor.update(&mut visual, |v, cx| {
+                v.selected_track = Some(track);
+                v.selected_clip = Some(clip);
+                v.clip_view_open = true;
+                v.device_panel_active = false;
+                v.audio_event_editor.source_view = false;
+                v.sync_audio_navigation();
+                v.audio_event_editor.selected = selected.then_some(1);
+                v.audio_event_editor.fade_hover = None;
+                v.audio_event_editor.fade_key_held = false;
+                v.audio_event_editor.viewport = Some(Viewport {
+                    start,
+                    length: 48_000,
+                });
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let paths = visual.rendered_path_triangles("audio-event-fade-shade-1");
+            editor.read_with(&visual, |view, _| {
+                let (_, root, _) = view.event_context().unwrap();
+                assert_eq!(view.event_frame_window(&root).start, i128::from(start));
+            });
+            assert!(
+                visual.debug_bounds("audio-event-fade-shade-1").is_some(),
+                "missing event fade shade at start={start}, selected={selected}"
+            );
+            assert!(
+                start != 0 || paths.iter().any(|path| path.color == shade),
+                "event fade shade missing at start={start}, selected={selected}"
+            );
+        }
+    }
 }

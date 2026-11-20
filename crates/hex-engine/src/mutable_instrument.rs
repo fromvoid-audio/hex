@@ -87,6 +87,23 @@ pub(crate) struct MutableNoteOnset {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    /// An explicitly admitted source-bound onset requiring a 5 ms fade-in.
+    pub(crate) contributor_fade_in: bool,
+}
+
+/// A bounded 5 ms fade for a source-owned onset, derived from its project rate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContributorFadeIn(std::num::NonZeroU16);
+impl ContributorFadeIn {
+    pub(crate) fn new(sample_rate: u32) -> Option<Self> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return None;
+        }
+        std::num::NonZeroU16::new(u16::try_from(sample_rate.div_ceil(200)).ok()?).map(Self)
+    }
+    fn frames(self) -> u64 {
+        u64::from(self.0.get())
+    }
 }
 
 /// Owned proof that this exact authored occurrence was dispatched by a
@@ -187,6 +204,7 @@ impl ContributorFade {
 pub(crate) struct MutableOnsetBuffer {
     spans: [Option<MutableNoteOnset>; MAX_MUTABLE_SPANS_PER_QUERY],
     len: usize,
+    has_contributor_fade_in: bool,
 }
 
 impl Default for MutableOnsetBuffer {
@@ -194,17 +212,23 @@ impl Default for MutableOnsetBuffer {
         Self {
             spans: [None; MAX_MUTABLE_SPANS_PER_QUERY],
             len: 0,
+            has_contributor_fade_in: false,
         }
     }
 }
 
 impl MutableOnsetBuffer {
     pub(crate) fn candidate_storage_empty(&self) -> bool {
-        let Self { spans, len } = self;
-        *len == 0 && spans.iter().all(Option::is_none)
+        let Self {
+            spans,
+            len,
+            has_contributor_fade_in,
+        } = self;
+        *len == 0 && !has_contributor_fade_in && spans.iter().all(Option::is_none)
     }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
+        self.has_contributor_fade_in = false;
     }
 
     pub(crate) fn push(&mut self, onset: MutableNoteOnset) -> Result<(), ()> {
@@ -213,6 +237,7 @@ impl MutableOnsetBuffer {
         };
         *slot = Some(onset);
         self.len += 1;
+        self.has_contributor_fade_in |= onset.contributor_fade_in;
         Ok(())
     }
 
@@ -259,6 +284,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    sample_rate: u32,
     frozen_parameters: frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
     output_trim: Option<output_trim::OutputTrim>,
@@ -269,6 +295,7 @@ pub(crate) struct MutableInstrumentTrackRuntime {
     scratch: Vec<MutableOccurrence>,
     next_id: u64,
     next_id_scratch: u64,
+    retained_at_latency_cut: Option<u64>,
     live: Option<Box<live::LiveLedger>>,
 }
 
@@ -278,6 +305,143 @@ pub(crate) struct MutableInstrumentTail {
     pub(crate) track_id: TrackId,
     pub(crate) runtime: MutableInstrumentTrackRuntime,
     pub(crate) sends: DetachedSourceSends,
+    power_off: Option<PowerOffFade>,
+}
+
+struct PowerOffFade {
+    frames: u32,
+    remaining: u32,
+    scratch: u32,
+    receiver_gain: Option<f32>,
+}
+
+impl MutableInstrumentTail {
+    pub(crate) fn new(
+        track_id: TrackId,
+        mut runtime: MutableInstrumentTrackRuntime,
+        sends: DetachedSourceSends,
+        power_off_rate: Option<u32>,
+    ) -> Self {
+        let power_off = power_off_rate.map(|rate| {
+            // Keep already-applied expression inside the kernel. This tail
+            // no longer accepts new controller events.
+            runtime.expression = None;
+            let frames = rate.div_ceil(200).max(1);
+            PowerOffFade {
+                frames,
+                remaining: frames,
+                scratch: frames,
+                receiver_gain: None,
+            }
+        });
+        Self {
+            track_id,
+            runtime,
+            sends,
+            power_off,
+        }
+    }
+
+    pub(crate) fn with_power_off_receiver(mut self, gain: f32) -> Self {
+        if let Some(fade) = &mut self.power_off {
+            fade.receiver_gain = Some(gain);
+        }
+        self
+    }
+
+    pub(crate) fn powers_off_through_receiver(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.receiver_gain.is_some())
+    }
+
+    pub(crate) fn is_powering_off(&self) -> bool {
+        self.power_off.is_some()
+    }
+
+    pub(crate) fn committed_is_quiescent(&self) -> bool {
+        self.power_expired() || self.runtime.committed_is_quiescent()
+    }
+
+    pub(crate) fn speculative_is_quiescent(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.scratch == 0)
+            || self.runtime.speculative_is_quiescent()
+    }
+
+    fn power_expired(&self) -> bool {
+        self.power_off
+            .as_ref()
+            .is_some_and(|fade| fade.remaining == 0)
+    }
+
+    pub(crate) fn begin_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.begin_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.scratch = fade.remaining;
+        }
+    }
+
+    pub(crate) fn commit_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.commit_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.remaining = fade.scratch;
+        }
+    }
+
+    pub(crate) fn rollback_block(&mut self) {
+        if self.power_expired() {
+            return;
+        }
+        self.runtime.rollback_block();
+        if let Some(fade) = &mut self.power_off {
+            fade.scratch = fade.remaining;
+        }
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if let Some(fade) = &mut self.power_off {
+            fade.remaining = 0;
+            fade.scratch = 0;
+        } else {
+            self.runtime.reset();
+        }
+    }
+
+    /// Render only the departing instrument's contribution. A block that
+    /// straddles the deadline processes no samples beyond it.
+    pub(crate) fn render_source<E>(
+        &mut self,
+        output: &mut [[f32; 2]],
+        over_budget: E,
+        render: impl FnOnce(&mut MutableInstrumentTrackRuntime, &mut [[f32; 2]]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(fade) = &mut self.power_off else {
+            return render(&mut self.runtime, output);
+        };
+        let width = output.len().min(fade.scratch as usize);
+        if width == 0 {
+            return Ok(());
+        }
+        output_trim::render_contribution(
+            &mut output[..width],
+            |offset| {
+                let fade_gain = (fade.scratch - offset as u32) as f32 / fade.frames as f32;
+                fade_gain * fade.receiver_gain.unwrap_or(1.0)
+            },
+            over_budget,
+            |contribution| render(&mut self.runtime, contribution),
+        )?;
+        fade.scratch -= width as u32;
+        Ok(())
+    }
 }
 
 /// Post-fader Return destinations for one detached source release. Stable
@@ -310,6 +474,49 @@ impl DetachedSourceSends {
 }
 
 impl MutableInstrumentTrackRuntime {
+    /// Resource, live and parameter owners must not need to interleave with
+    /// this track's isolated dry rendering.
+    pub(crate) fn can_batch_isolated_window(&self, frames: u64) -> bool {
+        let last_offset = frames.saturating_sub(1);
+        let live_idle = self.live.as_ref().is_none_or(|live| {
+            live.pending_len == 0
+                && live.scratch.iter().all(Option::is_none)
+                && live
+                    .scratch_age
+                    .checked_add(last_offset)
+                    .and_then(|age| age.checked_add(self.max_release_tail_frames()))
+                    .is_some()
+        });
+        live_idle
+            && self.resources.is_none()
+            && self.expression.is_none()
+            && self.modulation.is_none()
+            && self.output_trim.is_none()
+            && !self.has_volume_gain()
+    }
+
+    /// Advance up to the next pending gate or proof retirement. A gate already
+    /// due renders on its own frame; an already quiet proof retires at entry.
+    pub(crate) fn isolated_segment_width(&self, performance: u64, max_frames: usize) -> usize {
+        let source_age = self.live.as_ref().map(|live| live.scratch_age);
+        let mut width = max_frames as u64;
+        for voice in &self.scratch {
+            let until_boundary = if voice.note_off_sent {
+                let (start, quiet) = source_age
+                    .zip(voice.quiet_deadline_age)
+                    .unwrap_or((performance, voice.quiet_deadline_frame));
+                if quiet <= start {
+                    continue;
+                }
+                quiet - start
+            } else {
+                voice.gate_end_frame.saturating_sub(performance)
+            };
+            width = width.min(until_boundary);
+        }
+        width.max(1) as usize
+    }
+
     pub(crate) fn is_concrete_current_sampler(&self) -> bool {
         self.resources.is_none()
             && self.expression.is_none()
@@ -327,6 +534,7 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
+            sample_rate: _,
             frozen_parameters,
             modulation,
             output_trim,
@@ -337,6 +545,7 @@ impl MutableInstrumentTrackRuntime {
             scratch,
             next_id: _,
             next_id_scratch: _,
+            retained_at_latency_cut: _,
             live,
         } = self;
         if live.is_some() {
@@ -439,6 +648,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            sample_rate,
             frozen_parameters,
             modulation: None,
             output_trim: None,
@@ -449,6 +659,7 @@ impl MutableInstrumentTrackRuntime {
             scratch,
             next_id: 0,
             next_id_scratch: 0,
+            retained_at_latency_cut: None,
             live: None,
         })
     }
@@ -603,12 +814,12 @@ impl MutableInstrumentTrackRuntime {
             || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || (previous.live.is_some() && self.live.is_none())
-            || !self.pair.can_inherit_from(&previous.pair)
         {
             return Err(MutableInstrumentRuntimeError::Runtime(
                 NativeInstrumentRuntimeError::IncompatibleHistory,
             ));
         }
+        // The pair validates both twins before it copies either history.
         self.pair
             .inherit_from(&previous.pair)
             .map_err(map_runtime_error)?;
@@ -620,6 +831,7 @@ impl MutableInstrumentTrackRuntime {
         self.expression = previous
             .expression
             .filter(|_| self.supports_live_expression());
+        self.retained_at_latency_cut = previous.retained_at_latency_cut;
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
         if let Some((next, old)) = self.live.as_mut().zip(previous.live.as_ref()) {
@@ -632,6 +844,22 @@ impl MutableInstrumentTrackRuntime {
             next.pending_len = 0;
         }
         Ok(())
+    }
+
+    /// Copy a continuously clocked generator, including its gate deadlines.
+    /// It has already processed the prefix that a fresh runtime would chase.
+    pub(crate) fn inherit_at_latency_cut(
+        &mut self,
+        previous: &Self,
+        frame: u64,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.inherit_from(previous)?;
+        self.retained_at_latency_cut = Some(frame);
+        Ok(())
+    }
+
+    pub(crate) fn retained_at_latency_cut(&self, frame: u64) -> bool {
+        self.retained_at_latency_cut == Some(frame)
     }
 
     /// Runtime history may carry only the same physical original-source bindings.
@@ -819,6 +1047,26 @@ impl MutableInstrumentTrackRuntime {
         });
     }
 
+    pub(crate) fn can_admit_contributor_chase(&self) -> bool {
+        self.can_admit_contributor_chases(1)
+    }
+
+    pub(crate) fn can_admit_contributor_chases(&self, additional: usize) -> bool {
+        self.is_source_owner()
+            && self.pair.supports_occurrence_gain()
+            && self
+                .primary
+                .len()
+                .checked_add(self.transition_live_count(false))
+                .and_then(|used| used.checked_add(additional))
+                .is_some_and(|needed| {
+                    needed
+                        <= self
+                            .max_active_occurrences()
+                            .min(MAX_MUTABLE_OCCURRENCE_PROOFS)
+                })
+    }
+
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
@@ -1002,6 +1250,7 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
             || self.live.as_ref().is_some_and(|live| {
                 live.scratch
                     .iter()
@@ -1057,6 +1306,7 @@ impl MutableInstrumentTrackRuntime {
             .scratch
             .iter()
             .any(|proof| proof.contributor_fade.is_some())
+            || onsets.has_contributor_fade_in
             || self.live.as_ref().is_some_and(|live| {
                 live.scratch
                     .iter()
@@ -1133,6 +1383,10 @@ impl MutableInstrumentTrackRuntime {
             source_start,
             width,
             source_age,
+            contributor_fade_rate: self
+                .pair
+                .supports_occurrence_gain()
+                .then_some(self.sample_rate),
             tail_frames: self.max_release_tail_frames(),
             max_active: self.max_active_occurrences(),
             steals_releasing: self.steals_releasing_voices(),
@@ -1298,6 +1552,7 @@ impl MutableInstrumentTrackRuntime {
         self.scratch.clear();
         self.next_id = 0;
         self.next_id_scratch = 0;
+        self.retained_at_latency_cut = None;
         if let Some(live) = &mut self.live {
             **live = Default::default();
         }

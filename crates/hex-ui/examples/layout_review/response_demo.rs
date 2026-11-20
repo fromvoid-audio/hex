@@ -18,6 +18,7 @@ impl ResponseDemo {
     pub fn new() -> Self {
         Self {
             model: model(vec![ResponseGraphNode {
+                accent: None,
                 id: 1,
                 position: [0.5, 0.7],
                 enabled: true,
@@ -56,6 +57,7 @@ impl ResponseDemo {
                     node.selected = false;
                 }
                 self.model.nodes.push(ResponseGraphNode {
+                    accent: None,
                     id,
                     position: event.position,
                     enabled: true,

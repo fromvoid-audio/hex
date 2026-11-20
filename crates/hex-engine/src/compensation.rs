@@ -6,7 +6,7 @@
 //! fixed buffers, and commit/rollback copy the circular intervals actually touched.
 
 use crate::Frame;
-use std::{fmt, mem::size_of};
+use std::{fmt, mem::size_of, num::NonZeroU64};
 
 mod block_origins;
 pub(crate) use block_origins::OriginWindow;
@@ -121,6 +121,9 @@ fn requested_ring_bytes<T>(capacity: usize) -> Result<usize, CompensationError> 
 /// Beat preserves exact Q32.32 quarter-note ticks; no project or runtime owner is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportStamp {
+    /// Arrangement frame-coordinate identity when this content entered the
+    /// graph. History copies keep it with the exact original PCM and timing.
+    pub authored_clock_epoch: Option<NonZeroU64>,
     /// Local source tempo; stays aligned with the same delayed content stamp.
     pub tempo_micro_bpm: Option<u32>,
     /// Exact source performance-frame identity, independent of loop position.
@@ -308,6 +311,24 @@ impl CompensationRuntime {
         self.stamps.at_delay(delay_frames as usize).flatten()
     }
 
+    pub(crate) fn stamp_at_delay_ref(&self, delay_frames: u32) -> Option<&TransportStamp> {
+        self.stamps.at_delay_ref(delay_frames as usize)?.as_ref()
+    }
+
+    /// Oldest already-staged frame the input can still see after a compatible
+    /// handoff. At the next render one new stamp is pushed before this read.
+    pub(crate) fn oldest_pending_stage_clock(&self, input_delay: u32) -> Option<NonZeroU64> {
+        let index = self
+            .stamps
+            .valid_len()
+            .min(input_delay as usize)
+            .checked_sub(1)?;
+        self.stamps
+            .at_delay_ref(index)?
+            .as_ref()?
+            .authored_clock_epoch
+    }
+
     /// Preview an upcoming stage's Arrangement frame before its stamp is pushed.
     /// The supplied incoming projection belongs to the same planned clock as
     /// the caller's eventual render. Historical stamps are read verbatim from
@@ -397,6 +418,11 @@ impl CompensationRuntime {
                 .edges
                 .get(index)
                 .is_some_and(DelayPair::history_is_silent)
+    }
+    /// True when no committed routing edge holds PCM. Transport stamps do not
+    /// affect signal quiescence. This visits only the bounded edge table.
+    pub(crate) fn pcm_history_is_silent(&self) -> bool {
+        self.is_closed() && self.edges.iter().all(DelayPair::history_is_silent)
     }
     pub(crate) fn can_copy_edge_history_from(
         &self,

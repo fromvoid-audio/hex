@@ -6,6 +6,10 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+mod overrange;
+mod retained_samples;
+pub use overrange::Overrange;
+
 #[cfg(test)]
 mod channel_tests;
 

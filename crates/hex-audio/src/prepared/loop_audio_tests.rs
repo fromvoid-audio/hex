@@ -5,6 +5,157 @@ use hex_project::{Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
 #[test]
+fn silent_audio_repeat_reaches_callback_without_allocations_or_frees() {
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: 1_024,
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    for operation in [
+        hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 3_000,
+        },
+        hex_project::AudioViewResizeOperation::CycleEnd {
+            project_frame: 1_200,
+        },
+    ] {
+        editor
+            .execute(Command::ResizeAudioClipView { clip, operation })
+            .unwrap();
+    }
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5, -0.25]; 1_024]).unwrap())]);
+    for block_size in [64, 127] {
+        let revision = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let (mut control, mut callback) = channel(RATE).unwrap();
+        control
+            .publish(Playback::try_from_prepared_with_session(revision).unwrap())
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = vec![[0.0; 2]; 3_000];
+        let allocations = allocation_counter::measure(|| {
+            for block in output.chunks_mut(block_size) {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for (frame, actual) in output.iter().enumerate() {
+            let expected = if frame % 1_200 < 1_024 {
+                [0.5, -0.25]
+            } else {
+                [0.0; 2]
+            };
+            assert_eq!(*actual, expected, "frame {frame}");
+        }
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+}
+
+#[test]
+fn silent_audio_repeat_edit_publishes_during_playback_without_allocations_or_frees() {
+    const RATE: u32 = 48_000;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: RATE,
+            frames: 1_024,
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 3_000,
+            },
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5, -0.25]; 1_024]).unwrap())]);
+    let table = Arc::new(SineTable::new());
+    let before = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+    );
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: hex_project::AudioViewResizeOperation::CycleEnd {
+                project_frame: 1_200,
+            },
+        })
+        .unwrap();
+    let after = Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
+    let (mut control, mut callback) = channel(RATE).unwrap();
+    control
+        .publish(Playback::try_from_prepared_with_session(before).unwrap())
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 128]).unwrap();
+    let revision = control
+        .publish(Playback::try_from_prepared_with_session(after).unwrap())
+        .unwrap();
+    let mut output = [[0.0; 2]; 1_800];
+    let allocations = allocation_counter::measure(|| {
+        for block in output.chunks_mut(127) {
+            callback.begin_block();
+            callback.render(block).unwrap();
+        }
+    });
+    assert_eq!(
+        (
+            allocations.count_total,
+            allocations.bytes_total,
+            allocations.count_current,
+            allocations.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    assert!(control.status.playing.load(Acquire));
+    for (offset, frame) in output.iter().enumerate().skip(256) {
+        let position = (128 + offset) % 1_200;
+        assert_eq!(
+            *frame,
+            if position < 1_024 {
+                [0.5, -0.25]
+            } else {
+                [0.0; 2]
+            },
+            "frame {}",
+            128 + offset
+        );
+    }
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
 fn loop_end_fades_without_callback_allocations() {
     const RATE: u32 = 48_000;
     const START: usize = 41;
@@ -220,8 +371,46 @@ fn edited_loop_with_a_source_effect_follows_the_running_cursor_without_allocatio
 }
 
 #[test]
-fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
+fn shared_source_utility_gain_and_mute_retarget_without_callback_allocations() {
+    for (mute, settled, prefix) in [
+        (false, false, None),
+        (true, false, None),
+        (true, true, None),
+        (true, false, Some(11)),
+        (true, true, Some(12)),
+    ] {
+        for partition in [1, 7, 64, 128, 257] {
+            source_utility_matrix_callback_retarget(mute, settled, partition, prefix, None);
+        }
+    }
+}
+
+#[test]
+fn shared_source_filtered_utility_mute_handoff_is_allocation_free() {
+    for filter in [11, 12] {
+        for settled in [false, true] {
+            for partition in [1, 7, 64, 128, 257] {
+                source_utility_matrix_callback_retarget(
+                    true,
+                    settled,
+                    partition,
+                    None,
+                    Some(filter),
+                );
+            }
+        }
+    }
+}
+
+fn source_utility_matrix_callback_retarget(
+    mute: bool,
+    settled: bool,
+    partition: usize,
+    prefix: Option<u32>,
+    filter: Option<u32>,
+) {
     use hex_project::BeatTime;
+    let target_gain = if mute { 0.0 } else { 2.0 };
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(receiver) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -246,14 +435,44 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         .unwrap()
         .instrument()
         .id();
+    if let Some(prefix) = prefix {
+        let initial = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &initial,
+            hex_lattice_contract::ParameterId::from_static(prefix),
+            hex_lattice_contract::ParameterValue::Bool(true),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+    }
+    let mut state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    if let Some(filter) = filter {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &state,
+            hex_lattice_contract::ParameterId::from_static(filter),
+            hex_lattice_contract::ParameterValue::Bool(true),
+        )
+        .unwrap();
+    }
     let Created::Device(effect) = editor
         .execute(Command::InsertNestedDevice {
             parent: instrument,
-            state: hex_engine::default_native_device_state_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                hex_engine::DeviceTypeId::from_static("hex.utility"),
-            )
-            .unwrap(),
+            state,
         })
         .unwrap()
     else {
@@ -314,12 +533,16 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
     callback.render(&mut prefix).unwrap();
     reference.begin_block();
     reference.render(&mut prefix).unwrap();
-    let gain = hex_lattice_contract::ParameterId::from_static(1);
+    let parameter = hex_lattice_contract::ParameterId::from_static(if mute { 8 } else { 1 });
     let state = hex_engine::patch_native_device_parameter_for_class(
         hex_engine::NativeDeviceClass::Effect,
         editor.project().device(effect).unwrap().state(),
-        gain,
-        hex_lattice_contract::ParameterValue::Float(2.0),
+        parameter,
+        if mute {
+            hex_lattice_contract::ParameterValue::Bool(true)
+        } else {
+            hex_lattice_contract::ParameterValue::Float(2.0)
+        },
     )
     .unwrap();
     editor
@@ -376,8 +599,10 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         .unwrap();
     let mut actual = [[0.0; 2]; 128];
     let counts = allocation_counter::measure(|| {
-        callback.begin_block();
-        callback.render(&mut actual).unwrap();
+        for chunk in actual.chunks_mut(partition) {
+            callback.begin_block();
+            callback.render(chunk).unwrap();
+        }
     });
     assert_eq!(
         (
@@ -390,19 +615,50 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
     );
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
     let mut baseline = [[0.0; 2]; 128];
-    reference.begin_block();
-    reference.render(&mut baseline).unwrap();
+    for chunk in baseline.chunks_mut(partition) {
+        reference.begin_block();
+        reference.render(chunk).unwrap();
+    }
     assert!(
         baseline.iter().flatten().any(|sample| sample.abs() > 1e-5),
         "source is silent"
     );
     for (i, (actual, old)) in actual.iter().zip(baseline).enumerate() {
-        let factor = 1.0 + (i + 1) as f32 / 240.0;
+        let factor = 1.0 + (target_gain - 1.0) * (i + 1) as f32 / 240.0;
         for channel in 0..2 {
             assert!(
                 (actual[channel] - factor * old[channel]).abs() < 1e-4,
                 "frame {i}"
             );
+        }
+    }
+    if settled {
+        let mut tail = [[0.0; 2]; 112];
+        let mut baseline = tail;
+        let counts = allocation_counter::measure(|| {
+            for chunk in tail.chunks_mut(partition) {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for chunk in baseline.chunks_mut(partition) {
+            reference.begin_block();
+            reference.render(chunk).unwrap();
+        }
+        for (i, (actual, old)) in tail.iter().zip(baseline).enumerate() {
+            let factor = 1.0 - (128 + i + 1) as f32 / 240.0;
+            for channel in 0..2 {
+                assert!((actual[channel] - factor * old[channel]).abs() < 1e-4);
+            }
         }
     }
     control.reclaim();
@@ -411,8 +667,10 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
         .unwrap();
     let counts = allocation_counter::measure(|| {
-        callback.begin_block();
-        callback.render(&mut actual).unwrap();
+        for chunk in actual.chunks_mut(partition) {
+            callback.begin_block();
+            callback.render(chunk).unwrap();
+        }
     });
     assert_eq!(
         (
@@ -424,9 +682,15 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
         (0, 0, 0, 0)
     );
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
-    reference.begin_block();
-    reference.render(&mut baseline).unwrap();
-    let start = 1.0 + 128.0 / 240.0;
+    for chunk in baseline.chunks_mut(partition) {
+        reference.begin_block();
+        reference.render(chunk).unwrap();
+    }
+    let start = if settled {
+        0.0
+    } else {
+        1.0 + (target_gain - 1.0) * 128.0 / 240.0
+    };
     for (i, (actual, old)) in actual.iter().zip(baseline).enumerate() {
         let factor = start + (1.0 - start) * (i + 1) as f32 / 240.0;
         for channel in 0..2 {
@@ -436,6 +700,34 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
             );
         }
     }
+    control.reclaim();
+    assert!(editor.redo());
+    let pending = control
+        .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+        .unwrap();
+    control.command(PlaybackCommand::Stop).unwrap();
+    let counts = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 256]).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert!(
+        control.status.applied_revision.load(Acquire) == pending
+            || control
+                .status
+                .rejected_revision()
+                .is_some_and(|rejected| rejected.0 == pending),
+        "pending publication must have a terminal when Stop wins"
+    );
     for (ctl, cb) in [
         (&mut control, &mut callback),
         (&mut reference_control, &mut reference),
@@ -447,10 +739,25 @@ fn shared_source_utility_gain_handoff_is_audible_and_allocation_free() {
 }
 
 #[test]
-fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations() {
+fn shared_source_utility_matrix_handoff_preserves_pcm_without_allocations() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::BeatTime;
-    for (dc, bass) in [(true, false), (false, true)] {
+    for (dc, bass, equivalent, polarity, channel_choice) in [
+        (true, false, false, None, None),
+        (false, true, false, None, None),
+        (false, false, true, None, None),
+        (true, false, true, None, None),
+        (false, true, true, None, None),
+        (false, false, false, Some(5), None),
+        (false, false, false, Some(6), None),
+        (true, false, false, Some(5), None),
+        (true, false, false, Some(6), None),
+        (false, true, false, Some(5), None),
+        (false, true, false, Some(6), None),
+        (false, false, false, None, Some(1)),
+        (true, false, false, None, Some(2)),
+        (false, true, false, None, Some(3)),
+    ] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(receiver) = editor
             .execute(Command::InsertTrackWithDevice {
@@ -475,19 +782,22 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
             .unwrap()
             .instrument()
             .id();
-        let state = hex_devices::utility::UTILITY_DEFINITION
-            .patch_parameter(
-                &hex_devices::utility::UTILITY_DEFINITION
-                    .default_state()
-                    .unwrap(),
-                if dc {
-                    hex_devices::utility::parameter::DC_REMOVE
-                } else {
-                    hex_devices::utility::parameter::BASS_MONO
-                },
-                ParameterValue::Bool(true),
-            )
+        let mut state = hex_devices::utility::UTILITY_DEFINITION
+            .default_state()
             .unwrap();
+        if dc || bass {
+            state = hex_devices::utility::UTILITY_DEFINITION
+                .patch_parameter(
+                    &state,
+                    if dc {
+                        hex_devices::utility::parameter::DC_REMOVE
+                    } else {
+                        hex_devices::utility::parameter::BASS_MONO
+                    },
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+        }
         let Created::Device(effect) = editor
             .execute(Command::InsertNestedDevice {
                 parent: instrument,
@@ -567,8 +877,22 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
         let state = hex_devices::utility::UTILITY_DEFINITION
             .patch_parameter(
                 editor.project().device(effect).unwrap().state(),
-                hex_devices::utility::parameter::GAIN,
-                ParameterValue::Float(2.0),
+                if channel_choice.is_some() {
+                    hex_devices::utility::parameter::CHANNEL
+                } else if let Some(polarity) = polarity {
+                    hex_lattice_contract::ParameterId::from_static(polarity)
+                } else if equivalent {
+                    hex_devices::utility::parameter::MID_SIDE_ENABLED
+                } else {
+                    hex_devices::utility::parameter::GAIN
+                },
+                if let Some(channel) = channel_choice {
+                    ParameterValue::Choice(channel)
+                } else if equivalent || polarity.is_some() {
+                    ParameterValue::Bool(true)
+                } else {
+                    ParameterValue::Float(2.0)
+                },
             )
             .unwrap();
         editor
@@ -608,7 +932,7 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
             for (a, b) in actual.iter().zip(expected) {
                 assert!(
                     (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5,
-                    "dc={dc} bass={bass} undo={undo}: {a:?} vs {b:?}"
+                    "dc={dc} bass={bass} equivalent={equivalent} undo={undo}: {a:?} vs {b:?}"
                 );
             }
             control.reclaim();
@@ -616,5 +940,979 @@ fn shared_source_utility_filter_gain_handoff_preserves_pcm_without_allocations()
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+}
+
+#[test]
+fn first_shared_source_utility_attachment_preserves_pcm_without_callback_allocations() {
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    use hex_project::BeatTime;
+    const LOCAL: [f32; 2] = [0.125, -0.25];
+    for partition in [1, 7, 64, 128, 257] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "local.wav".into(),
+                sample_rate: 48_000,
+                frames: 512,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::PlaceClip {
+                track: receiver,
+                asset,
+                start: 0,
+                duration: 512,
+                source_offset: 0,
+                source_length: 512,
+                looping: false,
+            })
+            .unwrap();
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![LOCAL; 512]).unwrap())]);
+        let table = Arc::new(SineTable::new());
+        let prepare = |editor: &Editor| {
+            Arc::new(
+                PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                    .unwrap(),
+            )
+        };
+        let original = prepare(&editor);
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (mut reference_control, mut reference) = channel(48_000).unwrap();
+        for ctl in [&mut control, &mut reference_control] {
+            ctl.publish(Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap())
+                .unwrap();
+            ctl.command(PlaybackCommand::Play).unwrap();
+        }
+        for cb in [&mut callback, &mut reference] {
+            cb.begin_block();
+            cb.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        let default = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &default,
+            ParameterId::from_static(1),
+            ParameterValue::Float(2.0),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+        let revision = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+            .unwrap();
+        let mut actual = [[0.0; 2]; 128];
+        let counts = allocation_counter::measure(|| {
+            for chunk in actual.chunks_mut(partition) {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        let mut baseline = [[0.0; 2]; 128];
+        for chunk in baseline.chunks_mut(partition) {
+            reference.begin_block();
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            baseline
+                .iter()
+                .any(|frame| (frame[0] - LOCAL[0]).abs() > 1e-5)
+        );
+        for (i, (actual, dry)) in actual.iter().zip(baseline).enumerate() {
+            for channel in 0..2 {
+                let expected = 2.0 * (dry[channel] - LOCAL[channel]) + LOCAL[channel];
+                assert!(
+                    (actual[channel] - expected).abs() < 1e-4,
+                    "partition={partition} frame={i} channel={channel} actual={} expected={expected}",
+                    actual[channel]
+                );
+            }
+        }
+        control.reclaim();
+        assert!(editor.undo());
+        let removed = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+            .unwrap();
+        let mut refused_audio = [[0.0; 2]; 64];
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut refused_audio).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            control
+                .status
+                .rejected_revision()
+                .map(|rejected| rejected.0),
+            Some(removed)
+        );
+        let mut dry_after = [[0.0; 2]; 64];
+        reference.begin_block();
+        reference.render(&mut dry_after).unwrap();
+        for (actual, dry) in refused_audio.iter().zip(dry_after) {
+            for channel in 0..2 {
+                let expected = 2.0 * (dry[channel] - LOCAL[channel]) + LOCAL[channel];
+                assert!((actual[channel] - expected).abs() < 1e-4);
+            }
+        }
+        control.command(PlaybackCommand::Stop).unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 256]).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(!control.status.playing.load(Acquire));
+        control.reclaim();
+        let removed_after_stop = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+            .unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 1]).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            removed_after_stop
+        );
+        for (ctl, cb) in [
+            (&mut control, &mut callback),
+            (&mut reference_control, &mut reference),
+        ] {
+            ctl.request_shutdown();
+            cb.begin_block();
+            ctl.reclaim();
+        }
+    }
+}
+
+#[test]
+fn appending_neutral_source_utility_preserves_audio_without_callback_allocations() {
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    use hex_project::BeatTime;
+    const LOCAL: [f32; 2] = [0.125, -0.25];
+    for partition in [1, 7, 64, 128, 257] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "local.wav".into(),
+                sample_rate: 48_000,
+                frames: 512,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::PlaceClip {
+                track: receiver,
+                asset,
+                start: 0,
+                duration: 512,
+                source_offset: 0,
+                source_length: 512,
+                looping: false,
+            })
+            .unwrap();
+        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![LOCAL; 512]).unwrap())]);
+        let table = Arc::new(SineTable::new());
+        let prepare = |editor: &Editor| {
+            Arc::new(
+                PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                    .unwrap(),
+            )
+        };
+        let first = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let first = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &first,
+            ParameterId::from_static(12),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+        let first = hex_engine::patch_native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            &first,
+            ParameterId::from_static(2),
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state: first,
+            })
+            .unwrap();
+        let original = prepare(&editor);
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (mut reference_control, mut reference) = channel(48_000).unwrap();
+        for ctl in [&mut control, &mut reference_control] {
+            ctl.publish(Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap())
+                .unwrap();
+            ctl.command(PlaybackCommand::Play).unwrap();
+        }
+        for cb in [&mut callback, &mut reference] {
+            cb.begin_block();
+            cb.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        let default = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.utility"),
+        )
+        .unwrap();
+        let state = default;
+        editor
+            .execute(Command::InsertNestedDevice {
+                parent: instrument,
+                state,
+            })
+            .unwrap();
+        let revision = control
+            .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+            .unwrap();
+        let mut actual = [[0.0; 2]; 128];
+        let counts = allocation_counter::measure(|| {
+            for chunk in actual.chunks_mut(partition) {
+                callback.begin_block();
+                callback.render(chunk).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        let mut baseline = [[0.0; 2]; 128];
+        for chunk in baseline.chunks_mut(partition) {
+            reference.begin_block();
+            reference.render(chunk).unwrap();
+        }
+        assert!(
+            baseline
+                .iter()
+                .any(|frame| (frame[0] - LOCAL[0]).abs() > 1e-5)
+        );
+        for (i, (actual, dry)) in actual.iter().zip(baseline).enumerate() {
+            for channel in 0..2 {
+                let expected = dry[channel];
+                assert!(
+                    (actual[channel] - expected).abs() < 1e-4,
+                    "partition={partition} frame={i} channel={channel} actual={} expected={expected}",
+                    actual[channel]
+                );
+            }
+        }
+        for (ctl, cb) in [
+            (&mut control, &mut callback),
+            (&mut reference_control, &mut reference),
+        ] {
+            ctl.request_shutdown();
+            cb.begin_block();
+            ctl.reclaim();
+        }
+    }
+}
+
+#[test]
+fn removing_utility_from_shared_chain_waits_for_stop_without_callback_allocations() {
+    use hex_lattice_contract::{ParameterId, ParameterValue};
+    use hex_project::BeatTime;
+    for (remove_first, append_third, reorder) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        for partition in [1, 7, 64, 128, 257] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(receiver) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "receiver".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            let source = editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .source_id()
+                .unwrap();
+            let instrument = editor
+                .project()
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .id();
+            let Created::Track(contributor) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "contributor".into(),
+                })
+                .unwrap()
+            else {
+                panic!("contributor")
+            };
+            editor
+                .execute(Command::BindTrackSource {
+                    track: contributor,
+                    source: Some(source),
+                })
+                .unwrap();
+            for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+                let Created::Clip(clip) = editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::ONE,
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .unwrap();
+            }
+            const LOCAL: [f32; 2] = [0.125, -0.25];
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: "local.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 512,
+                })
+                .unwrap()
+            else {
+                panic!("asset")
+            };
+            editor
+                .execute(Command::PlaceClip {
+                    track: receiver,
+                    asset,
+                    start: 0,
+                    duration: 512,
+                    source_offset: 0,
+                    source_length: 512,
+                    looping: false,
+                })
+                .unwrap();
+            let default = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap();
+            let filter = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                &default,
+                ParameterId::from_static(12),
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+            let filter = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                &filter,
+                ParameterId::from_static(2),
+                ParameterValue::Float(1.0),
+            )
+            .unwrap();
+            let Created::Device(first) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: filter,
+                })
+                .unwrap()
+            else {
+                panic!("first")
+            };
+            let last_state = if reorder {
+                hex_engine::patch_native_device_parameter_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    &default,
+                    ParameterId::from_static(7),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap()
+            } else {
+                default.clone()
+            };
+            let Created::Device(last) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: instrument,
+                    state: last_state,
+                })
+                .unwrap()
+            else {
+                panic!("last")
+            };
+            if append_third {
+                editor
+                    .execute(Command::InsertNestedDevice {
+                        parent: instrument,
+                        state: default,
+                    })
+                    .unwrap();
+            }
+            let media = BTreeMap::from([(asset, Audio::new(48_000, vec![LOCAL; 512]).unwrap())]);
+            let table = Arc::new(SineTable::new());
+            let prepare = |editor: &Editor| {
+                Arc::new(
+                    PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+                        .unwrap(),
+                )
+            };
+            let original = prepare(&editor);
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let (mut reference_control, mut reference) = channel(48_000).unwrap();
+            let mut active = 0;
+            for ctl in [&mut control, &mut reference_control] {
+                active = ctl
+                    .publish(
+                        Playback::try_from_prepared_with_session(Arc::clone(&original)).unwrap(),
+                    )
+                    .unwrap();
+                ctl.command(PlaybackCommand::Play).unwrap();
+            }
+            for cb in [&mut callback, &mut reference] {
+                cb.begin_block();
+                cb.render(&mut [[0.0; 2]; 64]).unwrap();
+            }
+            let edit = if reorder {
+                Command::MoveNativeSourceDevice {
+                    source,
+                    device: last,
+                    before: Some(first),
+                }
+            } else {
+                Command::RemoveDevice(if remove_first { first } else { last })
+            };
+            editor.execute(edit).unwrap();
+            let removed = control
+                .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+                .unwrap();
+            let mut actual = [[0.0; 2]; 128];
+            let counts = allocation_counter::measure(|| {
+                for chunk in actual.chunks_mut(partition) {
+                    callback.begin_block();
+                    callback.render(chunk).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), active);
+            assert_eq!(
+                control
+                    .status
+                    .rejected_revision()
+                    .map(|rejected| rejected.0),
+                Some(removed)
+            );
+            let mut expected = [[0.0; 2]; 128];
+            for chunk in expected.chunks_mut(partition) {
+                reference.begin_block();
+                reference.render(chunk).unwrap();
+            }
+            assert!(
+                expected
+                    .iter()
+                    .any(|frame| (frame[0] - LOCAL[0]).abs() > 1e-5)
+            );
+            assert_eq!(
+                actual, expected,
+                "first={remove_first} partition={partition}"
+            );
+            control.command(PlaybackCommand::Stop).unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut [[0.0; 2]; 256]).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(!control.status.playing.load(Acquire));
+            control.reclaim();
+            let stopped = control
+                .publish(Playback::try_from_prepared_with_session(prepare(&editor)).unwrap())
+                .unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut [[0.0; 2]; 1]).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), stopped);
+            for (ctl, cb) in [
+                (&mut control, &mut callback),
+                (&mut reference_control, &mut reference),
+            ] {
+                ctl.request_shutdown();
+                cb.begin_block();
+                ctl.reclaim();
+            }
+        }
+    }
+}
+
+#[test]
+fn live_track_audio_engine_render_has_no_allocations_or_frees() {
+    for compensated in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "input".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        if compensated {
+            let limiter = hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                hex_engine::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap();
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: limiter,
+                })
+                .unwrap();
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = hex_engine::SessionPlayback::new(revision).unwrap();
+        playback
+            .apply(hex_engine::SessionPlaybackCommand::Play)
+            .unwrap();
+        let mut output = [[0.0; 2]; 256];
+        let input = [[0.25, -0.5]; 256];
+        let mut result = Ok(());
+        let counts = allocation_counter::measure(|| {
+            result = playback.render_with_live_track_audio(
+                &mut output,
+                track,
+                &input,
+                None,
+                None,
+                None,
+                &mut hex_lattice::RefuseForeign,
+            );
+        });
+        result.unwrap();
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "compensated: {compensated}"
+        );
+    }
+}
+
+#[test]
+fn live_track_audio_playback_wrapper_has_no_allocations_or_frees() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let input = [[0.25, -0.5]; 512];
+    let mut output = [[0.0; 2]; 512];
+    let mut result = Ok(());
+    let counts = allocation_counter::measure(|| {
+        result = playback.render_with_live_track_audio(
+            &mut output,
+            track,
+            &input,
+            None,
+            None,
+            None,
+            &mut hex_lattice::RefuseForeign,
+        );
+    });
+    result.unwrap();
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+}
+
+/// Four authored event-faded kicks, repeated by the clip and wrapped by the
+/// Arrangement scope. The independent sample oracle separates the kick attack
+/// from any extra seam impulse; all sample/peak construction stays off callback.
+#[test]
+fn faded_kicks_keep_inner_and_scope_wrap_samples_without_allocations() {
+    use hex_project::{AudioEventEdit, AudioEventFade, AudioViewResizeOperation, ClipFade};
+    const RATE: u32 = 16_000;
+    const KICK: usize = 8_000;
+    const BAR: usize = 4 * KICK;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "original kick".into(),
+            path: "original-kick.wav".into(),
+            sample_rate: RATE,
+            frames: KICK as u64,
+        })
+        .unwrap()
+    else {
+        panic!("audio import")
+    };
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let fade = ClipFade::new(KICK as u64, 0, 32, 128).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(AudioEventFade::new(0, fade).unwrap()),
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::ScopeRange {
+                start: 0,
+                end: KICK as u64,
+                looping: true,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip,
+            operation: AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: BAR as u64,
+            },
+        })
+        .unwrap();
+    let samples: Vec<_> = (0..KICK)
+        .map(|i| {
+            let t = i as f32 / RATE as f32;
+            let x = (std::f32::consts::TAU * (70.0 * t + 30.0 * t * (-40.0 * t).exp())).cos()
+                * (-12.0 * t).exp()
+                * 0.7;
+            [x, -x * 0.5]
+        })
+        .collect();
+    // Endpoint zeros are authored fades, not an assumption about the transient.
+    assert!(samples[0][0] > 0.5);
+    let expected: Vec<_> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, f)| f.map(|s| s * fade.gain_at(i as u64)))
+        .collect();
+    assert_eq!(expected[0], [0.0; 2]);
+    assert_eq!(expected[KICK - 1], [0.0; 2]);
+    let media = BTreeMap::from([(asset, Audio::new(RATE, samples).unwrap())]);
+    for scope_bars in [1, 4] {
+        let end = BAR * scope_bars;
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: end as u64,
+                },
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 0,
+                end: end as u64,
+                enabled: true,
+            })
+            .unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        for block in [1, 127, 257, 512] {
+            let (mut control, mut callback) = channel(RATE).unwrap();
+            control
+                .publish(Playback::try_from_prepared_with_session(Arc::clone(&prepared)).unwrap())
+                .unwrap();
+            let first = if block == 1 { end - 64 } else { 0 };
+            control
+                .command(PlaybackCommand::PlayFrom(first as u64))
+                .unwrap();
+            let length = if block == 1 { 192 } else { end * 2 + KICK };
+            let mut output = vec![[0.0; 2]; length];
+            let counts = allocation_counter::measure(|| {
+                for chunk in output.chunks_mut(block) {
+                    callback.begin_block();
+                    callback.render(chunk).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            for (i, actual) in output.iter().enumerate() {
+                let i = first + i;
+                let at = i % end;
+                let remaining = end - at;
+                let seam_frames = 43; // round(16000 * 128 / 48000)
+                let gain = if remaining <= seam_frames {
+                    (remaining - 1) as f32 / (seam_frames - 1) as f32
+                } else {
+                    1.0
+                };
+                let oracle = expected[i % KICK].map(|s| s * gain);
+                assert!(
+                    (actual[0] - oracle[0]).abs() < 1e-6 && (actual[1] - oracle[1]).abs() < 1e-6,
+                    "bars={scope_bars} block={block} frame={i}: {actual:?} != {oracle:?}"
+                );
+            }
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
     }
 }

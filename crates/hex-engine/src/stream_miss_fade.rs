@@ -25,8 +25,9 @@
 //!
 //! Voice identity and reset rules: a voice is a contiguous read of one
 //! streamed source. A span continues the voice whose next expected source
-//! frame equals the span's first source frame for the same source key;
-//! anything else starts a fresh voice at full gain with a silent held sample.
+//! frame equals the span's first source frame for the same source key and
+//! direction; anything else starts a fresh voice at full gain with a silent
+//! held sample. Reverse reads expect decreasing source positions.
 //! Seek, transport loop wrap, clip loop wrap, scene launch and any other
 //! source discontinuity therefore reset by construction, with no command
 //! hook. Transport action fades and Session audio releases own their edges;
@@ -55,6 +56,7 @@ pub const STREAM_MISS_FADE_VOICES: usize = 128;
 struct Voice {
     key: Option<StreamSourceKey>,
     next_source_frame: u64,
+    reversed: bool,
     gain: f32,
     held: Frame,
     touched: u64,
@@ -63,6 +65,7 @@ struct Voice {
 const IDLE: Voice = Voice {
     key: None,
     next_source_frame: 0,
+    reversed: false,
     gain: 1.0,
     held: [0.0; 2],
     touched: 0,
@@ -88,12 +91,26 @@ impl StreamMissFades {
     }
 
     /// The voice continuing `key` at `source_frame`, or a fresh one.
+    #[cfg(test)]
     pub(crate) fn voice(&mut self, key: StreamSourceKey, source_frame: u64) -> MissVoice<'_> {
+        self.directed_voice(key, source_frame, false)
+    }
+
+    pub(crate) fn directed_voice(
+        &mut self,
+        key: StreamSourceKey,
+        source_frame: u64,
+        reversed: bool,
+    ) -> MissVoice<'_> {
         self.clock = self.clock.wrapping_add(1);
         let index = self
             .voices
             .iter()
-            .position(|voice| voice.key == Some(key) && voice.next_source_frame == source_frame)
+            .position(|voice| {
+                voice.key == Some(key)
+                    && voice.next_source_frame == source_frame
+                    && voice.reversed == reversed
+            })
             .unwrap_or_else(|| {
                 let reuse = self
                     .voices
@@ -104,6 +121,7 @@ impl StreamMissFades {
                 self.voices[reuse] = Voice {
                     key: Some(key),
                     next_source_frame: source_frame,
+                    reversed,
                     ..IDLE
                 };
                 reuse
@@ -124,11 +142,22 @@ pub(crate) struct MissVoice<'a> {
 }
 
 impl MissVoice<'_> {
+    fn advance(&mut self) {
+        if self.voice.reversed {
+            if let Some(previous) = self.voice.next_source_frame.checked_sub(1) {
+                self.voice.next_source_frame = previous;
+            } else {
+                self.voice.key = None;
+            }
+        } else {
+            self.voice.next_source_frame = self.voice.next_source_frame.saturating_add(1);
+        }
+    }
     /// A present frame: returns it under the (rising) miss gain.
     pub(crate) fn present(&mut self, sample: Frame) -> Frame {
+        self.voice.held = sample;
+        self.advance();
         let voice = &mut *self.voice;
-        voice.held = sample;
-        voice.next_source_frame = voice.next_source_frame.saturating_add(1);
         if voice.gain >= 1.0 {
             return sample;
         }
@@ -138,8 +167,8 @@ impl MissVoice<'_> {
 
     /// A missing frame: the held sample under the (falling) miss gain.
     pub(crate) fn missing(&mut self) -> Frame {
+        self.advance();
         let voice = &mut *self.voice;
-        voice.next_source_frame = voice.next_source_frame.saturating_add(1);
         voice.gain = (voice.gain - self.step).max(0.0);
         [voice.held[0] * voice.gain, voice.held[1] * voice.gain]
     }

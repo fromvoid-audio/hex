@@ -11,15 +11,16 @@ pub use preparation::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) mod native_sources;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use native_sources::{NativeEndpointBank, NativeEndpointEnvelope};
+pub(crate) use native_sources::{EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) mod publication;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use native_sources::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+    RetiringEditLease, RetiringEditProgress, RetiringEditReceipt,
 };
 pub(crate) use pages::DomainEnvelope;
 pub(super) use publication::OrdinaryReservation;
-pub(crate) use publication::{ActiveView, OrdinaryStreams};
+pub(crate) use publication::{ActiveView, OrdinaryStreams, QuantumFailure, QuantumPins};
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
@@ -160,12 +161,25 @@ struct NativeWork {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     sources: native_sources::Work,
 }
-#[derive(Default)]
 pub(super) struct Custody {
     enabled: AtomicBool,
     closed: AtomicBool,
     bank: Mutex<NativeBank>,
     work: Mutex<NativeWork>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    retiring_edit_alive: [AtomicBool; hex_lattice::MAX_STATEFUL_PROCESSORS],
+}
+impl Default for Custody {
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            bank: Mutex::default(),
+            work: Mutex::default(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            retiring_edit_alive: std::array::from_fn(|_| AtomicBool::new(false)),
+        }
+    }
 }
 impl Custody {
     fn mark_closing(&self, bank: &mut NativeBank) {

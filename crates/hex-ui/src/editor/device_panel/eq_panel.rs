@@ -756,11 +756,18 @@ fn response_model(
     let channel = usize::from(bank == 2 || bank == 4);
     let primary = response[channel].clone();
     let secondary = response[1 - channel].clone();
+    let canonical = super::automation_tint::native_device(view, device, NativeDeviceClass::Effect);
     let nodes = state
         .nodes
         .iter()
         .filter(|n| n.bank == bank)
         .map(|n| ResponseGraphNode {
+            accent: super::automation_tint::graph_accent(
+                canonical,
+                NodeParameter::ALL
+                    .into_iter()
+                    .filter_map(|field| n.id.parameter(field).ok()),
+            ),
             id: n.id.value(),
             position: node_position(n, rate),
             enabled: n.enabled,

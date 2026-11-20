@@ -239,10 +239,13 @@ pub enum DeviceAutomationTakeProgress {
     },
     /// Fully validated identity of a selected finished durable file.
     SealedFile(Box<SealedAutomationRecoveryFile>),
-    /// An ordered observation found no device automation custody.
+    /// An ordered observation found no automation or retiring editor custody.
     CloseSafe,
     /// Device automation custody is active, retained or being copied.
     CloseBlocked,
+    /// The Session is still needed to dispose of a retiring editor source.
+    CloseRetiringEditor(super::RetiringEditorCloseBlocker),
+    ClosePluginEditor(super::PluginEditorCloseAdmission),
     Retained(PathBuf),
     /// Poll found a failed native writer that still owns original observations.
     /// Retain the caller's exact take scope for explicit recovery.
