@@ -6405,27 +6405,37 @@ fn run_worker(
                         && resident_preview.is_none()
                         && device_gesture.snapshot().is_none()
                         && !plugin_recording.editor_active()
+                        && pending_stopped_restore.is_none()
                         && let Some(sink) = events.sampler_edit_audio()
                     {
-                        match retiring_plugin_editor::apply(
-                            &mut session,
-                            sink,
-                            &mut resident_snapshot,
-                            hex_engine::AudioSourceContext {
-                                project_generation,
-                                editor_revision: revision,
-                            },
-                            export_lane.admission_with_resident_owners(
-                                compiled.as_ref().map(|(_, prepared)| {
-                                    hex_engine::native_device_resources::ControlSamplerSelection {
-                                        sources: current_sources.as_ref(),
-                                        prepared: Some(prepared),
-                                    }
-                                }),
-                                resident_seek.as_ref(),
-                                None,
+                        let context = hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        };
+                        let replay = match sink.prepare_retiring_editor_replay_restore(context) {
+                            Ok(true) => {
+                                pending_stopped_restore = Some(context);
+                                Ok(None)
+                            }
+                            Ok(false) => retiring_plugin_editor::apply(
+                                &mut session,
+                                sink,
+                                &mut resident_snapshot,
+                                context,
+                                export_lane.admission_with_resident_owners(
+                                    compiled.as_ref().map(|(_, prepared)| {
+                                        hex_engine::native_device_resources::ControlSamplerSelection {
+                                            sources: current_sources.as_ref(),
+                                            prepared: Some(prepared),
+                                        }
+                                    }),
+                                    resident_seek.as_ref(),
+                                    None,
+                                ),
                             ),
-                        ) {
+                            Err(reason) => Err(reason),
+                        };
+                        match replay {
                             Ok(Some(outcome)) => {
                                 if let Some(prepared) = outcome.prepared {
                                     unsaved = true;

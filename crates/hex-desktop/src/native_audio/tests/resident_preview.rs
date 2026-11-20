@@ -1629,6 +1629,14 @@ impl WorkerAudioSink for ResidentSink {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_retiring_editor_replay_restore(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<bool, String> {
+        self.inner.prepare_retiring_editor_replay_restore(context)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_plugin_editor_close(
         &mut self,
         context: AudioSourceContext,

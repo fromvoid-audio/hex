@@ -722,6 +722,16 @@ pub trait WorkerAudioSink: Send {
     fn retiring_editor_replay_ready(&self) -> bool {
         false
     }
+
+    /// Start the ordinary stopped-source renewal before borrowing a pending
+    /// retiring receipt. The Session owns compilation and publication of the
+    /// unchanged canonical graph through its existing restore continuation.
+    fn prepare_retiring_editor_replay_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
     /// Close or document replacement must preserve the Session while this
     /// source still needs replay or an explicit disposition.
     fn retiring_editor_close_blocker(&self) -> Option<super::RetiringEditorCloseBlocker> {
