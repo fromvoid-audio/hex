@@ -45,7 +45,7 @@ pub(super) struct Slot {
     ordinal: u64,
     last_processed: Option<u64>,
     last_idle_flush: Option<u64>,
-    last_guarded_write: Option<NonZeroU64>,
+    last_guarded_write: Option<(NonZeroU64, bool)>,
     phase: Phase,
     point: ParameterPoint,
     intent: Intent,
@@ -592,14 +592,18 @@ impl Slot {
         self.last_idle_flush = None;
     }
 
-    pub(super) fn record_guarded_write(&mut self, ordinal: NonZeroU64) {
-        self.last_guarded_write = Some(ordinal);
+    pub(super) fn record_guarded_write(&mut self, ordinal: NonZeroU64, readback_matches: bool) {
+        self.last_guarded_write = Some((ordinal, readback_matches));
+    }
+
+    pub(super) fn guarded_write_readback(&self, ordinal: NonZeroU64) -> Option<bool> {
+        let (written, matches) = self.last_guarded_write?;
+        (self.phase == Phase::Idle && self.ordinal == ordinal.get() && ordinal == written)
+            .then_some(matches)
     }
 
     pub(super) fn guarded_write_is_current(&self, ordinal: NonZeroU64) -> bool {
-        self.phase == Phase::Idle
-            && self.ordinal == ordinal.get()
-            && self.last_guarded_write == Some(ordinal)
+        self.guarded_write_readback(ordinal) == Some(true)
     }
 
     pub(super) fn processed_ordinal(&self) -> Option<u64> {

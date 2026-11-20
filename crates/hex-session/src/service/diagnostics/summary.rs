@@ -1623,6 +1623,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::QueryPluginParameters(query) => {
             describe!("query_plugin_parameters"; ["device" => query.device.value(), "request_id" => query.request_id]; omitted="")
         }
+        Request::ContinueRetiringEditorReplay => {
+            describe!("continue_retiring_editor_replay"; []; omitted="")
+        }
         Request::ContinuePluginParameters => {
             describe!("continue_plugin_parameters"; []; omitted="")
         }

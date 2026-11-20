@@ -116,6 +116,11 @@ mod plugin_effect;
 mod plugin_parameters;
 mod plugin_recording;
 mod plugin_state_save;
+mod retiring_plugin_editor;
+pub use retiring_plugin_editor::{
+    MAX_RETIRING_EDITOR_EVENTS, RetiringEditorBatch, RetiringEditorEvent, RetiringEditorEventKind,
+    RetiringEditorReplayDisposition,
+};
 mod project_save;
 pub use project_save::sample_take_root;
 mod recording_barrier;
@@ -962,6 +967,8 @@ pub enum Request {
         device: hex_project::DeviceId,
     },
     ContinuePluginEditor,
+    #[doc(hidden)]
+    ContinueRetiringEditorReplay,
     QueryPluginParameters(PluginParameterQuery),
     ContinuePluginParameters,
     QueryPluginParameterConversion(PluginParameterConversionQuery),
@@ -1371,6 +1378,7 @@ impl Request {
         matches!(
             self,
             Self::QueryPluginParameters(_)
+                | Self::ContinueRetiringEditorReplay
                 | Self::ContinuePluginParameters
                 | Self::QueryPluginParameterConversion(_)
                 | Self::ContinuePluginParameterConversion
@@ -3529,6 +3537,20 @@ fn run_worker(
                     sink,
                 );
             }
+            let editor_replay_ready = session.audio_mode() == DocumentAudioMode::Resident
+                && resident_preview.is_none()
+                && !resident_seek
+                    .as_ref()
+                    .is_some_and(resident_seek::Lane::pending)
+                && device_gesture.snapshot().is_none()
+                && tuning_gesture.snapshot().is_none()
+                && pending_plugin_effect.is_none()
+                && pending_stopped_restore.is_none()
+                && !plugin_recording.editor_active()
+                && !plugin_recording.pending()
+                && audio
+                    .as_ref()
+                    .is_some_and(|sink| sink.retiring_editor_replay_ready());
             audio_sink::native_sampler::drive(
                 audio,
                 &session,
@@ -3551,6 +3573,7 @@ fn run_worker(
                 gesture: plugin_recording.ready(),
                 editor_take: plugin_recording.editor_ready(),
                 recovery_ready: recovery_tracker.async_ready(),
+                editor_replay_ready,
             }
         },
     ) {
@@ -3774,6 +3797,7 @@ fn run_worker(
                 | Request::ContinueDeviceInsert
                 | Request::ContinuePluginEditor
                 | Request::ContinuePluginEditorRecording { .. }
+                | Request::ContinueRetiringEditorReplay
                 | Request::ContinuePluginParameters
                 | Request::ContinuePluginParameterConversion
                 | Request::ContinuePluginStateRestore
@@ -5599,6 +5623,7 @@ fn run_worker(
                     | Request::TogglePluginEditor { .. }
                     | Request::ContinuePluginEditor
                     | Request::QueryPluginParameters(_)
+                    | Request::ContinueRetiringEditorReplay
                     | Request::ContinuePluginParameters
                     | Request::QueryPluginParameterConversion(_)
                     | Request::ContinuePluginParameterConversion
@@ -6318,6 +6343,42 @@ fn run_worker(
                             descriptor_signature: None,
                             rows: Err(reason),
                         });
+                    }
+                }
+                Request::ContinueRetiringEditorReplay => {
+                    if session.audio_mode() == DocumentAudioMode::Resident
+                        && resident_preview.is_none()
+                        && device_gesture.snapshot().is_none()
+                        && !plugin_recording.editor_active()
+                        && let Some(sink) = events.sampler_edit_audio()
+                    {
+                        match retiring_plugin_editor::apply(
+                            &mut session,
+                            sink,
+                            &mut resident_snapshot,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                None,
+                            ),
+                        ) {
+                            Ok(Some(outcome)) => {
+                                unsaved = true;
+                                replacement_revision = Some(outcome.prepared);
+                                error = outcome.receipt_failure;
+                            }
+                            Ok(None) => {}
+                            Err(reason) => error = Some(reason),
+                        }
                     }
                 }
                 Request::ContinuePluginParameters => {

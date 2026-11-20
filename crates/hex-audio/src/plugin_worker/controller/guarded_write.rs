@@ -7,10 +7,15 @@ use hex_plugin_host::protocol::{FlushDisposition, MAX_EDITOR_FLUSH_PARAMETERS};
 pub(super) struct GuardedWrite {
     expected_editor_admission: u64,
     parameters: Parameters,
+    pub(super) previous: Option<NonZeroU64>,
 }
 
 impl GuardedWrite {
-    fn new(expected_editor_admission: u64, points: &[(u32, f64)]) -> Result<Self, &'static str> {
+    fn new(
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+        previous: Option<NonZeroU64>,
+    ) -> Result<Self, &'static str> {
         // The SDK zero-frame flush accepts at most 64 distinct parameters.
         if points.is_empty() || points.len() > MAX_EDITOR_FLUSH_PARAMETERS {
             return Err("invalid native guarded editor write extent");
@@ -31,6 +36,7 @@ impl GuardedWrite {
         Ok(Self {
             expected_editor_admission,
             parameters,
+            previous,
         })
     }
 
@@ -93,9 +99,24 @@ impl NativeWorker {
         expected_editor_admission: u64,
         points: &[(u32, f64)],
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.begin_guarded_editor_write_after(expected_editor_admission, points, None)
+    }
+
+    /// Restore values only while the exact processed write still owns the
+    /// latest host input generation and the helper has no newer editor input.
+    pub(crate) fn begin_guarded_editor_write_after(
+        &mut self,
+        expected_editor_admission: u64,
+        points: &[(u32, f64)],
+        after: Option<&NativeWorkerControllerQuery>,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let previous = after
+            .map(|token| self.guarded_write_ordinal(token))
+            .transpose()?;
         self.begin_query(Operation::Guarded(GuardedWrite::new(
             expected_editor_admission,
             points,
+            previous,
         )?))
     }
 

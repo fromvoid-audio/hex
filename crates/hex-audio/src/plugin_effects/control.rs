@@ -145,12 +145,13 @@ impl NativeEffect {
         &mut self,
         expected_editor_admission: u64,
         points: &[(u32, f64)],
+        after: Option<&NativeWorkerControllerQuery>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         for &(id, _) in points {
             self.callback.configuration.admit_parameter_input(id)?;
         }
         self.worker
-            .begin_guarded_editor_write_on_control(expected_editor_admission, points)
+            .begin_guarded_editor_write_after(expected_editor_admission, points, after)
     }
     pub(crate) fn poll_guarded_editor_write(
         &mut self,
@@ -368,12 +369,13 @@ impl NativeEffectControl {
         &mut self,
         expected_editor_admission: u64,
         points: &[(u32, f64)],
+        after: Option<&NativeWorkerControllerQuery>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         for &(id, _) in points {
             self.configuration.admit_parameter_input(id)?;
         }
         self.worker
-            .begin_guarded_editor_write_on_control(expected_editor_admission, points)
+            .begin_guarded_editor_write_after(expected_editor_admission, points, after)
     }
     pub(crate) fn poll_guarded_editor_write(
         &mut self,
