@@ -9,7 +9,9 @@ impl SessionPlayback {
         let grouped = match (&self.compensation, &previous.compensation) {
             (None, None) => false,
             (Some(next), Some(old))
-                if next.graph.supports_closed_group_stream()
+                if !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
+                    && next.graph.supports_closed_group_stream()
                     && old.graph.supports_closed_group_stream()
                     && next.graph.supports_closed_compensated_audio_groups()
                     && old.graph.supports_closed_compensated_audio_groups()
@@ -17,6 +19,8 @@ impl SessionPlayback {
                     && previous.foreign_runtime_bindings().next().is_none()
                     && next.can_copy_from(old, None) =>
             {
+                // Resident-only: the shared stream planner reaches this branch
+                // before proving file-backed pages or workspace readiness.
                 // Changed serial edges carry no PCM. Existing typed routing,
                 // arrivals and stamp history still pass the ordinary copy proof.
                 true
@@ -109,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_reorder_keeps_stamps_and_refuses_rerouting_or_delay_layout_changes() {
+    fn grouped_reorder_keeps_stamps_and_refuses_streamed_sources_or_changed_layouts() {
         exact_reorder(false, true);
     }
 
@@ -212,6 +216,7 @@ mod tests {
         let prepare = |project: &Project| {
             Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
         };
+        let before_project = grouped.then(|| editor.project().clone());
         let before = prepare(editor.project());
         editor
             .execute(Command::ReorderDevices {
@@ -221,6 +226,52 @@ mod tests {
             })
             .unwrap();
         let after = prepare(editor.project());
+        if let Some(before_project) = &before_project {
+            let sources = BTreeMap::from([(
+                asset,
+                crate::compile::PreparedAudioSource::Streamed(Arc::new(
+                    crate::StreamedSourceMetadata::new(
+                        crate::StreamSourceKey::new(9, asset),
+                        RATE,
+                        RATE,
+                        2048,
+                        2048,
+                        hex_project::IDENTITY_CONVERSION,
+                        [19; 32],
+                    )
+                    .unwrap(),
+                )),
+            )]);
+            let prepare_streamed = |project: &Project| {
+                Arc::new(
+                    PreparedRevision::prepare_with_prepared_audio_sources(
+                        project,
+                        &sources,
+                        9,
+                        Arc::clone(&table),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let before_streamed = prepare_streamed(before_project);
+            let after_streamed = prepare_streamed(editor.project());
+            for (old, next) in [
+                (&before_streamed, &after_streamed),
+                (&before, &after_streamed),
+                (&before_streamed, &after),
+            ] {
+                let mut old = SessionPlayback::new(Arc::clone(old)).unwrap();
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut next = SessionPlayback::new(Arc::clone(next)).unwrap();
+                next.require_continuous_insert = true;
+                // This shared planner is called before the streamed page/workspace
+                // proof; the resident-only Group class must never begin a fade.
+                assert!(!next.plan_native_removal_from(&old).unwrap());
+                assert!(!next.native_removal_pending());
+                assert!(old.track_faders.iter().all(|fader| !fader.active()));
+            }
+        }
         let track_index = before
             .arrangement()
             .tracks()
