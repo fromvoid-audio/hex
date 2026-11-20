@@ -13,7 +13,7 @@ pub(super) struct InstrumentTrackMove {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum InstrumentMoveKind {
     AnalyticSine,
-    MutableVector,
+    Mutable { requires_original_sample: bool },
 }
 
 impl SessionPlayback {
@@ -98,13 +98,17 @@ impl SessionPlayback {
         }) {
             return None;
         }
-        if kind == InstrumentMoveKind::MutableVector {
+        if let InstrumentMoveKind::Mutable {
+            requires_original_sample,
+        } = kind
+        {
             let receiver_track = receiver.canonical_track_id()?;
             if !self.direct_mutable_move_preserves_occurrences(
                 previous,
                 source,
                 destination,
                 [donor_track, receiver_track],
+                requires_original_sample,
             ) {
                 return None;
             }
@@ -123,6 +127,7 @@ impl SessionPlayback {
         source: usize,
         destination: usize,
         tracks: [hex_project::TrackId; 2],
+        requires_original_sample: bool,
     ) -> bool {
         const MAX_UNCHANGED_CLIPS: usize = 16;
         let Some(donor) = previous
@@ -149,6 +154,10 @@ impl SessionPlayback {
             && self.loop_region().is_none()
             && donor.is_source_owner()
             && !donor.has_committed_live_occurrences()
+            // Sampler's existing inheritance also compares the actual
+            // backing owners. The move must have both original PCM leases.
+            && (!requires_original_sample
+                || (donor.resources.is_some() && receiver.resources.is_some()))
             && receiver.can_inherit_from(donor)
             && donor.expression_identity.is_some_and(|device| {
                 previous
@@ -204,8 +213,13 @@ impl Track {
                 Some(InstrumentMoveKind::AnalyticSine)
             }
             (hex_devices::operator_state::OPERATOR_TYPE_ID, true) => {
-                Some(InstrumentMoveKind::MutableVector)
+                Some(InstrumentMoveKind::Mutable {
+                    requires_original_sample: false,
+                })
             }
+            (hex_devices::sampler::state::TYPE_ID, true) => Some(InstrumentMoveKind::Mutable {
+                requires_original_sample: true,
+            }),
             _ => None,
         }
     }

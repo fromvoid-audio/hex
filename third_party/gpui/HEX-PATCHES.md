@@ -114,6 +114,17 @@ and propagate the maximum along the usual ancestor path. Every primitive
 keeps its own assigned order and every future overlap has the same maximum.
 The locked verifier covers repeated overlap, reservation and disjoint reuse.
 
+Draw-order nodes retain both corners directly. A union no longer recreates
+an edge from a rounded origin and size, which could hide a fractional
+intersection in a sibling subtree. The independent ordering oracle checks a
+five-rectangle reproduction alongside cached replay and reserve coverage.
+
+Best-fit insertion also keeps the draw-order tree height balanced. In-place
+rotations retain every leaf and the ordering of intersecting draws. Each affected
+ancestor is refreshed from its children after insertion. The ordering
+verifier covers 4,096 consecutive non-overlapping clip positions and
+their repeated draws, with logarithmic tree depth.
+
 Mac display requests still service dirty frames and explicit presentation.
 The optional recent-input replay of an unchanged scene skips drawable
 acquisition during a GPUI pointer drag. Release or cancellation restores the
