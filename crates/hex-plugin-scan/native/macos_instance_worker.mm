@@ -492,6 +492,7 @@ int main(int argc,char** argv) {
             hex_instance::ControllerParameterPage parameter_page{};
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
             bool editor_edits_sealed=false;
+            bool editor_admission_changed=false;
             uint64_t editor_frontier=0;
             std::optional<hex_instance::EditorPosition> detached_editor_position;
             uint32_t page_failure=0;
@@ -811,6 +812,12 @@ int main(int argc,char** argv) {
                             wire::number(body,5,1);wire::number(body,editor_edits_sealed?1:0,1);
                         } else if(complete && page_query.kind==hex_instance::READ_EDITOR_FRONTIER) {
                             wire::number(body,6,1);wire::number(body,editor_frontier,8);
+                        } else if(complete && hex_instance::editor_admission_request(page_query.kind)) {
+                            wire::number(body,7,1);wire::number(body,page_query.kind,1);
+                            wire::number(body,page_query.revision,8);
+                            wire::number(body,editor_admission_changed?1:0,1);
+                            if(editor_admission_changed && page_query.kind==hex_instance::HOLD_EDITOR_ADMISSION)
+                                wire::number(body,editor_frontier,8);
                         } else if(complete && hex_instance::editor_request(page_query.kind)) {
                             wire::number(body,4,1);
                             if(detached_editor_position) {
@@ -1331,6 +1338,11 @@ int main(int argc,char** argv) {
                             if(!instance.synchronize_parameter_feedback_on_control()) page_failure=HostControl;
                             else if(page_query.kind==hex_instance::READ_EDITOR_FRONTIER)
                                 editor_frontier=instance.editor_admission_sequence_on_worker();
+                            else if(page_query.kind==hex_instance::HOLD_EDITOR_ADMISSION) {
+                                editor_admission_changed=instance.hold_editor_admission_on_control(page_query.revision);
+                                if(editor_admission_changed) editor_frontier=instance.editor_admission_sequence_on_worker();
+                            } else if(page_query.kind==hex_instance::RELEASE_EDITOR_ADMISSION)
+                                editor_admission_changed=instance.release_editor_admission_on_control(page_query.revision);
                             else if(hex_instance::editor_request(page_query.kind)) {
                                 @autoreleasepool {
                                     const bool was_open=editor.is_open();

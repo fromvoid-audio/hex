@@ -110,6 +110,57 @@ fn editor_seal_receipt_is_bound_to_its_operation_and_discriminant() {
     reply.pop();
     assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
 }
+
+#[test]
+fn editor_admission_receipt_binds_action_token_and_frontier() {
+    use std::num::NonZeroU64;
+    let config = config();
+    let token = NonZeroU64::new(11).unwrap();
+    let hold = ControllerRequest::HoldEditorAdmission(token);
+    let release = ControllerRequest::ReleaseEditorAdmission(token);
+    for (request, kind) in [(hold, 17), (release, 18)] {
+        for poll in [false, true] {
+            let encoded = parameter_page_request(&config, 1, 7, request, poll).unwrap();
+            assert_eq!(&encoded[74..82], &token.get().to_le_bytes());
+            assert_eq!(encoded[82], kind);
+            assert!(encoded[83..].iter().all(|byte| *byte == 0));
+        }
+        let mut reply = Vec::new();
+        stamp(&mut reply, config.binding);
+        for value in [1_u64, u64::from(config.quantum), 7] {
+            reply.extend(value.to_le_bytes());
+        }
+        let payload = reply.len();
+        reply.extend([7, kind]);
+        reply.extend(token.get().to_le_bytes());
+        reply.push(0);
+        assert_eq!(
+            parameter_page(&reply, &config, 1, 7, request).unwrap(),
+            ParameterPageProgress::EditorAdmission(EditorAdmissionState::Refused),
+        );
+        *reply.last_mut().unwrap() = 1;
+        let expected = if request == hold {
+            assert!(parameter_page(&reply, &config, 1, 7, hold).is_err());
+            reply.extend(23_u64.to_le_bytes());
+            EditorAdmissionState::Held {
+                admitted_through: 23,
+            }
+        } else {
+            EditorAdmissionState::Released
+        };
+        assert_eq!(
+            parameter_page(&reply, &config, 1, 7, request).unwrap(),
+            ParameterPageProgress::EditorAdmission(expected),
+        );
+        for offset in [0, payload - 1, payload + 1, payload + 2, payload + 10] {
+            reply[offset] ^= 4;
+            assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+            reply[offset] ^= 4;
+        }
+        reply.push(0);
+        assert!(parameter_page(&reply, &config, 1, 7, request).is_err());
+    }
+}
 #[test]
 fn editor_frontier_requires_exact_source_clock_operation_and_payload() {
     let config = config();

@@ -23,9 +23,9 @@ pub use controller::{
     NativeWorkerControllerQuery, NativeWorkerGuardedEditorWriteProgress,
 };
 pub use hex_plugin_host::protocol::{
-    ControllerRequest, ParameterConversion, ParameterConversionStatus, ParameterEdit,
-    ParameterEditKind, ParameterPageQuery, ParameterText, PluginEditorPosition, PluginEditorState,
-    RecoveryEdits,
+    ControllerRequest, EditorAdmissionState, ParameterConversion, ParameterConversionStatus,
+    ParameterEdit, ParameterEditKind, ParameterPageQuery, ParameterText, PluginEditorPosition,
+    PluginEditorState, RecoveryEdits,
 };
 
 /// One successful slow helper exchange; diagnostic only, never audio acceptance.

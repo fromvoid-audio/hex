@@ -167,6 +167,31 @@ int main(int argc,char** argv) { @autoreleasepool {
     assert(detaching.endEdit(7)==kResultOk);
     assert(detaching.pending_parameter_edits()==retained+3);
 
+    Host held(false,true);
+    assert(held.refresh_on_control(&controller).disposition==HostDisposition::Refreshed);
+    assert(held.beginEdit(7)==kResultOk);
+    assert(!held.hold_editor_admission_on_control(1));
+    assert(held.performEdit(7,0.5)==kResultOk && held.endEdit(7)==kResultOk);
+    const auto accepted=held.editor_admission_sequence_on_worker();
+    assert(held.hold_editor_admission_on_control(1));
+    assert(held.hold_editor_admission_on_control(1));
+    assert(!held.hold_editor_admission_on_control(2));
+    assert(!held.release_editor_admission_on_control(2));
+    assert(held.beginEdit(7)==kResultFalse && held.performEdit(7,0.75)==kResultFalse);
+    assert(held.startGroupEdit()==kResultFalse);
+    assert(held.editor_admission_sequence_on_worker()==accepted);
+    assert(held.pending_parameter_edits()==3 && held.refusal_flags()==0);
+    assert(held.release_editor_admission_on_control(1));
+    assert(!held.hold_editor_admission_on_control(1));
+    assert(held.startGroupEdit()==kResultOk);
+    assert(!held.hold_editor_admission_on_control(2));
+    assert(held.finishGroupEdit()==kResultOk);
+    assert(held.performEdit(7,0.75)==kResultOk);
+    assert(held.hold_editor_admission_on_control(2));
+    assert(held.seal_editor_edits_on_control());
+    assert(!held.release_editor_admission_on_control(2));
+    assert(held.performEdit(7,0.25)==kResultFalse);
+
     // A closed input boundary must keep already accepted work in both main
     // and worker queues and refuse later SDK calls without faulting the host.
     Host retiring;

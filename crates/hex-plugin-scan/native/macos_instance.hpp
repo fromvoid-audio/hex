@@ -537,6 +537,12 @@ public:
     bool seal_editor_edits_on_control() {
         return opened && host && !quarantined.load() && host->seal_editor_edits_on_control();
     }
+    bool hold_editor_admission_on_control(uint64 ordinal) {
+        return opened && host && !quarantined.load() && host->hold_editor_admission_on_control(ordinal);
+    }
+    bool release_editor_admission_on_control(uint64 ordinal) {
+        return opened && host && !quarantined.load() && host->release_editor_admission_on_control(ordinal);
+    }
     EditorDetachAdmission begin_editor_detach_on_control() {
         if(!opened || !host || quarantined.load()) return EditorDetachAdmission::Refused;
         return host->begin_editor_detach_on_control();
