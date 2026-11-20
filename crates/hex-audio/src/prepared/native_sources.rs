@@ -913,15 +913,15 @@ impl PublicationControl {
         )
     }
 
-    /// Enqueue a compensating write only while the exact preceding SDK write
-    /// still owns host input. The helper also checks its editor admission
-    /// frontier before applying any supplied prior values.
-    pub fn begin_native_source_guarded_editor_restore_on_control(
+    /// Enqueue the next replay or compensating write only while the exact
+    /// preceding SDK write owns host input. The helper checks its editor
+    /// admission frontier before applying the new values.
+    pub fn begin_native_source_guarded_editor_write_after_on_control(
         &mut self,
         binding: Binding,
         expected_editor_admission: u64,
-        written: &NativeWorkerControllerQuery,
-        restore: &[(u32, f64)],
+        previous: &NativeWorkerControllerQuery,
+        points: &[(u32, f64)],
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native guarded editor write output is closing");
@@ -929,8 +929,8 @@ impl PublicationControl {
         self.candidate_root.begin_guarded_editor_write(
             binding,
             expected_editor_admission,
-            restore,
-            Some(written),
+            points,
+            Some(previous),
         )
     }
 

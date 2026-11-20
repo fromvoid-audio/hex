@@ -312,6 +312,18 @@ fn late_editor_group_replays_both_values_and_reopens_on_the_same_successor() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn later_vst3_cohorts_replay_in_order_and_save_final_values() {
+    retiring_editor_replay_roundtrip(ReplayCase::SeveralGroups);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn later_vst3_cohorts_restore_original_values_when_publication_refuses() {
+    retiring_editor_replay_roundtrip(ReplayCase::SeveralGroupsRefuse);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_preserves_playing_transport() {
     retiring_editor_replay_roundtrip(ReplayCase::Playing);
 }
@@ -340,6 +352,8 @@ enum ReplayCase {
     Mixed,
     MixedConflict,
     Grouped,
+    SeveralGroups,
+    SeveralGroupsRefuse,
     Playing,
     Refuse,
     RefuseAfterNewer,
@@ -352,7 +366,11 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         case,
         ReplayCase::EarlierGrouped | ReplayCase::EarlierGroupedConflict
     );
-    let grouped = earlier_group || mixed || case == ReplayCase::Grouped;
+    let several_groups = matches!(
+        case,
+        ReplayCase::SeveralGroups | ReplayCase::SeveralGroupsRefuse
+    );
+    let grouped = earlier_group || mixed || several_groups || case == ReplayCase::Grouped;
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
         let release = files.0.join("release");
@@ -368,10 +386,16 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             ])
             .env(CHILD, "1")
             .envs(
-                matches!(case, ReplayCase::Refuse | ReplayCase::RefuseAfterNewer)
-                    .then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
+                matches!(
+                    case,
+                    ReplayCase::Refuse
+                        | ReplayCase::RefuseAfterNewer
+                        | ReplayCase::SeveralGroupsRefuse
+                )
+                .then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
             )
             .envs(mixed.then_some(("HEX_EXPECT_RETIRING_MIXED_BATCH", "1")))
+            .envs(several_groups.then_some(("HEX_EXPECT_RETIRING_ORDERED_COHORTS", "1")))
             .envs(earlier_group.then_some(("HEX_EXPECT_RETIRING_EARLIER_GROUP", "1")))
             .env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
@@ -379,7 +403,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             )
             .env(
                 "HEX_ORIGINAL_GROUPED_EDITOR_PATTERN",
-                if mixed { "ordinary-first" } else { "split" },
+                if mixed {
+                    "ordinary-first"
+                } else if several_groups {
+                    "repeat"
+                } else {
+                    "split"
+                },
             )
             .env(
                 "HEX_ORIGINAL_GROUPED_RELEASE",
@@ -628,7 +658,11 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
 
     if matches!(
         case,
-        ReplayCase::Publish | ReplayCase::Playing | ReplayCase::Grouped | ReplayCase::Mixed
+        ReplayCase::Publish
+            | ReplayCase::Playing
+            | ReplayCase::Grouped
+            | ReplayCase::Mixed
+            | ReplayCase::SeveralGroups
     ) {
         let event = loop {
             h.pump();
@@ -662,9 +696,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         );
         let captured =
             hex_plugin_state::decode(event.state.project.device(device).unwrap().state()).unwrap();
+        let final_gain = if several_groups { 1.0 } else { 3.0 };
         assert_eq!(
             f32::from_le_bytes(captured.component.unwrap()[8..12].try_into().unwrap()),
-            3.0
+            final_gain
         );
         let saved = h.run(Request::SaveCurrent);
         assert!(
@@ -678,13 +713,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             hex_plugin_state::decode(saved_project.device(device).unwrap().state()).unwrap();
         assert_eq!(
             f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
-            3.0
+            final_gain
         );
         if grouped {
             for capture in [captured, state] {
                 assert_eq!(
                     f64::from_le_bytes(capture.component.unwrap()[32..40].try_into().unwrap()),
-                    2.0
+                    if several_groups { 1.0 } else { 2.0 }
                 );
             }
         }
@@ -734,12 +769,12 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 .find(|row| row.id == gain_id)
                 .unwrap()
                 .normalized,
-            0.75
+            if several_groups { 0.25 } else { 0.75 }
         );
         if grouped {
             assert_eq!(
                 rows.iter().find(|row| row.id == 11).unwrap().normalized,
-                0.5
+                if several_groups { 0.25 } else { 0.5 }
             );
         }
         assert_eq!(hex_audio::audio_lifecycle_failure(), None);
@@ -762,7 +797,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         );
         std::thread::yield_now();
     };
-    if matches!(case, ReplayCase::Refuse | ReplayCase::RefuseAfterNewer) {
+    if matches!(
+        case,
+        ReplayCase::Refuse | ReplayCase::RefuseAfterNewer | ReplayCase::SeveralGroupsRefuse
+    ) {
         assert!(error.contains("fixture final admission refusal"), "{error}");
         h.refuse.store(false, Release);
         let path = files.0.join("effect.hex");
@@ -795,6 +833,27 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap()),
             1.5
         );
+        if several_groups {
+            assert_eq!(
+                f64::from_le_bytes(state.component.unwrap()[32..40].try_into().unwrap()),
+                1.0
+            );
+            let original = super::super::editor_recording::probe(&h, |reply| {
+                crate::native_audio::tests::resident_preview::EditorRecordingProbe::RetiringBatch(
+                    old_binding,
+                    reply,
+                )
+            })
+            .unwrap();
+            assert_eq!(original.successor, successor);
+            let values: Vec<_> = original
+                .events()
+                .iter()
+                .filter(|edit| edit.kind == hex_session::service::RetiringEditorEventKind::Perform)
+                .map(|edit| (edit.parameter, edit.normalized))
+                .collect();
+            assert_eq!(values, [(0, 0.75), (11, 0.5), (0, 0.25), (11, 0.25)]);
+        }
         return;
     }
     if pre_cut || earlier_group || case == ReplayCase::MixedConflict {
