@@ -609,6 +609,7 @@ impl Command {
             | Self::SetMidiSource { .. }
             | Self::SetReturnFeed { .. }
             | Self::InsertMainDevice { .. }
+            | Self::ReplaceMainDevice { .. }
             | Self::MoveMainDevice { .. }
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }

@@ -391,6 +391,11 @@ pub enum Command {
         before: Option<DeviceId>,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Replace one exact top-level Main effect with a fresh authored identity.
+    ReplaceMainDevice {
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     /// Reorder within Main; cross-owner moves retain their existing commands.
     MoveMainDevice {
         device: DeviceId,
@@ -2289,9 +2294,9 @@ impl Project {
                 points,
             } => self.replace_device_automation(device, parameter, points),
             Command::InitializeDevice(initialization) => initialization.apply(self),
-            main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
-                crate::main_devices::apply(self, main_command)
-            }
+            main_command @ (Command::InsertMainDevice { .. }
+            | Command::ReplaceMainDevice { .. }
+            | Command::MoveMainDevice { .. }) => crate::main_devices::apply(self, main_command),
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }

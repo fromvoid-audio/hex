@@ -1044,7 +1044,8 @@ impl Session {
                 crate::validate_command_media(&command)?;
                 let operation = if plugin.is_some() {
                     match &command {
-                        Command::ReplaceTrackInstrument { .. } => GraphEditOperation::ReplaceDevice,
+                        Command::ReplaceTrackInstrument { .. }
+                        | Command::ReplaceMainDevice { .. } => GraphEditOperation::ReplaceDevice,
                         _ => GraphEditOperation::InsertDevice,
                     }
                 } else {
