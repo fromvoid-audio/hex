@@ -265,3 +265,53 @@ fn limiter_standard_soft_clip_true_peak_and_ms_callbacks_allocate_nothing() {
     assert!(Arc::strong_count(&revision) >= 1);
     assert!(Arc::strong_count(&next_revision) >= 1);
 }
+
+/// Borrowing physical dry reservations is safe on the transfer-planning thread.
+/// Construction and destruction remain outside this measured scope.
+#[test]
+fn reserved_host_dry_view_allocates_and_frees_nothing() {
+    use hex_lattice::{
+        DevicePreparationContext, EMPTY_DEVICE_RESOURCES, NativeDeviceDefinition,
+        NativeRuntimeChain, PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
+        TuningTable,
+    };
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let state = hex_devices::limiter::DEFINITION.default_state().unwrap();
+    let factory = hex_devices::limiter::DEFINITION
+        .prepare_runtime_factory(
+            &state,
+            &DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let chain = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: None,
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Main,
+        device_id: 1,
+        device_type: LIMITER,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(Arc::new(state)),
+        definition: Some(factory),
+    }])
+    .unwrap();
+    let mut bytes = 0;
+    let mut count = 0;
+    let observed = measure(|| {
+        for entry in chain.storage_view().entries() {
+            for frames in entry.reserved_dry_storage().into_iter().flatten() {
+                bytes += std::hint::black_box(frames).capacity() * std::mem::size_of::<[f32; 2]>();
+                count += 1;
+            }
+        }
+    });
+    assert_zero(observed);
+    assert_eq!((count, bytes), (2, 1152));
+}
