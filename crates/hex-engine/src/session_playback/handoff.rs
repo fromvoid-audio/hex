@@ -1749,12 +1749,12 @@ impl SessionPlayback {
         }
         let main_pass_delay = if let Some(transition) = main_pass_cut {
             if demand.is_none() {
-                Some(
-                    previous
-                        .main_chain
-                        .settled_main_pass_delay(transition)
-                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
-                )
+                let settled = if transition.foreign_main_pass_binding().is_some() {
+                    self.main_pass_delay
+                } else {
+                    previous.main_chain.settled_main_pass_delay(transition)
+                };
+                Some(settled.ok_or(SessionPlaybackError::DeviceRuntime)?)
             } else {
                 None
             }

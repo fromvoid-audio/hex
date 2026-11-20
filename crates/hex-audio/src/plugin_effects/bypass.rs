@@ -10,6 +10,10 @@ pub(super) struct BypassMix {
 }
 
 impl BypassMix {
+    pub(super) fn settled_at_dry(&self) -> bool {
+        self.target_bypassed == Some(true) && self.remaining == 0
+    }
+
     pub(super) fn process(
         &mut self,
         wet: &mut [[f32; 2]],

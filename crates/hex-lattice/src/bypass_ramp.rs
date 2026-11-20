@@ -2,8 +2,10 @@
 use hex_lattice_contract::DeviceContractError;
 
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
-// A fixed 1.5 ms delay at the maximum supported 192 kHz output rate.
-const MAX_MAIN_PASS_DRY_FRAMES: usize = 288;
+// The fixed 1.5 ms native path at the maximum 192 kHz output rate.
+const MAX_NATIVE_MAIN_PASS_DRY_FRAMES: usize = 288;
+// Covers the short native stages and the admitted two-quantum Main bridge.
+const MAX_MAIN_PASS_DRY_FRAMES: usize = 512;
 
 /// Value-only aligned PCM after the original Main processor has retired.
 pub type MainPassDelay = InlineDryDelay<MAX_MAIN_PASS_DRY_FRAMES>;
@@ -18,6 +20,23 @@ pub struct InlineDryDelay<const CAPACITY: usize> {
 }
 
 impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
+    /// Copy a committed ring without transferring its allocation or provider.
+    pub fn copy_committed_ring(frames: &[[f32; 2]], next: usize) -> Option<Self> {
+        let mut delay = Self {
+            frames: [[0.0; 2]; CAPACITY],
+            len: frames.len(),
+            next,
+        };
+        if next >= frames.len() {
+            return None;
+        }
+        delay
+            .frames
+            .get_mut(..frames.len())?
+            .copy_from_slice(frames);
+        Some(delay)
+    }
+
     pub fn latency_frames(&self) -> u32 {
         self.len as u32
     }
@@ -115,22 +134,13 @@ impl AlignedDry {
     }
     pub(crate) fn main_pass_latency_frames(&self) -> Option<u32> {
         let len = self.parts().0.len();
-        (1..=MAX_MAIN_PASS_DRY_FRAMES)
+        (1..=MAX_NATIVE_MAIN_PASS_DRY_FRAMES)
             .contains(&len)
             .then_some(len as u32)
     }
     pub(crate) fn main_pass_delay(&self) -> Option<MainPassDelay> {
         let (frames, next) = self.parts();
-        let mut retained = MainPassDelay {
-            frames: [[0.0; 2]; MAX_MAIN_PASS_DRY_FRAMES],
-            len: frames.len(),
-            next,
-        };
-        retained
-            .frames
-            .get_mut(..frames.len())?
-            .copy_from_slice(frames);
-        Some(retained)
+        MainPassDelay::copy_committed_ring(frames, next)
     }
     pub(crate) fn is_quiet(&self) -> bool {
         self.parts().0.iter().all(|f| *f == [0.0; 2])
@@ -242,6 +252,22 @@ mod tests {
         ProcessorChainOwner, StereoMatrix,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn committed_main_pass_copy_preserves_the_cursor_and_rejects_bad_extent() {
+        use super::MainPassDelay;
+
+        let mut ring = [[0.0; 2]; 512];
+        ring[511] = [0.25, -0.25];
+        ring[0] = [0.5, -0.5];
+        let mut delay = MainPassDelay::copy_committed_ring(&ring, 511).unwrap();
+        let mut frames = [[0.0; 2]; 2];
+        delay.process(&mut frames);
+        assert_eq!(frames, [ring[511], ring[0]]);
+        assert!(MainPassDelay::copy_committed_ring(&ring, 512).is_none());
+        assert!(MainPassDelay::copy_committed_ring(&[], 0).is_none());
+        assert!(MainPassDelay::copy_committed_ring(&[[0.0; 2]; 513], 0).is_none());
+    }
 
     #[test]
     fn dry_lead_continues_across_an_equivalent_publication_and_can_reverse() {
