@@ -82,3 +82,60 @@ fn main_snapshot_rejects_duplicate_ids_and_overflow_without_losing_metadata() {
         crate::MAX_DEVICES_PER_TRACK
     );
 }
+
+#[test]
+fn main_replacement_preserves_neighbors_and_restores_old_authored_state_on_undo() {
+    let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    for _ in 0..3 {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state(),
+            })
+            .unwrap();
+    }
+    let old = editor.project().main_devices()[1].id();
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: old,
+            bypassed: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceAutomation {
+            device: old,
+            parameter: hex_lattice_contract::ParameterId::from_static(1),
+            points: vec![crate::AutomationPoint {
+                beat: crate::BeatTime::ZERO,
+                value: crate::AutomationValue::new(0.25).unwrap(),
+                outgoing: crate::AutomationInterpolation::Linear,
+            }],
+        })
+        .unwrap();
+    let original = editor.project().main_devices().to_vec();
+    let expected_new = editor.project().next_identity();
+    let incoming =
+        NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, vec![2]).unwrap();
+    let replace = || Command::ReplaceMainDevice {
+        replacing: old,
+        state: incoming.clone(),
+    };
+    let Created::Device(new) = editor.execute(replace()).unwrap() else {
+        panic!("replacement must create a fresh device");
+    };
+    assert_eq!(new.value(), expected_new);
+    let replaced = editor.project().main_devices().to_vec();
+    assert_eq!(replaced[0], original[0]);
+    assert_eq!(replaced[2], original[2]);
+    assert_eq!(replaced[1].id(), new);
+    assert_eq!(replaced[1].state(), &incoming);
+    assert!(!replaced[1].bypassed());
+    assert!(replaced[1].automation().is_empty());
+    let after = editor.project().snapshot();
+    assert!(editor.execute(replace()).is_err());
+    assert_eq!(editor.project().snapshot(), after);
+    assert!(editor.undo());
+    assert_eq!(editor.project().main_devices(), original);
+    assert!(editor.redo());
+    assert_eq!(editor.project().main_devices(), replaced);
+}

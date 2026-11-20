@@ -1067,7 +1067,8 @@ impl Session {
                     GraphEditOperation::PowerDevice
                 } else if plugin.is_some() {
                     match &command {
-                        Command::ReplaceTrackInstrument { .. } => GraphEditOperation::ReplaceDevice,
+                        Command::ReplaceTrackInstrument { .. }
+                        | Command::ReplaceMainDevice { .. } => GraphEditOperation::ReplaceDevice,
                         _ => GraphEditOperation::InsertDevice,
                     }
                 } else {

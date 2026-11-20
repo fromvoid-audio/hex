@@ -132,6 +132,14 @@ enum Terminal {
     Stop,
 }
 
+#[derive(Clone, Copy)]
+enum Reroute {
+    Enter,
+    Exit,
+    EnterEmpty,
+    ExitLastChild,
+}
+
 #[test]
 fn allocation_probe_detects_balanced_allocation_and_free() {
     let observed = allocation_counter::measure(|| {
@@ -148,7 +156,7 @@ fn group_entry_cancel_and_stop_preserve_the_old_route_before_and_during_fade() -
     for partition in [1, 257] {
         for terminal in [Terminal::Cancel, Terminal::Stop] {
             for fade in [false, true] {
-                route_cut(partition, terminal, fade, false)?;
+                route_cut(partition, terminal, fade, Reroute::Enter)?;
             }
         }
     }
@@ -156,18 +164,18 @@ fn group_entry_cancel_and_stop_preserve_the_old_route_before_and_during_fade() -
 }
 #[test]
 fn group_entry_fades_only_leaf_at_single_frame_partitions() -> Result {
-    route_cut(1, Terminal::Install, true, false)
+    route_cut(1, Terminal::Install, true, Reroute::Enter)
 }
 #[test]
 fn group_entry_fades_only_leaf_at_257_frame_partitions() -> Result {
-    route_cut(257, Terminal::Install, true, false)
+    route_cut(257, Terminal::Install, true, Reroute::Enter)
 }
 #[test]
 fn group_exit_cancel_and_stop_preserve_the_old_group_before_and_during_fade() -> Result {
     for partition in [1, 257] {
         for terminal in [Terminal::Cancel, Terminal::Stop] {
             for fade in [false, true] {
-                route_cut(partition, terminal, fade, true)?;
+                route_cut(partition, terminal, fade, Reroute::Exit)?;
             }
         }
     }
@@ -176,29 +184,66 @@ fn group_exit_cancel_and_stop_preserve_the_old_group_before_and_during_fade() ->
 
 #[test]
 fn group_exit_fades_only_leaf_at_single_frame_partitions() -> Result {
-    route_cut(1, Terminal::Install, true, true)
+    route_cut(1, Terminal::Install, true, Reroute::Exit)
 }
 #[test]
 fn group_exit_fades_only_leaf_at_257_frame_partitions() -> Result {
-    route_cut(257, Terminal::Install, true, true)
+    route_cut(257, Terminal::Install, true, Reroute::Exit)
 }
-fn route_cut(partition: usize, terminal: Terminal, fade: bool, exiting: bool) -> Result {
+
+#[test]
+fn group_reroutes_across_the_first_or_last_child() -> Result {
+    for partition in [1, 257] {
+        for reroute in [Reroute::EnterEmpty, Reroute::ExitLastChild] {
+            route_cut(partition, Terminal::Install, true, reroute)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn abandoning_a_last_child_exit_restores_the_former_group_feed() -> Result {
+    for terminal in [Terminal::Cancel, Terminal::Stop] {
+        route_cut(257, terminal, true, Reroute::ExitLastChild)?;
+    }
+    Ok(())
+}
+
+fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
+    let exiting = matches!(reroute, Reroute::Exit | Reroute::ExitLastChild);
+    let has_sibling = matches!(reroute, Reroute::Enter | Reroute::Exit);
     let mut a = vec![[0.125, -0.0625]; FRAMES];
     a[1700] = [0.5, -0.25];
     a[CUT + 53] = [-0.375, 0.1875];
-    let b: Vec<Frame> = (0..FRAMES)
-        .map(|i| [0.03125 + i as f32 / 262144.0, -0.015625])
-        .collect();
+    let b: Vec<Frame> = if has_sibling {
+        (0..FRAMES)
+            .map(|i| [0.03125 + i as f32 / 262144.0, -0.015625])
+            .collect()
+    } else {
+        vec![[0.0; 2]; FRAMES]
+    };
     let c: Vec<Frame> = (0..FRAMES)
         .map(|i| [-0.015625, 0.03125 + i as f32 / 524288.0])
         .collect();
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let mut media = BTreeMap::new();
-    let child = import(&mut editor, &mut media, "destination child", b.clone())?;
-    let destination = group(&mut editor, child, "destination")?;
+    let sibling = has_sibling
+        .then(|| import(&mut editor, &mut media, "destination child", b.clone()))
+        .transpose()?;
+    let moved = import(&mut editor, &mut media, "moved", a.clone())?;
+    let destination = group(&mut editor, sibling.unwrap_or(moved), "destination")?;
+    if sibling.is_none() {
+        editor.execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[moved])?,
+            destination: TrackDestination {
+                parent_group: None,
+                before: None,
+            },
+        })?;
+        assert!(editor.project().track(destination).unwrap().is_group());
+    }
     effect(&mut editor, destination, delay(11.0))?;
     effect(&mut editor, destination, invert())?;
-    let moved = import(&mut editor, &mut media, "moved", a.clone())?;
     effect(&mut editor, moved, delay(7.0))?;
     let unrelated = import(&mut editor, &mut media, "unrelated", c.clone())?;
     let other_group = group(&mut editor, unrelated, "other group")?;
