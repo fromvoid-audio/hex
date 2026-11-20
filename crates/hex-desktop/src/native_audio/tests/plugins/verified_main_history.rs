@@ -38,7 +38,7 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
     h.applied(h.context.unwrap());
     let submit = |h: &Harness, request| h.service.as_ref().unwrap().submit(request).unwrap();
     let mut insertion = request(&imported.state, PluginEffectDestination::Main);
-    insertion.selection = selection;
+    insertion.selection = selection.clone();
     submit(&h, Request::InsertPluginEffect(insertion));
     let inserted = loop {
         let event = h.next_with_audio();
@@ -118,6 +118,42 @@ fn running_verified_main_history_restores_a_fresh_worker_only_after_exact_consen
             break offer;
         }
     };
+    // Catalog resolution is the full saved provider identity, never a path
+    // alias or a different currently available signed processor.
+    let wrong = signed_effect_selection("effect");
+    assert_ne!(
+        (&wrong.cid, &wrong.executable_sha256, &wrong.info_sha256),
+        (
+            &selection.cid,
+            &selection.executable_sha256,
+            &selection.info_sha256
+        )
+    );
+    hex_ui::write_plugin_effect_test_catalog(&directory, &wrong, "Fx", 0).unwrap();
+    submit(&h, Request::Undo);
+    let unavailable = loop {
+        let event = next_event(&h);
+        if event.request_complete {
+            break event;
+        }
+    };
+    assert!(
+        unavailable
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("saved vst3 binary or class is unavailable")),
+        "wrong provider was accepted: {:?}",
+        unavailable.error
+    );
+    assert_eq!(unavailable.state.project, removed.state.project);
+    assert_eq!(unavailable.state.revision, removed.state.revision);
+    assert_eq!(unavailable.state.can_undo, removed.state.can_undo);
+    assert_eq!(unavailable.state.can_redo, removed.state.can_redo);
+    assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
+    assert!(status(&h).playing.load(Acquire));
+    assert!(progress.lock().unwrap().newest_source.is_none());
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection, "Fx", 0).unwrap();
+
     submit(&h, Request::Undo);
     assert!(offer(&h).cancel());
     let cancelled = loop {
