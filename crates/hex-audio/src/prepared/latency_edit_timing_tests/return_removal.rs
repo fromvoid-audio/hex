@@ -27,13 +27,18 @@ fn removing_a_flat_return_cuts_its_reverb_after_its_own_fade() {
 
 #[test]
 fn removing_a_flat_return_cuts_its_serial_delay_and_reverb_after_its_own_fade() {
-    assert_flat_return_removal(
+    for chain in [
         [feedback_delay(10.0), full_wet_reverb()],
-        Some(feedback_delay(17.0)),
-        reverb_input(),
-        2048,
-        1e-5,
-    );
+        [full_wet_reverb(), feedback_delay(10.0)],
+    ] {
+        assert_flat_return_removal(
+            chain,
+            Some(feedback_delay(17.0)),
+            reverb_input(),
+            2048,
+            1e-5,
+        );
+    }
 }
 
 fn full_wet_reverb() -> NativeDeviceState {
