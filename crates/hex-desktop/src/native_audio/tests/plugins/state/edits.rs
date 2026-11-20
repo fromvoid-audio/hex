@@ -2629,7 +2629,11 @@ fn running_native_device_duplicate_waits_for_the_exact_install() {
             }
             assert_eq!(event.state.project, before.project);
             if let Some(offer) = event.device_insert_confirmation {
+                let (submitted, resume) = h.probe_next_submitted_device_insert();
                 assert!(offer.proceed());
+                let confirmed = submitted.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(confirmed.context, offer.submission().context);
+                resume.send(()).unwrap();
             }
         }
         assert!(Instant::now() < deadline, "duplicate did not install");

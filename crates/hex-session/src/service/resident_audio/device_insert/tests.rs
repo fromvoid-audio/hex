@@ -907,7 +907,7 @@ fn cancelled_resident_paste_keeps_the_clipboard_for_one_confirmed_history_step()
     assert_ne!(duplicate.id(), device.id());
     assert_eq!(duplicate.state(), device.state());
     let undone = run(Request::Undo).state;
-    assert_eq!(undone.project.main_devices(), &[device.clone()]);
+    assert_eq!(undone.project.main_devices(), std::slice::from_ref(device));
     assert!(undone.can_redo);
     assert_eq!(run(Request::Redo).state.project, pasted.project);
 }
