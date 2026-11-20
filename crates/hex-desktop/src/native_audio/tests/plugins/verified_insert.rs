@@ -58,6 +58,7 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
     let removed = h.run_verified_device_insert(Command::RemoveDevice(vst));
     assert!(removed.state.project.device(vst).is_none());
     let predecessor = h.applied(h.context.unwrap());
+    await_verified_retirement(&h, &progress);
     let applied = |h: &Harness| {
         h.audio
             .as_ref()
@@ -198,6 +199,21 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
         removed_source.audio_revision
     );
     assert_eq!(removed_source.output_identity, predecessor.output_identity);
+}
+
+fn await_verified_retirement(
+    h: &Harness,
+    progress: &Mutex<crate::native_audio::plugins::PreparationObservation>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while progress.lock().unwrap().newest_source.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "removed Verified VST3 stayed warm for history"
+        );
+        h.render();
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
