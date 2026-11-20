@@ -569,6 +569,7 @@ fn resident_graph_edit_operation(
     controlled: bool,
 ) -> Option<GraphEditOperation> {
     match command {
+        Command::RemoveReturnTrack(_) => Some(GraphEditOperation::RemoveTrack),
         Command::PasteDevices { .. } => Some(GraphEditOperation::InsertDevice),
         _ => catalog_graph_edit_operation(command, controlled),
     }
