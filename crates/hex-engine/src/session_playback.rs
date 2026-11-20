@@ -720,18 +720,25 @@ impl SessionPlayback {
         &self,
         visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
     ) {
-        for node in self
+        self.foreign_runtime_bindings().for_each(visit);
+    }
+
+    fn foreign_runtime_bindings(
+        &self,
+    ) -> impl Iterator<Item = Option<hex_lattice_contract::ForeignProcessorBinding>> + '_ {
+        let instruments = self
             .revision
             .arrangement()
             .tracks()
             .iter()
             .filter_map(|track| track.foreign_instrument.as_ref())
             .filter(|node| !node.bypassed)
-        {
-            if let Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) = node.definition {
-                visit(facts.binding());
-            }
-        }
+            .filter_map(|node| match node.definition {
+                Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => {
+                    Some(facts.binding())
+                }
+                _ => None,
+            });
         let chains = self
             .device_chains
             .iter()
@@ -758,11 +765,7 @@ impl SessionPlayback {
                     .filter(|tail| tail.output_active)
                     .map(|tail| &tail.chain),
             );
-        for chain in chains {
-            for binding in chain.foreign_bindings() {
-                visit(binding);
-            }
-        }
+        instruments.chain(chains.flat_map(hex_lattice::NativeRuntimeChain::foreign_bindings))
     }
     pub(crate) fn device_resource_lease_on_control(
         &self,
