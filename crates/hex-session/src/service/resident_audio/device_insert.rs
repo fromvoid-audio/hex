@@ -2,6 +2,8 @@
 use super::*;
 mod main_history;
 
+mod move_history;
+
 fn device_edit_preparation_deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
@@ -83,6 +85,7 @@ impl DeviceInsertConfirmation {
 pub(in crate::service) enum Operation {
     Device(GraphEditOperation),
     HostedHistory(GraphEditOperation),
+    ResidentMoveHistory,
     HostedClipboard,
     Tempo,
 }
@@ -98,7 +101,7 @@ impl Operation {
             Self::Device(GraphEditOperation::MoveDevice) => "device moved",
             Self::Device(GraphEditOperation::MoveTrack) => "track moved",
             Self::Device(GraphEditOperation::RemoveTrack) => "track removed",
-            Self::HostedHistory(_) => "history committed",
+            Self::HostedHistory(_) | Self::ResidentMoveHistory => "history committed",
             Self::Tempo => "tempo applied",
         }
     }
@@ -106,6 +109,7 @@ impl Operation {
     pub(in crate::service) fn device(self) -> Option<GraphEditOperation> {
         match self {
             Self::Device(operation) | Self::HostedHistory(operation) => Some(operation),
+            Self::ResidentMoveHistory => Some(GraphEditOperation::MoveDevice),
             Self::HostedClipboard => Some(GraphEditOperation::InsertDevice),
             Self::Tempo => None,
         }
@@ -1023,25 +1027,91 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
+        self.stage_resident_graph_change(
+            context,
+            sink,
+            admission,
+            current,
+            plugin,
+            proposal_control,
+            document_intent,
+            |session| {
+                crate::validate_command_media(&command)?;
+                let operation = if plugin.is_some() {
+                    match &command {
+                        Command::ReplaceTrackInstrument { .. } => GraphEditOperation::ReplaceDevice,
+                        _ => GraphEditOperation::InsertDevice,
+                    }
+                } else {
+                    resident_graph_edit_operation(&command, proposal_control.is_some())
+                        .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
+                };
+                let edit = session.editor.stage_edit(command)?;
+                if (matches!(
+                    operation,
+                    GraphEditOperation::MoveDevice | GraphEditOperation::MoveTrack
+                ) || proposal_control.is_some())
+                    && edit.project() == session.project()
+                {
+                    return Ok(None);
+                }
+                Ok(Some((
+                    StagedChange::Command(edit),
+                    Operation::Device(operation),
+                )))
+            },
+        )
+    }
+
+    pub(in crate::service) fn stage_resident_move_history(
+        &mut self,
+        redo: bool,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        document_intent: u64,
+    ) -> Result<Option<Pending>, SessionError> {
+        if !sink.confirms_device_inserts()
+            || matches!(
+                sink.resident_publication_readiness(),
+                ResidentPublicationReadiness::NoOutput
+            )
+        {
+            return Ok(None);
+        }
+        self.stage_resident_graph_change(
+            context,
+            sink,
+            admission,
+            current,
+            None,
+            None,
+            document_intent,
+            |session| {
+                Ok(move_history::stage(&mut session.editor, redo)?
+                    .map(|edge| (StagedChange::History(edge), Operation::ResidentMoveHistory)))
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Both edit kinds share exact source and receipt custody.
+    fn stage_resident_graph_change(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        plugin: Option<&PluginEffectControl>,
+        proposal_control: Option<&PluginEffectControl>,
+        document_intent: u64,
+        stage: impl FnOnce(&mut Self) -> Result<Option<(StagedChange, Operation)>, SessionError>,
+    ) -> Result<Option<Pending>, SessionError> {
         let preparation_deadline = device_edit_preparation_deadline();
         let staged = (|| {
-            crate::validate_command_media(&command)?;
-            let operation = if plugin.is_some() {
-                // The hosted browser also stages replacement of an instrument.
-                GraphEditOperation::InsertDevice
-            } else {
-                resident_graph_edit_operation(&command, proposal_control.is_some())
-                    .ok_or(SessionError::Invalid("unsupported staged graph edit"))?
-            };
-            let edit = self.editor.stage_edit(command)?;
-            if (matches!(
-                operation,
-                GraphEditOperation::MoveDevice | GraphEditOperation::MoveTrack
-            ) || proposal_control.is_some())
-                && edit.project() == self.project()
-            {
+            let Some((edit, operation)) = stage(self)? else {
                 return Ok(None);
-            }
+            };
             let installed = sink
                 .resident_runtime_loop(context)
                 .map_err(SessionError::NativeAudio)?
@@ -1060,7 +1130,7 @@ impl Session {
                     })
                 })
                 .ok_or(SessionError::Invalid(
-                    if operation == GraphEditOperation::MoveTrack {
+                    if matches!(operation, Operation::Device(GraphEditOperation::MoveTrack)) {
                         "track move needs the current installed audio graph"
                     } else {
                         "device edit needs the current installed audio graph"
@@ -1107,21 +1177,22 @@ impl Session {
                 },
             )?;
             let receipt = insert_receipt(&snapshot, sink)?;
+            let publish_created = matches!(edit, StagedChange::Command(_));
             Ok(Some(Pending {
-                edit: StagedChange::Command(edit),
+                edit,
                 prepared: Prepared::Resident(Box::new(Resident {
                     snapshot,
                     receipt: Receipt(receipt),
                     predecessor: installed,
                 })),
                 confirmation: None,
-                operation: Operation::Device(operation),
+                operation,
                 cut_devices: None,
                 cut_tracks: None,
                 document_intent,
                 plugin: None,
                 proposal_control: None,
-                publish_created: true,
+                publish_created,
             }))
         })();
         if staged.is_err() {

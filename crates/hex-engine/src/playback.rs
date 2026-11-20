@@ -1860,7 +1860,10 @@ impl Playback {
     /// Frames by which Main output trails the scheduled content frame: the
     /// graph's pre-Main compensation plus declared Main processor latency.
     pub fn main_output_latency_frames(&self) -> u32 {
-        self.project.main_latency_frames()
+        self.session_runtime.as_ref().map_or_else(
+            || self.project.main_latency_frames(),
+            |runtime| runtime.main_output_latency_frames(),
+        )
     }
 
     /// Monotonic render clock, independent of Arrangement loop wrapping.
