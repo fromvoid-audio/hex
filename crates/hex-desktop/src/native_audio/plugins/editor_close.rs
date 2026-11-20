@@ -44,6 +44,23 @@ enum Stage {
 }
 
 impl Worker {
+    /// Output close transfers the exact pending admission reply with its
+    /// original edit reader. Root consumes it before issuing the final seal.
+    fn retire_on_output_close(&mut self, sources: &mut [Source]) {
+        let Some(source) = sources.iter_mut().find(|source| {
+            source.binding == self.binding && source.editor_retirement.lease.is_some()
+        }) else {
+            return;
+        };
+        if source.editor_retirement.pending_controller.is_some() {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.stage, Stage::Finished);
+        if let Stage::Holding(query) | Stage::Releasing(query) = previous {
+            source.editor_retirement.pending_controller = Some(query);
+        }
+    }
+
     /// A refusal aborts acquisition for this attempt. Any possible native hold
     /// stays in the release path until its producer supplies a terminal.
     fn poll(
@@ -361,9 +378,24 @@ impl Plugins {
     }
 
     pub(super) fn editor_close_output_closed(&mut self) {
-        self.replay_editor_hold = None;
-        if let Some(attempt) = self.editor_close.take() {
+        if let Some(hold) = &mut self.replay_editor_hold {
+            hold.worker.retire_on_output_close(&mut self.sources);
+            if matches!(hold.worker.stage, Stage::Finished) {
+                self.replay_editor_hold = None;
+            }
+        }
+        if let Some(attempt) = &mut self.editor_close {
             attempt.invalidate();
+            for worker in &mut attempt.workers {
+                worker.retire_on_output_close(&mut self.sources);
+            }
+            if attempt
+                .workers
+                .iter()
+                .all(|worker| matches!(worker.stage, Stage::Finished))
+            {
+                self.editor_close = None;
+            }
         }
     }
 }
