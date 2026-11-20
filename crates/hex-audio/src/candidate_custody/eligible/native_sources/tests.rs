@@ -458,6 +458,51 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn independent_publication_accounts_for_the_original_child_before_processor_sealing() {
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    let verify = || {
+        assert_eq!(root.actual_control_backing_bytes(), None);
+        let work = lock(&root.work);
+        let bank = lock(&root.bank);
+        let inventory = bank
+            .sources
+            .inventory(&work.sources, Some(References::default()))
+            .unwrap();
+        assert_eq!(
+            (inventory.workers, inventory.children, inventory.ipc),
+            (0, 1, 2)
+        );
+        assert!(
+            inventory.data > 0 && inventory.data <= source_reservation().max_retained_data_bytes
+        );
+    };
+    verify();
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 0,
+            output_frames: 8,
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Prepared { .. })
+    ));
+    verify();
+    assert!(root.retire_native_source(binding));
+    dispose(&root, binding);
+    assert_eq!(
+        root.recover_native_source(binding).unwrap().binding,
+        binding
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_close_during_reserved_construction_keeps_custody_without_starting_an_instance() {
     for close_before_pair in [false, true] {
         let root = root();

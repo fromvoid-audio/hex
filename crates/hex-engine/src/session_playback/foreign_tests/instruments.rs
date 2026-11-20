@@ -1172,6 +1172,11 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
 }
 
 fn session_held_note_fixture() -> (Arc<PreparedRevision>, hex_project::ClipId) {
+    let (editor, identity, clip) = session_held_note_project();
+    (prepare(&editor, identity, true).unwrap(), clip)
+}
+
+fn session_held_note_project() -> (Editor, ProcessorInstanceIdentity, hex_project::ClipId) {
     let (mut editor, identity) = fixture();
     let track = editor.project().tracks()[0].id();
     let Created::Scene(scene) = editor
@@ -1203,8 +1208,79 @@ fn session_held_note_fixture() -> (Arc<PreparedRevision>, hex_project::ClipId) {
             velocity: 98,
         })
         .unwrap();
+    (editor, identity, clip)
+}
+
+#[test]
+fn guarded_handoff_keeps_the_session_gate_deadline_only_for_the_same_midi_source() {
+    let (mut editor, identity, clip) = session_held_note_project();
     let revision = prepare(&editor, identity, true).unwrap();
-    (revision, clip)
+    let instrument = revision.arrangement().tracks()[0]
+        .foreign_instrument
+        .as_ref()
+        .unwrap();
+    let state = instrument.configuration.as_deref().unwrap();
+    let binding = instrument.foreign_processor().unwrap().binding().unwrap();
+    let proof = hex_lattice::ForeignConfigurationContinuation::new(identity, binding, state, state)
+        .unwrap();
+    let mut playing = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut endpoint = NoteEndpoint::default();
+    playing
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    playing.apply(SessionPlaybackCommand::Play).unwrap();
+    endpoint.render(&mut playing, &mut [[0.0; 2]; 16]).unwrap();
+    let [(0, onset)] = endpoint.notes.as_slice() else {
+        panic!("one Session note-on");
+    };
+    let onset = *onset;
+    assert!(onset.on);
+
+    let mut ordinary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(matches!(
+        ordinary.try_inherit_state_live_from(&mut playing),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::from_ratio(1, 64).unwrap(),
+            duration: BeatTime::from_ratio(1, 128).unwrap(),
+            pitch: 67,
+            channel: 3,
+            velocity: 98,
+        })
+        .unwrap();
+    let mut changed = SessionPlayback::new(prepare(&editor, identity, true).unwrap()).unwrap();
+    assert!(matches!(
+        changed.try_inherit_state_live_with_foreign_continuation_from(&mut playing, &proof),
+        Err(super::super::foreign_arrangement::INCOMPATIBLE_HANDOFF)
+    ));
+    assert_eq!(playing.performance_frame(), 16);
+
+    let mut continued = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    continued
+        .try_inherit_state_live_with_foreign_continuation_from(&mut playing, &proof)
+        .unwrap();
+    assert_eq!(continued.performance_frame(), 16);
+    let remaining = 375 - 16;
+    endpoint
+        .render(&mut continued, &mut vec![[0.0; 2]; remaining + 1])
+        .unwrap();
+    assert_eq!(
+        endpoint.notes,
+        [(
+            remaining,
+            hex_lattice::ForeignNote {
+                on: false,
+                velocity: 0,
+                ..onset
+            }
+        )]
+    );
 }
 
 #[test]

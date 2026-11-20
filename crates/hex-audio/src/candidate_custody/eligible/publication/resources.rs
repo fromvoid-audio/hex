@@ -102,11 +102,19 @@ pub(super) fn for_candidate(
     summary: AudioCandidateConstructorSummary,
     excluded_preparation: Option<usize>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))] source_work: &native_sources::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_refs: native_sources::References,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let native_sources = bank
         .sources
-        .inventory(source_work)
+        .inventory(
+            source_work,
+            bank.publication
+                .stream_extents
+                .is_some()
+                .then_some(native_refs),
+        )
         .ok_or("native source construction is not sealed")?;
     if bank
         .domains
