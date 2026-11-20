@@ -8,6 +8,153 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
+    use hex_session::service::DeviceInsertOutcome;
+
+    let _native = native_fixture();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.progress = Some(Arc::clone(&progress));
+    });
+    let files = Files::new();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    h.service
+        .as_ref()
+        .unwrap()
+        .submit(Request::InsertPluginEffect(request(
+            &imported.state,
+            PluginEffectDestination::Track(track),
+        )))
+        .unwrap();
+    let inserted = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let Some(Created::Device(vst)) = inserted.created else {
+        panic!("fixture VST3");
+    };
+    let predecessor = h.applied(h.context.unwrap());
+    fn status(h: &Harness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+    wait(|| progress.lock().unwrap().source_bindings[0].is_some());
+    let binding = progress.lock().unwrap().source_bindings[0].unwrap().1;
+    let observe = || {
+        let observation = progress.lock().unwrap();
+        let (device, current, blocks) = observation.source_bindings[0].unwrap();
+        assert_eq!((device, current), (vst.value(), binding));
+        blocks.unwrap_or(0)
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let play_original = |h: &Harness| {
+        let status = status(h);
+        let start = status.performance_frame.load(Acquire);
+        let mut pcm = [0.0; 512];
+        wait(|| {
+            pcm = render_hosted_pcm(h);
+            let current = status.performance_frame.load(Acquire);
+            if current == start {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            current > start
+        });
+        assert_eq!(status.performance_frame.load(Acquire), start + 256);
+        let block = start / 256;
+        wait(|| observe() > block);
+        let sample = block
+            .checked_sub(2)
+            .map_or(0.0, |input| 0.25 * (0.5 + input as f32 * 0.125));
+        assert!(pcm.iter().all(|value| (*value - sample).abs() < 1e-5));
+    };
+    for _ in 0..4 {
+        play_original(&h);
+    }
+    for proceed in [false, true] {
+        let pending = h.run(Request::Edit(Command::RemoveDevice(vst)));
+        assert!(!pending.request_complete);
+        assert_eq!(pending.state.project, inserted.state.project);
+        wait(|| status(&h).publication_in_flight());
+        play_original(&h);
+        let proposed = h.next();
+        let offer = proposed
+            .device_insert_confirmation
+            .expect("exact removal offer");
+        assert_eq!(proposed.state.project, inserted.state.project);
+        assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
+        play_original(&h);
+        if !proceed {
+            assert!(offer.cancel());
+            let cancelled = h.next();
+            assert_eq!(cancelled.state.project, inserted.state.project);
+            assert_eq!(
+                cancelled.device_insert_complete.unwrap().outcome,
+                DeviceInsertOutcome::Cancelled
+            );
+            play_original(&h);
+            continue;
+        }
+        assert!(offer.proceed());
+        wait(|| status(&h).publication_in_flight());
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let (cut_start, faded) = loop {
+            let start = status(&h).position.load(Acquire);
+            let faded = render_hosted_pcm(&h);
+            let position = status(&h).position.load(Acquire);
+            if position == start + 128 {
+                break (start, faded);
+            }
+            assert_eq!(position, start + 256, "waiting for cut: {faded:?}");
+            assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
+            assert!(faded.iter().all(|value| *value > 0.0));
+            wait(|| observe() > start / 256);
+            assert!(Instant::now() < deadline, "approved cut did not start");
+        };
+        assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
+        assert_eq!(status(&h).position.load(Acquire), cut_start + 128);
+        assert!(faded[0] > 0.0);
+        assert!(faded[254..].iter().all(|value| *value == 0.0));
+        let resumed = render_hosted_pcm(&h);
+        assert_eq!(status(&h).position.load(Acquire), cut_start + 128 + 256);
+        assert!(resumed[0] > 0.0 && resumed[0] < 0.25);
+        assert_eq!(resumed[510..], [0.25; 2]);
+        let removed = h.next();
+        assert!(removed.error.is_none(), "{:?}", removed.error);
+        assert_eq!(
+            removed.device_insert_complete.unwrap().outcome,
+            DeviceInsertOutcome::Installed
+        );
+        assert!(removed.state.project.device(vst).is_none());
+        assert_eq!(removed.state.revision, inserted.state.revision + 1);
+        let active = status(&h).applied_audio_source().unwrap();
+        assert_eq!(active.context, h.context.unwrap());
+        assert_eq!(active.output_identity, predecessor.output_identity);
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_hosted_insert_keeps_the_eq_gesture_commit() {
     let _native = native_fixture();
     let files = Files::new();
@@ -387,6 +534,10 @@ fn verified_hosted_insert_installs_original_worker_and_retains_it_for_eq_edit() 
 }
 
 fn render_hosted_quantum(h: &Harness) -> f32 {
+    render_hosted_pcm(h)[510]
+}
+
+fn render_hosted_pcm(h: &Harness) -> [f32; 512] {
     let mut block = [[0.0; 2]; 256];
     let mut host = [0.0; 512];
     let mut slot = h.backend.lock().unwrap();
@@ -403,5 +554,5 @@ fn render_hosted_quantum(h: &Harness) -> f32 {
         ),
         (0, 0, 0, 0),
     );
-    host[510]
+    host
 }
