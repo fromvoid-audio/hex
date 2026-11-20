@@ -363,6 +363,17 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             view.error, view.status, view.selected_track, view.state.as_ref().map(|s| (s.revision, s.project.tracks().len()))
         );
     });
+    if log.is_some() {
+        // Paint twice while the worker terminal is still in the receive queue.
+        for _ in 0..2 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(view.pending_plugin_effect.is_some());
+            });
+            assert!(visual.debug_bounds("editor-status-message").is_some());
+        }
+    }
     let deadline = crate::test_wait::hang_deadline();
     loop {
         cx.background_executor
@@ -400,9 +411,10 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             .lines()
             .filter(|line| line.contains("vst3_load"))
             .collect();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert!(records[0].contains("stage=submitted"));
-        assert!(records[1].contains("stage=refused"));
+        assert!(records[1].contains("stage=loading_feedback_painted"));
+        assert!(records[2].contains("stage=refused"));
         for record in records {
             assert!(record.contains("Original Processor") && record.contains("rate_hz=48000"));
             assert!(!record.contains("Original.vst3"));
@@ -1273,14 +1285,6 @@ fn check_vst_proposal(
         })
     });
     let directory = PreferencesTestDirectory::new();
-    let mut log = (existing_chain && !cancel_first).then(|| {
-        let log = hex_diagnostics::SessionLog::start(directory.0.join("logs")).unwrap();
-        visual.update(|_, cx| {
-            crate::diagnostics::install_session_log(cx, Ok(log.handle()));
-            crate::diagnostics::install_action_diagnostics(cx, true);
-        });
-        log
-    });
     let module = directory.0.canonicalize().unwrap().join("Original.vst3");
     let mut catalog = original_plugin_catalog(module.clone());
     let class = &mut catalog.entries[0]
@@ -1352,12 +1356,6 @@ fn check_vst_proposal(
         )
     };
     let pending = visual.debug_bounds(surface).expect("loading proposal");
-    if log.is_some() {
-        assert!(visual.debug_bounds("editor-status-message").is_some());
-        editor.update(&mut visual, |_, cx| cx.notify());
-        visual.run_until_parked();
-        assert_eq!(visual.debug_bounds(surface), Some(pending));
-    }
     let cancel_bounds = visual.debug_bounds(cancel).expect("cancel on proposal");
     let original = Box::leak(
         before_device
@@ -1435,18 +1433,6 @@ fn check_vst_proposal(
         visual.run_until_parked();
     }
     assert!(visual.debug_bounds(surface).is_none());
-    if let Some(log) = &mut log {
-        log.shutdown().unwrap();
-        let contents = std::fs::read_to_string(log.path()).unwrap();
-        let stages: Vec<_> = contents
-            .lines()
-            .filter_map(|row| {
-                let (_, stage) = row.split_once("vst3_load v=1 stage=")?;
-                stage.split_once(' ').map(|(stage, _)| stage)
-            })
-            .collect();
-        assert_eq!(stages, ["submitted", "loading_feedback_painted", "refused"]);
-    }
     let original_bounds = visual.debug_bounds(original).unwrap();
     if existing_chain || session {
         assert!(original_bounds.left() < pending.right());
