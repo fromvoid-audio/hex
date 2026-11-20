@@ -225,6 +225,10 @@ impl NativeAudioSink {
             return;
         }
         self.verified_edit = None;
+        if attempt.stages_hosted_history() {
+            self.plugins
+                .finish_edit(attempt.source().context(), installed);
+        }
         if installed && let Some(submission) = attempt.submission() {
             self.verified_last =
                 Some(VerifiedSource::Canonical(Arc::clone(attempt.source())).key());

@@ -744,13 +744,16 @@ impl Plugins {
         .then(|| Arc::clone(&pending.operation))
     }
 
-    /// Select only installed sources or the exact ready worker owned by this
-    /// proposal. Root's borrowed definition still validates the actual state.
+    /// Select installed sources and workers prepared for this exact proposal
+    /// or staged history edge. Root still validates the actual state.
     pub(super) fn verified_effect_bindings(
         &self,
         input: ResidentEffectPreparation<'_>,
         proposal: Option<&Arc<PluginEffectControl>>,
+        staged_history: bool,
     ) -> Result<Vec<Binding>, String> {
+        let context = input.context();
+        let history = staged_history && self.edit == Some(context);
         let pending = self.pending.as_ref().filter(|pending| {
             proposal.is_some_and(|proposal| Arc::ptr_eq(proposal, &pending.operation))
                 && pending.canonical_context.project_generation
@@ -773,7 +776,8 @@ impl Plugins {
                         && source.device == device
                         && !source.retiring
                         && (source.accepted
-                            || pending.is_some_and(|pending| source.binding == pending.binding))
+                            || pending.is_some_and(|pending| source.binding == pending.binding)
+                            || (history && source.operation.edit_context() == Some(context)))
                         && edits::source_covers_selection(
                             source.authored.as_ref(),
                             authored.as_ref(),
@@ -1157,6 +1161,37 @@ impl Plugins {
         }
         self.installed_removals_checked = Some(context);
     }
+    pub(super) fn prepare_edit_sources(
+        &mut self,
+        mut output: Option<&mut WorkerPreparedOutput>,
+        input: &ResidentEffectPreparation<'_>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        cancellation: Option<&hex_session::service::RequestCancellation>,
+        hosted_history: bool,
+    ) -> Result<(), String> {
+        let previous = desired
+            .filter(|_| hosted_history)
+            .map(CanonicalAudioSourceSnapshot::effect_preparation);
+        input.visit_plugin_devices(|destination, device, state| {
+            // History may carry the identity and state of a deleted device.
+            // The predecessor's membership decides whether DSP can survive.
+            let fresh_history_source = previous
+                .as_ref()
+                .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
+            self.prepare_edit_source(
+                output.as_deref_mut().ok_or("native output closed")?,
+                input,
+                destination,
+                device,
+                state,
+                desired,
+                cancellation,
+                fresh_history_source,
+            )
+            .map_err(bounded_error)
+        })
+    }
+
     pub fn compile(
         &mut self,
         output: Option<&mut WorkerPreparedOutput>,
@@ -1177,18 +1212,7 @@ impl Plugins {
         }
         let mut output = output;
         if input.preparing_edit() {
-            input.visit_plugin_devices(|destination, device, state| {
-                self.prepare_edit_source(
-                    output.as_deref_mut().ok_or("native output closed")?,
-                    &input,
-                    destination,
-                    device,
-                    state,
-                    desired,
-                    cancellation,
-                )
-                .map_err(bounded_error)
-            })?;
+            self.prepare_edit_sources(output.as_deref_mut(), &input, desired, cancellation, false)?;
         }
         let mut bindings = Vec::new();
         bindings

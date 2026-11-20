@@ -9743,6 +9743,35 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
+                request @ (Request::Undo | Request::Redo)
+                    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && session
+                            .has_verified_hosted_history(matches!(request, Request::Redo))
+                        && events
+                            .resident_audio()
+                            .is_some_and(|sink| sink.confirms_verified_device_inserts()) =>
+                {
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.stage_verified_hosted_history(
+                                matches!(request, Request::Redo),
+                                &state,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                                sink,
+                                request_document_intent,
+                            )
+                        });
+                    match result {
+                        Ok(staged) => {
+                            pending_device_insert = Some(staged);
+                            request_complete = false;
+                            status = Some("history pending · waiting for audio".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 Request::Undo => match session.comparison_history(
                     false,
                     compiled
