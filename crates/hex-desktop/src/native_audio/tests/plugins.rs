@@ -101,7 +101,7 @@ fn request(
         control: Arc::new(PluginEffectControl::default()),
     }
 }
-fn wait(mut ready: impl FnMut() -> bool) {
+pub(super) fn wait(mut ready: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(10);
     while !ready() {
         assert!(

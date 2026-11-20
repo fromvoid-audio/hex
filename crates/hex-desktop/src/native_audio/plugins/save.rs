@@ -97,6 +97,11 @@ impl Plugins {
                 if source.retiring {
                     return Err("vst3 capture source is retiring".into());
                 }
+                if self.replay_state_is_unconfirmed(source.binding) {
+                    return Err(
+                        "vst3 state capture refused · editor replay recovery is unconfirmed".into(),
+                    );
+                }
                 wanted
                     .try_reserve(1)
                     .map_err(|_| "vst3 capture inventory allocation failed")?;

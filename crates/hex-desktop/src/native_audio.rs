@@ -1352,6 +1352,74 @@ impl WorkerAudioSink for NativeAudioSink {
         self.offer_resident_device_insert_consent(submission)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn retiring_editor_replay_ready(&self) -> bool {
+        self.plugins.retiring_editor_replay_ready()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn next_retiring_editor_replay(&mut self) -> Option<hex_session::service::RetiringEditorBatch> {
+        self.plugins.next_retiring_editor_replay()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn capture_retiring_editor_replay(
+        &mut self,
+        batch: &hex_session::service::RetiringEditorBatch,
+        points: &[(u32, f64)],
+        publication: AudioSourceContext,
+    ) -> Result<hex_session::service::PluginParameterCapture, String> {
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 replay output is unavailable")?;
+        let submitted = self
+            .resident
+            .current_submission
+            .filter(|submission| submission.source_context == Some(batch.successor_context))
+            .ok_or("vst3 replay graph submission changed")?;
+        if control.status.recording_source().is_none_or(|actual| {
+            Some(actual.context) != submitted.source_context
+                || actual.output_identity != submitted.output_identity
+                || actual.audio_revision != submitted.audio_revision
+        }) {
+            return Err("vst3 replay graph is not current".into());
+        }
+        self.plugins.capture_retiring_editor_replay(
+            control,
+            batch,
+            points,
+            publication,
+            self.desired.as_deref(),
+            self.request_cancellation.as_ref(),
+        )
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn finish_retiring_editor_replay(
+        &mut self,
+        batch: &hex_session::service::RetiringEditorBatch,
+        disposition: hex_session::service::RetiringEditorReplayDisposition,
+    ) -> Result<(), String> {
+        self.plugins.finish_retiring_editor_replay(
+            self.output
+                .as_mut()
+                .and_then(|output| output.publication.control()),
+            batch,
+            disposition,
+        )
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn accept_retiring_editor_batch(
+        &mut self,
+        batch: &hex_session::service::RetiringEditorBatch,
+    ) -> Result<(), String> {
+        self.plugins
+            .accept_retiring_editor_batch(batch)
+            .map_err(str::to_owned)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn plugin_parameter_requires_stopped_restore(
         &mut self,
         context: AudioSourceContext,

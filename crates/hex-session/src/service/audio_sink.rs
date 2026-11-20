@@ -709,6 +709,43 @@ pub trait WorkerAudioSink: Send {
         None
     }
 
+    fn retiring_editor_replay_ready(&self) -> bool {
+        false
+    }
+    fn next_retiring_editor_replay(&mut self) -> Option<super::RetiringEditorBatch> {
+        None
+    }
+
+    fn capture_retiring_editor_replay(
+        &mut self,
+        _batch: &super::RetiringEditorBatch,
+        _points: &[(u32, f64)],
+        _publication: hex_engine::AudioSourceContext,
+    ) -> Result<super::PluginParameterCapture, String> {
+        Err("retiring vst3 editor replay is unavailable".into())
+    }
+
+    /// End the exact replay attempt after its Session disposition. A refusal
+    /// leaves the original receipt in native custody and reports the transfer
+    /// failure through the existing retirement status.
+    fn finish_retiring_editor_replay(
+        &mut self,
+        _batch: &super::RetiringEditorBatch,
+        _disposition: super::RetiringEditorReplayDisposition,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Release this exact sequence only after Session disposes every event.
+    /// An accepted disposition covers the original source and successor.
+    /// An error must leave the original receipt available for the same retry.
+    fn accept_retiring_editor_batch(
+        &mut self,
+        _batch: &super::RetiringEditorBatch,
+    ) -> Result<(), String> {
+        Err("retiring vst3 editor batches are unavailable".into())
+    }
+
     /// Before Begin, request renewal only when the exact stopped source has
     /// returned its endpoints. Session republishes its unchanged canonical
     /// snapshot through the existing stopped-restore owner before admission.
@@ -1407,6 +1444,7 @@ pub(super) struct ControlPoll {
     pub gesture: Option<GestureRequest>,
     pub editor_take: Option<u64>,
     pub recovery_ready: bool,
+    pub editor_replay_ready: bool,
 }
 
 impl WorkerEvents {
@@ -2051,6 +2089,12 @@ impl WorkerEvents {
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginParameters,
+                    document_intent,
+                ));
+            }
+            if control_pending.editor_replay_ready {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueRetiringEditorReplay,
                     document_intent,
                 ));
             }
