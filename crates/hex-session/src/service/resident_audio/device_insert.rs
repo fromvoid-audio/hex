@@ -1,5 +1,6 @@
 //! Keep a validated graph edit private until the callback installs its exact graph.
 use super::*;
+mod main_history;
 
 mod move_history;
 
@@ -178,6 +179,7 @@ struct VerifiedAttempt {
 enum HostedSources {
     InstalledOnly,
     Clipboard,
+    MainHistory,
     PausedHistory,
 }
 
@@ -228,6 +230,8 @@ impl VerifiedGraphEditAttempt {
         self.0.tempo_cut
     }
 
+    /// Unsupported hosted history still requires its exact settled interval.
+    /// A single Main restoration uses ordinary fenced insertion and consent.
     pub fn stages_hosted_history(&self) -> bool {
         self.0.hosted_sources == HostedSources::PausedHistory
     }
@@ -886,6 +890,11 @@ impl Session {
         ));
         let tempo_cut = matches!(operation, Operation::Tempo);
         let hosted_sources = match operation {
+            Operation::HostedHistory(GraphEditOperation::InsertDevice)
+                if main_history::restores_one_main(self.project(), edit.project()) =>
+            {
+                HostedSources::MainHistory
+            }
             Operation::HostedHistory(_) => HostedSources::PausedHistory,
             Operation::HostedClipboard => HostedSources::Clipboard,
             _ => HostedSources::InstalledOnly,
@@ -938,7 +947,7 @@ impl Session {
             document_intent,
             plugin: None,
             proposal_control: None,
-            publish_created: hosted_sources != HostedSources::PausedHistory,
+            publish_created: !matches!(operation, Operation::HostedHistory(_)),
         })
     }
 

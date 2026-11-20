@@ -431,7 +431,7 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
     await_verified_retirement(&h, &progress);
 }
 
-fn await_verified_retirement(
+pub(super) fn await_verified_retirement(
     h: &Harness,
     progress: &Mutex<crate::native_audio::plugins::PreparationObservation>,
 ) {
@@ -1166,7 +1166,7 @@ fn verified_hosted_insert_installs_original_worker_and_retains_it_for_eq_edit() 
     panic!("verified eq successor did not render");
 }
 
-fn render_hosted_quantum(h: &Harness) -> f32 {
+pub(super) fn render_hosted_quantum(h: &Harness) -> f32 {
     render_hosted_pcm(h)[510]
 }
 
