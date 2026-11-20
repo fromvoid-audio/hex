@@ -172,12 +172,14 @@ impl NativeWorker {
         {
             return Err("native guarded editor write is busy");
         }
-        // A revoked live token is already Failed. Retire its late data only
-        // after the actual original SDK query completed on the joined owner.
+        // Revoked live observations can be superseded after their SDK query
+        // completes. An admission terminal can change the same helper's
+        // continued editor behavior, so its original token must consume it.
         if stopped
             && slot.controller.requested
             && slot.controller.complete
             && !slot.controller.stopped
+            && !slot.controller.changes_editor_admission()
         {
             slot.controller.requested = false;
         }
@@ -231,7 +233,8 @@ impl NativeWorker {
     }
 
     /// Only the exact token consumes its terminal once. Revocation wins over
-    /// late live data; stopped queries use the same retained reader after join.
+    /// late live observations. Hold and release terminals can still be read on
+    /// the joined original worker so the caller can settle the admission change.
     /// The returned page allocation belongs to this control-side caller and is
     /// outside the fixed constructor backing and the audio callback.
     pub fn poll_controller_query_on_control(
@@ -275,7 +278,7 @@ impl NativeWorker {
         {
             return Err("native controller source differs");
         }
-        {
+        let changes_editor_admission = {
             let slot = match self.reaper.completed.capture.try_lock() {
                 Ok(slot) => slot,
                 Err(TryLockError::WouldBlock) => {
@@ -286,8 +289,10 @@ impl NativeWorker {
             if !slot.controller.matches(request) {
                 return Err("native controller operation differs");
             }
-        }
-        if request.stopped {
+            slot.controller.changes_editor_admission()
+        };
+        let live = self.transport_is_live_on_control();
+        if request.stopped || (!live && changes_editor_admission) {
             match self.service_stopped_controller() {
                 Ok(()) => {}
                 Err("native preparation is busy") => {
@@ -295,7 +300,7 @@ impl NativeWorker {
                 }
                 Err(_) => return Ok(Poll::Failed),
             }
-        } else if !self.transport_is_live_on_control() {
+        } else if !live {
             return Ok(Poll::Failed);
         }
         let mut mailbox = match self.reaper.completed.capture.try_lock() {
@@ -350,6 +355,16 @@ impl NativeWorker {
     }
 }
 impl Slot {
+    fn changes_editor_admission(&self) -> bool {
+        matches!(
+            self.query,
+            Operation::Observe(
+                ControllerRequest::HoldEditorAdmission(_)
+                    | ControllerRequest::ReleaseEditorAdmission(_)
+            )
+        )
+    }
+
     pub(super) fn guarded_write_pending(&self) -> bool {
         self.requested && self.query.kind() == Kind::GuardedWrite
     }

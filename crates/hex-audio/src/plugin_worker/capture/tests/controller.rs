@@ -336,6 +336,81 @@ fn original_worker_holds_editor_admission_without_parking_the_callback() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_worker_preserves_unread_editor_hold_terminal_until_exact_release() {
+    use hex_plugin_host::protocol::{ControllerRequest, EditorAdmissionState};
+    use std::num::NonZeroU64;
+
+    const NAME: &str = "plugin_worker::capture::tests::controller::stopped_worker_preserves_unread_editor_hold_terminal_until_exact_release";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let instance = original_instance();
+    let child = instance.child_id_on_control();
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(instance).unwrap();
+    callback_block(&owner, &mut endpoint, 0);
+    let token = NonZeroU64::new(12).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let hold = loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::HoldEditorAdmission(token))
+        {
+            Ok(query) => break query,
+            Err("native controller mailbox is busy") => {}
+            Err(reason) => panic!("editor hold admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    // The real SDK has applied the hold, but the client has not read its reply.
+    while owner.reaper.completed.controller_requested.load(Acquire) {
+        assert!(Instant::now() < until, "native editor hold completed");
+        thread::yield_now();
+    }
+    owner.revoke_on_control();
+    loop {
+        match owner.begin_controller_query_on_control(ControllerRequest::ReadEditorFrontier) {
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err("native controller query is already pending") => break,
+            Err(reason) => panic!("stopped controller admission: {reason}"),
+            Ok(_) => panic!("a new query replaced the unread editor hold"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    loop {
+        match owner.poll_controller_query_on_control(&hold).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorAdmission(EditorAdmissionState::Held {
+                admitted_through: 0,
+            }) => break,
+            other => panic!("unread exact editor hold after stop: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&hold).is_err());
+    let release = owner
+        .begin_controller_query_on_control(ControllerRequest::ReleaseEditorAdmission(token))
+        .unwrap();
+    loop {
+        match owner.poll_controller_query_on_control(&release).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::EditorAdmission(EditorAdmissionState::Released) => {
+                break;
+            }
+            other => panic!("stopped editor hold release: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&release).is_err());
+    assert!(owner.owns_callback(&endpoint));
+    let quiescent = owner.quiesce_on_control().unwrap();
+    assert_eq!(quiescent.child_id_on_control(), child);
+    assert!(quiescent.retire_on_control().unwrap().status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn editor_seal_requires_stopped_original_worker_and_exact_completion() {
     use hex_plugin_host::protocol::{ControllerRequest, EditorSealState};
     const NAME: &str = "plugin_worker::capture::tests::controller::editor_seal_requires_stopped_original_worker_and_exact_completion";
