@@ -348,7 +348,7 @@ impl SessionPlayback {
                         .map(RemovalTransition::Reorder)
                 })
                 .or_else(|| {
-                    self.resident_group_entry_from(previous)
+                    self.resident_group_reroute_from(previous)
                         .map(RemovalTransition::Route)
                 })
                 .or_else(|| {
