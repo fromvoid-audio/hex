@@ -17,6 +17,8 @@ mod reorder;
 mod return_removal;
 mod reverb_power;
 #[cfg(feature = "allocation-probe")]
+mod short_main_pass;
+#[cfg(feature = "allocation-probe")]
 mod track_removal;
 
 const RATE: u32 = 48_000;

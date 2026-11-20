@@ -1509,6 +1509,9 @@ impl SessionPlayback {
             Restart::Ordinary | Restart::Baked | Restart::ConfirmedInsert { force: true }
         );
         let continuous_insert = self.require_continuous_insert && previous.playing;
+        let main_pass_cut = self
+            .native_removal
+            .and_then(|pending| pending.main_pass_transition());
         let tail_policy = if let Some(removal) = self.native_removal {
             if !continuous_insert || !removal.matches(previous) {
                 return Err(SessionPlaybackError::InvalidCommand);
@@ -1719,11 +1722,36 @@ impl SessionPlayback {
         if continuous_insert
             && (force_restart
                 || !mapped_main_clock
-                || self.revision.arrangement().main_latency_frames()
-                    != previous.revision.arrangement().main_latency_frames())
+                || (main_pass_cut.is_none()
+                    && self.revision.arrangement().main_latency_frames()
+                        != previous.revision.arrangement().main_latency_frames()))
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
+        let main_pass_delay = if let Some(transition) = main_pass_cut {
+            if demand.is_none() {
+                Some(
+                    previous
+                        .main_chain
+                        .settled_inline_main_delay(transition)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
+            } else {
+                None
+            }
+        } else if let Some(delay) = previous.main_pass_delay {
+            if force_restart
+                || !mapped_main_clock
+                || self.compensation.is_some()
+                || !self.main_chain.is_empty()
+                || !self.same_direct_pass_input(previous)
+            {
+                return Err(SessionPlaybackError::LatencyLayoutChanged);
+            }
+            Some(delay)
+        } else {
+            None
+        };
         if !self.device_cut_keeps_effect_clocks(previous, tail_policy) {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
@@ -2011,6 +2039,7 @@ impl SessionPlayback {
                     })
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
+            (None, Some(_)) if main_pass_cut.is_some() => Some(0),
             (Some(_), Some(_)) if removed_send_clock => Some(3_u8),
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
@@ -6826,6 +6855,7 @@ impl SessionPlayback {
                     .any(|bus| bus.id == fade.id)
             });
         }
+        self.main_pass_delay = main_pass_delay;
         self.native_removal = None;
         Ok(report)
     }
