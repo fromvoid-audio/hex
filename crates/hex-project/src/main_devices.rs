@@ -1,5 +1,6 @@
 //! Singleton Main metadata; provider class admission stays in prepared effect compilation.
 use crate::{Command, Created, Device, DeviceId, Invalid, Project};
+use hex_lattice_contract::NativeDeviceState;
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
@@ -12,18 +13,20 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             }
             let index = anchor(project, before)?;
             let id = DeviceId(project.allocate_id()?);
-            project.main_devices.insert(
-                index,
-                Device {
-                    modulation: Default::default(),
-                    parent: None,
-                    automation: Vec::new(),
-                    id,
-                    state,
-                    bypassed: false,
-                    comparison: None,
-                },
-            );
+            project.main_devices.insert(index, leaf(id, state));
+            Ok(Created::Device(id))
+        }
+        Command::ReplaceMainDevice { replacing, state } => {
+            let index = project
+                .main_devices
+                .iter()
+                .position(|device| device.id == replacing && device.parent.is_none())
+                .ok_or(Invalid("main device replacement target changed"))?;
+            if crate::device_inventory::serial_unit_span(&project.main_devices, index)?.len() != 1 {
+                return Err(Invalid("main device replacement requires a single effect"));
+            }
+            let id = DeviceId(project.allocate_id()?);
+            project.main_devices[index] = leaf(id, state);
             Ok(Created::Device(id))
         }
         Command::MoveMainDevice { device, before } => {
@@ -39,6 +42,19 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         _ => Err(Invalid("not a main device command")),
     }
 }
+
+fn leaf(id: DeviceId, state: NativeDeviceState) -> Device {
+    Device {
+        modulation: Default::default(),
+        parent: None,
+        automation: Vec::new(),
+        id,
+        state,
+        bypassed: false,
+        comparison: None,
+    }
+}
+
 fn anchor(project: &Project, before: Option<DeviceId>) -> Result<usize, Invalid> {
     match before {
         Some(id) => project

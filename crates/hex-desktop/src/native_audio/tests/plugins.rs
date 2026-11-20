@@ -1073,6 +1073,169 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_main_vst3_replacement_keeps_original_until_the_exact_slot_install() {
+    use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    let selected = selection();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selected, "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        directory.join("plugin-catalog.json"),
+    );
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 8192)));
+    (applied, _) = h.applied(applied);
+    let project = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    (applied, _) = h.applied(applied);
+    h.run(Request::InsertPluginEffect(request(
+        &project.state,
+        PluginEffectDestination::Main,
+    )));
+    let original = terminal(&mut h);
+    assert!(
+        original.plugin_effect_complete[0].accepted,
+        "{:?}",
+        original.error
+    );
+    h.applied(applied);
+    let old = original.state.project.main_devices()[0].id();
+    let binding = |h: &ResidentHarness| {
+        h.plugin_progress.lock().unwrap().source_bindings[0]
+            .unwrap()
+            .1
+    };
+    let old_binding = binding(&h);
+    let source = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let old_source = source(&h);
+    let replacement = || {
+        request(
+            &original.state,
+            PluginEffectDestination::ReplaceMainEffect { replacing: old },
+        )
+    };
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        instruments::render_completed_block(&h);
+    }
+    let cancel = replacement();
+    let control = Arc::clone(&cancel.control);
+    h.run(Request::InsertPluginEffect(cancel));
+    wait(|| {
+        h.pump();
+        let pcm = instruments::render_completed_block(&h);
+        assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.001));
+        assert_eq!(source(&h), old_source);
+        assert_eq!(binding(&h), old_binding);
+        h.plugin_progress
+            .lock()
+            .unwrap()
+            .newest_source
+            .is_some_and(|(id, candidate, accepted)| {
+                id == original.state.project.next_identity()
+                    && candidate != old_binding
+                    && !accepted
+            })
+    });
+    assert!(control.cancel());
+    let cancelled = terminal(&mut h);
+    assert!(!cancelled.plugin_effect_complete[0].accepted);
+    assert_eq!(cancelled.state.project, original.state.project);
+    assert_eq!(cancelled.state.revision, original.state.revision);
+    assert_eq!(cancelled.state.can_undo, original.state.can_undo);
+    assert_eq!(cancelled.state.can_redo, original.state.can_redo);
+    assert_eq!(source(&h), old_source);
+    assert_eq!(binding(&h), old_binding);
+
+    h.run(Request::InsertPluginEffect(replacement()));
+    let mut terminal = None;
+    let mut approved_basis = None;
+    wait(|| {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            if let Some(offer) = &event.device_insert_confirmation {
+                assert_eq!(offer.operation(), GraphEditOperation::ReplaceDevice);
+                assert_eq!(event.state.project, original.state.project);
+                assert_eq!(source(&h), old_source);
+                assert!(offer.proceed());
+                assert!(approved_basis.replace(offer.submission()).is_none());
+            }
+            if !event.plugin_effect_complete.is_empty() {
+                terminal = Some(event);
+                return true;
+            }
+        }
+        instruments::render_completed_block(&h);
+        false
+    });
+    let installed = terminal.unwrap();
+    assert!(
+        installed.plugin_effect_complete[0].accepted,
+        "{:?}",
+        installed.error
+    );
+    let receipt = installed.device_insert_complete.unwrap();
+    let approved_basis = approved_basis.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.context, approved_basis.context);
+    assert_eq!(
+        receipt.submission.output_identity,
+        approved_basis.output_identity
+    );
+    assert_ne!(
+        receipt.submission.audio_revision,
+        approved_basis.audio_revision
+    );
+    assert_eq!(source(&h).audio_revision, receipt.submission.audio_revision);
+    assert_eq!(source(&h).output_identity, old_source.output_identity);
+    assert_eq!(installed.state.revision, original.state.revision + 1);
+    let [new] = installed.state.project.main_devices() else {
+        panic!("occupied Main slot must be replaced atomically");
+    };
+    assert_eq!(new.id().value(), original.state.project.next_identity());
+    assert!(installed.state.project.device(old).is_none());
+    wait(|| {
+        h.pump();
+        instruments::render_completed_block(&h);
+        h.plugin_records.load(Acquire) == 1
+            && h.plugin_progress.lock().unwrap().source_bindings[0]
+                .is_some_and(|(id, fresh, _)| id == new.id().value() && fresh != old_binding)
+    });
+    assert!(
+        instruments::render_completed_block(&h)
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 0.001)
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tail_pcm() {
     let _native = native_fixture();
     let files = Files::new();
