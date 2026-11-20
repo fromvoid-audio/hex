@@ -94,9 +94,11 @@ fn check_position(partition: usize) {
             context.project_generation,
         )
         .unwrap_or_else(|error| panic!("{}", error.reason));
-    control
-        .command(PlaybackCommand::PlayFrom(page - 1024))
-        .unwrap();
+    let initial = AppliedAudioSource {
+        context,
+        audio_revision: control.submitted_revision(),
+        output_identity: control.output_identity().unwrap(),
+    };
     let status = Arc::clone(&control.status);
     let mut saw_pins = false;
     let mut render = |frames: usize| {
@@ -128,14 +130,60 @@ fn check_position(partition: usize) {
         );
         (start, output)
     };
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // First observe the actual constructor receipt. A nonzero PlayFrom while
+    // that publication is still pending starts a different stream-action path
+    // and cannot establish this edit's incumbent. Match check_insert's Play.
+    let bootstrap_deadline = Instant::now() + Duration::from_secs(2);
+    while status.applied_audio_source() != Some(initial) {
+        render(256);
+        assert!(
+            Instant::now() < bootstrap_deadline,
+            "fixture bootstrap did not install: expected={initial:?}, applied={:?}, rejected={:?}, action={:?}, playing={}, position={}, performance={}, buffering={}, changed={}, read_failed={}, consumed={}, admitted={}",
+            status.applied_audio_source(),
+            status.rejected_revision(),
+            status.rejected_action(),
+            status.playing.load(Acquire),
+            status.position.load(Acquire),
+            status.performance_frame.load(Acquire),
+            status.stream_buffering.load(Acquire),
+            status.stream_source_changed.load(Acquire),
+            status.stream_read_failed.load(Acquire),
+            status.consumed_command.load(Acquire),
+            status.admitted_ticket.load(Acquire),
+        );
+        std::thread::yield_now();
+    }
+    assert!(!status.playing.load(Acquire));
+    let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
     while status.position.load(Acquire) < page - 768 {
-        render(partition);
-        assert!(Instant::now() < deadline, "initial stream did not play");
+        render(256);
+        assert!(
+            Instant::now() < bootstrap_deadline,
+            "fixture bootstrap did not play: initial={initial:?}, applied={:?}, rejected={:?}, action={:?}, play_ticket={play}, playing={}, position={}, performance={}, buffering={}, changed={}, read_failed={}, consumed={}, admitted={}",
+            status.applied_audio_source(),
+            status.rejected_revision(),
+            status.rejected_action(),
+            status.playing.load(Acquire),
+            status.position.load(Acquire),
+            status.performance_frame.load(Acquire),
+            status.stream_buffering.load(Acquire),
+            status.stream_source_changed.load(Acquire),
+            status.stream_read_failed.load(Acquire),
+            status.consumed_command.load(Acquire),
+            status.admitted_ticket.load(Acquire),
+        );
         std::thread::yield_now();
     }
     let predecessor = status.applied_audio_source().unwrap();
-    assert_eq!(predecessor.context, context);
+    assert_eq!(predecessor, initial);
+    assert_eq!(status.consumed_command.load(Acquire), play);
+    assert!(status.playing.load(Acquire));
+    eprintln!(
+        "verified position fixture bootstrapped: partition={partition}, initial={initial:?}, play_ticket={play}, position={}, performance={}",
+        status.position.load(Acquire),
+        status.performance_frame.load(Acquire),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
     let candidate_context = AudioSourceContext {
         editor_revision: context.editor_revision + 1,
         ..context
