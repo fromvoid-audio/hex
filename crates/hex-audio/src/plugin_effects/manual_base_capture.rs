@@ -9,8 +9,9 @@ use crate::{
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_plugin_host::{
     protocol::{FlushDisposition, PresentationPlan},
-    transport::{ParameterPoint, Parameters},
+    transport::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters},
 };
+use std::collections::VecDeque;
 
 pub(crate) struct BaseCaptureSource {
     pub metadata: EffectSourceMetadata,
@@ -30,6 +31,63 @@ enum Phase {
     Finished,
 }
 
+struct FlushPlan {
+    cohorts: VecDeque<Parameters>,
+    exact_readback: bool,
+}
+
+impl FlushPlan {
+    fn manual_point(id: u32, normalized: f64) -> Result<Self, String> {
+        let mut parameters = Parameters::default();
+        parameters
+            .push(ParameterPoint {
+                id,
+                frame: 0,
+                normalized,
+            })
+            .map_err(|_| "native manual base input is invalid")?;
+        Ok(Self {
+            cohorts: VecDeque::from([parameters]),
+            exact_readback: false,
+        })
+    }
+
+    fn ordered(cohorts: &[Vec<(u32, f64)>]) -> Result<Self, String> {
+        let mut plan = Self {
+            cohorts: VecDeque::new(),
+            exact_readback: true,
+        };
+        let mut remaining = MAX_PARAMETER_POINTS;
+        if cohorts.is_empty() || cohorts.len() > remaining {
+            return Err("native replay base cohort count is invalid".into());
+        }
+        plan.cohorts
+            .try_reserve_exact(cohorts.len())
+            .map_err(|_| "native replay base cohort allocation failed")?;
+        for cohort in cohorts {
+            remaining = remaining
+                .checked_sub(cohort.len())
+                .filter(|_| !cohort.is_empty())
+                .ok_or("native replay base input exceeds its point bound")?;
+            let mut parameters = Parameters::default();
+            for &(id, normalized) in cohort {
+                parameters
+                    .push(ParameterPoint {
+                        id,
+                        frame: 0,
+                        normalized,
+                    })
+                    .map_err(|_| "native replay base input is invalid")?;
+            }
+            if parameters.as_slice().len() != cohort.len() {
+                return Err("native replay base cohort repeats a parameter".into());
+            }
+            plan.cohorts.push_back(parameters);
+        }
+        Ok(plan)
+    }
+}
+
 /// One bounded in-flight scratch source, with no callback endpoint or graph
 /// publication. Poll on the same control lane even after cancellation until it
 /// returns a terminal. If the output itself closes, its Root retains disposal.
@@ -41,7 +99,7 @@ pub struct ManualBaseCapture {
     original_binding: Option<Binding>,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
-    parameters: Parameters,
+    flushes: FlushPlan,
     phase: Phase,
 }
 
@@ -83,11 +141,7 @@ impl Hosting {
             source,
             binding,
             canonical,
-            ParameterPoint {
-                id,
-                frame: 0,
-                normalized,
-            },
+            FlushPlan::manual_point(id, normalized)?,
             true,
         )
     }
@@ -108,12 +162,32 @@ impl Hosting {
             source,
             binding,
             canonical,
-            ParameterPoint {
-                id,
-                frame: 0,
-                normalized,
-            },
+            FlushPlan::manual_point(id, normalized)?,
             false,
+        )
+    }
+
+    /// Replay ordered native editor cohorts in a private sibling restored
+    /// from the installed source's exact canonical base. Every cohort requires
+    /// exact SDK readback before the next can run. The live program stays on
+    /// the original worker. A returned capture grants state preparation only;
+    /// the caller still owns editor-input conflict checks and publication.
+    pub fn begin_ordered_manual_base_capture_on_control(
+        &self,
+        output: &mut PublicationControl,
+        source: AppliedAudioSource,
+        binding: Binding,
+        canonical: &NativeDeviceState,
+        cohorts: &[Vec<(u32, f64)>],
+        playing: bool,
+    ) -> Result<ManualBaseCapture, String> {
+        self.begin_parameter_base_capture(
+            output,
+            source,
+            binding,
+            canonical,
+            FlushPlan::ordered(cohorts)?,
+            playing,
         )
     }
 
@@ -123,13 +197,9 @@ impl Hosting {
         source: AppliedAudioSource,
         binding: Binding,
         canonical: &NativeDeviceState,
-        point: ParameterPoint,
+        flushes: FlushPlan,
         playing: bool,
     ) -> Result<ManualBaseCapture, String> {
-        let mut parameters = Parameters::default();
-        parameters
-            .push(point)
-            .map_err(|_| "native manual base input is invalid")?;
         let identity = Self::saved_identity_on_control(canonical)?;
         let (rate, transport_epoch, original) =
             output.native_base_capture_source(source, binding, canonical, playing)?;
@@ -151,7 +221,7 @@ impl Hosting {
             original_binding: Some(binding),
             identity,
             presentation: original.presentation,
-            parameters,
+            flushes,
             phase: Phase::Prepare,
         })
     }
@@ -248,7 +318,10 @@ impl Hosting {
             original_binding: None,
             identity,
             presentation: original.presentation,
-            parameters,
+            flushes: FlushPlan {
+                cohorts: VecDeque::from([parameters]),
+                exact_readback: true,
+            },
             phase: Phase::Prepare,
         })
     }
@@ -357,29 +430,34 @@ impl ManualBaseCapture {
                     self.binding = binding;
                     Phase::Flush
                 }),
-            (Phase::Flush, Some(Progress::Facts(_))) => output
-                .flush_native_source_parameters_on_control(
-                    self.binding,
-                    &self.parameters,
-                    &mut cancelled,
-                )
-                .and_then(|reply| {
-                    reply
-                        .filter(|reply| {
-                            // Manual gestures allow SDK normalization. Save
-                            // requires readback of every exact frozen base.
-                            reply.disposition == FlushDisposition::Applied
-                                && self.parameters.as_slice().iter().all(|expected| {
-                                    reply.as_slice().iter().any(|value| {
-                                        value.id == expected.id
-                                            && (self.source.is_some()
-                                                || value.normalized == expected.normalized)
+            (Phase::Flush, Some(Progress::Facts(_))) => match self.flushes.cohorts.front() {
+                Some(points) => output
+                    .flush_native_source_parameters_on_control(self.binding, points, &mut cancelled)
+                    .and_then(|reply| {
+                        reply
+                            .filter(|reply| {
+                                reply.disposition == FlushDisposition::Applied
+                                    && points.as_slice().iter().all(|expected| {
+                                        reply.as_slice().iter().any(|value| {
+                                            value.id == expected.id
+                                                && (!self.flushes.exact_readback
+                                                    || value.normalized == expected.normalized)
+                                        })
                                     })
-                                })
-                        })
-                        .map(|_| Phase::Capture)
-                        .ok_or("native manual base input was not acknowledged")
-                }),
+                            })
+                            .map(|_| ())
+                            .ok_or("native manual base input was not acknowledged")
+                    })
+                    .map(|()| {
+                        self.flushes.cohorts.pop_front();
+                        if self.flushes.cohorts.is_empty() {
+                            Phase::Capture
+                        } else {
+                            Phase::Flush
+                        }
+                    }),
+                None => Err("native manual base input is unavailable"),
+            },
             (Phase::Capture, Some(Progress::Facts(_))) => output
                 .capture_native_source_state_on_control(self.binding, &mut cancelled)
                 .map(|state| {

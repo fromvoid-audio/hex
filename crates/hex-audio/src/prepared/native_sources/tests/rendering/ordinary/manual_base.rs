@@ -5,6 +5,115 @@ use hex_plugin_host::transport::ParameterPoint;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn ordered_manual_base_capture_flushes_each_cohort_without_changing_the_live_lane() {
+    const CHILD: &str = "HEX_ORDERED_MANUAL_BASE_DRIVER";
+    if std::env::var_os(CHILD).is_none() {
+        let path = std::env::temp_dir().join(format!("hex-ordered-base-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "144")
+            .env("HEX_ORIGINAL_INSTANCE_TRACE", path.join("trace"))
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let _serial = serial();
+    let mut f = fixture_with_authored("processing", 2, 8, &[7]);
+    let device = f.editor.project().main_devices()[0].id();
+    f.editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 7 },
+            points: vec![hex_project::AutomationPoint {
+                beat: hex_project::BeatTime::ZERO,
+                value: hex_project::AutomationValue::new(0.5).unwrap(),
+                outgoing: hex_project::AutomationInterpolation::Step,
+            }],
+        })
+        .unwrap();
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    let binding = f.binding;
+    replacement::wait_for_blocks(&root, binding, 1);
+    for completed in 2..=3 {
+        block(&mut f);
+        replacement::wait_for_blocks(&root, binding, completed);
+    }
+    assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
+    replacement::wait_for_blocks(&root, binding, 4);
+    let source = f.control.status.native_effect_source().unwrap();
+    let initial = f.control.native_source_prepared_state(binding).unwrap();
+    let class = Hosting::saved_identity_on_control(&initial).unwrap().class;
+    let (build, _, preparation) = crate::candidate_custody::native_source_test_fixture::input_for(
+        "processing",
+        class.bytes(),
+    );
+    let host = Hosting::from_test_build(build, preparation.limits);
+    let begin = |output: &mut PublicationControl, cohorts: &[Vec<(u32, f64)>]| {
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match host.begin_ordered_manual_base_capture_on_control(
+                output, source, binding, &initial, cohorts, true,
+            ) {
+                Err(error)
+                    if matches!(
+                        error.as_str(),
+                        "native preparation is busy" | "native source is busy"
+                    ) && Instant::now() < until =>
+                {
+                    std::thread::yield_now();
+                }
+                terminal => break terminal,
+            }
+        }
+    };
+    assert!(begin(&mut f.control, &[vec![(7, 0.75), (7, 0.5)]]).is_err());
+    let first = vec![(7, 0.75), (11, 0.5)];
+    let mut refused = begin(&mut f.control, &[first.clone(), vec![(63, 0.25)]]).unwrap();
+    assert!(poll(&mut f.control, &mut refused, false).is_err());
+    assert_eq!(
+        f.control.native_source_prepared_state(binding),
+        Some(initial.clone())
+    );
+    let mut replay = begin(&mut f.control, &[first, vec![(7, 0.375)]]).unwrap();
+    let captured = poll(&mut f.control, &mut replay, false).unwrap();
+    let captured_state = hex_plugin_state::decode(&captured).unwrap();
+    let component = captured_state.component.unwrap();
+    assert_eq!(&component[8..12], &1.5_f32.to_le_bytes());
+    assert_eq!(&component[32..40], &2.0_f64.to_le_bytes());
+    let trace = std::fs::read(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap()).unwrap();
+    assert_eq!(i32::from_ne_bytes(trace[44..48].try_into().unwrap()), 2);
+    assert_eq!(
+        f.control
+            .native_source_approves_captured_state_on_control(binding, &captured),
+        Some(true)
+    );
+    assert_eq!(
+        f.control.native_source_prepared_state(binding),
+        Some(initial)
+    );
+    assert_eq!(f.control.status.native_effect_source(), Some(source));
+    assert_eq!(block(&mut f), [[0.5, -1.0]; 8]);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_ordinary_manual_base_capture_preserves_authored_pcm_and_recovers_scratch() {
     if std::env::var_os("HEX_ORDINARY_MANUAL_BASE_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
