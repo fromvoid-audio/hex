@@ -2,6 +2,7 @@
 use super::*;
 mod authored_reopen;
 mod batch;
+mod pressure;
 mod reopen;
 
 #[test]
