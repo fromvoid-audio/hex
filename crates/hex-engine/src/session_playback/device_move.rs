@@ -135,7 +135,7 @@ impl SessionPlayback {
     }
 }
 
-fn same_clip(a: &crate::Clip, b: &crate::Clip) -> bool {
+pub(super) fn same_clip(a: &crate::Clip, b: &crate::Clip) -> bool {
     a.active == b.active
         && a.start == b.start
         && a.end == b.end

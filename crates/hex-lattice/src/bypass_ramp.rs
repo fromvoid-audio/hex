@@ -3,6 +3,32 @@ use hex_lattice_contract::DeviceContractError;
 
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
 
+/// Inline aligned dry history can outlive the processor that filled it.
+/// It contains only PCM and a cursor, with no owned DSP or allocation.
+#[derive(Clone, Copy, Debug)]
+pub struct InlineDryDelay {
+    frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
+    len: usize,
+    next: usize,
+}
+
+impl InlineDryDelay {
+    pub fn latency_frames(&self) -> u32 {
+        self.len as u32
+    }
+
+    pub fn process(&mut self, frames: &mut [[f32; 2]]) {
+        for frame in frames {
+            *frame = advance(&mut self.frames[..self.len], &mut self.next, *frame);
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.frames.fill([0.0; 2]);
+        self.next = 0;
+    }
+}
+
 /// Dry input has one control-allocated owner per committed/speculative history.
 /// Short legacy delays remain inline. The separately admitted owned lookahead
 /// reserves exact configured storage before publication; callback operations
@@ -12,25 +38,18 @@ pub(crate) struct AlignedDry {
 }
 // Keep lengths and cursor construction private to this history owner.
 enum DryStorage {
-    Inline {
-        frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
-        len: usize,
-        next: usize,
-    },
-    Reserved {
-        frames: Vec<[f32; 2]>,
-        next: usize,
-    },
+    Inline(InlineDryDelay),
+    Reserved { frames: Vec<[f32; 2]>, next: usize },
 }
 impl AlignedDry {
     pub(crate) fn new(latency: Option<u32>) -> Option<Self> {
         let len = usize::try_from(latency?).ok()?;
         (1..=MAX_ALIGNED_DRY_FRAMES).contains(&len).then_some(Self {
-            storage: DryStorage::Inline {
+            storage: DryStorage::Inline(InlineDryDelay {
                 frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
                 len,
                 next: 0,
-            },
+            }),
         })
     }
     pub(crate) fn reserved(frames: u32) -> Result<Self, DeviceContractError> {
@@ -55,13 +74,13 @@ impl AlignedDry {
     }
     fn parts(&self) -> (&[[f32; 2]], usize) {
         match &self.storage {
-            DryStorage::Inline { frames, len, next } => (&frames[..*len], *next),
+            DryStorage::Inline(dry) => (&dry.frames[..dry.len], dry.next),
             DryStorage::Reserved { frames, next } => (frames, *next),
         }
     }
     fn parts_mut(&mut self) -> (&mut [[f32; 2]], &mut usize) {
         match &mut self.storage {
-            DryStorage::Inline { frames, len, next } => (&mut frames[..*len], next),
+            DryStorage::Inline(dry) => (&mut dry.frames[..dry.len], &mut dry.next),
             DryStorage::Reserved { frames, next } => (frames, next),
         }
     }
@@ -81,12 +100,13 @@ impl AlignedDry {
     }
     pub(crate) fn advance(&mut self, input: [f32; 2]) -> [f32; 2] {
         let (frames, next) = self.parts_mut();
-        let dry = std::mem::replace(&mut frames[*next], input);
-        *next += 1;
-        if *next == frames.len() {
-            *next = 0;
+        advance(frames, next, input)
+    }
+    pub(crate) fn inline_delay(&self) -> Option<InlineDryDelay> {
+        match self.storage {
+            DryStorage::Inline(dry) => Some(dry),
+            DryStorage::Reserved { .. } => None,
         }
-        dry
     }
     pub(crate) fn is_quiet(&self) -> bool {
         self.parts().0.iter().all(|f| *f == [0.0; 2])
@@ -97,6 +117,16 @@ impl AlignedDry {
         *next = 0;
     }
 }
+
+fn advance(frames: &mut [[f32; 2]], next: &mut usize, input: [f32; 2]) -> [f32; 2] {
+    let dry = std::mem::replace(&mut frames[*next], input);
+    *next += 1;
+    if *next == frames.len() {
+        *next = 0;
+    }
+    dry
+}
+
 /// Both options have the same prepared layout within one transaction. A
 /// cross-owner caller must preflight compatibility; mismatch never mutates.
 pub(crate) fn copy_dry(

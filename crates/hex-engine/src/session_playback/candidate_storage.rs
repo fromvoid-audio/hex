@@ -98,6 +98,7 @@ impl SessionPlayback {
             candidate_admission_open,
             live_restart: _,
             native_removal,
+            main_pass_delay,
             foreign_continuation,
             require_continuous_insert: _,
             return_fade: _,
@@ -105,6 +106,7 @@ impl SessionPlayback {
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
         if native_removal.is_some()
+            || main_pass_delay.is_some()
             || !source_effects.is_empty()
             || !foreign_arrangement.is_empty()
             || midi_admission.is_some()
