@@ -5088,17 +5088,30 @@ fn install_running_device_move_for_history(
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn undo_and_redo_a_held_sine_move_waits_for_the_callback_receipt() {
-    assert_held_instrument_move_history(false);
+    assert_held_instrument_move_history(HeldMoveInstrument::Sine);
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn undo_and_redo_a_held_vector_move_waits_for_the_callback_receipt() {
-    assert_held_instrument_move_history(true);
+    assert_held_instrument_move_history(HeldMoveInstrument::Vector);
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn assert_held_instrument_move_history(filtered_vector: bool) {
+#[test]
+fn undo_and_redo_a_held_sampler_move_waits_for_the_callback_receipt() {
+    assert_held_instrument_move_history(HeldMoveInstrument::Sampler);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+enum HeldMoveInstrument {
+    Sine,
+    Vector,
+    Sampler,
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
     use hex_project::{BeatTime, Command, Created, DeviceSelectionIds, TrackDeviceSlot};
     use hex_session::device_gesture::{ParameterId, ParameterValue};
 
@@ -5106,31 +5119,56 @@ fn assert_held_instrument_move_history(filtered_vector: bool) {
     let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    let state = if filtered_vector {
-        let class = hex_engine::NativeDeviceClass::Instrument;
-        let state = hex_engine::default_native_device_state_for_class(
-            class,
-            hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
-        )
-        .unwrap();
-        hex_engine::patch_native_device_parameter_for_class(
-            class,
-            &state,
-            ParameterId::from_static(20_001),
-            ParameterValue::Bool(true),
-        )
-        .unwrap()
+    let sampler_files = matches!(instrument, HeldMoveInstrument::Sampler).then(Files::new);
+    let (source, added) = if let Some(files) = sampler_files.as_ref() {
+        let track = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "source".into(),
+        }));
+        let Some(Created::Track(source)) = track.created else {
+            panic!("source track");
+        };
+        applied = h.applied(applied).0;
+        let loaded = h.run(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: track.state.revision,
+            track: source,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+            path: files.wav(48_000, 96_000),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        (source, loaded)
     } else {
-        hex_project::default_instrument_state().unwrap()
-    };
-    let added = h.run(Request::Edit(Command::InsertTrackWithDevice {
-        name: "source".into(),
-        before_track: None,
-        slot: TrackDeviceSlot::Instrument,
-        state,
-    }));
-    let Some(Created::Track(source)) = added.created else {
-        panic!("source track");
+        let state = if matches!(instrument, HeldMoveInstrument::Vector) {
+            let class = hex_engine::NativeDeviceClass::Instrument;
+            let state = hex_engine::default_native_device_state_for_class(
+                class,
+                hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+            )
+            .unwrap();
+            hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(20_001),
+                ParameterValue::Bool(true),
+            )
+            .unwrap()
+        } else {
+            hex_project::default_instrument_state().unwrap()
+        };
+        let added = h.run(Request::Edit(Command::InsertTrackWithDevice {
+            name: "source".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state,
+        }));
+        let Some(Created::Track(source)) = added.created else {
+            panic!("source track");
+        };
+        (source, added)
     };
     applied = h.applied(applied).0;
     let device = added

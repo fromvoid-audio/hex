@@ -1,6 +1,7 @@
 //! Prove that a history target is exactly one direct native device move.
 //! Match a Delay or Reverb with an optional retained Utility on one side, or
-//! an unchanged, single-contributor Sine or Vector. Audio proves the cut.
+//! an unchanged single-contributor Sine, Vector or loaded Sampler. Audio
+//! proves the cut and retains authority over Sampler's original backing.
 use hex_project::{
     Command, Device, DeviceSelectionIds, Editor, Invalid, Project, SourceId, StagedProjectHistory,
     Track,
@@ -115,10 +116,13 @@ fn solitary_move_instrument<'a>(
     let id = track.source_id()?;
     let source = project.native_source(id)?;
     let type_id = device.state().type_id();
+    let supported_mutable = match type_id.as_str() {
+        Ok("hex.instrument.operator") => true,
+        Ok("hex.instrument.sampler") => device.state().asset_references().len() == 1,
+        _ => false,
+    };
     let supported = type_id == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
-        || (matches!(type_id.as_str(), Ok("hex.instrument.operator"))
-            && device.automation().is_empty()
-            && device.modulation().is_empty());
+        || (supported_mutable && device.automation().is_empty() && device.modulation().is_empty());
     (supported
         && source.receiver() == Some(track.id())
         && source.devices().count() == 1
