@@ -1,4 +1,4 @@
-//! One Resident Arrangement leaf enters an existing root Group at zero latency.
+//! One Resident Arrangement leaf moves between Main and an existing root Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
 //! The Group and Main faders never participate, and compensation copy rules stay
@@ -7,7 +7,14 @@ use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::TrackOutput;
 
 impl SessionPlayback {
-    pub(super) fn resident_group_entry_from(&self, previous: &Self) -> Option<usize> {
+    // Entry and exit have the same immutable identity checks. Classifying the
+    // inverse changes no runtime: only the actual donor's child fader is staged.
+    pub(super) fn resident_group_reroute_from(&self, previous: &Self) -> Option<usize> {
+        self.exact_resident_group_entry_from(previous)
+            .or_else(|| previous.exact_resident_group_entry_from(self))
+    }
+
+    fn exact_resident_group_entry_from(&self, previous: &Self) -> Option<usize> {
         for playback in [self, previous] {
             if playback.revision.contains_streamed_sources()
                 || playback.foreign_runtime_bindings().next().is_some()
