@@ -603,7 +603,8 @@ int main(int argc,char** argv) {
                     };
                     enum class BatchFit { Ready, Wait, Invalid };
                     const auto preflight_group=[&](const hex_instance::EditEvent& first,size_t later_points,
-                            const hex_instance::ParameterPoint* later,const hex_instance::EditorTouch* touch) {
+                            const hex_instance::ParameterPoint* later,const hex_instance::EditorTouch* touch,
+                            std::optional<ParamID> dense) {
                         constexpr auto maximum=hex_instance::PARAMETER_POINT_COUNT;
                         std::array<hex_instance::ParameterPoint,maximum> points{};
                         auto count=parameter_input.size();
@@ -616,10 +617,12 @@ int main(int argc,char** argv) {
                                     event.batch_remaining!=first.batch_remaining-n)
                                 return BatchFit::Invalid;
                             if(preview && !preview->can_stage(event)) return BatchFit::Wait;
-                            if(event.kind==hex_instance::Perform) {
-                                // Each ParamID has one sample-zero input per quantum.
-                                // A later SDK cohort must never erase an earlier one.
-                                if(conflicts_with_prior_cohort(event)) return BatchFit::Wait;
+                            // A later cohort cannot erase an earlier one. The
+                            // dense owner supplies PCM for its ID, while its
+                            // editor values remain in the ordered receipt batch.
+                            if(event.kind==hex_instance::Perform && conflicts_with_prior_cohort(event))
+                                return BatchFit::Wait;
+                            if(event.kind==hex_instance::Perform && event.id!=dense) {
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)))
                                     return BatchFit::Invalid;
@@ -646,14 +649,15 @@ int main(int argc,char** argv) {
                         return BatchFit::Ready;
                     };
                     const auto stage_edits=[&](size_t later_points=0,
-                            const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr) {
+                            const hex_instance::ParameterPoint* later=nullptr,hex_instance::EditorTouch* touch=nullptr,
+                            std::optional<ParamID> dense=std::nullopt) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
                         size_t remaining_group=0;
                         while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
                             if(!remaining_group && event.cohort) {
                                 const auto available=completed_edits.size()-completed_edit_count-applying_edit_count;
                                 if(event.batch_remaining>available) break;
-                                switch(preflight_group(event,later_points,later,touch)) {
+                                switch(preflight_group(event,later_points,later,touch,dense)) {
                                     case BatchFit::Wait: return true;
                                     case BatchFit::Invalid: return false;
                                     case BatchFit::Ready: remaining_group=event.batch_remaining;break;
@@ -663,8 +667,9 @@ int main(int argc,char** argv) {
                                 if(remaining_group) return false;
                                 break;
                             }
-                            if(event.kind==hex_instance::Perform) {
-                                if(!remaining_group && conflicts_with_prior_cohort(event)) break;
+                            if(event.kind==hex_instance::Perform && !remaining_group && conflicts_with_prior_cohort(event))
+                                break;
+                            if(event.kind==hex_instance::Perform && event.id!=dense) {
                                 const auto* info=processing_parameters.find(event.id);
                                 if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
                                 const bool captures=touch && touch->would_capture(event);
@@ -1131,6 +1136,7 @@ int main(int argc,char** argv) {
                         }
                         // Each transport context starts an SDK call, but the
                         // copied exchange and its reply remain one quantum.
+                        const auto dense=packet.dense_parameter?std::optional{packet.dense_id}:std::nullopt;
                         packet.reply_parameter_count=0;
                         size_t next_note=0,next_parameter=0;
                         for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
@@ -1150,7 +1156,7 @@ int main(int argc,char** argv) {
                                 if(!parameter_input.input(point.id,0,point.normalized)) valid=false;
                             }
                             if(!valid || (!slice && !stage_edits(packet.parameter_count-next_parameter,
-                                packet.parameters.data()+next_parameter,touch))) {
+                                packet.parameters.data()+next_parameter,touch,dense))) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
                             if(packet.dense_parameter &&
@@ -1204,7 +1210,7 @@ int main(int argc,char** argv) {
                                 std::optional<uint64> input_sequence;
                                 bool editor_input=false;
                                 if(use_input) {
-                                    const auto editor_sequence=first || point.offset?0:staged_editor_sequence(point.id);
+                                    const auto editor_sequence=first || point.offset || point.id==dense?0:staged_editor_sequence(point.id);
                                     input_sequence=editor_sequence?editor_sequence:host_frontier;
                                     editor_input=editor_sequence!=0;
                                 }
@@ -1229,7 +1235,7 @@ int main(int argc,char** argv) {
                             // the SDK, even though its editor callback was consumed.
                             for(size_t n=0;n<applying_edit_count;++n) {
                                 const auto& edit=applying_edits[n];
-                                if(edit.kind==hex_instance::Perform && last_editor_edit(edit.id)==n &&
+                                if(edit.kind==hex_instance::Perform && edit.id!=dense && last_editor_edit(edit.id)==n &&
                                     (!group || editor_capture[n]) && !packet.append_editor_perform(edit)) {
                                     worker_failure.store(ProtocolFailure);break;
                                 }
