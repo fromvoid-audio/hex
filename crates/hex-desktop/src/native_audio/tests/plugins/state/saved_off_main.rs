@@ -30,7 +30,10 @@ fn prepare_on_before_ack(
     h: &mut ResidentHarness,
     device: hex_project::DeviceId,
     source: hex_audio::prepared::AppliedAudioSource,
-) -> hex_session::service::Event {
+) -> (
+    hex_session::service::Event,
+    hex_session::service::ResidentGraphSubmission,
+) {
     let (private, enqueue, _) = h.probe_next_native_publication();
     let (submitted, release) = h.probe_next_submitted_device_insert();
     h.service
@@ -85,11 +88,11 @@ fn prepare_on_before_ack(
         Some(source)
     );
     release.send(()).unwrap();
-    h.next()
+    (h.next(), queued)
 }
 
 #[test]
-#[ignore = "source-only product follow-up oracle; original signed SDK/helper receipts required"]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn saved_off_main_reopens_without_worker_then_installs_fresh_stopped_on() {
     let _native = native_fixture();
     let saved = nondefault_fixture_with_frames(8192);
@@ -193,7 +196,7 @@ fn saved_off_main_reopens_without_worker_then_installs_fresh_stopped_on() {
     fs::rename(&parked_catalog, &saved.catalog).unwrap();
 
     // A valid catalog On is prepared fresh, while canonical Off waits for its ACK.
-    let pending = prepare_on_before_ack(&mut h, device, off_source);
+    let (pending, _) = prepare_on_before_ack(&mut h, device, off_source);
     assert!(pending.error.is_none(), "{:?}", pending.error);
     assert!(!pending.request_complete);
     assert_eq!(pending.state.project, saved_off.state.project);
@@ -274,7 +277,7 @@ fn play_after_source_free_on_staging_keeps_canonical_off() {
         .unwrap()
         .recording_source()
         .unwrap();
-    let pending = prepare_on_before_ack(&mut h, device, off_source);
+    let (pending, first_candidate) = prepare_on_before_ack(&mut h, device, off_source);
     assert!(pending.error.is_none(), "{:?}", pending.error);
     assert!(!pending.request_complete);
     assert_eq!(pending.state.project, opened.state.project);
@@ -301,6 +304,18 @@ fn play_after_source_free_on_staging_keeps_canonical_off() {
             .recording_source(),
         Some(off_source)
     );
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision(),
+        Some((
+            first_candidate.audio_revision,
+            hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged
+        ))
+    );
     // Off remains authoritative after refusal; running On must not take the old fallback.
     let records = h.plugin_records.load(Acquire);
     h.service
@@ -326,13 +341,15 @@ fn play_after_source_free_on_staging_keeps_canonical_off() {
             .paused_input_interval()
             .is_some()
     });
-    let retry = prepare_on_before_ack(&mut h, device, off_source);
+    let (retry, retry_candidate) = prepare_on_before_ack(&mut h, device, off_source);
+    assert!(retry_candidate.audio_revision > first_candidate.audio_revision);
     assert!(retry.error.is_none(), "{:?}", retry.error);
     assert!(!retry.request_complete);
     assert_eq!(retry.state.project, opened.state.project);
-    h.applied(off_source.audio_revision);
+    h.applied(first_candidate.audio_revision);
     let installed = edits::ordinary_terminal(&mut h);
     assert!(installed.error.is_none(), "{:?}", installed.error);
     assert!(!installed.state.project.device(device).unwrap().bypassed());
     assert_eq!(installed.state.revision, opened.state.revision + 1);
+    assert_eq!(observed(&h, device), PreparedDeviceProcessing::Foreign);
 }
