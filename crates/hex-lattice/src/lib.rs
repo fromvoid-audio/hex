@@ -42,7 +42,7 @@ pub use prepared_modulation::{MAX_PREPARED_MODULATION_BYTES, PreparedModulationS
 #[cfg(test)]
 mod static_processing_tests;
 mod tail_split;
-pub use bypass_ramp::InlineDryDelay;
+pub use bypass_ramp::MainPassDelay;
 pub use foreign_processor::{
     ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
     ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors,
@@ -2757,14 +2757,17 @@ impl NativeRuntimeChain {
 
     /// One outgoing Main stage whose delayed dry history can be copied by
     /// value. The host separately proves the unchanged upstream signal clock.
-    pub fn inline_main_removal_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
+    pub fn main_pass_removal_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
         let [entry] = previous.entries.as_slice() else {
             return None;
         };
-        let delay = entry.committed_aligned_dry.as_ref()?.inline_delay()?;
+        let latency_frames = entry
+            .committed_aligned_dry
+            .as_ref()?
+            .main_pass_latency_frames()?;
         if !self.is_empty()
             || entry.owner != ProcessorChainOwner::Main
-            || entry.algorithmic_latency_frames != Some(delay.latency_frames())
+            || entry.algorithmic_latency_frames != Some(latency_frames)
             || entry.bypassed
             || entry.removal_bypassing
             || !entry.automation.is_empty()
@@ -2791,10 +2794,10 @@ impl NativeRuntimeChain {
     }
 
     /// Copy the exact settled Main delay without transferring its processor.
-    pub fn settled_inline_main_delay(
+    pub fn settled_main_pass_delay(
         &self,
         transition: NativeRemovalTransition,
-    ) -> Option<InlineDryDelay> {
+    ) -> Option<MainPassDelay> {
         if transition.identity().owner() != ProcessorChainOwner::Main
             || !self.native_removal_ready(transition)
         {
@@ -2804,7 +2807,7 @@ impl NativeRuntimeChain {
             .get(transition.position)?
             .committed_aligned_dry
             .as_ref()?
-            .inline_delay()
+            .main_pass_delay()
     }
 
     fn extra_native_stage_from(

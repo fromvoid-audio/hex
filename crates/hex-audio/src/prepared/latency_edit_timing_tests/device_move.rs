@@ -2,20 +2,42 @@
 use super::*;
 use hex_lattice_contract::NativeDeviceState;
 
+#[derive(Clone, Copy)]
+enum TrackLayout {
+    WithClip,
+    Empty,
+    WithUtility,
+    FromUtility,
+}
+
 #[test]
 fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocations() {
-    assert_running_effect_move(feedback_delay(20.0), Some([-0.125, 0.25]));
+    assert_running_effect_move(feedback_delay(20.0), TrackLayout::WithClip);
 }
 
 #[test]
 fn running_reverb_moves_its_decay_to_the_destination_track() {
-    assert_running_effect_move(full_wet_reverb(), Some([-0.125, 0.25]));
+    assert_running_effect_move(full_wet_reverb(), TrackLayout::WithClip);
 }
 
 #[test]
 fn running_effects_keep_sounding_when_moved_to_an_empty_track() {
     for state in [feedback_delay(20.0), full_wet_reverb()] {
-        assert_running_effect_move(state, None);
+        assert_running_effect_move(state, TrackLayout::Empty);
+    }
+}
+
+#[test]
+fn running_effects_move_after_the_receiving_tracks_utility() {
+    for state in [feedback_delay(20.0), full_wet_reverb()] {
+        assert_running_effect_move(state, TrackLayout::WithUtility);
+    }
+}
+
+#[test]
+fn running_effects_move_away_from_the_donor_tracks_utility() {
+    for state in [feedback_delay(20.0), full_wet_reverb()] {
+        assert_running_effect_move(state, TrackLayout::FromUtility);
     }
 }
 
@@ -31,7 +53,7 @@ fn full_wet_reverb() -> NativeDeviceState {
         .unwrap()
 }
 
-fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Option<Frame>) {
+fn assert_running_effect_move(state: NativeDeviceState, layout: TrackLayout) {
     const FRAMES: usize = 4096;
     const CUT: usize = 2048;
     const FADE: usize = 240;
@@ -41,8 +63,8 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
     source[1600] = [0.5, -0.25];
     source[3000] = [0.25, 0.125];
     let mut destination = vec![[0.0; 2]; FRAMES];
-    if let Some(signal) = destination_signal {
-        destination[DESTINATION_ONSET..].fill(signal);
+    if !matches!(layout, TrackLayout::Empty) {
+        destination[DESTINATION_ONSET..].fill([-0.125, 0.25]);
     }
     let unrelated = vec![[0.0625, -0.03125]; FRAMES];
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
@@ -53,7 +75,7 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         .into_iter()
         .enumerate()
     {
-        if index == 1 && destination_signal.is_none() {
+        if index == 1 && matches!(layout, TrackLayout::Empty) {
             let Created::Track(track) = editor
                 .execute(Command::AddTrack {
                     name: "empty destination".into(),
@@ -80,6 +102,37 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         tracks.push(track);
         assets.push(asset);
     }
+    let utility_track = match layout {
+        TrackLayout::FromUtility => Some(0),
+        TrackLayout::WithUtility => Some(1),
+        _ => None,
+    };
+    let utility = utility_track.map(|index| {
+        use hex_devices::utility::{UTILITY_DEFINITION, parameter::INVERT_LEFT};
+        let utility = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                INVERT_LEFT,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track: tracks[index],
+                before: None,
+                state: utility,
+            })
+            .unwrap()
+        else {
+            panic!("utility");
+        };
+        // Apply Utility's polarity offline to the reference input, leaving the
+        // imported PCM untouched so incorrect chain order changes the result.
+        for frame in [&mut source, &mut destination][index].iter_mut() {
+            frame[0] = -frame[0];
+        }
+        device
+    });
     editor
         .execute(Command::SetTrackGains {
             gains: vec![(tracks[0], 0.25), (tracks[1], 0.75)],
@@ -103,6 +156,11 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         )
     };
     let mut reference_editor = Editor::new(editor.project().clone(), 8).unwrap();
+    if let Some(utility) = utility.filter(|_| matches!(layout, TrackLayout::FromUtility)) {
+        reference_editor
+            .execute(Command::RemoveDevice(utility))
+            .unwrap();
+    }
     for track in [tracks[1], tracks[2]] {
         reference_editor
             .execute(Command::RemoveTrack(track))
@@ -123,6 +181,27 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
         })
         .unwrap();
     let after = prepare(editor.project(), &media);
+    if let Some(utility) = utility {
+        let mut changed = Editor::new(editor.project().clone(), 4).unwrap();
+        changed
+            .execute(Command::SetDeviceBypass {
+                device: utility,
+                bypassed: true,
+            })
+            .unwrap();
+        let (control, mut callback, predecessor, receipt) = begin_insert_with_pending_track(
+            Arc::clone(&before),
+            prepare(changed.project(), &media),
+            None,
+            CUT,
+        );
+        render(&mut callback, &mut [[0.0; 2]; 64]);
+        assert_eq!(control.status.recording_source(), Some(predecessor));
+        assert!(matches!(
+            receipt.state(),
+            PublicationReceiptState::Refused(_)
+        ));
+    }
     for partition in [1, 257] {
         let (control, mut callback, predecessor, receipt) =
             begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after), None, CUT);
@@ -186,9 +265,13 @@ fn assert_running_effect_move(state: NativeDeviceState, destination_signal: Opti
     }
     // Cancel and source-fence invalidation retain the exact donor. A cancelled
     // move must restore both mixes while the original effect keeps processing.
-    let mut oracle =
-        Playback::try_from_prepared_with_session(prepare(reference_editor.project(), &media))
-            .unwrap();
+    let mut reference_media = media.clone();
+    reference_media.insert(assets[0], hex_engine::Audio::new(RATE, source).unwrap());
+    let mut oracle = Playback::try_from_prepared_with_session(prepare(
+        reference_editor.project(),
+        &reference_media,
+    ))
+    .unwrap();
     oracle.apply(PlaybackCommand::Play);
     let mut wet = vec![[0.0; 2]; FRAMES];
     oracle.render(&mut wet).unwrap();

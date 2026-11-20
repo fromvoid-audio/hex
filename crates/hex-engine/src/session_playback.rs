@@ -672,7 +672,7 @@ pub struct SessionPlayback {
     // than carry voices or detached tails the candidate already represents.
     live_restart: bool,
     native_removal: Option<device_removal::PendingNativeRemoval>,
-    main_pass_delay: Option<hex_lattice::InlineDryDelay>,
+    main_pass_delay: Option<hex_lattice::MainPassDelay>,
     return_fade: Option<device_removal::ReturnFade>,
     return_fade_scratch: Option<device_removal::ReturnFade>,
 }
@@ -2495,6 +2495,12 @@ impl SessionPlayback {
     /// route, voice and processor history for handoff or resumption.
     pub(crate) fn set_playing_at_device_insert_cut(&mut self, playing: bool) {
         self.playing = playing;
+    }
+
+    pub(crate) fn replaced_foreign_instrument(
+        &self,
+    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        self.foreign_arrangement.replaced_instrument()
     }
 
     /// Scalar translation used by the effective performance clock. Observers

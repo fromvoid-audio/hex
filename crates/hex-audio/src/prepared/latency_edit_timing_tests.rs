@@ -85,13 +85,24 @@ fn resident_input(
     hex_project::TrackId,
     impl Fn(&Project) -> Arc<hex_engine::PreparedRevision>,
 ) {
-    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    resident_input_at_rate(pcm, RATE)
+}
+
+fn resident_input_at_rate(
+    pcm: Vec<Frame>,
+    sample_rate: u32,
+) -> (
+    Editor,
+    hex_project::TrackId,
+    impl Fn(&Project) -> Arc<hex_engine::PreparedRevision>,
+) {
+    let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 8).unwrap();
     let frames = pcm.len() as u64;
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
             name: "resident input".into(),
             path: "memory/resident.wav".into(),
-            source_sample_rate: RATE,
+            source_sample_rate: sample_rate,
             source_frames: frames,
             playback_frames: frames,
             conversion_version: hex_project::IDENTITY_CONVERSION,
@@ -100,7 +111,7 @@ fn resident_input(
     else {
         panic!("audio import");
     };
-    let media = BTreeMap::from([(asset, hex_engine::Audio::new(RATE, pcm).unwrap())]);
+    let media = BTreeMap::from([(asset, hex_engine::Audio::new(sample_rate, pcm).unwrap())]);
     let table = Arc::new(hex_engine::SineTable::new());
     let prepare = move |project: &Project| {
         Arc::new(
@@ -155,7 +166,7 @@ fn begin_quantized_insert(
         project_generation: 5,
         editor_revision: 7,
     };
-    let (mut control, mut callback) = channel(RATE).unwrap();
+    let (mut control, mut callback) = channel(old.arrangement().sample_rate()).unwrap();
     control
         .publish_unaccounted_pcm_obligation(
             Playback::try_from_prepared_with_session(old).unwrap(),

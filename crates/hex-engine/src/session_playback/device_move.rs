@@ -46,18 +46,37 @@ impl SessionPlayback {
             return None;
         }
         let (mut source, mut destination) = (None, None);
-        for (index, (next, old)) in self
+        for (index, (next, previous_chain)) in self
             .device_chains
             .iter()
             .zip(&previous.device_chains)
             .enumerate()
         {
-            if next.len() == old.len() && next.configuration_matches_range(old, 0..old.len()) {
+            if next.len() == previous_chain.len()
+                && next.configuration_matches_range(previous_chain, 0..previous_chain.len())
+            {
                 continue;
             }
-            match (old.len(), next.len()) {
-                (1, 0) if source.replace(index).is_none() => {}
-                (0, 1) if destination.replace(index).is_none() => {}
+            let lengths = (previous_chain.len(), next.len());
+            if matches!(lengths, (1, 2) | (2, 1)) {
+                let before = old.get(index)?.device_chain.first()?;
+                let after = new.get(index)?.device_chain.first()?;
+                let supported_prefix = |prefix: &hex_lattice::PreparedRuntimeInstance| {
+                    prefix.device_type == hex_devices::utility::UTILITY_TYPE_ID
+                        && prefix.algorithmic_latency_frames() == Some(0)
+                        && !prefix.bypassed
+                        && prefix.automation.is_empty()
+                        && prefix.modulation.is_none()
+                };
+                if !next.configuration_matches_range(previous_chain, 0..1)
+                    || ![before, after].into_iter().all(supported_prefix)
+                {
+                    return None;
+                }
+            }
+            match lengths {
+                (1, 0) | (2, 1) if source.replace(index).is_none() => {}
+                (0, 1) | (1, 2) if destination.replace(index).is_none() => {}
                 _ => return None,
             }
         }
@@ -98,7 +117,7 @@ impl SessionPlayback {
             }
         }
         // Provider-specific trust belongs here, not in Lattice's generic proof.
-        let device_type = old.get(source)?.device_chain.first()?.device_type;
+        let device_type = old.get(source)?.device_chain.last()?.device_type;
         if device_type != hex_devices::delay::DEFINITION.type_id()
             && device_type != hex_devices::reverb::REVERB_TYPE_ID
         {

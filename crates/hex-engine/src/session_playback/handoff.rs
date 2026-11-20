@@ -1590,6 +1590,17 @@ impl SessionPlayback {
             },
             fresh,
             continuous_insert,
+            // Ordinary Resident publication returns the exact old graph and
+            // its native-source attachment after this confirmed cut.
+            match (
+                groups.is_none() && demand.as_ref().is_none_or(|d| d.ordinary),
+                continuous_insert,
+                confirmed_insert,
+            ) {
+                (true, _, true) => foreign_arrangement::HostedReplacementCut::Confirmed,
+                (true, true, false) => foreign_arrangement::HostedReplacementCut::Offer,
+                _ => foreign_arrangement::HostedReplacementCut::Unsupported,
+            },
             [old_loop_region, new_loop_region],
             tempo_cut,
             continuation,
@@ -1734,7 +1745,7 @@ impl SessionPlayback {
                 Some(
                     previous
                         .main_chain
-                        .settled_inline_main_delay(transition)
+                        .settled_main_pass_delay(transition)
                         .ok_or(SessionPlaybackError::DeviceRuntime)?,
                 )
             } else {
