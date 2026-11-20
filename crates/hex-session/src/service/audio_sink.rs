@@ -173,7 +173,7 @@ impl<'a> ResidentEffectPreparation<'a> {
         let mut played = playback_plugin_devices(self.project);
         let (destination, actual) = played.next()?;
         (played.next().is_none()
-            && destination.owner() == hex_lattice::ProcessorChainOwner::Main
+            && destination.owner() == hex_engine::ProcessorChainOwner::Main
             && actual.id() == device.id())
         .then_some((device.id().value(), device.state()))
     }
