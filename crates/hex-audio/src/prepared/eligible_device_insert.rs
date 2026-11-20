@@ -7,9 +7,15 @@ impl Callback {
     pub(super) fn abort_blocked_verified_insert(&mut self) {
         let held = matches!(self.active.as_ref(), Some(ActivePublication::Eligible(old))
             if old.runtime().is_some_and(hex_engine::ClaimedAudioCandidateRuntime::device_insert_cut_pending));
-        if held && let Some(next) = self.deferred_eligible.take() {
+        if (held
+            || self
+                .deferred_eligible
+                .as_ref()
+                .is_some_and(QueuedEligibleCandidate::native_removal_started))
+            && let Some(mut next) = self.deferred_eligible.take()
+        {
             self.return_verified_receipt(
-                &next,
+                &mut next,
                 Some(PlaybackHandoffRejection::RuntimeFenceChanged),
             );
             self.deferred_eligible = Some(next);
@@ -152,25 +158,26 @@ impl Callback {
 
     pub(super) fn return_verified_receipt(
         &mut self,
-        next: &QueuedEligibleCandidate,
+        next: &mut QueuedEligibleCandidate,
         rejection: Option<PlaybackHandoffRejection>,
     ) {
         let Some(receipt) = next.receipt() else {
             return;
         };
+        let basis = receipt.0.device_insert_basis();
+        let predecessor = basis.map(|basis| basis.predecessor_fence().0);
+        let approved = basis.is_some_and(|basis| basis.approved.is_some());
         receipt.returned(rejection);
-        if let Some(predecessor) = receipt
-            .0
-            .device_insert_basis()
-            .and_then(|basis| basis.approved)
-            .map(|offer| offer.predecessor())
-        {
+        if approved {
             self.release_device_insert_fade_pins();
-            if !self.status.closing.load(Acquire)
-                && self.recording_source() == Some(predecessor)
-                && let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
-                && let Some(runtime) = active.runtime_mut()
-            {
+        }
+        if predecessor.is_some()
+            && !self.status.closing.load(Acquire)
+            && self.recording_source() == predecessor
+            && let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+        {
+            next.restore_native_removal(active);
+            if approved && let Some(runtime) = active.runtime_mut() {
                 runtime.release_device_insert_cut();
             }
         }

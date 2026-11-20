@@ -187,7 +187,7 @@ impl Callback {
             self.reject_publication(next.revision(), reason);
             let has_receipt = next.receipt().is_some();
             self.status.publication_pending.store(false, Release);
-            self.return_verified_receipt(&next, Some(reason));
+            self.return_verified_receipt(&mut next, Some(reason));
             self.return_publication(ReturnedPublication::Eligible(next.reject_before_install()));
             if !has_receipt && let Some(ticket) = self.stream_pending_play.take() {
                 self.status

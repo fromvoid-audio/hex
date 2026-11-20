@@ -103,6 +103,62 @@ impl ClaimedAudioCandidateRuntime {
             .filter(|runtime| runtime.sampler_sources.is_none())
             .map(|runtime| &mut runtime.playback)
     }
+
+    /// Classify one fitting stage removal on these claimed graph owners.
+    /// Publication must validate the receipt and prove both render windows
+    /// before it advances the running stage.
+    pub fn plan_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<bool, crate::PlaybackHandoffError> {
+        if self.identity() == previous.identity() {
+            return Err(crate::PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        let Some(next) = self.device_insert_runtime() else {
+            return Ok(false);
+        };
+        let Some(old) = previous.device_insert_runtime() else {
+            return Ok(false);
+        };
+        if (0..old.session_route_count()).any(|index| {
+            old.session_route_status(index)
+                .is_some_and(|route| route.pending.is_some())
+        }) {
+            return Ok(false);
+        }
+        next.plan_native_removal_from(old)
+    }
+
+    /// Advance this exact stage only after page and publication preflight.
+    pub fn advance_native_removal_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<crate::session_playback::NativeRemovalProgress, crate::PlaybackHandoffError> {
+        let (Some(next), Some(old)) = (
+            self.device_insert_runtime(),
+            previous.device_insert_runtime(),
+        ) else {
+            return Err(crate::PlaybackHandoffError::RuntimeFenceChanged);
+        };
+        next.advance_planned_native_removal_from(old)
+    }
+
+    /// A returned candidate with an armed removal must restore its predecessor.
+    pub fn native_removal_started(&self) -> bool {
+        self.current_playback()
+            .is_some_and(Playback::native_removal_started)
+    }
+
+    /// Return a refused candidate to control after restoring its donor.
+    pub fn cancel_native_removal_from(&mut self, previous: &mut Self) {
+        if let (Some(next), Some(old)) = (
+            self.device_insert_runtime(),
+            previous.device_insert_runtime(),
+        ) {
+            next.cancel_native_removal_from(old);
+        }
+    }
+
     pub fn render_with_post_node_observer(
         &mut self,
         output: &mut [crate::Frame],

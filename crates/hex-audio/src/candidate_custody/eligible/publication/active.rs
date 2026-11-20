@@ -43,6 +43,19 @@ impl Queued {
         self.receipt().filter(|receipt| receipt.is_device_insert())
     }
 
+    pub(crate) fn native_removal_started(&self) -> bool {
+        self.state
+            .runtime
+            .as_ref()
+            .is_some_and(ClaimedAudioCandidateRuntime::native_removal_started)
+    }
+
+    pub(crate) fn restore_native_removal(&mut self, previous: &mut Active) {
+        if let (Some(next), Some(old)) = (&mut self.state.runtime, &mut previous.state.runtime) {
+            next.cancel_native_removal_from(old);
+        }
+    }
+
     pub(crate) fn tempo_cut(&self) -> Option<&crate::prepared::FencedTempoCut> {
         self.receipt().and_then(|receipt| receipt.tempo_cut())
     }
@@ -148,7 +161,7 @@ impl Queued {
         previous: Option<&mut Active>,
         root: &CandidateRoot,
         stream: Option<&mut StreamInstall<'_>>,
-        receipt_is_current: impl FnOnce(&crate::prepared::PublicationReceiptOwner) -> bool,
+        receipt_is_current: impl Fn(&crate::prepared::PublicationReceiptOwner) -> bool,
     ) -> InstallDecision {
         let receipt = self.state.receipt.take();
         let decision = self.prepare_install_with_receipt(
@@ -168,7 +181,7 @@ impl Queued {
         root: &CandidateRoot,
         mut stream: Option<&mut StreamInstall<'_>>,
         receipt: Option<&crate::prepared::PublicationReceiptOwner>,
-        receipt_is_current: impl FnOnce(&crate::prepared::PublicationReceiptOwner) -> bool,
+        receipt_is_current: impl Fn(&crate::prepared::PublicationReceiptOwner) -> bool,
     ) -> InstallDecision {
         if let Some(reason) = self.preflight_refusal(root) {
             return InstallDecision::Refused(reason);
@@ -195,6 +208,24 @@ impl Queued {
                 .runtime
                 .as_ref()
                 .is_none_or(|runtime| runtime.contains_streamed_sources());
+        let local_removal = if !confirmed_insert
+            && receipt.is_some_and(|receipt| receipt.is_device_insert())
+            && let Some(old) = previous
+                .as_deref_mut()
+                .and_then(|old| old.state.runtime.as_mut())
+            && let Some(runtime) = next.runtime.as_mut()
+        {
+            match runtime.plan_native_removal_from(old) {
+                Ok(planned) => planned,
+                Err(error) => {
+                    return InstallDecision::Refused(
+                        hex_engine::PlaybackHandoffRejection::from_error(error),
+                    );
+                }
+            }
+        } else {
+            false
+        };
         if streamed {
             if !confirmed_insert
                 && previous
@@ -259,6 +290,32 @@ impl Queued {
                         hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady
                     });
                 }
+            }
+        }
+        if local_removal
+            && let Some(receipt) = receipt
+            && let Some(old) = previous
+                .as_deref_mut()
+                .and_then(|old| old.state.runtime.as_mut())
+            && let Some(runtime) = next.runtime.as_mut()
+        {
+            use hex_engine::PlaybackHandoffRejection as Rejection;
+            use hex_engine::session_playback::NativeRemovalProgress;
+            if receipt.fenced_before_admission() {
+                return InstallDecision::Refused(Rejection::FreshRuntimeCancelled);
+            }
+            if !receipt_is_current(receipt) {
+                return InstallDecision::Refused(Rejection::RuntimeFenceChanged);
+            }
+            match runtime.advance_native_removal_from(old) {
+                Ok(NativeRemovalProgress::Fading) => {
+                    return InstallDecision::Retry(PublicationWaitReason::NativeRemovalFade);
+                }
+                Ok(NativeRemovalProgress::Ready) => {}
+                Ok(NativeRemovalProgress::NotApplicable) => {
+                    return InstallDecision::Refused(Rejection::RuntimeFenceChanged);
+                }
+                Err(error) => return InstallDecision::Refused(Rejection::from_error(error)),
             }
         }
         let promotions = if streamed {
