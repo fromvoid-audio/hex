@@ -855,6 +855,11 @@ fn native_moves_wait_for_the_exact_audio_receipt_and_preserve_noops() {
 
 #[test]
 fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel() {
+    assert_native_move_history(false);
+    assert_native_move_history(true);
+}
+
+fn assert_native_move_history(with_utility_prefix: bool) {
     let (service, fixture, _) = service();
     let run = |request| {
         service.submit(request).unwrap();
@@ -871,6 +876,20 @@ fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel()
     };
     let source = add_track("source");
     let destination = add_track("destination");
+    if with_utility_prefix {
+        assert!(
+            !run(Request::AddNativeDevice {
+                track: destination,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                    "hex.utility"
+                )),
+                before: None,
+            })
+            .request_complete
+        );
+        install_candidate(&service, &fixture);
+    }
     assert!(
         !run(Request::AddNativeDevice {
             track: source,
@@ -894,7 +913,14 @@ fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel()
     );
     let moved = install_candidate(&service, &fixture).state;
     assert_eq!(
-        moved.project.track(destination).unwrap().devices()[0].id(),
+        moved
+            .project
+            .track(destination)
+            .unwrap()
+            .devices()
+            .last()
+            .unwrap()
+            .id(),
         device
     );
 
