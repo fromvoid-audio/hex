@@ -807,9 +807,7 @@ impl Custody {
                     .map(|()| Some(ShutdownHandoff::Drain(None))),
                 ShutdownHandoff::Drain(None) => {
                     match self.poll_retiring_edits_with_work(work, binding) {
-                        Ok(Progress::Pending) => {
-                            return Ok(Some(handoff.step));
-                        }
+                        Ok(Progress::Pending) => Ok(Some(handoff.step)),
                         Ok(Progress::Complete) => Ok(None),
                         Ok(Progress::Batch(receipt, _)) => {
                             // Move the page to the existing retained sequence so
