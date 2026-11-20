@@ -1902,13 +1902,17 @@ impl SessionPlayback {
         let fresh_history = compensation_pair.and_then(|(candidate, old)| {
             history_track
                 .or_else(|| {
+                    let staged_track = self
+                        .native_removal
+                        .and_then(|removal| removal.staged_track_id(previous));
                     if !previous.playing
                         || !same_base_timing
                         || self.revision.arrangement().tracks().len().checked_add(1)
                             != Some(previous.revision.arrangement().tracks().len())
                         || old_loop_region != new_loop_region
-                        || self.revision.contains_streamed_sources()
-                        || previous.revision.contains_streamed_sources()
+                        || (staged_track.is_none()
+                            && (self.revision.contains_streamed_sources()
+                                || previous.revision.contains_streamed_sources()))
                         || !old.delays.history_ready()
                         // The Arrangement cursor wraps, so it cannot prove
                         // history age inside a loop. A ready donor with the
@@ -1928,20 +1932,21 @@ impl SessionPlayback {
                     if has_foreign {
                         return None;
                     }
-                    fresh_added_audio_track(
-                        previous.revision.arrangement().tracks(),
-                        self.revision.arrangement().tracks(),
-                        previous.arrangement_frame,
-                        None,
-                        true,
-                    )
-                    .map(|track| FreshHistory::RemovedTrack {
+                    // The staged plan has matched the single departing track.
+                    // Streaming publication proves both windows before it starts
+                    // the fade. The gate above requires silence before copying.
+                    let track = staged_track.or_else(|| {
+                        fresh_added_audio_track(
+                            previous.revision.arrangement().tracks(),
+                            self.revision.arrangement().tracks(),
+                            previous.arrangement_frame,
+                            None,
+                            true,
+                        )
+                    })?;
+                    Some(FreshHistory::RemovedTrack {
                         track,
-                        // The staged path above gates actual copying on both
-                        // the fader and the departing rings being silent.
-                        staged: self
-                            .native_removal
-                            .is_some_and(|removal| removal.stages_track(previous, track)),
+                        staged: staged_track.is_some(),
                     })
                 })
                 .or_else(|| {
