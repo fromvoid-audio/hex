@@ -1,4 +1,4 @@
-//! Scratch product oracle; intentionally unbuilt until the typed compiler leaf lands.
+//! Source-free saved Off Main and exact fresh stopped On lifecycle.
 //! One valid saved Off Main must remain source-free until an exact fresh On.
 use super::*;
 use hex_engine::PreparedDeviceProcessing;
@@ -172,4 +172,108 @@ fn saved_off_main_reopens_without_worker_then_installs_fresh_stopped_on() {
         wait(|| h.plugin_completed.load(Acquire) > block);
         assert_eq!(pcm, [[if block == 2 { 0.09375 } else { 0.0 }; 2]; 256]);
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn play_after_source_free_on_staging_keeps_canonical_off() {
+    let _native = native_fixture();
+    let saved = nondefault_fixture_with_frames(8192);
+    let device = saved.project.main_devices()[0].id();
+    let mut editor = hex_project::Editor::new(saved.project.clone(), 8).unwrap();
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let path = saved.files.0.join("off-race.hex");
+    hex_storage::save_new(&path, editor.project()).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        saved.catalog.clone(),
+    );
+    assert!(h.next().error.is_none());
+    h.applied(0);
+    h.enable_confirmed_device_inserts();
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(path));
+    super::super::super::resident_lifecycle::finish_replacement(&mut h, &opened, output);
+    assert_eq!(observed(&h, device), PreparedDeviceProcessing::PoweredOff);
+    let off_source = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, opened.state.project);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let refused = edits::ordinary_terminal(&mut h);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, opened.state.project);
+    assert_eq!(refused.state.revision, opened.state.revision);
+    assert_eq!(
+        (refused.state.can_undo, refused.state.can_redo),
+        (opened.state.can_undo, opened.state.can_redo)
+    );
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(off_source)
+    );
+    // Off remains authoritative after refusal; running On must not take the old fallback.
+    let records = h.plugin_records.load(Acquire);
+    let running = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(running.error.is_some());
+    assert_eq!(running.state.project, opened.state.project);
+    assert_eq!(h.plugin_records.load(Acquire), records);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    wait(|| {
+        h.render();
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .paused_input_interval()
+            .is_some()
+    });
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let retry = h.next();
+    assert!(retry.error.is_none(), "{:?}", retry.error);
+    assert!(!retry.request_complete);
+    assert_eq!(retry.state.project, opened.state.project);
+    h.applied(off_source.audio_revision);
+    let installed = edits::ordinary_terminal(&mut h);
+    assert!(installed.error.is_none(), "{:?}", installed.error);
+    assert!(!installed.state.project.device(device).unwrap().bypassed());
+    assert_eq!(installed.state.revision, opened.state.revision + 1);
 }

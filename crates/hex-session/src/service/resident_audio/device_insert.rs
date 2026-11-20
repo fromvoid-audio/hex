@@ -601,12 +601,15 @@ pub(in crate::service) fn stopped_hosted_power_fence(
     command: &Command,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
-) -> Option<ResidentFreshRuntimeFence> {
+) -> Result<Option<ResidentFreshRuntimeFence>, SessionError> {
     if !sink.confirms_device_inserts() || !stopped_power::eligible(project, command) {
-        return None;
+        return Ok(None);
     }
-    let device = project.main_devices().first()?;
+    let Some(device) = project.main_devices().first() else {
+        return Ok(None);
+    };
     sink.stopped_resident_power_fence(context, device.id().value())
+        .map_err(SessionError::NativeAudio)
 }
 
 fn resident_graph_edit_operation(
@@ -1051,7 +1054,7 @@ impl Session {
         proposal_control: Option<&PluginEffectControl>,
         document_intent: u64,
     ) -> Result<Option<Pending>, SessionError> {
-        let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink);
+        let stopped_fence = stopped_hosted_power_fence(self.project(), &command, context, sink)?;
         self.stage_resident_graph_change(
             context,
             sink,

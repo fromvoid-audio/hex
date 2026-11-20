@@ -2246,7 +2246,7 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
         context: AudioSourceContext,
         device: u64,
-    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+    ) -> Result<Option<hex_session::service::ResidentFreshRuntimeFence>, String> {
         self.inner.stopped_resident_power_fence(context, device)
     }
 

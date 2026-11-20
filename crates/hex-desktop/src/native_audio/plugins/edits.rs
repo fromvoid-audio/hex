@@ -338,9 +338,10 @@ impl Plugins {
             let previous = desired
                 .filter(|source| source.context().project_generation == context.project_generation)
                 .map(CanonicalAudioSourceSnapshot::effect_preparation);
-            let reintroduced = previous
-                .as_ref()
-                .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
+            let reintroduced = fresh_source
+                || previous
+                    .as_ref()
+                    .is_some_and(|old| old.plugin_device_bypassed(device).is_none());
             let selected = if reintroduced {
                 self.saved_catalog_selection(state, destination)
             } else {
@@ -349,6 +350,9 @@ impl Plugins {
             catalog = match selected {
                 Ok(selected) => selected,
                 Err(reason) => {
+                    if fresh_source {
+                        return Err(reason);
+                    }
                     let mut preserved = false;
                     if let Some(previous) = previous {
                         previous.visit_plugin_devices(|_, _, old| {

@@ -7706,7 +7706,7 @@ fn run_worker(
                                     editor_revision: revision,
                                 },
                                 sink,
-                            )
+                            )?
                             .is_some()
                             {
                                 let staged = session.stage_resident_device_insert(

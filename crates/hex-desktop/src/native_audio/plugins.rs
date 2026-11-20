@@ -234,6 +234,7 @@ pub(super) struct Plugins {
     installed_removals_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
+    saved_off_document: Option<(u64, u64)>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
@@ -1193,6 +1194,7 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
+        powered_off: Option<u64>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
@@ -1200,9 +1202,10 @@ impl Plugins {
         input.visit_plugin_devices(|destination, device, state| {
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let fresh_source = previous
-                .as_ref()
-                .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
+            let fresh_source = powered_off == Some(device)
+                || previous
+                    .as_ref()
+                    .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
             self.prepare_edit_source(
                 output.as_deref_mut().ok_or("native output closed")?,
                 input,
@@ -1223,6 +1226,7 @@ impl Plugins {
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
+        powered_off: Option<u64>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -1235,9 +1239,32 @@ impl Plugins {
         }) {
             return Err("vst3 state restoration is pending".into());
         }
+        if let Some((device, state)) = input.powered_off_main()
+            && (self.saved_off_document == Some((input.context().project_generation, device))
+                || powered_off == Some(device))
+            && !self.has_accepted_main_source(input.context(), device)
+        {
+            return Hosting::prepare_powered_off_on_control(
+                hex_audio::plugin_effects::PoweredOffEffect {
+                    owner: ProcessorChainOwner::Main,
+                    device_id: device,
+                    sample_rate: input.sample_rate(),
+                    state,
+                },
+                prepare,
+            )
+            .map(Some);
+        }
         let mut output = output;
         if input.preparing_edit() {
-            self.prepare_edit_sources(output.as_deref_mut(), &input, desired, cancellation, false)?;
+            self.prepare_edit_sources(
+                output.as_deref_mut(),
+                &input,
+                desired,
+                cancellation,
+                false,
+                powered_off,
+            )?;
         }
         let mut bindings = Vec::new();
         bindings

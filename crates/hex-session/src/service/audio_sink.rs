@@ -156,6 +156,28 @@ pub enum PluginParameterGestureError {
     SourceLost(String),
 }
 impl<'a> ResidentEffectPreparation<'a> {
+    /// One saved Off Main on a playback route, without automation or modulation.
+    /// This borrowed declaration grants no worker, endpoint or applied-source authority.
+    pub fn powered_off_main(&self) -> Option<(u64, &'a NativeDeviceState)> {
+        let [device] = self.project.main_devices() else {
+            return None;
+        };
+        if !is_plugin_effect(device)
+            || !device.bypassed()
+            || !device.automation().is_empty()
+            || !device.modulation().sources().is_empty()
+            || !device.modulation().routes().is_empty()
+        {
+            return None;
+        }
+        let mut played = playback_plugin_devices(self.project);
+        let (destination, actual) = played.next()?;
+        (played.next().is_none()
+            && destination.owner() == hex_lattice::ProcessorChainOwner::Main
+            && actual.id() == device.id())
+        .then_some((device.id().value(), device.state()))
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.project.sample_rate()
     }
@@ -1135,8 +1157,8 @@ pub trait WorkerAudioSink: Send {
         &mut self,
         _context: hex_engine::AudioSourceContext,
         _device: u64,
-    ) -> Option<ResidentFreshRuntimeFence> {
-        None
+    ) -> Result<Option<ResidentFreshRuntimeFence>, String> {
+        Ok(None)
     }
 
     /// Actual output/source/revision-bound loop, never the saved loop marker.
@@ -2249,6 +2271,57 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn only_the_sole_played_bypassed_main_is_a_saved_off_declaration() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let state =
+            NativeDeviceState::new(hex_lattice_contract::VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("main");
+        };
+        let selected = |project: &Project| {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 0,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: false,
+            }
+            .powered_off_main()
+            .map(|(id, _)| id)
+        };
+        assert_eq!(selected(editor.project()), None);
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert_eq!(selected(editor.project()), Some(device.value()));
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "detached".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        editor
+            .execute(Command::InsertInstrument { track, state })
+            .unwrap();
+        assert_eq!(selected(editor.project()), None);
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+        assert_eq!(selected(editor.project()), Some(device.value()));
+    }
 
     #[test]
     fn detached_hosted_instrument_keeps_authored_state_without_playback_membership() {
