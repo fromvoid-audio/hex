@@ -2244,6 +2244,43 @@ impl WorkerAudioSink for NativeAudioSink {
         crate::streamed_export::resident_seek_storage_bytes(prepared, sources)
     }
 
+    fn stopped_resident_power_fence(
+        &mut self,
+        context: AudioSourceContext,
+        device: u64,
+    ) -> Option<hex_session::service::ResidentFreshRuntimeFence> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            if !self.plugins.has_accepted_main_source(context, device) {
+                return None;
+            }
+            let control = self.output.as_mut()?.publication.control()?;
+            let interval = control.status.paused_input_interval()?;
+            if interval.0.context != context {
+                return None;
+            }
+            let fence = control.capture_fresh_runtime_fence()?;
+            if fence.expected_active_revision() != interval.0.audio_revision
+                || control.status.paused_input_interval() != Some(interval)
+            {
+                return None;
+            }
+            Some(hex_session::service::ResidentFreshRuntimeFence {
+                output_identity: interval.0.output_identity,
+                active_audio_revision: fence.expected_active_revision(),
+                route_generation: fence.route_state_generation(),
+                admitted_command_ticket: fence.admitted_command_ticket(),
+                output_fault_epoch: fence.output_fault_epoch(),
+                consumed_stop_generation: fence.consumed_stop_generation(),
+            })
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let _ = (context, device);
+            None
+        }
+    }
+
     fn resident_runtime_loop(
         &mut self,
         context: AudioSourceContext,
