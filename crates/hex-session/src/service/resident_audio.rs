@@ -846,6 +846,16 @@ impl Inputs<'_> {
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        if let ResidentPublicationPolicy::DeviceInsert {
+            preparation_deadline,
+            ..
+        } = policy
+            && Instant::now() >= preparation_deadline
+        {
+            return Err(SessionError::Invalid(
+                "resident graph edit preparation timed out",
+            ));
+        }
         let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
         self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, section_loop)
     }
