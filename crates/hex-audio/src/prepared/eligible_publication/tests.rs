@@ -12,6 +12,8 @@ mod device_insert;
 #[cfg(feature = "allocation-probe")]
 mod domain_facts;
 #[cfg(feature = "allocation-probe")]
+mod eq;
+#[cfg(feature = "allocation-probe")]
 mod fanout;
 mod granular;
 #[cfg(feature = "allocation-probe")]

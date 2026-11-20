@@ -18,6 +18,8 @@ mod draft;
 #[cfg(test)]
 mod eq8_storage_tests;
 #[cfg(test)]
+mod eq_storage_tests;
+#[cfg(test)]
 mod gate_modulation_tests;
 #[cfg(test)]
 mod grouped_audio_tests;

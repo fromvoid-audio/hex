@@ -81,7 +81,8 @@ impl Configuration {
     }
 }
 
-pub(super) struct PreparedEq {
+/// Validated control-side configuration shared immutably by its runtime pair.
+pub struct PreparedEq {
     sample_rate: u32,
     configuration: Arc<Configuration>,
 }
@@ -89,16 +90,27 @@ impl PreparedEq {
     pub(super) fn source_factory_bytes_bound() -> usize {
         // Source effects grant no host parameter slots. The retained historical
         // lanes and their point and node arrays have canonical state bounds.
-        crate::source_effect_arc_bytes::<Self>()
-            + crate::source_effect_arc_bytes::<Configuration>()
+        crate::source_effect_arc_bytes::<Self>() + Self::configuration_bytes_bound(0)
+    }
+    fn configuration_bytes_bound(parameters: usize) -> usize {
+        crate::source_effect_arc_bytes::<Configuration>()
             + MAX_NODES * (std::mem::size_of::<Node>() + std::mem::size_of::<BandStages>())
             + MAX_LANES * std::mem::size_of::<CompiledLane>()
             + MAX_POINTS * std::mem::size_of::<AutomationPoint>()
+            + parameters * std::mem::size_of::<automation::Grant>()
+    }
+    /// Bounds the factory's private backing for all supported saved states and grants.
+    pub fn closed_configuration_bytes_bound() -> usize {
+        Self::configuration_bytes_bound(hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE)
+    }
+    /// Private immutable backing charged once to the constructor that created this factory.
+    pub fn configuration_storage_bytes(&self) -> usize {
+        crate::source_effect_arc_bytes::<Configuration>() + self.configuration.heap_bytes()
     }
     pub(super) fn new(settings: EqState, sample_rate: u32) -> Result<Self, DeviceContractError> {
         Self::prepare(settings, sample_rate, &[])
     }
-    fn prepare(
+    pub(super) fn prepare(
         settings: EqState,
         sample_rate: u32,
         parameters: &[ParameterId],
@@ -537,7 +549,8 @@ impl ModeFade {
     }
 }
 pub const EQ_RUNTIME_BYTES: usize = std::mem::size_of::<EqRuntime>();
-struct EqRuntime {
+/// Bounded sparse EQ histories, initialized on control and reused in playback.
+pub struct EqRuntime {
     sample_rate: u32,
     configuration: Arc<Configuration>,
     bands: Box<[RuntimeBand]>,
@@ -558,6 +571,13 @@ struct EqRuntime {
     mode_fade: ModeFade,
 }
 impl EqRuntime {
+    /// Runtime-private bytes. The original factory accounts for the immutable
+    /// configuration retained by both runtimes, including after chain transfer.
+    pub fn private_storage_bytes(&self) -> usize {
+        EQ_RUNTIME_BYTES
+            + std::mem::size_of_val(self.bands.as_ref())
+            + std::mem::size_of_val(self.mode_fade.bands.as_ref())
+    }
     fn mode_is_automated(&self) -> bool {
         self.configuration
             .parameters

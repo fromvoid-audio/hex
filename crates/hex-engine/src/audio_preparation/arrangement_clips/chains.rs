@@ -6,6 +6,7 @@ use crate::{
     device_modulation::EffectModulation,
     owned_shared::{OwnedShared, SharedDeclaration},
 };
+use hex_devices::eq::{EQ_DEFINITION, EQ_TYPE_ID, EqDefinition, PreparedEq};
 use hex_lattice::{
     NativeDeviceDefinition, NativeDeviceRegistry, PreparedForeignProcessor,
     PreparedProcessorFactory, PreparedRuntimeInstance, ProcessorChainOwner,
@@ -24,6 +25,7 @@ struct Entry {
     foreign: Option<PreparedForeignProcessor>,
     state: SharedDeclaration,
     processor: Option<SharedDeclaration>,
+    processor_backing_bytes: usize,
     meter: SharedDeclaration,
     payload: (usize, usize),
     handles: [u64; 4],
@@ -136,6 +138,20 @@ impl ChainCustody {
                     Some(parts(OwnedShared::<
                         hex_devices::overdrive::PreparedOverdrive,
                     >::declared_parts())?),
+                )
+            } else if state.type_id() == EQ_TYPE_ID {
+                let migrated = EQ_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(eq_construction_overlap(migrated.payload().len())?);
+                let factory = parts(OwnedShared::<PreparedEq>::declared_parts())?;
+                (
+                    migrated.payload().len(),
+                    Some(
+                        factory
+                            .checked_add(PreparedEq::closed_configuration_bytes_bound())
+                            .ok_or(AudioStorageError::Overflow)?,
+                    ),
                 )
             } else if state.type_id() == hex_devices::eq8::EQ8_TYPE_ID {
                 let migrated = hex_devices::eq8::EQ8_DEFINITION
@@ -364,15 +380,19 @@ impl ChainCustody {
                     devices
                         .iter()
                         .filter(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                        .map(|d| {
+                        .try_fold(0, |largest, d| {
                             if d.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID {
-                                hex_devices::reverb::PARAMETER_COUNT * 4
+                                Some(largest.max(hex_devices::reverb::PARAMETER_COUNT * 4))
+                            } else if d.state().type_id() == EQ_TYPE_ID {
+                                Some(
+                                    largest.max(
+                                        eq_construction_overlap(d.state().payload().len()).ok()?,
+                                    ),
+                                )
                             } else {
-                                d.state().payload().len()
+                                Some(largest.max(d.state().payload().len()))
                             }
-                        })
-                        .max()
-                        .unwrap_or(0),
+                        })?,
                 )
             })
             .ok_or(AudioStorageError::Overflow)?;
@@ -424,6 +444,7 @@ impl ChainCustody {
             let compressor =
                 device.state().type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID;
             let rattle = device.state().type_id() == hex_devices::rattle::RATTLE_TYPE_ID;
+            let eq = device.state().type_id() == EQ_TYPE_ID;
             let eq8 = device.state().type_id() == hex_devices::eq8::EQ8_TYPE_ID;
             let delay = device.state().type_id() == hex_devices::delay::TYPE_ID;
             let limiter = device.state().type_id() == hex_devices::limiter::TYPE_ID;
@@ -440,7 +461,12 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if eq8 {
+            let migrated = if eq {
+                EQ_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if eq8 {
                 hex_devices::eq8::EQ8_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
@@ -558,6 +584,7 @@ impl ChainCustody {
                 || gate
                 || compressor
                 || rattle
+                || eq
                 || eq8
                 || delay
                 || limiter
@@ -583,7 +610,13 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if eq8 {
+            let mut processor_backing_bytes = 0;
+            let processor = if eq {
+                let prepared = EqDefinition::prepare_owned(&migrated, rate, parameters)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                processor_backing_bytes = prepared.configuration_storage_bytes();
+                Some(OwnedShared::new_owned(prepared).into_processor_parts_on_control())
+            } else if eq8 {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::eq8::Eq8Definition::prepare_owned(&migrated, rate, parameters)
@@ -764,6 +797,8 @@ impl ChainCustody {
                         &hex_devices::overdrive::OVERDRIVE_DEFINITION
                     } else if compressor {
                         &hex_devices::compressor::COMPRESSOR_DEFINITION
+                    } else if eq {
+                        &EQ_DEFINITION
                     } else if eq8 {
                         &hex_devices::eq8::EQ8_DEFINITION
                     } else if delay {
@@ -807,6 +842,7 @@ impl ChainCustody {
                 foreign,
                 state,
                 processor: processor_declaration,
+                processor_backing_bytes,
                 meter: meter_declaration,
                 payload,
                 handles,
@@ -896,6 +932,7 @@ impl ChainCustody {
             bytes = bytes
                 .checked_add(pair.automation_bytes)
                 .and_then(|bytes| bytes.checked_add(pair.modulation_bytes.unwrap_or(0)))
+                .and_then(|bytes| bytes.checked_add(pair.processor_backing_bytes))
                 .ok_or(AudioStorageError::Overflow)?;
             let state = value
                 .configuration
@@ -1026,9 +1063,22 @@ impl ChainCustody {
                 )?,
                 _ => {}
             }
+            if pair.processor_backing_bytes != 0 {
+                l.bytes(
+                    Owner::exclusive(value),
+                    Location("processor-private-configuration", 0),
+                    pair.processor_backing_bytes,
+                )?;
+            }
         }
         Ok(())
     }
+}
+
+fn eq_construction_overlap(payload: usize) -> Result<usize, AudioStorageError> {
+    payload
+        .checked_add(EqDefinition::preparation_overlap_bytes_bound())
+        .ok_or(AudioStorageError::Overflow)
 }
 
 /// Fresh exact constructor payload; no caller/provider Arc enters the ledger.
