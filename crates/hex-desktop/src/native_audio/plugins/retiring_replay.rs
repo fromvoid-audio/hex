@@ -15,7 +15,7 @@ use hex_audio::{
 use hex_engine::playback::Playback;
 use hex_session::service::{
     PluginParameterCapture, RequestCancellation, RetiringEditorBatch,
-    RetiringEditorReplayDisposition,
+    RetiringEditorReplayDisposition, RetiringEditorReplayMode,
 };
 use std::time::{Duration, Instant};
 
@@ -208,7 +208,7 @@ impl Plugins {
         control: &mut PublicationControl,
         batch: &RetiringEditorBatch,
         points: &[(u32, f64)],
-        publication: AudioSourceContext,
+        mode: RetiringEditorReplayMode,
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<PluginParameterCapture, String> {
@@ -272,6 +272,26 @@ impl Plugins {
             .ok_or("vst3 replay applied source changed")?;
         let values = recovery_values(control, binding, points, cancellation)?;
         let before = capture(control, binding, cancellation)?;
+        let publication = match mode {
+            RetiringEditorReplayMode::VerifyExisting => {
+                if values.as_slice() != points {
+                    return Err(
+                        "vst3 replacement does not already contain the retiring edit".into(),
+                    );
+                }
+                confirm_unedited_successor(control, binding, cancellation)?;
+                if control.status.native_parameter_source(playing)
+                    != Some((source, transport_epoch))
+                {
+                    return Err("vst3 replay applied source changed".into());
+                }
+                return Ok(PluginParameterCapture {
+                    before: before.clone(),
+                    after: before,
+                });
+            }
+            RetiringEditorReplayMode::Apply { publication } => publication,
+        };
         let token = admit(control, cancellation, |control| {
             // A replacement helper is fresh. Its own editor input takes
             // precedence over any retained value from the predecessor.
@@ -318,22 +338,7 @@ impl Plugins {
                 Err(reason) => return Err(reason.into()),
             }
         };
-        let token = admit(control, cancellation, |control| {
-            control.begin_native_source_controller_query_on_control(
-                binding,
-                ControllerRequest::ReadEditorFrontier,
-            )
-        })?;
-        loop {
-            match control.poll_native_source_controller_query_on_control(binding, &token) {
-                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
-                    edits::poll_control(control)
-                }
-                Ok(NativeWorkerControllerProgress::EditorFrontier(0)) => break,
-                _ => return Err("vst3 replacement editor input changed during capture".into()),
-            }
-        }
-        edits::check_cancel(cancellation)?;
+        confirm_unedited_successor(control, binding, cancellation)?;
         let after = admit(control, cancellation, |control| {
             control.approve_native_guarded_capture_on_control(binding, &fact)
         })?
@@ -354,6 +359,30 @@ impl Plugins {
             after: after.clone(),
         });
         Ok(PluginParameterCapture { before, after })
+    }
+}
+
+fn confirm_unedited_successor(
+    control: &mut PublicationControl,
+    binding: Binding,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<(), String> {
+    let token = admit(control, cancellation, |control| {
+        control.begin_native_source_controller_query_on_control(
+            binding,
+            ControllerRequest::ReadEditorFrontier,
+        )
+    })?;
+    loop {
+        match control.poll_native_source_controller_query_on_control(binding, &token) {
+            Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                edits::poll_control(control)
+            }
+            Ok(NativeWorkerControllerProgress::EditorFrontier(0)) => {
+                return edits::check_cancel(cancellation);
+            }
+            _ => return Err("vst3 replacement editor input changed during capture".into()),
+        }
     }
 }
 
