@@ -4132,6 +4132,9 @@ impl SessionPlayback {
         let faded_analytic_track = self
             .native_removal
             .and_then(|pending| pending.faded_analytic_track(previous));
+        let analytic_move = self
+            .native_removal
+            .and_then(|pending| pending.analytic_track_move());
         for (old_index, _) in previous.routes.iter().enumerate() {
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
             if faded_analytic_track == Some(old_route.id)
@@ -4162,6 +4165,7 @@ impl SessionPlayback {
                 .tracks()
                 .get(new_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let moved_donor = analytic_move.is_some_and(|movement| movement.source == old_index);
             let cut_frame = previous.arrangement_frame;
             let new_cut_frame = arrangement_cut;
             let candidate_loop_end = self
@@ -4267,7 +4271,8 @@ impl SessionPlayback {
                         if is_suppressed(previous, old_route.id, key) {
                             return;
                         }
-                        let voice_result = if source_powered_off(old_index)
+                        let voice_result = if moved_donor
+                            || source_powered_off(old_index)
                             || (arrangement_cut == previous.arrangement_frame
                                 && shared_sources::track_has_analytic_source(
                                     &self.revision,
@@ -5234,7 +5239,12 @@ impl SessionPlayback {
                 previous,
                 self.revision.as_ref(),
                 &analytic_owner_matches,
-                source_effects_continue,
+                source_effects_continue
+                    || analytic_move.is_some_and(|movement| {
+                        release
+                            .source_origin
+                            .is_some_and(|origin| origin.source == movement.source_id)
+                    }),
             )?;
             let Some(old_index) = audio_plan.old_receiver else {
                 continue;
@@ -5792,6 +5802,11 @@ impl SessionPlayback {
 
         if let Some(movement) = self.native_removal.and_then(|pending| pending.track_move())
             && self.direct_audio_track_move_from(previous) != Some(movement)
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        if let Some(movement) = analytic_move
+            && self.direct_analytic_instrument_move_from(previous) != Some(movement)
         {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
