@@ -473,3 +473,8 @@ computed union. Otherwise each path uses ordinary insertion. The pair retains
 separate masks, primitive records and PathIds, and inherits any enclosing layer.
 Cached scene tests cover ordering, fallback and replay, and widget tests compare
 the completed triangles under the live clip mask.
+
+20 November piano-roll border test support: `rendered_quad_borders_at` reads the
+colors and widths of completed canvas quads at a logical point inside their
+content masks. Hex uses it to distinguish the idle, hover, and selected rounded
+note outlines. It is confined to the existing test-support context.
