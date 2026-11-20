@@ -1,4 +1,4 @@
-//! One Resident Arrangement leaf moves between Main and an existing root Group.
+//! One Resident Arrangement leaf moves between Main and an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
 //! The Group and Main faders never participate, and compensation copy rules stay
@@ -100,13 +100,11 @@ impl SessionPlayback {
                 (TrackOutput::Main { .. }, TrackOutput::Main { .. }) => {}
                 (TrackOutput::Group { target: a, .. }, TrackOutput::Group { target: b, .. })
                     if a == b => {}
-                (TrackOutput::Main { .. }, TrackOutput::Group { target, .. }) => {
-                    // The compiled Group edge names the target in the same
-                    // stable inventory. Its input may have no other child.
+                (TrackOutput::Main { .. }, TrackOutput::Group { .. }) => {
+                    // Every other edge stays fixed, including the destination's
+                    // route through any ancestors. Only a leaf can move.
                     if changed.replace(index).is_some()
                         || old.clips.is_empty()
-                        || !matches!(old_graph.tracks.get(target)?.output, TrackOutput::Main { .. })
-                        || !matches!(new_graph.tracks.get(target)?.output, TrackOutput::Main { .. })
                         || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == index))
                     {
                         return None;

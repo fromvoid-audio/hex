@@ -138,6 +138,8 @@ enum Reroute {
     Exit,
     EnterEmpty,
     ExitLastChild,
+    EnterNested,
+    ExitNested,
 }
 
 #[test]
@@ -209,9 +211,33 @@ fn abandoning_a_last_child_exit_restores_the_former_group_feed() -> Result {
     Ok(())
 }
 
+#[test]
+fn nested_group_reroutes_preserve_both_ancestors() -> Result {
+    for partition in [1, 257] {
+        for reroute in [Reroute::EnterNested, Reroute::ExitNested] {
+            route_cut(partition, Terminal::Install, true, reroute)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn abandoning_a_nested_group_reroute_preserves_its_predecessor() -> Result {
+    for reroute in [Reroute::EnterNested, Reroute::ExitNested] {
+        for terminal in [Terminal::Cancel, Terminal::Stop] {
+            route_cut(257, terminal, true, reroute)?;
+        }
+    }
+    Ok(())
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
-    let exiting = matches!(reroute, Reroute::Exit | Reroute::ExitLastChild);
-    let has_sibling = matches!(reroute, Reroute::Enter | Reroute::Exit);
+    let exiting = matches!(
+        reroute,
+        Reroute::Exit | Reroute::ExitLastChild | Reroute::ExitNested
+    );
+    let has_sibling = !matches!(reroute, Reroute::EnterEmpty | Reroute::ExitLastChild);
+    let nested = matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
     let mut a = vec![[0.125, -0.0625]; FRAMES];
     a[1700] = [0.5, -0.25];
     a[CUT + 53] = [-0.375, 0.1875];
@@ -244,6 +270,10 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     }
     effect(&mut editor, destination, delay(11.0))?;
     effect(&mut editor, destination, invert())?;
+    if nested {
+        let outer = group(&mut editor, destination, "outer group")?;
+        effect(&mut editor, outer, delay(3.0))?;
+    }
     effect(&mut editor, moved, delay(7.0))?;
     let unrelated = import(&mut editor, &mut media, "unrelated", c.clone())?;
     let other_group = group(&mut editor, unrelated, "other group")?;
@@ -333,6 +363,11 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         }
     }
     let destination_pcm = standalone(destination_input, &[delay(11.0), invert()])?;
+    let destination_pcm = if nested {
+        standalone(destination_pcm, &[delay(3.0)])?
+    } else {
+        destination_pcm
+    };
     let mut mixed = vec![[0.0; 2]; FRAMES];
     for i in 0..FRAMES {
         for channel in 0..2 {
