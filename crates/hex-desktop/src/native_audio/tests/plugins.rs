@@ -170,12 +170,16 @@ fn same_source_edit(h: &mut ResidentHarness, request: Request) -> Event {
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
     let _native = native_fixture();
-    let mut h = ResidentHarness::with_plugins(
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
         }),
+        directory.join("plugin-catalog.json"),
     );
     assert!(h.next().error.is_none());
     let (applied, _) = h.applied(0);
@@ -221,12 +225,73 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
     assert_eq!(new.devices().len(), 1);
     assert_eq!(new.devices()[0].id().value(), identity + 1);
 
+    let original_binding = h.plugin_progress.lock().unwrap().newest_source.unwrap().1;
     let undone = h.run(Request::Undo);
     assert_eq!(undone.state.project.tracks(), original.project.tracks());
     let (applied, _) = h.applied(applied);
-    let redone = h.run(Request::Redo);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.plugin_records.load(Acquire) != 0 {
+        h.render();
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "deleted worker stayed warm for history"
+        );
+        std::thread::yield_now();
+    }
+
+    let catalog = directory.join("plugin-catalog.json");
+    let displaced_catalog = directory.join("temporarily-unavailable-catalog.json");
+    fs::rename(&catalog, &displaced_catalog).unwrap();
+    h.service.submit(Request::Redo).unwrap();
+    let unavailable = h.next();
+    assert!(unavailable.error.is_some());
+    assert_eq!(unavailable.state.project, undone.state.project);
+    assert!(unavailable.state.can_redo);
+    fs::rename(&displaced_catalog, &catalog).unwrap();
+
+    h.service.submit(Request::Redo).unwrap();
+    let redone = state::edits::ordinary_terminal(&mut h);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(redone.state.project, accepted.state.project);
+    let (applied, _) = h.applied(applied);
+    let (reintroduced, fresh, installed) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert_eq!(reintroduced, identity + 1);
+    assert!(installed);
+    assert_ne!(fresh, original_binding);
+
+    let device = new.devices()[0].id();
+    h.service
+        .submit(Request::Edit(Command::RemoveDevice(device)))
+        .unwrap();
+    let deleted = state::edits::ordinary_terminal(&mut h);
+    assert!(deleted.error.is_none(), "{:?}", deleted.error);
+    assert!(deleted.state.project.device(device).is_none());
+    let (applied, _) = h.applied(applied);
+    wait(|| {
+        h.render();
+        h.pump();
+        h.plugin_records.load(Acquire) == 0
+    });
+    h.service.submit(Request::Undo).unwrap();
+    let restored = state::edits::ordinary_terminal(&mut h);
+    assert!(restored.error.is_none(), "{:?}", restored.error);
+    assert_eq!(restored.state.project, accepted.state.project);
+    let (applied, _) = h.applied(applied);
+    let (_, restored_binding, installed) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
+    assert!(installed);
+    assert_ne!(restored_binding, fresh);
+    h.service.submit(Request::Redo).unwrap();
+    let deleted_again = state::edits::ordinary_terminal(&mut h);
+    assert!(deleted_again.error.is_none(), "{:?}", deleted_again.error);
+    assert_eq!(deleted_again.state.project, deleted.state.project);
     h.applied(applied);
+    wait(|| {
+        h.render();
+        h.pump();
+        h.plugin_records.load(Acquire) == 0
+    });
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
 }
 
 #[test]

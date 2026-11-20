@@ -19,6 +19,27 @@ impl Source {
 }
 
 impl Plugins {
+    pub(super) fn saved_catalog_selection(
+        &self,
+        state: &NativeDeviceState,
+        destination: PluginEffectDestination,
+    ) -> Result<hex_plugin_catalog::PluginSelection, String> {
+        let identity = Hosting::saved_identity_on_control(state)?;
+        let catalog = hex_plugin_catalog::Catalog::load(
+            self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
+        )?;
+        catalog.resolve_plugin(
+            identity.class.bytes(),
+            identity.binary.executable_sha256,
+            identity.binary.info_sha256,
+            if destination.is_instrument() {
+                hex_plugin_catalog::PluginRole::Instrument
+            } else {
+                hex_plugin_catalog::PluginRole::Effect
+            },
+        )
+    }
+
     pub(in crate::native_audio) fn prepare_saved_verified_effects(
         &self,
         input: ResidentEffectPreparation<'_>,
@@ -256,22 +277,7 @@ impl Plugins {
         }
         // Catalog results are copied choices only. Drop the bounded catalog
         // before Host inspects files and starts its original restore protocol.
-        let selected = (|| {
-            let identity = Hosting::saved_identity_on_control(state)?;
-            let catalog = hex_plugin_catalog::Catalog::load(
-                self.catalog.as_deref().ok_or("vst3 catalog unavailable")?,
-            )?;
-            catalog.resolve_plugin(
-                identity.class.bytes(),
-                identity.binary.executable_sha256,
-                identity.binary.info_sha256,
-                if destination.is_instrument() {
-                    hex_plugin_catalog::PluginRole::Instrument
-                } else {
-                    hex_plugin_catalog::PluginRole::Effect
-                },
-            )
-        })();
+        let selected = self.saved_catalog_selection(state, destination);
         let binding = selected.and_then(|selected| {
             let authored = edits::requested_selection(&input, device)?;
 
@@ -280,13 +286,7 @@ impl Plugins {
                 .ok_or("qualified vst3 helper unavailable")?
                 .begin_on_control(
                     control,
-                    EffectSelection {
-                        module: &selected.module,
-                        executable: &selected.executable_relative_path,
-                        cid: selected.cid,
-                        executable_sha256: &selected.executable_sha256,
-                        info_sha256: &selected.info_sha256,
-                    },
+                    catalog_selection(&selected),
                     owner,
                     device,
                     restore.context.editor_revision.max(1),
@@ -331,5 +331,17 @@ impl Plugins {
             Err(_) => restore.next += 1,
         }
         self.reopen = Some(restore);
+    }
+}
+
+pub(super) fn catalog_selection(
+    selected: &hex_plugin_catalog::PluginSelection,
+) -> EffectSelection<'_> {
+    EffectSelection {
+        module: &selected.module,
+        executable: &selected.executable_relative_path,
+        cid: selected.cid,
+        executable_sha256: &selected.executable_sha256,
+        info_sha256: &selected.info_sha256,
     }
 }

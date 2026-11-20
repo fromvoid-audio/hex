@@ -29,7 +29,7 @@ fn with_gain_and_axis(
     })
     .unwrap()
 }
-pub(super) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
+pub(in crate::native_audio::tests::plugins) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
     let end = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
@@ -2603,7 +2603,14 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
     assert_eq!(duplicated.state.revision, state.revision + 1);
     assert_eq!(duplicated.state.project.tracks().len(), 4);
     (applied, _) = h.applied(applied);
-    assert_eq!(h.plugin_records.load(Acquire), 4);
+    // Superseded preparation records can still be awaiting their Root return
+    // after the four active processors have installed.
+    wait(|| {
+        h.render();
+        workers_idle(&h);
+        h.pump();
+        h.plugin_records.load(Acquire) == 4
+    });
     h.service.submit(Request::Undo).unwrap();
     let undone = ordinary_terminal(&mut h);
     assert!(undone.error.is_none(), "{:?}", undone.error);
