@@ -2489,7 +2489,7 @@ pub(super) struct ResidentHarness {
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
     confirmation_probe: Arc<Mutex<Option<ConfirmationProbe>>>,
     device_insert_probe: Arc<DeviceInsertProbe>,
-    allow_unavailable: bool,
+    pub(super) allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

@@ -2275,6 +2275,111 @@ fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() 
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn rate_changing_open_retires_the_original_vst3_editor_source() {
+    const CHILD: &str = "HEX_TEST_RATE_CHANGING_EDITOR_OPEN";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        for mode in ["empty", "conflict"] {
+            let files = Files::new();
+            let name = std::thread::current().name().unwrap().to_owned();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--ignored", "--nocapture"])
+                .env(CHILD, mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", files.0.join("emit"))
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", files.0.join("trace"))
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        return;
+    };
+    let conflict = mode == "conflict";
+    let _native = native_fixture();
+    let (mut h, files, saved) = fixture(Start::Saved);
+    h.allow_unavailable = conflict;
+    let original_path = files.0.join("effect.hex");
+    let original_bytes = fs::read(&original_path).unwrap();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    assert_eq!(saved.project.main_devices().len(), 1);
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+
+    let incoming = hex_project::Project::new(44_100).unwrap();
+    let path = files.0.join("different-rate.hex");
+    hex_storage::save_new(&path, &incoming).unwrap();
+    h.service.submit(Request::Open(path)).unwrap();
+    wait(|| {
+        h.pump();
+        h.released.last() == Some(&(0, old_output))
+    });
+    if conflict {
+        // The callback still owns the endpoint. Accept real editor callbacks
+        // on the original worker before returning it to the close lane.
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+            b"emit",
+        )
+        .unwrap();
+        let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+        wait(|| fs::read(&trace).is_ok_and(|data| data.starts_with(&25_i32.to_le_bytes())));
+    }
+    h.release_relinquished_output();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let opened = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            break event;
+        }
+        if h.callback.lock().unwrap().is_some() {
+            h.render();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "rate-changing open did not settle"
+        );
+        std::thread::yield_now();
+    };
+    assert!(opened.open_complete);
+    if conflict {
+        assert!(!opened.project_replaced);
+        assert_eq!(opened.state.project, saved.project);
+        assert_eq!(
+            opened.error.as_deref(),
+            Some("resolve the retiring vst3 editor changes before replacing the project")
+        );
+        wait(|| {
+            h.pump();
+            !h.unavailable.is_empty()
+                && h.retirement_issues.iter().any(|&(device, issue)| {
+                    device == saved.project.main_devices()[0].id().value()
+                        && issue == hex_ui::PluginEditorRetirementIssue::NeedsDisposition
+                })
+        });
+        assert_eq!(
+            h.unavailable,
+            ["project open refused · original vst3 editor changes retained"]
+        );
+        assert!(h.audio.is_none());
+        assert_eq!(h.plugin_records.load(Acquire), 1);
+    } else {
+        assert!(opened.project_replaced, "{:?}", opened.error);
+        assert_eq!(*opened.state.project, incoming);
+        h.wait_fresh_output(old_output);
+        h.applied(0);
+        assert_eq!(h.audio.as_ref().unwrap().sample_rate, 44_100);
+        assert_eq!(h.plugin_records.load(Acquire), 0);
+    }
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+    assert_eq!(fs::read(original_path).unwrap(), original_bytes);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_contended_admission_retries_or_cancels_the_exact_insertion() {
     let _native = native_fixture();
     for cancel in [false, true] {
