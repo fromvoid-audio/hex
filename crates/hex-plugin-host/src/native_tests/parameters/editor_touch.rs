@@ -437,6 +437,120 @@ fn sdk_group_performs_wait_together_for_real_physical_capacity() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn dense_editor_target_keeps_pcm_and_ordered_group_receipts() {
+    use crate::transport::DenseParameterLane;
+
+    let case = Case::new();
+    let setup = case.setup_restore(148);
+    let end = case.root.join("group-end");
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        |command| {
+            setup(command);
+            command
+                .arg("--test-grouped-editor")
+                .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", "repeat")
+                .env("HEX_ORIGINAL_EDITOR_END_RELEASE", &end);
+        },
+    )
+    .unwrap();
+    let metadata = instance
+        .read_authored_parameter_metadata_on_control(class(), &[0, 11])
+        .unwrap();
+    instance
+        .arm_authored_parameter_metadata_on_control(metadata)
+        .unwrap();
+    fs::write(case.release(), b"admit the original editor cohorts").unwrap();
+
+    let mut ordered = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        ordered.extend_from_slice(batch.as_slice());
+        if batch.ready >= 8 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "editor cohorts were not queued");
+        thread::yield_now();
+    }
+
+    let input = [0.125, -0.25];
+    let normalized = [0.125, 0.375, 0.125, 0.375, 0.125, 0.375, 0.125, 0.375];
+    for (sequence, axis) in [(0, 0.5), (1, 0.25)] {
+        let mut block = request(instance.configuration(), sequence);
+        assert_eq!(usize::from(block.frames), normalized.len());
+        block.pcm[..normalized.len()].fill(input);
+        let reply = instance
+            .exchange_armed_dense_on_worker(
+                block,
+                DenseParameterLane {
+                    id: 0,
+                    normalized: &normalized,
+                },
+                None,
+                true,
+            )
+            .unwrap();
+        let [perform] = reply.performs.as_slice() else {
+            panic!("only the unmodulated editor value reached PCM");
+        };
+        assert_eq!((perform.id, perform.normalized), (11, axis));
+        for (pcm, base) in reply.block.pcm.iter().zip(normalized) {
+            assert_eq!(
+                *pcm,
+                input.map(|sample| sample * (base * 16.0 * axis) as f32)
+            );
+        }
+    }
+
+    fs::write(&end, b"close the original editor group").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while ordered
+        .iter()
+        .filter(|edit| edit.kind == ParameterEditKind::End)
+        .count()
+        < 2
+    {
+        ordered.extend_from_slice(
+            instance
+                .poll_parameter_edits_on_worker()
+                .unwrap()
+                .as_slice(),
+        );
+        assert!(
+            Instant::now() < deadline,
+            "editor cohort terminals were lost"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        ordered
+            .windows(2)
+            .all(|pair| pair[0].sequence + 1 == pair[1].sequence)
+    );
+    let performs: Vec<_> = ordered
+        .iter()
+        .filter(|edit| edit.kind == ParameterEditKind::Perform)
+        .map(|edit| (edit.id, edit.normalized, edit.first_frame))
+        .collect();
+    assert_eq!(
+        performs,
+        [(0, 0.75, 0), (11, 0.5, 0), (0, 0.25, 8), (11, 0.25, 8)]
+    );
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn grouped_editor_touch_restores_each_target_on_its_actual_late_end() {
     use crate::protocol::{EditorRestoration, EditorTouchPlanSet, EditorTouchTarget};
     const QUANTUM: usize = crate::transport::MAX_PARAMETER_POINTS;
