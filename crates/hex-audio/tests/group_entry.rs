@@ -138,6 +138,8 @@ enum Reroute {
     Exit,
     EnterEmpty,
     ExitLastChild,
+    EnterSoleGroup,
+    ExitSoleGroup,
 }
 
 #[test]
@@ -209,8 +211,32 @@ fn abandoning_a_last_child_exit_restores_the_former_group_feed() -> Result {
     Ok(())
 }
 
+#[test]
+fn moving_the_first_or_last_child_of_the_only_group_preserves_history() -> Result {
+    for partition in [1, 257] {
+        for reroute in [Reroute::EnterSoleGroup, Reroute::ExitSoleGroup] {
+            route_cut(partition, Terminal::Install, true, reroute)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn abandoning_a_reroute_across_the_only_group_preserves_the_old_route() -> Result {
+    for reroute in [Reroute::EnterSoleGroup, Reroute::ExitSoleGroup] {
+        for terminal in [Terminal::Cancel, Terminal::Stop] {
+            route_cut(257, terminal, true, reroute)?;
+        }
+    }
+    Ok(())
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
-    let exiting = matches!(reroute, Reroute::Exit | Reroute::ExitLastChild);
+    let exiting = matches!(
+        reroute,
+        Reroute::Exit | Reroute::ExitLastChild | Reroute::ExitSoleGroup
+    );
+    let has_other_group = !matches!(reroute, Reroute::EnterSoleGroup | Reroute::ExitSoleGroup);
     let has_sibling = matches!(reroute, Reroute::Enter | Reroute::Exit);
     let mut a = vec![[0.125, -0.0625]; FRAMES];
     a[1700] = [0.5, -0.25];
@@ -246,8 +272,12 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     effect(&mut editor, destination, invert())?;
     effect(&mut editor, moved, delay(7.0))?;
     let unrelated = import(&mut editor, &mut media, "unrelated", c.clone())?;
-    let other_group = group(&mut editor, unrelated, "other group")?;
-    effect(&mut editor, other_group, delay(13.0))?;
+    let unrelated_root = if has_other_group {
+        group(&mut editor, unrelated, "other group")?
+    } else {
+        unrelated
+    };
+    effect(&mut editor, unrelated_root, delay(13.0))?;
     editor.execute(Command::InsertMainDevice {
         before: None,
         state: delay(5.0),
@@ -276,7 +306,7 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             tracks: TrackSelectionIds::new(&[moved])?,
             destination: TrackDestination {
                 parent_group: None,
-                before: Some(other_group),
+                before: Some(unrelated_root),
             },
         })?;
         assert_eq!(
