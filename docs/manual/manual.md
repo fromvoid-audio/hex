@@ -316,7 +316,8 @@ in the top toolbar and click a section body to start and loop that section.
 pause even while the button has focus. the launch dropdown in the toolbar also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
 **4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
-**1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
+**1/8t**, **1/16**, **1/16t**, or **1/32**. the default is **1 bar**.
+**t** means triplet timing.
 when a console launch replaces a playing audio clip, the outgoing clip fades
 briefly as the new one begins.
 
@@ -833,10 +834,11 @@ is currently resolved at audio-block boundaries; sustain and mpe are not include
 
 ## input quantization
 
-use **in off ▾** in the transport to choose off, quarter notes (1/4), eighth notes
+use **in 1/16 ▾** in the transport to choose off, quarter notes (1/4), eighth notes
 (1/8), sixteenth notes (1/16), or adaptive. the same setting controls recorded midi
-note starts and browser sample insertion with enter. the browser's grid button
-switches between off and adaptive; choose a fixed subdivision in the transport.
+note starts and browser sample insertion with enter. the default is **1/16**.
+the browser's grid button switches between off and adaptive; choose a fixed
+subdivision in the transport.
 
 fixed subdivisions work independently of the arrangement snap toggle. adaptive
 uses the arrangement's visible grid and density, so enable that grid first.

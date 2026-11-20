@@ -1467,15 +1467,22 @@ mod tests {
                     "1/8", "1/8t", "1/16", "1/16t", "1/32"
                 ]
             );
-            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+            assert_eq!(
+                menu.items
+                    .iter()
+                    .filter(|item| item.checked)
+                    .map(|item| item.label)
+                    .collect::<Vec<_>>(),
+                ["1 bar"]
+            );
         });
-        visual.simulate_keystrokes("down down down down enter");
+        visual.simulate_keystrokes("up up up up enter");
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
             assert_eq!(
                 view.session_quantization,
-                hex_engine::LaunchQuantization::OneBar
+                hex_engine::LaunchQuantization::Immediate
             );
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before);
         });
@@ -1486,14 +1493,14 @@ mod tests {
                 view.select_context_item(
                     EditorContextAction::LaunchQuantization {
                         generation,
-                        quantization: hex_engine::LaunchQuantization::Immediate,
+                        quantization: hex_engine::LaunchQuantization::OneBar,
                     },
                     window,
                     cx,
                 );
                 assert_eq!(
                     view.session_quantization,
-                    hex_engine::LaunchQuantization::OneBar
+                    hex_engine::LaunchQuantization::Immediate
                 );
             });
         })

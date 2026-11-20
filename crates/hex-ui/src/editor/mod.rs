@@ -1737,7 +1737,7 @@ impl EditorView {
             session_track_start: 0,
             console_returns: console_returns::State::default(),
             session_visible_columns: 1,
-            session_quantization: hex_engine::LaunchQuantization::Immediate,
+            session_quantization: hex_engine::LaunchQuantization::OneBar,
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
@@ -1962,7 +1962,7 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
-            input_quantization: hex_project::InputQuantization::Off,
+            input_quantization: hex_project::InputQuantization::Sixteenth,
             #[cfg(test)]
             test_environment,
             browser,
