@@ -854,6 +854,118 @@ fn native_moves_wait_for_the_exact_audio_receipt_and_preserve_noops() {
 }
 
 #[test]
+fn native_move_history_waits_for_each_exact_install_and_can_retry_after_cancel() {
+    let (service, fixture, _) = service();
+    let run = |request| {
+        service.submit(request).unwrap();
+        receive(&service)
+    };
+    let add_track = |name: &str| {
+        let Created::Track(track) = run(Request::Edit(Command::AddTrack { name: name.into() }))
+            .created
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        track
+    };
+    let source = add_track("source");
+    let destination = add_track("destination");
+    assert!(
+        !run(Request::AddNativeDevice {
+            track: source,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static("hex.delay")),
+            before: None,
+        })
+        .request_complete
+    );
+    let original = install_candidate(&service, &fixture).state;
+    let device = original.project.track(source).unwrap().devices()[0].id();
+    assert!(
+        !run(Request::MoveTrackDevices {
+            project_generation: 0,
+            revision: original.revision,
+            source,
+            selected: hex_project::DeviceSelectionIds::new(&[device]).unwrap(),
+            destination,
+        })
+        .request_complete
+    );
+    let moved = install_candidate(&service, &fixture).state;
+    assert_eq!(
+        moved.project.track(destination).unwrap().devices()[0].id(),
+        device
+    );
+
+    let pending = run(Request::Undo);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, moved.project);
+    assert_eq!(pending.state.revision, moved.revision);
+    {
+        let fixture = fixture.lock().unwrap();
+        let receipt = fixture.candidate.as_ref().unwrap();
+        assert_eq!(receipt.state.swap(CANCELLED, Ordering::AcqRel), PENDING);
+    }
+    let cancelled = service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap();
+    assert!(cancelled.request_complete);
+    assert_eq!(
+        cancelled.error.as_deref(),
+        Some("device edit cancelled before installation")
+    );
+    assert_eq!(
+        cancelled.device_insert_complete.unwrap().outcome,
+        DeviceInsertOutcome::Cancelled
+    );
+    assert_eq!(cancelled.state.project, moved.project);
+    assert_eq!(cancelled.state.revision, moved.revision);
+    assert!(cancelled.state.can_undo);
+    assert!(!cancelled.state.can_redo);
+
+    let pending = run(Request::Undo);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, moved.project);
+    let undone = install_candidate(&service, &fixture).state;
+    assert_eq!(undone.project, original.project);
+    assert_eq!(undone.revision, moved.revision + 1);
+    assert!(undone.can_redo);
+
+    let pending = run(Request::Redo);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, original.project);
+    let redone = install_candidate(&service, &fixture).state;
+    assert_eq!(redone.project, moved.project);
+    assert_eq!(redone.revision, undone.revision + 1);
+    assert!(!redone.can_redo);
+
+    let mut compound = hex_project::Editor::new(original.project.as_ref().clone(), 4).unwrap();
+    compound
+        .execute_many_prepared(
+            vec![
+                Command::MoveTrackDevices {
+                    source,
+                    destination,
+                    selected: hex_project::DeviceSelectionIds::new(&[device]).unwrap(),
+                },
+                Command::Gain {
+                    track: destination,
+                    gain: 0.5,
+                },
+            ],
+            |_, _| Ok::<_, hex_project::Invalid>(()),
+        )
+        .unwrap();
+    let compound_project = compound.project().clone();
+    assert!(move_history::stage(&mut compound, false).unwrap().is_none());
+    assert_eq!(compound.project(), &compound_project);
+    assert!(compound.can_undo());
+    assert!(!compound.can_redo());
+}
+
+#[test]
 fn cancelled_resident_paste_keeps_the_clipboard_for_one_confirmed_history_step() {
     use crate::service::DeviceClipboardAction;
     use hex_project::{DeviceChainOwner, DeviceSelectionIds};
