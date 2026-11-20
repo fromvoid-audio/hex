@@ -260,6 +260,10 @@ impl NativeAudioSink {
                 .finish_edit(attempt.source().context(), installed);
         }
         if installed && let Some(submission) = attempt.submission() {
+            // Session saw this exact constructor receipt before committing.
+            // Retire the absent sources through the existing Root return path.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            self.plugins.retire_absent_catalog_sources(attempt.source());
             self.verified_last =
                 Some(VerifiedSource::Canonical(Arc::clone(attempt.source())).key());
             self.last_context = Some(attempt.source().context());
