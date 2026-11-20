@@ -1,4 +1,4 @@
-//! One Resident Arrangement leaf moves between Main and an existing Group.
+//! One Resident Arrangement leaf changes its route to Main or an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
 //! The Group and Main faders never participate, and compensation copy rules stay
@@ -7,21 +7,9 @@ use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
 impl SessionPlayback {
-    // Entry and exit have the same immutable identity checks. Classifying the
-    // inverse changes no runtime: only the actual donor's child fader is staged.
+    // The moving leaf can occupy different rows. Stage its predecessor fader
+    // after proving that every other route and relative row order stays fixed.
     pub(super) fn resident_group_reroute_from(&self, previous: &Self) -> Option<usize> {
-        self.exact_resident_group_entry_from(previous)
-            .map(|(flat_index, _)| flat_index)
-            .or_else(|| {
-                previous
-                    .exact_resident_group_entry_from(self)
-                    .map(|(_, grouped_index)| grouped_index)
-            })
-    }
-
-    // The moving leaf can occupy different rows. The fader always belongs to
-    // the predecessor, which is grouped on exit and flat on entry.
-    fn exact_resident_group_entry_from(&self, previous: &Self) -> Option<(usize, usize)> {
         for playback in [self, previous] {
             if playback.revision.contains_streamed_sources()
                 || playback.foreign_runtime_bindings().next().is_some()
@@ -103,9 +91,10 @@ impl SessionPlayback {
                 (TrackOutput::Main { .. }, TrackOutput::Main { .. }) => {}
                 (TrackOutput::Group { target: a, .. }, TrackOutput::Group { target: b, .. })
                     if old_graph.tracks.get(a)?.id? == new_graph.tracks.get(b)?.id? => {}
-                (TrackOutput::Main { .. }, TrackOutput::Group { .. }) => {
-                    // Every other edge stays fixed, including the destination's
-                    // route through any ancestors. Only a leaf can move.
+                (TrackOutput::Main { .. }, TrackOutput::Group { .. })
+                | (TrackOutput::Group { .. }, TrackOutput::Main { .. })
+                | (TrackOutput::Group { .. }, TrackOutput::Group { .. }) => {
+                    // The fader can move one leaf without moving a subtree.
                     if changed.replace((old_index, new_index)).is_some()
                         || old.clips.is_empty()
                         || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == old_index))
@@ -113,7 +102,6 @@ impl SessionPlayback {
                         return None;
                     }
                 }
-                _ => return None,
             }
         }
         let (from, to) = changed?;
@@ -131,7 +119,7 @@ impl SessionPlayback {
             .enumerate()
             .filter(|(index, _)| *index != to)
             .map(|(_, track)| track.canonical_track_id());
-        other_old_ids.eq(other_new_ids).then_some((from, to))
+        other_old_ids.eq(other_new_ids).then_some(from)
     }
 
     fn resident_group_cut_graph(&self) -> Option<&SignalGraph> {
