@@ -76,8 +76,8 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
     let transport = |h: &mut Harness, command| {
         h.audio.as_mut().unwrap().control.command(command).unwrap();
     };
-    let settle_pause = |h: &mut Harness| {
-        transport(h, PlaybackCommand::Pause);
+    let settle_transport = |h: &mut Harness, command| {
+        transport(h, command);
         wait(|| {
             h.render();
             h.audio
@@ -116,7 +116,7 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
         Some("stop playback to undo or redo this vst3 edit")
     );
     check_refused(&running, &h);
-    settle_pause(&mut h);
+    settle_transport(&mut h, PlaybackCommand::Stop);
 
     let unavailable = directory.join("temporarily-unavailable.vst3");
     fs::rename(&module, &unavailable).unwrap();
@@ -142,7 +142,7 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
     transport(&mut h, PlaybackCommand::Play);
     let interrupted = terminal(&mut h);
     check_refused(&interrupted, &h);
-    settle_pause(&mut h);
+    settle_transport(&mut h, PlaybackCommand::Pause);
 
     submit(&h, Request::Undo);
     let pending = h.next_with_audio();
@@ -199,6 +199,7 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
         removed_source.audio_revision
     );
     assert_eq!(removed_source.output_identity, predecessor.output_identity);
+    await_verified_retirement(&h, &progress);
 }
 
 fn await_verified_retirement(
@@ -226,15 +227,18 @@ fn verified_file_track_removal_keeps_one_compensated_hosted_return_worker() {
     const FADE: u64 = 240;
 
     let _native = native_fixture();
+    let first = Files::new();
+    let second = Files::new();
+    let directory = first.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
     let progress = Arc::new(Mutex::new(
         crate::native_audio::plugins::PreparationObservation::default(),
     ));
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
         sink.plugins.progress = Some(Arc::clone(&progress));
+        sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
     });
-    let first = Files::new();
-    let second = Files::new();
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -388,14 +392,17 @@ fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
     const QUANTUM: u64 = 256;
 
     let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
     let progress = Arc::new(Mutex::new(
         crate::native_audio::plugins::PreparationObservation::default(),
     ));
     let mut h = super::super::verified_gain::native_harness_with(|sink| {
         sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
         sink.plugins.progress = Some(Arc::clone(&progress));
+        sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
     });
-    let files = Files::new();
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -545,6 +552,8 @@ fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
         assert_eq!(active.context, h.context.unwrap());
         assert_eq!(active.audio_revision, receipt.submission.audio_revision);
         assert_eq!(active.output_identity, predecessor.output_identity);
+        await_verified_retirement(&h, &progress);
+        assert!(status(&h).playing.load(Acquire));
     }
 }
 
