@@ -47,6 +47,10 @@ impl Worker {
     /// Output close transfers the exact pending admission reply with its
     /// original edit reader. Root consumes it before issuing the final seal.
     fn retire_on_output_close(&mut self, sources: &mut [Source]) {
+        if !matches!(self.stage, Stage::Holding(_) | Stage::Releasing(_)) {
+            self.stage = Stage::Finished;
+            return;
+        }
         let Some(source) = sources.iter_mut().find(|source| {
             source.binding == self.binding && source.editor_retirement.lease.is_some()
         }) else {
