@@ -1,4 +1,4 @@
-//! Direct Resident Sine removal uses its original route fader before the cut.
+//! Direct Resident instrument removal uses its original route fader before the cut.
 use super::{RouteOwner, SessionPlayback};
 
 impl SessionPlayback {
@@ -64,7 +64,7 @@ impl SessionPlayback {
         })
     }
 
-    pub(super) fn direct_analytic_instrument_removal_from(&self, previous: &Self) -> Option<usize> {
+    pub(super) fn direct_instrument_removal_from(&self, previous: &Self) -> Option<usize> {
         if !self.direct_analytic_transition_graph_matches(previous) {
             return None;
         }
@@ -77,9 +77,7 @@ impl SessionPlayback {
             }
             if removed.replace(index).is_some()
                 || !old.instrument_slot_enabled()
-                || old.has_mutable_instrument()
-                || old.instrument_state.as_ref()?.type_id()
-                    != hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+                || !previous.direct_removable_instrument(index, old)
                 || old.foreign_instrument.is_some()
                 || old.instrument_latency != Some(0)
                 // Authored MIDI templates remain after the canonical slot is removed.
@@ -97,6 +95,33 @@ impl SessionPlayback {
             }
         }
         removed
+    }
+
+    fn direct_removable_instrument(&self, index: usize, track: &crate::Track) -> bool {
+        let Some(state) = track.instrument_state.as_ref() else {
+            return false;
+        };
+        match (state.type_id(), track.has_mutable_instrument()) {
+            (hex_project::DEFAULT_INSTRUMENT_TYPE_ID, false) => true,
+            (hex_devices::operator_state::OPERATOR_TYPE_ID, true) => {
+                let Some(id) = track.canonical_track_id() else {
+                    return false;
+                };
+                self.mutable_instruments
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|runtime| {
+                        runtime.is_source_owner()
+                            && runtime.expression_identity == track.instrument_id
+                            && !runtime.has_committed_live_occurrences()
+                            && runtime
+                                .transition_proofs(false)
+                                .iter()
+                                .all(|proof| proof.signature.key().track == id)
+                    })
+            }
+            _ => false,
+        }
     }
 }
 
@@ -155,9 +180,9 @@ mod tests {
         old.apply(SessionPlaybackCommand::Play).unwrap();
         old.render(&mut [[0.0; 2]; 32]).unwrap();
         let mut next = SessionPlayback::new(after).unwrap();
-        assert_eq!(next.direct_analytic_instrument_removal_from(&old), Some(0));
+        assert_eq!(next.direct_instrument_removal_from(&old), Some(0));
         next.routes[0].owner = RouteOwner::Silence;
-        assert!(next.direct_analytic_instrument_removal_from(&old).is_none());
+        assert!(next.direct_instrument_removal_from(&old).is_none());
         next.routes[0].owner = RouteOwner::Arrangement;
         next.require_continuous_insert = true;
         assert_eq!(
