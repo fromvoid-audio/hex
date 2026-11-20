@@ -1731,7 +1731,7 @@ impl WorkerAudioSink for ResidentSink {
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
         disposition: hex_session::service::RetiringEditorReplayDisposition,
-    ) -> Result<(), String> {
+    ) -> Result<hex_session::service::RetiringEditorReplayCompletion, String> {
         self.inner.finish_retiring_editor_replay(batch, disposition)
     }
 

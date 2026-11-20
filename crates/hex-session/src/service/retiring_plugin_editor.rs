@@ -94,6 +94,13 @@ pub enum RetiringEditorReplayDisposition {
     Confirmed { receipt_accepted: bool },
 }
 
+/// Outcome of returning the borrowed receipt to its native owner.
+pub enum RetiringEditorReplayCompletion {
+    Finished,
+    /// Native custody retained the receipt for a fresh stopped replay.
+    RetryStopped,
+}
+
 /// New successor input is allowed only for edits admitted after preparation.
 /// Earlier input can be acknowledged after read-only successor verification.
 #[derive(Clone, Copy, Debug)]
@@ -424,7 +431,8 @@ pub(super) fn apply(
             match sink
                 .finish_retiring_editor_replay(&batch, RetiringEditorReplayDisposition::Refused)
             {
-                Ok(()) => Err(reason),
+                Ok(RetiringEditorReplayCompletion::RetryStopped) => Ok(None),
+                Ok(RetiringEditorReplayCompletion::Finished) => Err(reason),
                 Err(restore) => Err(format!("{reason} · {restore}")),
             }
         }
