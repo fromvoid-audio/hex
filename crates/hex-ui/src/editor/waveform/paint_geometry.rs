@@ -1,8 +1,10 @@
 //! Bounded peak ordinates and fade sampling for waveform paint and previews.
 use hex_project::{
-    AudioViewOccurrence, AudioViewProjection, Clip, ClipFade, Invalid, ProjectedAudioFade,
+    AudioViewOccurrence, AudioViewProjection, Clip, ClipFade, DirectedFadeClock, Invalid,
+    ProjectedAudioFade,
 };
 use hex_session::CachedPeak;
+use std::ops::Range;
 
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
@@ -123,7 +125,7 @@ pub(in crate::editor) fn projected_fade_envelope_samples(
             visible_end,
         );
     }
-    if edit.placement.is_some() && edit.content_view.is_none() {
+    if edit.placement.is_some() || edit.content_view.is_some() {
         return placed_legacy_fade_samples(clip, tempo, visible_start, visible_end);
     }
     let fade = edit.projected_fade(tempo)?;
@@ -223,6 +225,17 @@ fn placed_legacy_fade_samples(
     visible_end: u64,
 ) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
     let projection = AudioViewProjection::new(clip, tempo)?;
+    let directed = projection
+        .content_window()
+        .map(|_| DirectedFadeClock::new(&projection))
+        .transpose()?;
+    let destination = |occurrence: AudioViewOccurrence| {
+        if let Some(clock) = &directed {
+            clock.destination(&projection, occurrence)
+        } else {
+            Ok(occurrence.destination_start..occurrence.destination_end)
+        }
+    };
     let length = visible_end - visible_start;
     let count = length.min(FADE_ENVELOPE_SAMPLES as u64) as usize;
     let mut positions = Vec::new();
@@ -233,17 +246,12 @@ fn placed_legacy_fade_samples(
         positions.push(visible_start + fraction_u64(length - 1, index, count.saturating_sub(1)));
     }
     // Binary search the visible occurrence interval; never walk hidden repeats.
-    let first = first_occurrence_ending_after(&projection, visible_start, 0)?;
-    let mut last = first;
-    let mut end = projection.occurrence_count();
-    while last < end {
-        let mid = last + (end - last) / 2;
-        if projection.occurrence(mid)?.destination_start < visible_end {
-            last = mid + 1;
-        } else {
-            end = mid;
-        }
-    }
+    let first = partition_point(0, projection.occurrence_count(), |ordinal| {
+        Ok(destination(projection.occurrence(ordinal)?)?.end <= visible_start)
+    })?;
+    let last = partition_point(first, projection.occurrence_count(), |ordinal| {
+        Ok(destination(projection.occurrence(ordinal)?)?.start < visible_end)
+    })?;
     let visible_count = last - first;
     let selected = visible_count.min(MAX_FADE_OCCURRENCES as u64) as usize;
     let mut knots = Vec::new();
@@ -261,22 +269,43 @@ fn placed_legacy_fade_samples(
     for index in 0..selected {
         let ordinal = first + fraction_u64(visible_count - 1, index, selected.saturating_sub(1));
         let (occurrence, fade) = projection.legacy_fade_occurrence(ordinal)?;
-        positions.push(occurrence.destination_start.max(visible_start));
-        positions.push((occurrence.destination_end - 1).min(visible_end - 1));
+        let range = destination(occurrence)?;
+        let visible = range.start.max(visible_start)..range.end.min(visible_end);
+        if visible.is_empty() {
+            continue;
+        }
+        positions.extend([visible.start, visible.end - 1]);
+        let root_range = occurrence.root_start..occurrence.root_end;
         for &position in &knots {
             let Some(knot) = fade.frame_at_domain_position(position)? else {
                 continue;
             };
-            for root in [knot.saturating_sub(1), knot, knot.saturating_add(1)] {
-                if root < occurrence.root_start || root >= occurrence.root_end {
+            if let Some(clock) = &directed {
+                if !root_range.contains(&knot) {
                     continue;
                 }
-                let frame = occurrence
-                    .destination_start
-                    .checked_add(root - occurrence.root_start)
-                    .ok_or(Invalid("fade geometry frame overflow"))?;
-                if frame >= visible_start && frame < visible_end {
-                    positions.push(frame);
+                // The forward root can run at a different tempo from the visible
+                // range. Locate the first destination sample that reaches this knot.
+                let frame = partition_point(visible.start, visible.end, |frame| {
+                    Ok(clock.root_sample(&projection, occurrence, frame)? < knot)
+                })?;
+                positions.extend(
+                    [frame.saturating_sub(1), frame, frame.saturating_add(1)]
+                        .into_iter()
+                        .filter(|frame| visible.contains(frame)),
+                );
+            } else {
+                for root in [knot.saturating_sub(1), knot, knot.saturating_add(1)] {
+                    if !root_range.contains(&root) {
+                        continue;
+                    }
+                    let frame = range
+                        .start
+                        .checked_add(root - occurrence.root_start)
+                        .ok_or(Invalid("fade geometry frame overflow"))?;
+                    if visible.contains(&frame) {
+                        positions.push(frame);
+                    }
                 }
             }
         }
@@ -288,25 +317,36 @@ fn placed_legacy_fade_samples(
         .try_reserve_exact(positions.len())
         .map_err(|_| Invalid("fade geometry allocation failed"))?;
     let mut index = first;
-    let mut current: Option<(AudioViewOccurrence, ProjectedAudioFade<'_>)> = None;
+    let mut current: Option<(Range<u64>, AudioViewOccurrence, ProjectedAudioFade<'_>)> = None;
     for frame in positions {
         if current
             .as_ref()
-            .is_none_or(|(occurrence, _)| occurrence.destination_end <= frame)
+            .is_none_or(|(range, _, _)| range.end <= frame)
         {
-            index = first_occurrence_ending_after(&projection, frame, index)?;
+            index = partition_point(index, last, |ordinal| {
+                Ok(destination(projection.occurrence(ordinal)?)?.end <= frame)
+            })?;
             current = if index < last {
-                Some(projection.legacy_fade_occurrence(index)?)
+                let (occurrence, fade) = projection.legacy_fade_occurrence(index)?;
+                Some((destination(occurrence)?, occurrence, fade))
             } else {
                 None
             };
         }
         let mut gain = 1.0;
-        if let Some((occurrence, fade)) = &current
-            && let Some(offset) = frame.checked_sub(occurrence.destination_start)
-            && offset < occurrence.root_end - occurrence.root_start
+        if let Some((range, occurrence, fade)) = &current
+            && range.contains(&frame)
         {
-            gain = fade.gain_at(occurrence.root_start + offset)?;
+            let root = if let Some(clock) = &directed {
+                Some(clock.root_sample(&projection, *occurrence, frame)?)
+            } else {
+                let offset = frame - range.start;
+                (offset < occurrence.root_end - occurrence.root_start)
+                    .then(|| occurrence.root_start + offset)
+            };
+            if let Some(root) = root {
+                gain = fade.gain_at(root)?;
+            }
         }
         let x = if length == 1 {
             0.0
@@ -318,15 +358,14 @@ fn placed_legacy_fade_samples(
     Ok(samples)
 }
 
-fn first_occurrence_ending_after(
-    projection: &AudioViewProjection<'_>,
-    frame: u64,
+fn partition_point(
     mut first: u64,
+    mut end: u64,
+    is_before: impl Fn(u64) -> Result<bool, Invalid>,
 ) -> Result<u64, Invalid> {
-    let mut end = projection.occurrence_count();
     while first < end {
         let mid = first + (end - first) / 2;
-        if projection.occurrence(mid)?.destination_end <= frame {
+        if is_before(mid)? {
             first = mid + 1;
         } else {
             end = mid;
@@ -624,6 +663,92 @@ mod tests {
         .unwrap();
         assert!(samples.len() <= MAX_PLACED_FADE_POINTS);
         assert!(samples.iter().any(|(_, gain)| *gain < 1.0));
+    }
+
+    #[test]
+    fn reversed_legacy_repeat_shade_keeps_the_forward_fade_clock() {
+        use hex_project::{
+            AudioClipFadeClock, AudioViewResizeOperation, BeatTime, Command, Tempo, TrimEdge,
+        };
+
+        for musical in [false, true] {
+            let (mut editor, id) = repeated_fixture(19_174, 4);
+            if musical {
+                for command in [
+                    Command::SetClipFades {
+                        clip: id,
+                        fade_in: 0,
+                        fade_out: 0,
+                    },
+                    Command::SetTempoPoint {
+                        beat: BeatTime::ONE,
+                        tempo: Tempo::new(72_000_000).unwrap(),
+                    },
+                    Command::SetAudioClipMusical {
+                        clip: id,
+                        enabled: true,
+                    },
+                    Command::ResizeAudioClipView {
+                        clip: id,
+                        operation: AudioViewResizeOperation::RepeatOuterEnd {
+                            project_frame: 82_000,
+                        },
+                    },
+                    Command::SetClipFades {
+                        clip: id,
+                        fade_in: 13_184,
+                        fade_out: 23_254,
+                    },
+                ] {
+                    editor.execute(command).unwrap();
+                }
+            }
+            let project = editor.project();
+            let clip = project.clip(id).unwrap();
+            let projection = AudioViewProjection::new(clip, project.tempo_map()).unwrap();
+            let seam = projection.occurrence(2).unwrap().destination_start;
+            let end = clip.start() + clip.duration();
+            editor.execute(Command::ReverseClips(vec![id])).unwrap();
+
+            let project = editor.project();
+            let clip = project.clip(id).unwrap();
+            let edit = clip.audio_edit().unwrap();
+            assert!(edit.content_view.unwrap().window.reversed);
+            assert_eq!(edit.domain.fade_clock, AudioClipFadeClock::LegacyRoot);
+            let tempo = project.tempo_map();
+            let full = projected_fade_envelope_samples(clip, tempo, clip.start(), end, None)
+                .expect("a reversed repeat has a shade across the entire visible clip");
+            assert!(full.len() <= MAX_PLACED_FADE_POINTS);
+            assert!(
+                full.iter()
+                    .any(|(x, gain)| { *x == seam as f32 / (end - 1) as f32 && *gain < 0.001 })
+            );
+            let clipped = projected_fade_envelope_samples(clip, tempo, seam - 1, seam + 2, None)
+                .expect("a viewport can start between two reversed repeat fades");
+            assert_eq!(clipped.len(), 3);
+            assert!(clipped[0].1 > 0.5 && clipped[1].1 < 0.001);
+
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip: id,
+                    edge: TrimEdge::Left,
+                    frame: 1_009,
+                })
+                .unwrap();
+            let project = editor.project();
+            let cropped = project.clip(id).unwrap();
+            let view = cropped.audio_edit().unwrap().content_view.unwrap();
+            assert!(view.window.reversed && view.base_start_delta < 0);
+            let samples = projected_fade_envelope_samples(
+                cropped,
+                project.tempo_map(),
+                seam - 1,
+                seam + 2,
+                None,
+            )
+            .unwrap();
+            assert_eq!(samples, clipped, "trimming retains the forward fade phase");
+        }
     }
 
     #[test]

@@ -1,16 +1,18 @@
 //! Forward destination clock of the legacy envelope on directed content.
+use super::{AudioViewOccurrence, AudioViewProjection};
 use crate::Invalid;
-use hex_project::{AudioViewOccurrence, AudioViewProjection};
 use std::ops::Range;
 
-pub(super) struct DirectedFadeClock {
+/// Map forward legacy fade occurrences into the audible placement of a
+/// directed clip. The direction of the source read does not reflect its fade.
+pub struct DirectedFadeClock {
     consumed: i128,
     length: i128,
     bounds: (u64, u64),
 }
 
 impl DirectedFadeClock {
-    pub(super) fn new(projection: &AudioViewProjection<'_>) -> Result<Self, Invalid> {
+    pub fn new(projection: &AudioViewProjection<'_>) -> Result<Self, Invalid> {
         let view = projection
             .clip()
             .audio_edit()
@@ -27,7 +29,8 @@ impl DirectedFadeClock {
         })
     }
 
-    pub(super) fn destination(
+    /// Return the clipped destination range for an occurrence of the same projection.
+    pub fn destination(
         &self,
         projection: &AudioViewProjection<'_>,
         occurrence: AudioViewOccurrence,
@@ -44,12 +47,18 @@ impl DirectedFadeClock {
         Ok(frame(occurrence.elapsed_start)?..frame(occurrence.elapsed_end)?)
     }
 
-    pub(super) fn root_sample(
+    /// Read the legacy root frame for a frame within this occurrence's destination.
+    pub fn root_sample(
         &self,
         projection: &AudioViewProjection<'_>,
         occurrence: AudioViewOccurrence,
         frame: u64,
     ) -> Result<u64, Invalid> {
+        let last = occurrence
+            .root_end
+            .checked_sub(1)
+            .filter(|&last| last >= occurrence.root_start)
+            .ok_or(Invalid("directed fade root crop is empty"))?;
         let elapsed = self
             .consumed
             .checked_add(i128::from(projection.elapsed_at_frame(frame)?))
@@ -60,6 +69,6 @@ impl DirectedFadeClock {
             .root_start
             .checked_add(base.saturating_sub(occurrence.destination_start))
             .ok_or(Invalid("directed fade sample overflow"))?;
-        Ok(sample.clamp(occurrence.root_start, occurrence.root_end - 1))
+        Ok(sample.clamp(occurrence.root_start, last))
     }
 }
