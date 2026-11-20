@@ -41,6 +41,26 @@ fn removing_a_flat_return_cuts_its_serial_delay_and_reverb_after_its_own_fade() 
     }
 }
 
+#[test]
+fn removing_a_flat_return_fades_a_mixed_native_chain_after_all_effects() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter::GAIN};
+
+    let utility = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            GAIN,
+            ParameterValue::Float(0.5),
+        )
+        .unwrap();
+    assert_flat_return_removal(
+        [utility, feedback_delay(10.0), full_wet_reverb()],
+        Some(feedback_delay(17.0)),
+        reverb_input(),
+        2048,
+        1e-5,
+    );
+}
+
 fn full_wet_reverb() -> NativeDeviceState {
     REVERB_DEFINITION
         .patch_parameter(
