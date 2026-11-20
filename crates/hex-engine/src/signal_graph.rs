@@ -2064,8 +2064,12 @@ impl SignalRuntime {
     /// A grouped graph with latency only in Main owns no pre-Main delay PCM.
     /// The route proof separately checks the unchanged processor chains.
     pub(crate) fn group_route_main_delay_only(&self) -> bool {
-        self.horizon() != 0
-            && self.horizon() == self.graph.main_latency()
+        let Some(&last_main_device) = self.graph.main_devices.last() else {
+            return false;
+        };
+        let output_latency = self.graph.plan.nodes()[last_main_device].output_arrival_frames;
+        output_latency != 0
+            && self.horizon() == output_latency
             && self.graph.main_input_arrival() == 0
             && self.graph.supports_closed_compensated_audio_groups()
             && self
