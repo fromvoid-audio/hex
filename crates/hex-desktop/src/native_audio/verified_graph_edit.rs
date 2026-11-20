@@ -255,7 +255,7 @@ impl NativeAudioSink {
             return;
         }
         self.verified_edit = None;
-        if attempt.stages_hosted_history() {
+        if attempt.prepares_hosted_sources() {
             self.plugins
                 .finish_edit(attempt.source().context(), installed);
         }
