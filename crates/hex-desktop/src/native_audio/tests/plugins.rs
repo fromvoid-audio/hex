@@ -274,14 +274,79 @@ fn prepared_vst3_effect_drop_creates_one_track_and_undo_restores_the_project() {
         h.pump();
         h.plugin_records.load(Acquire) == 0
     });
+    h.enable_confirmed_device_inserts();
+    let source = |h: &ResidentHarness| {
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+    };
+    let predecessor = source(&h);
+    assert_eq!(predecessor.context.editor_revision, deleted.state.revision);
+    let (prepared, resume, _) = h.probe_next_native_publication();
     h.service.submit(Request::Undo).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while prepared.try_recv().is_err() {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(
+                !event.request_complete,
+                "Undo ended before private preparation"
+            );
+        }
+        h.render_plugin_block();
+        assert!(Instant::now() < deadline, "Track VST3 Undo did not prepare");
+        std::thread::yield_now();
+    }
+    let fresh_undo = h.plugin_progress.lock().unwrap().newest_source.unwrap().1;
+    assert_ne!(fresh_undo, fresh);
+    assert_eq!(source(&h), predecessor);
+    resume.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(
+                !event.request_complete,
+                "Undo completed before its callback"
+            );
+            assert_eq!(event.state.project, deleted.state.project);
+            assert_eq!(event.state.revision, deleted.state.revision);
+            assert_eq!(event.state.can_undo, deleted.state.can_undo);
+            assert_eq!(event.state.can_redo, deleted.state.can_redo);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Track VST3 Undo did not go pending"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(source(&h), predecessor);
     let restored = state::edits::ordinary_terminal(&mut h);
     assert!(restored.error.is_none(), "{:?}", restored.error);
     assert_eq!(restored.state.project, accepted.state.project);
+    let receipt = restored.device_insert_complete.unwrap();
+    assert_eq!(
+        receipt.outcome,
+        hex_session::service::DeviceInsertOutcome::Installed
+    );
+    assert_eq!(receipt.submission.audio_revision, source(&h).audio_revision);
+    assert_eq!(receipt.submission.context, source(&h).context);
+    assert_eq!(
+        receipt.submission.output_identity,
+        predecessor.output_identity
+    );
     let (applied, _) = h.applied(applied);
     let (_, restored_binding, installed) = h.plugin_progress.lock().unwrap().newest_source.unwrap();
     assert!(installed);
     assert_ne!(restored_binding, fresh);
+    assert_eq!(restored_binding, fresh_undo);
     h.service.submit(Request::Redo).unwrap();
     let deleted_again = state::edits::ordinary_terminal(&mut h);
     assert!(deleted_again.error.is_none(), "{:?}", deleted_again.error);
