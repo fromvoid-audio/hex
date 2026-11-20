@@ -173,6 +173,10 @@ impl PendingNativeRemoval {
         self.runtime == previous.capture_runtime && self.epoch == previous.capture_epoch
     }
 
+    pub(super) fn matches_group_reroute(self, previous: &SessionPlayback) -> bool {
+        matches!(self.transition, RemovalTransition::Route(_)) && self.matches(previous)
+    }
+
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
             RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
