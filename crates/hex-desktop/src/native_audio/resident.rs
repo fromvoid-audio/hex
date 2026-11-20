@@ -160,7 +160,10 @@ pub(super) struct PendingPausedNotes {
     pub(super) effects: Option<plugins::PausedEffects>,
 }
 impl Resident {
-    fn powered_off_main(&self, actual: hex_audio::prepared::AppliedAudioSource) -> Option<u64> {
+    pub(super) fn powered_off_main(
+        &self,
+        actual: hex_audio::prepared::AppliedAudioSource,
+    ) -> Option<u64> {
         self.powered_off_sources
             .iter()
             .flatten()
