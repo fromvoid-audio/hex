@@ -1421,6 +1421,162 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
 
 #[gpui::test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_main_vst3_drop_replaces_only_after_its_exact_receipt(cx: &mut TestAppContext) {
+    let _native = native_fixture();
+    let mut submission_probe = None;
+    let mut fixture = open_browser_metadata(
+        cx,
+        2,
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        "Fx",
+        0,
+        None,
+        false,
+        Some(&mut |h| {
+            h.enable_confirmed_device_inserts();
+            submission_probe = Some(h.device_insert_probe());
+        }),
+    );
+    fixture.activate_to_facts(cx, false);
+    fixture.resume.send(()).unwrap();
+    until("original Main VST3 installs", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view
+                .applied
+                .is_some_and(|source| source.context.editor_revision == fixture.state.revision + 1)
+    });
+    let original = fixture.view(cx).state.unwrap();
+    let old = original.project.main_devices()[0].id().value();
+    let new = original.project.next_identity();
+    let selector = |name: &str, device| -> &'static str {
+        Box::leak(format!("{name}-{device}").into_boxed_str())
+    };
+    let original_shell = selector("device-shell", old);
+    let new_shell = selector("device-shell", new);
+    let original_active = selector("device-vst3-active", old);
+    let new_active = selector("device-vst3-active", new);
+    let replace_pad = selector("main-vst3-replace", old);
+    assert!(fixture.visual.debug_bounds(replace_pad).is_none());
+    let card = fixture
+        .visual
+        .debug_bounds(selector("main-device-drop-card", old))
+        .unwrap();
+    let row = fixture
+        .visual
+        .debug_bounds("browser-vst3-row-0")
+        .unwrap()
+        .center();
+    let modifiers = Modifiers::default();
+    fixture
+        .visual
+        .simulate_mouse_down(row, MouseButton::Left, modifiers);
+    fixture.visual.simulate_mouse_move(
+        gpui::point(row.x + gpui::px(12.0), row.y),
+        MouseButton::Left,
+        modifiers,
+    );
+    for (x, edge) in [
+        (card.origin.x + gpui::px(12.0), "before"),
+        (card.origin.x + card.size.width - gpui::px(12.0), "after"),
+    ] {
+        fixture.visual.simulate_mouse_move(
+            gpui::point(x, card.center().y),
+            MouseButton::Left,
+            modifiers,
+        );
+        repaint(cx, &mut fixture.visual);
+        assert!(
+            fixture
+                .visual
+                .debug_bounds(selector(&format!("main-device-insertion-{edge}"), old))
+                .is_some(),
+            "catalog drag still offers adjacent {edge} insertion"
+        );
+    }
+    let pad = fixture.visual.debug_bounds(replace_pad).unwrap().center();
+    fixture
+        .visual
+        .simulate_mouse_move(pad, MouseButton::Left, modifiers);
+    repaint(cx, &mut fixture.visual);
+    assert!(fixture.visual.debug_bounds(original_shell).is_some());
+    for edge in ["before", "after"] {
+        assert!(
+            fixture
+                .visual
+                .debug_bounds(selector(&format!("main-device-insertion-{edge}"), old))
+                .is_none(),
+            "the replace target has its own captured intent"
+        );
+    }
+    let (queued, resume) = submission_probe.unwrap().next_submitted();
+    fixture
+        .visual
+        .simulate_mouse_up(pad, MouseButton::Left, modifiers);
+    let mut exact = None;
+    until("actual occupied-slot replacement submitted", || {
+        if let Ok(submission) = queued.try_recv() {
+            exact = Some(submission);
+            return true;
+        }
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        false
+    });
+    let exact = exact.unwrap();
+    for _ in 0..3 {
+        repaint(cx, &mut fixture.visual);
+        let view = fixture.view(cx);
+        assert!(view.pending && view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project, original.project);
+        assert_eq!(view.state.as_ref().unwrap().revision, original.revision);
+        assert!(
+            fixture
+                .visual
+                .debug_bounds("device-chain-loading-slot")
+                .is_some()
+        );
+        assert!(fixture.visual.debug_bounds(original_shell).is_some());
+        assert!(fixture.visual.debug_bounds(original_active).is_some());
+        assert!(fixture.visual.debug_bounds(new_shell).is_none());
+    }
+    resume.send(()).unwrap();
+    until("replacement canonical and audio receipts match", || {
+        fixture.step(cx);
+        let view = fixture.view(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        !view.pending
+            && view.applied.is_some_and(|source| {
+                source.audio_revision == exact.audio_revision
+                    && source.output_identity == exact.output_identity
+                    && source.context == exact.context
+            })
+    });
+    let accepted = fixture.view(cx).state.unwrap();
+    assert_eq!(accepted.revision, original.revision + 1);
+    assert_eq!(accepted.project.main_devices().len(), 1);
+    assert_eq!(accepted.project.main_devices()[0].id().value(), new);
+    assert!(fixture.visual.debug_bounds(original_shell).is_none());
+    assert!(fixture.visual.debug_bounds(new_shell).is_some());
+    assert!(fixture.visual.debug_bounds(new_active).is_some());
+    assert!(
+        fixture
+            .visual
+            .debug_bounds("device-chain-loading-slot")
+            .is_none()
+    );
+    fixture.visual.update(|window, _| window.remove_window());
+    fixture.visual.run_until_parked();
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
     cx: &mut TestAppContext,
 ) {

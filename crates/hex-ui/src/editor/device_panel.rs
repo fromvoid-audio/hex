@@ -2826,11 +2826,16 @@ impl EditorView {
     fn drop_native_device_to_effect_bus(
         &mut self,
         drag: &drag::NativeDeviceDrag,
-        owner: EffectBusOwner,
-        before: Option<DeviceId>,
+        target: drag::ReturnDeviceDropTarget,
         window: &mut Window,
         cx: &mut Context<EditorView>,
     ) {
+        use drag::EffectBusDropSlot;
+        let owner = target.owner;
+        let before = match target.slot {
+            EffectBusDropSlot::Before(before) => before,
+            EffectBusDropSlot::Replace(_) => None,
+        };
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
         let owns_drag = self
             .active_native_device_drag
@@ -2840,10 +2845,25 @@ impl EditorView {
             && self.native_device_drag_is_current(drag)
             && self.state.as_ref().is_some_and(|state| {
                 state.revision == drag.revision
-                    && owner.devices(&state.project).is_some_and(|devices| {
-                        before
-                            .is_none_or(|anchor| devices.iter().any(|device| device.id() == anchor))
-                    })
+                    && owner
+                        .devices(&state.project)
+                        .is_some_and(|devices| match target.slot {
+                            EffectBusDropSlot::Before(before) => before.is_none_or(|anchor| {
+                                devices.iter().any(|device| device.id() == anchor)
+                            }),
+                            EffectBusDropSlot::Replace(replacing) => {
+                                owner == EffectBusOwner::Main
+                                    && self.document_audio_mode
+                                        == hex_session::DocumentAudioMode::Resident
+                                    && drag.source.is_catalog_vst3_effect()
+                                    && devices.iter().any(|device| {
+                                        device.id() == replacing
+                                            && device.parent().is_none()
+                                            && device.state().type_id()
+                                                == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+                                    })
+                            }
+                        })
             });
         if !current {
             self.error = Some("device drag canceled · project or source changed".into());
@@ -2906,11 +2926,13 @@ impl EditorView {
                 ..
             } => Err("this effect chain accepts effects only".to_owned()),
             drag::NativeDeviceDragSource::PluginEffect(ref selection) => {
-                let destination = match owner {
-                    EffectBusOwner::Main => hex_session::service::PluginEffectDestination::Main,
-                    EffectBusOwner::Return(id) => {
-                        hex_session::service::PluginEffectDestination::Return(id)
+                use hex_session::service::PluginEffectDestination;
+                let destination = match (owner, target.slot) {
+                    (EffectBusOwner::Main, EffectBusDropSlot::Replace(replacing)) => {
+                        PluginEffectDestination::ReplaceMainEffect { replacing }
                     }
+                    (EffectBusOwner::Main, _) => PluginEffectDestination::Main,
+                    (EffectBusOwner::Return(id), _) => PluginEffectDestination::Return(id),
                 };
                 self.clear_native_device_drag(drag);
                 self.insert_plugin_effect(selection, destination, before, cx);

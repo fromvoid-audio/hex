@@ -156,10 +156,31 @@ pub(super) enum NativeDeviceDragSource {
     },
 }
 
+impl NativeDeviceDragSource {
+    pub(super) fn is_catalog_vst3_effect(&self) -> bool {
+        matches!(self, Self::PluginEffect(selection) if selection.role == hex_plugin_catalog::PluginRole::Effect)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EffectBusDropSlot {
+    Before(Option<hex_project::DeviceId>),
+    Replace(hex_project::DeviceId),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ReturnDeviceDropTarget {
     pub(super) owner: super::device_panel::EffectBusOwner,
-    pub(super) before: Option<hex_project::DeviceId>,
+    pub(super) slot: EffectBusDropSlot,
+}
+
+impl ReturnDeviceDropTarget {
+    pub(super) fn anchor(self) -> Option<hex_project::DeviceId> {
+        match self.slot {
+            EffectBusDropSlot::Before(before) => before,
+            EffectBusDropSlot::Replace(device) => Some(device),
+        }
+    }
 }
 
 /// Metadata-only payload shared by catalog drops and ordered-chain moves.
