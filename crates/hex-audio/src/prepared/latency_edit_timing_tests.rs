@@ -22,6 +22,8 @@ mod reverb_power;
 mod short_main_pass;
 #[cfg(feature = "allocation-probe")]
 mod track_removal;
+#[cfg(feature = "allocation-probe")]
+mod vector_move;
 
 const RATE: u32 = 48_000;
 const DELAY: usize = 72;
@@ -164,14 +166,35 @@ fn begin_quantized_insert(
     AppliedAudioSource,
     CancellablePublicationReceipt,
 ) {
+    begin_quantized_playback_insert(
+        Playback::try_from_prepared_with_session(old).unwrap(),
+        Playback::try_from_prepared_with_session(next).unwrap(),
+        track,
+        position,
+        quantization,
+    )
+}
+
+fn begin_quantized_playback_insert(
+    old: Playback,
+    next: Playback,
+    track: Option<hex_project::TrackId>,
+    position: usize,
+    quantization: LaunchQuantization,
+) -> (
+    Control,
+    Callback,
+    AppliedAudioSource,
+    CancellablePublicationReceipt,
+) {
     let initial = hex_engine::AudioSourceContext {
         project_generation: 5,
         editor_revision: 7,
     };
-    let (mut control, mut callback) = channel(old.arrangement().sample_rate()).unwrap();
+    let (mut control, mut callback) = channel(old.sample_rate()).unwrap();
     control
         .publish_unaccounted_pcm_obligation(
-            Playback::try_from_prepared_with_session(old).unwrap(),
+            old,
             PublicationPolicy::InstallFreshRuntime,
             initial.project_generation,
             true,
@@ -196,7 +219,7 @@ fn begin_quantized_insert(
     let fence = control.capture_fresh_runtime_fence().unwrap();
     let revision = control
         .publish_unaccounted_pcm_obligation(
-            Playback::try_from_prepared_with_session(next).unwrap(),
+            next,
             PublicationPolicy::DeviceInsert { predecessor, fence },
             initial.project_generation,
             true,

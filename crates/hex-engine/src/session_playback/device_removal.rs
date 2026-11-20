@@ -3,7 +3,7 @@
 //! the outer source fence and restores the donor when it returns a candidate.
 use super::{
     RouteOwner, SessionPlayback, SessionPlaybackError, device_move::NativeTrackMove,
-    instrument_move::AnalyticTrackMove,
+    instrument_move::InstrumentTrackMove,
 };
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
@@ -148,7 +148,7 @@ enum RemovalTransition {
 #[derive(Clone, Copy)]
 enum StagedTrackMove {
     Effect(NativeTrackMove),
-    Analytic(AnalyticTrackMove),
+    Instrument(InstrumentTrackMove),
 }
 
 impl StagedTrackMove {
@@ -159,7 +159,7 @@ impl StagedTrackMove {
                 destination,
                 ..
             })
-            | Self::Analytic(AnalyticTrackMove {
+            | Self::Instrument(InstrumentTrackMove {
                 source,
                 destination,
                 ..
@@ -218,9 +218,9 @@ impl PendingNativeRemoval {
         }
     }
 
-    pub(super) fn analytic_track_move(self) -> Option<AnalyticTrackMove> {
+    pub(super) fn instrument_track_move(self) -> Option<InstrumentTrackMove> {
         match self.transition {
-            RemovalTransition::Move(StagedTrackMove::Analytic(movement)) => Some(movement),
+            RemovalTransition::Move(StagedTrackMove::Instrument(movement)) => Some(movement),
             _ => None,
         }
     }
@@ -392,10 +392,9 @@ impl SessionPlayback {
                         .map(|movement| RemovalTransition::Move(StagedTrackMove::Effect(movement)))
                 })
                 .or_else(|| {
-                    self.direct_analytic_instrument_move_from(previous)
-                        .map(|movement| {
-                            RemovalTransition::Move(StagedTrackMove::Analytic(movement))
-                        })
+                    self.direct_instrument_move_from(previous).map(|movement| {
+                        RemovalTransition::Move(StagedTrackMove::Instrument(movement))
+                    })
                 })
                 .or_else(|| {
                     self.direct_analytic_instrument_removal_from(previous)
