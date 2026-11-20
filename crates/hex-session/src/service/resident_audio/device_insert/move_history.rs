@@ -1,7 +1,10 @@
-//! Prove that a history target is exactly one direct native effect move.
-//! Recognize a sole Delay or Reverb with an optional retained Utility on one
-//! side. The audio owner still validates the live route and runtime transfer.
-use hex_project::{Command, DeviceSelectionIds, Editor, Invalid, Project, StagedProjectHistory};
+//! Prove that a history target is exactly one direct native device move.
+//! Match a Delay or Reverb with an optional retained Utility on one side, or
+//! an unchanged, single-contributor Sine. Audio still proves the actual cut.
+use hex_project::{
+    Command, Device, DeviceSelectionIds, Editor, Invalid, Project, SourceId, StagedProjectHistory,
+    Track,
+};
 
 pub(super) fn stage(
     editor: &mut Editor,
@@ -29,15 +32,35 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
     let mut destination = None;
     let mut has_utility_prefix = false;
     for (old, new) in before.tracks().iter().zip(after.tracks()) {
-        if old.devices() == new.devices() {
+        if old.devices() == new.devices()
+            && old.instrument() == new.instrument()
+            && old.source_id() == new.source_id()
+        {
             continue;
         }
-        if old.id() != new.id()
-            || old.is_group()
-            || old.parent_group().is_some()
-            || old.instrument().is_some()
-            || old.source_id().is_some()
-        {
+        if old.id() != new.id() || old.is_group() || old.parent_group().is_some() {
+            return None;
+        }
+        if old.instrument() != new.instrument() {
+            if !old.devices().is_empty() || !new.devices().is_empty() {
+                return None;
+            }
+            let (slot, attached, detached, project) = match (old.instrument(), new.instrument()) {
+                (Some(_), None) => (&mut source, old, new, before),
+                (None, Some(_)) => (&mut destination, new, old, after),
+                _ => return None,
+            };
+            let (device, native_source) = solitary_sine(project, attached)?;
+            if detached.source_id().is_some()
+                || slot
+                    .replace((old.id(), device, Some(native_source)))
+                    .is_some()
+            {
+                return None;
+            }
+            continue;
+        }
+        if old.instrument().is_some() || old.source_id().is_some() {
             return None;
         }
         let (slot, longer, shorter) = if old.devices().len() > new.devices().len() {
@@ -60,18 +83,20 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
             }
             _ => return None,
         };
-        if slot.replace((old.id(), device)).is_some() {
+        if slot.replace((old.id(), device, None)).is_some() {
             return None;
         }
     }
-    let (source, device) = source?;
-    let (destination, moved) = destination?;
+    let (source, device, source_id) = source?;
+    let (destination, moved, destination_source_id) = destination?;
     if device != moved
+        || source_id != destination_source_id
         || device.bypassed()
-        || !matches!(
-            device.state().type_id().as_str(),
-            Ok("hex.delay" | "hex.reverb")
-        )
+        || (source_id.is_none()
+            && !matches!(
+                device.state().type_id().as_str(),
+                Ok("hex.delay" | "hex.reverb")
+            ))
     {
         return None;
     }
@@ -80,4 +105,15 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
         destination,
         selected: DeviceSelectionIds::new(&[device.id()]).ok()?,
     })
+}
+
+fn solitary_sine<'a>(project: &Project, track: &'a Track) -> Option<(&'a Device, SourceId)> {
+    let device = track.instrument()?;
+    let id = track.source_id()?;
+    let source = project.native_source(id)?;
+    (device.state().type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+        && source.receiver() == Some(track.id())
+        && source.devices().count() == 1
+        && project.source_contributors(id).count() == 1)
+        .then_some((device, id))
 }
