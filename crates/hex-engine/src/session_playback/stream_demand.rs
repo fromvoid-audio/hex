@@ -92,54 +92,64 @@ impl SessionPlayback {
     /// readiness mode. Serial Main-only latency reads the ordinary source
     /// frontier for Arrangement and Session audio. Flat audio-only tracks and
     /// grouped audio, track feeds and Return feeds may use upstream
-    /// compensation with closed native effects. Instruments, foreign effects
-    /// and keyboard remain excluded from these compensated extensions.
+    /// compensation with closed native effects. Flat Track, Main and Return
+    /// routes also admit bound effect nodes: their sends, feeds and bridge
+    /// latency carry already rendered PCM, while pages are read at the local
+    /// source frontier. Root separately owns and validates the actual endpoint.
     pub(super) fn supports_closed_stream_demand(&self) -> bool {
         self.computer_keyboard.is_none()
             && self.compensation.as_ref().is_none_or(|runtime| {
-                let native_audio_only = || {
-                    self.revision.session().midi_clips().is_empty()
-                        && self
-                            .revision
-                            .arrangement()
-                            .tracks()
-                            .iter()
-                            .flat_map(|track| track.device_chain.iter())
-                            .chain(
-                                self.revision
-                                    .arrangement()
-                                    .return_buses()
-                                    .iter()
-                                    .flat_map(|bus| bus.device_chain.iter()),
-                            )
-                            .chain(self.revision.arrangement().main_device_chain.iter())
-                            .all(|device| {
-                                crate::native_effect_storage::is_closed_type(device.device_type)
-                                    && !matches!(
-                                        device.definition,
-                                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                                    )
-                            })
-                        && self.revision.arrangement().tracks().iter().all(|track| {
-                            track.instrument_id.is_none()
-                                && track.instrument.is_none()
-                                && track.foreign_instrument.is_none()
-                                && track.midi_source_index.is_none()
+                let graph = &runtime.graph;
+                let independent = graph.independent_main_routes();
+                if graph.supports_closed_group_stream()
+                    || (independent
+                        && !graph.needs_upstream_frame_routing()
+                        && self.revision.session().audio_clips().is_empty())
+                {
+                    return true;
+                }
+                let returns = graph.supports_closed_compensated_audio_returns();
+                let flat_alignment = independent
+                    && graph
+                        .tracks
+                        .iter()
+                        .enumerate()
+                        .all(|(index, _)| graph.resident_main_alignment(index).is_some());
+                if !(returns
+                    || flat_alignment
+                    || graph.supports_closed_compensated_audio_groups()
+                    || graph.supports_closed_compensated_track_feeds())
+                {
+                    return false;
+                }
+                let arrangement = self.revision.arrangement();
+                let bound_effects = flat_alignment || (returns && !graph.has_group_outputs());
+                self.revision.session().midi_clips().is_empty()
+                    && arrangement.tracks().iter().all(|track| {
+                        track.instrument_id.is_none()
+                            && track.instrument.is_none()
+                            && track.foreign_instrument.is_none()
+                            && track.midi_source_index.is_none()
+                    })
+                    && arrangement
+                        .tracks()
+                        .iter()
+                        .flat_map(|track| track.device_chain.iter())
+                        .chain(
+                            arrangement
+                                .return_buses()
+                                .iter()
+                                .flat_map(|bus| bus.device_chain.iter()),
+                        )
+                        .chain(arrangement.main_device_chain.iter())
+                        .all(|device| match &device.definition {
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(effect)) => {
+                                bound_effects
+                                    && !effect.is_instrument_profile()
+                                    && effect.binding().is_some()
+                            }
+                            _ => crate::native_effect_storage::is_closed_type(device.device_type),
                         })
-                };
-                runtime.graph.supports_closed_group_stream()
-                    || (runtime.graph.supports_closed_compensated_audio_groups()
-                        && native_audio_only())
-                    || (runtime.graph.supports_closed_compensated_track_feeds()
-                        && native_audio_only())
-                    || (runtime.graph.supports_closed_compensated_audio_returns()
-                        && native_audio_only())
-                    || (runtime.graph.independent_main_routes()
-                        && ((!runtime.graph.needs_upstream_frame_routing()
-                            && self.revision.session().audio_clips().is_empty())
-                            || (runtime.graph.tracks.iter().enumerate().all(|(index, _)| {
-                                runtime.graph.resident_main_alignment(index).is_some()
-                            }) && native_audio_only())))
             })
     }
 
