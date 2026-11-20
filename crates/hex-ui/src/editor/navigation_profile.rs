@@ -6,8 +6,10 @@
 //! original generated workload and its density assertions.
 //! HEX_NAVIGATION_SCOPE defaults to all. audio-100-dense requires the audio
 //! fixture directory and selects its 100-track normal-row dense pan/zoom cases;
-//! project-dense requires the project override and selects its corresponding
-//! normal-row cases. Both retain eight warmups and forty measured events per case.
+//! project-dense requires the project override and selects its normal-row
+//! cases. project-fit-pan and project-fit-zoom fit all Arrangement rows and run
+//! one action per invocation to bound the time spent in dense projects. These
+//! scopes retain eight warmups and forty measured events per case.
 //! HEX_NAVIGATION_COMPARE_LAYOUTS=1 runs reference/current/current/reference in
 //! one persistent fixture, retaining every warmup/event. Trial switches invalidate
 //! retained content and geometry; layout identity also participates in cache keys.
@@ -47,14 +49,11 @@ fn profile_inputs(selection: Selection) -> Vec<(ProfileInput, Vec<bool>)> {
             "absolute disposable project copy required"
         );
         let bytes = std::fs::read(&path).expect("read disposable project copy");
-        // Test setup metadata only; the real Service Open below owns full saved
-        // format validation, migration and media admission.
-        let header: serde_json::Value = serde_json::from_slice(&bytes).expect("project metadata");
-        let sample_rate = header["sample_rate"]
-            .as_u64()
-            .and_then(|rate| u32::try_from(rate).ok())
-            .expect("project sample rate");
-        let tracks = header["tracks"].as_array().expect("project tracks").len();
+        // Use the saved-format codec so nested schema envelopes and migrations
+        // yield the same rate and track count as the subsequent Service Open.
+        let project = hex_storage::decode(&bytes).expect("decode disposable project copy");
+        let sample_rate = project.sample_rate();
+        let tracks = project.tracks().len();
         assert!(tracks > 0, "navigation probe needs an ordinary track");
         return vec![(
             ProfileInput {
@@ -124,6 +123,7 @@ fn fixture(
     cx: &mut TestAppContext,
     input: &ProfileInput,
     profile_phases: bool,
+    window_size: gpui::Size<gpui::Pixels>,
 ) -> (VisualTestContext, Entity<EditorView>, Scratch) {
     let path = input.path.clone();
     let tracks = input.tracks;
@@ -144,7 +144,28 @@ fn fixture(
     scratch.created = true;
     theme::apply_preferences(hex_preferences::ThemePreferences::default());
     cx.update(crate::editor::bind_editor_keys);
-    let service = Service::new(input.sample_rate, 8, input.memory_bytes).unwrap();
+    let service = if input.content == "project" {
+        // Saved projects may contain device-original sources, which need an
+        // explicit resident admission budget even without an audio output.
+        Service::with_native_reservation(
+            input.sample_rate,
+            8,
+            input.memory_bytes,
+            hex_session::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 4096,
+                    root_rows: 4096,
+                    max_retained_bytes: 1024 * 1024 * 1024,
+                    max_construction_peak_bytes: 2 * 1024 * 1024 * 1024,
+                },
+                max_scan_frames: 64_000_000,
+            },
+        )
+    } else {
+        Service::new(input.sample_rate, 8, input.memory_bytes)
+    }
+    .expect("start offline navigation service");
     let handle = cx.add_window(|window, cx| ProfileRoot {
         profile_phases,
         editor: cx.new(|cx| {
@@ -162,7 +183,7 @@ fn fixture(
     let root = handle.root(cx).unwrap();
     let editor = root.read_with(cx, |root, _| root.editor.clone());
     let mut visual = VisualTestContext::from_window(*handle, cx);
-    visual.simulate_resize(size(px(1240.0), px(760.0)));
+    visual.simulate_resize(window_size);
     editor.update(cx, |view, cx| {
         view.begin_open_request(Request::Open(path));
         cx.notify();
@@ -412,8 +433,24 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
     }
     let stage_timing =
         std::env::var_os("HEX_NAVIGATION_STAGE_TIMING").is_some_and(|value| value == "1");
+    let fit_rows = selection.fits_project_rows();
+    let (width, height) = if fit_rows {
+        (1512.0, 1140.0)
+    } else {
+        (1240.0, 760.0)
+    };
+    let window_size = size(px(width), px(height));
+    let row_mode = |single_row| {
+        if single_row {
+            "single_visible"
+        } else if fit_rows {
+            "fit"
+        } else {
+            "normal"
+        }
+    };
     println!(
-        "\nNAV_META,headless_cpu_only=true,noop_text_system=true,native_gpu_present_audio=false,size=1240x760,scale=2,debug_smoke={smoke},stage_timing={stage_timing},warmup={warmup},rounds={rounds},paint_observations_capped=512,waveforms_suppressed={suppressed}"
+        "\nNAV_META,headless_cpu_only=true,noop_text_system=true,native_gpu_present_audio=false,size={width}x{height},scale=2,debug_smoke={smoke},stage_timing={stage_timing},warmup={warmup},rounds={rounds},paint_observations_capped=512,waveforms_suppressed={suppressed}"
     );
     println!(
         "NAV_CSV,content,tracks,row_mode,density,action,iteration,warmup,event_us,draw_us,arena_clear_us,cpu_total_us,warm_cpu_total_us,viewport_start,viewport_length,visible_tracks,audio_clips,midi_clips,child_builds,waveform_paints,geometry_entries"
@@ -445,10 +482,41 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                 input.sample_rate, input.memory_bytes
             );
             let cx = &mut cx.new_app();
-            let (mut visual, editor, _scratch) = fixture(cx, &input, stage_timing);
+            let (mut visual, editor, _scratch) = fixture(cx, &input, stage_timing, window_size);
             let initial_project = editor.read_with(cx, |view, _| {
                 std::sync::Arc::clone(&view.state.as_ref().unwrap().project)
             });
+            let row_mode = row_mode(single_row);
+            if fit_rows {
+                let ids = initial_project
+                    .tracks()
+                    .iter()
+                    .map(|track| track.id())
+                    .collect::<Vec<_>>();
+                visual.update(|window, cx| {
+                    editor.update(cx, |view, cx| {
+                        // Rows are laid out separately and each rounded to
+                        // device pixels. Reserve a pixel per row so rounded
+                        // heights cannot put the final row outside the view.
+                        let measured = view.arrangement_bounds;
+                        let margin = tracks as f32 / window.scale_factor().max(1.0);
+                        view.arrangement_bounds = measured.map(|mut area| {
+                            area.height -= margin;
+                            area
+                        });
+                        view.fit_tracks_vertically(&ids);
+                        view.arrangement_bounds = measured;
+                        cx.notify();
+                    });
+                    window.draw(cx).clear();
+                    window.draw(cx).clear();
+                });
+                assert_eq!(
+                    observe(&editor, &visual).visible_tracks,
+                    tracks,
+                    "fit must show every track"
+                );
+            }
             if single_row {
                 let (track, body) = editor.read_with(cx, |view, _| {
                     (
@@ -473,12 +541,7 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                 let _reference = navigation_metrics::use_reference_stereo(reference);
                 if trials.len() > 1 {
                     println!(
-                        "NAV_TRIAL,content={content},tracks={tracks},row_mode={},index={trial},layout={}",
-                        if single_row {
-                            "single_visible"
-                        } else {
-                            "normal"
-                        },
+                        "NAV_TRIAL,content={content},tracks={tracks},row_mode={row_mode},index={trial},layout={}",
                         if reference { "reference" } else { "current" },
                     );
                     editor.update(cx, |view, cx| {
@@ -492,10 +555,14 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                     visual.update(|window, cx| {
                         editor.update(cx, |view, cx| {
                             let horizon = view.state.as_ref().unwrap().timeline_frames;
-                            let length = ((horizon - horizon.div_ceil(5)) / divisor).max(1);
-                            view.viewport = Some(Viewport {
-                                start: horizon.saturating_sub(length) / 2,
-                                length,
+                            view.viewport = Some(if fit_rows {
+                                Viewport::fit(horizon)
+                            } else {
+                                let length = ((horizon - horizon.div_ceil(5)) / divisor).max(1);
+                                Viewport {
+                                    start: horizon.saturating_sub(length) / 2,
+                                    length,
+                                }
                             });
                             cx.notify();
                         });
@@ -503,6 +570,27 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         window.draw(cx).clear();
                     });
                     let body = editor.read_with(cx, |view, _| view.arrangement_bounds.unwrap());
+                    if fit_rows {
+                        let first = observe(&editor, &visual);
+                        let audio = initial_project
+                            .tracks()
+                            .iter()
+                            .map(|track| track.clips().len())
+                            .sum::<usize>();
+                        let midi = initial_project
+                            .tracks()
+                            .iter()
+                            .map(|track| track.midi_clips().len())
+                            .sum::<usize>();
+                        assert_eq!(
+                            first.audio_clips, audio,
+                            "fit must show every audio clip before input"
+                        );
+                        assert_eq!(
+                            first.midi_clips, midi,
+                            "fit must show every MIDI clip before input"
+                        );
+                    }
                     let width =
                         editor.read_with(cx, |view, _| body.width - view.track_header_width());
                     let origin = point(
@@ -543,7 +631,12 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         });
                         let builds_before = observe(&editor, &visual).builds;
                         if action == "pan" {
-                            pointer.x += px(if iteration % 20 < 10 { -4.0 } else { 4.0 });
+                            let left = if fit_rows {
+                                iteration % 2 == 0
+                            } else {
+                                iteration % 20 < 10
+                            };
+                            pointer.x += px(if left { -4.0 } else { 4.0 });
                         }
                         navigation_metrics::reset(stage_timing);
                         let (event, draw, clear, total) = visual.update(|window, cx| {
@@ -563,7 +656,13 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                                         position: origin,
                                         delta: ScrollDelta::Pixels(point(
                                             px(0.0),
-                                            px(if iteration % 16 < 8 { 80.0 } else { -80.0 }),
+                                            px(if fit_rows {
+                                                if iteration % 2 == 0 { 80.0 } else { -80.0 }
+                                            } else if iteration % 16 < 8 {
+                                                80.0
+                                            } else {
+                                                -80.0
+                                            }),
                                         )),
                                         ..Default::default()
                                     }),
@@ -581,6 +680,9 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         let stages = navigation_metrics::snapshot();
                         navigation_metrics::reset(false);
                         let observation = observe(&editor, &visual);
+                        if fit_rows {
+                            assert_eq!(observation.visible_tracks, tracks);
+                        }
                         if suppressed {
                             assert_eq!(
                                 observation.waveform_paints, 0,
@@ -650,22 +752,12 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                     ) in rows
                     {
                         println!(
-                            "NAV_WAVEFORM_CSV,{content},{tracks},{},{density},{action},{iteration},{},{}",
-                            if single_row {
-                                "single_visible"
-                            } else {
-                                "normal"
-                            },
+                            "NAV_WAVEFORM_CSV,{content},{tracks},{row_mode},{density},{action},{iteration},{},{}",
                             iteration < warmup,
                             observation.envelope_points,
                         );
                         println!(
-                            "NAV_CSV,{content},{tracks},{},{density},{action},{iteration},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
-                            if single_row {
-                                "single_visible"
-                            } else {
-                                "normal"
-                            },
+                            "NAV_CSV,{content},{tracks},{row_mode},{density},{action},{iteration},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
                             iteration < warmup,
                             event.as_secs_f64() * 1e6,
                             draw.as_secs_f64() * 1e6,
@@ -682,11 +774,6 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                             observation.geometry_entries
                         );
                         if stage_timing {
-                            let row_mode = if single_row {
-                                "single_visible"
-                            } else {
-                                "normal"
-                            };
                             for (phase, measures) in [("event", stages), ("warm", warm_stages)] {
                                 let times = measures
                                     .ns
