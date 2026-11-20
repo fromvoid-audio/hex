@@ -46,18 +46,37 @@ impl SessionPlayback {
             return None;
         }
         let (mut source, mut destination) = (None, None);
-        for (index, (next, old)) in self
+        for (index, (next, previous_chain)) in self
             .device_chains
             .iter()
             .zip(&previous.device_chains)
             .enumerate()
         {
-            if next.len() == old.len() && next.configuration_matches_range(old, 0..old.len()) {
+            if next.len() == previous_chain.len()
+                && next.configuration_matches_range(previous_chain, 0..previous_chain.len())
+            {
                 continue;
             }
-            match (old.len(), next.len()) {
+            match (previous_chain.len(), next.len()) {
                 (1, 0) if source.replace(index).is_none() => {}
                 (0, 1) if destination.replace(index).is_none() => {}
+                (1, 2)
+                    if next.configuration_matches_range(previous_chain, 0..1)
+                        && old
+                            .get(index)?
+                            .device_chain
+                            .first()
+                            .zip(new.get(index)?.device_chain.first())
+                            .is_some_and(|(before, after)| {
+                                [before, after].into_iter().all(|prefix| {
+                                    prefix.device_type == hex_devices::utility::UTILITY_TYPE_ID
+                                        && prefix.algorithmic_latency_frames() == Some(0)
+                                        && !prefix.bypassed
+                                        && prefix.automation.is_empty()
+                                        && prefix.modulation.is_none()
+                                })
+                            })
+                        && destination.replace(index).is_none() => {}
                 _ => return None,
             }
         }
