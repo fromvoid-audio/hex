@@ -108,43 +108,61 @@ fn operator_preroll(lfo: Option<bool>) {
 
     let destination = 1_000;
     let worker = ArrangementSeekWorker::new().expect("seek worker");
-    let request_id = worker
-        .submit(ArrangementSeekSpec {
-            mode: ArrangementSeekMode::Interactive,
-            generation: 7,
-            revision: 3,
-            prepared_revision: Arc::clone(&revision),
-            destination_frame: destination,
-            work_budget_frames: destination,
-            start_playing: false,
-        })
-        .expect("submit mutable Operator preroll");
-    let deadline = Instant::now() + std::time::Duration::from_secs(60);
-    let result = loop {
-        if let Some(result) = worker.try_result() {
-            break result;
-        }
-        assert!(Instant::now() < deadline, "Operator seek did not finish");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
-    assert_eq!(result.request_id, request_id);
-    assert_eq!(result.mode, ArrangementSeekMode::Interactive);
-    assert_eq!(result.destination_frame, destination);
-    assert!(Arc::ptr_eq(&result.prepared_revision, &revision));
-    let mut sought = result.result.expect("mutable Operator seek candidate");
-    sought.apply(PlaybackCommand::Play);
+    let region = hex_project::LoopRegion::new(destination, destination + 4096, true).unwrap();
+    for mode in [
+        ArrangementSeekMode::Interactive,
+        ArrangementSeekMode::SectionLoop(region),
+    ] {
+        for note_chase in [hex_engine::NoteChase::On, hex_engine::NoteChase::Off] {
+            let request_id = worker
+                .submit(ArrangementSeekSpec {
+                    note_chase,
+                    mode,
+                    generation: 7,
+                    revision: 3,
+                    prepared_revision: Arc::clone(&revision),
+                    destination_frame: destination,
+                    work_budget_frames: destination,
+                    start_playing: mode != ArrangementSeekMode::Interactive,
+                })
+                .expect("submit mutable Operator preroll");
+            let deadline = Instant::now() + std::time::Duration::from_secs(60);
+            let result = loop {
+                if let Some(result) = worker.try_result() {
+                    break result;
+                }
+                assert!(Instant::now() < deadline, "Operator seek did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            assert_eq!(result.request_id, request_id);
+            assert_eq!(result.mode, mode);
+            assert_eq!(result.note_chase, note_chase);
+            assert_eq!(result.destination_frame, destination);
+            assert!(Arc::ptr_eq(&result.prepared_revision, &revision));
+            let mut sought = result.result.expect("mutable Operator seek candidate");
+            sought.apply(PlaybackCommand::Play);
 
-    // Seeks share the interactive Play-from law: Operator feedback/LFO
-    // history starts empty and the held note is chased at the destination.
-    let mut reference = hex_engine::playback::Playback::try_from_prepared_with_session(revision)
-        .expect("live reference");
-    reference.apply(PlaybackCommand::PlayFrom(destination));
-    let mut actual = [[0.0; 2]; 256];
-    let mut expected = [[0.0; 2]; 256];
-    sought.render(&mut actual).expect("render seek candidate");
-    reference
-        .render(&mut expected)
-        .expect("render play-from reference");
-    assert_eq!(actual, expected);
-    assert!(actual.iter().any(|frame| frame[0].abs() > 1.0e-6));
+            // Seeks share the interactive Play-from law: Operator feedback/LFO
+            // history starts empty and the captured policy controls held-note chase.
+            let mut reference = hex_engine::playback::Playback::try_from_prepared_with_session(
+                Arc::clone(&revision),
+            )
+            .expect("live reference");
+            reference.apply(PlaybackCommand::PlayFromWithNoteChase {
+                frame: destination,
+                note_chase,
+            });
+            let mut actual = [[0.0; 2]; 256];
+            let mut expected = [[0.0; 2]; 256];
+            sought.render(&mut actual).expect("render seek candidate");
+            reference
+                .render(&mut expected)
+                .expect("render play-from reference");
+            assert_eq!(actual, expected);
+            assert_eq!(
+                actual.iter().any(|frame| frame[0].abs() > 1.0e-6),
+                note_chase == hex_engine::NoteChase::On
+            );
+        }
+    }
 }

@@ -17,8 +17,11 @@ fn range(
             let origin = b.origin + point(px(1.), px(1.));
             let width = b.size.width - px(2.);
             let height = b.size.height - px(2.);
-            let row = height / f32::from(v.piano_pitch_rows);
-            let top = row * f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - 64);
+            let row = height / f32::from(v.piano_pitch.test_row_count());
+            let top = row
+                * f32::from(
+                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 64,
+                );
             (
                 origin + point(width * (0.85 / 4.), top - px(1.)),
                 origin + point(width * (1.15 / 4.), top + row + px(1.)),

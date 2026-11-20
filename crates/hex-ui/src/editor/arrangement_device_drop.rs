@@ -1,4 +1,4 @@
-//! Shared painted Arrangement destinations; catalog drops remain worker-owned edits.
+//! Painted Arrangement device destinations for worker-owned insertions and moves.
 use super::{
     EditorMode, EditorView,
     drag::{LaneBounds, NativeDeviceDrag, NativeDeviceDragSource},
@@ -63,6 +63,11 @@ impl EditorView {
         self.arrangement_device_preview = None;
         let plugin_role = match &drag.source {
             NativeDeviceDragSource::Browser { .. } => None,
+            NativeDeviceDragSource::Existing { .. }
+                if self.device_drag_selection(drag).is_some() =>
+            {
+                None
+            }
             NativeDeviceDragSource::PluginEffect(selection)
                 if self.pending_plugin_effect.is_none() =>
             {
@@ -73,7 +78,13 @@ impl EditorView {
         if !self.native_device_drag_is_current(drag) || self.mode != EditorMode::Arrangement {
             return;
         }
-        let Some(target) = self.painted_arrangement_drop_target(x, y) else {
+        let target = if matches!(drag.source, NativeDeviceDragSource::Existing { .. }) {
+            self.hovered_track_drop_target(x, y)
+                .map(|(track, lane)| ArrangementDropTarget::ExistingTrack { track, lane })
+        } else {
+            self.painted_arrangement_drop_target(x, y)
+        };
+        let Some(target) = target else {
             return;
         };
         if plugin_role == Some(PluginRole::Instrument)
@@ -137,9 +148,36 @@ impl EditorView {
             && self.device_gesture.snapshot().is_none()
             && !self.device_panel.has_pending_draft(cx);
         let source = &drag.source;
+        let copy = window.modifiers().alt;
+        let existing_request = match (valid, captured, source) {
+            (
+                true,
+                Some(ArrangementDevicePreview {
+                    destination: ArrangementDeviceDestination::ExistingTrack { track, .. },
+                    ..
+                }),
+                NativeDeviceDragSource::Existing { .. },
+            ) => Some(self.existing_track_device_append_request(drag, track, copy, cx)),
+            _ => None,
+        };
         self.clear_native_device_drag(drag);
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
-        if let (true, Some(preview), NativeDeviceDragSource::PluginEffect(selection)) =
+        if let Some(request) = existing_request {
+            match request {
+                Ok(request) => {
+                    if self.enqueue_device_barrier(request) {
+                        self.error = None;
+                        self.status = if copy {
+                            "copying devices"
+                        } else {
+                            "moving devices to track"
+                        }
+                        .into();
+                    }
+                }
+                Err(reason) => self.error = Some(reason.into()),
+            }
+        } else if let (true, Some(preview), NativeDeviceDragSource::PluginEffect(selection)) =
             (valid, captured, source)
         {
             match preview.destination {

@@ -20,11 +20,20 @@ shortcuts apply when the relevant workspace has focus. a text field, browser
 search, dialog or device editor can handle the same key differently.
 
 space starts from the beginning of the time selection, or from the arrange edit
-cursor when there is no time selection. effects start with fresh tails. native
-mutable instruments retrigger notes whose gates cross the cursor and keep their
-original note-off times; earlier voice history is reset. starting does not replay
-the song before the cursor. section launches and exact-history seeks have their
-own preparation behavior.
+cursor when there is no time selection. effects start with fresh tails. right-click
+the play button to open playback options. **note chase** is on by default and
+is remembered between launches. when on, normal arrangement starts, seeks during
+playback and section launches retrigger midi notes whose gates cross the destination, keeping
+their original note-off times. when off, they play only note starts at or after
+the destination. normal session clip and scene launches use the same choice for
+notes crossing the clip's initial source window; later loop occurrences still play.
+a change applies to subsequent requests and leaves currently playing notes alone.
+
+in arrangement view, **play with history** remains a separate option: it prepares
+the earlier song history and ignores note chase. session midi source cueing retains
+its own no-chase behavior, and export is unaffected. if a playback source cannot
+support note chase off, hex reports the limitation before starting. starting
+normally does not replay the song before the cursor.
 
 normal pause and stop fade the output briefly. seeking during playback fades
 out at the old position and in at the new one. pause releases held arrangement
@@ -261,7 +270,8 @@ move or copy to the snapped pointer beat; a new section marks the intervening ga
 a move closes the old interval and preserves music in the gap. move/copy and the
 gap marker share one undo step. command toggles snapping for a move; use control
 while option-copying, since option-command edits only markers. changing option
-during the drag switches between moving and copying. the source stays in place when copying, and
+during the drag switches between moving and copying. the source stays in place when copying.
+section copies carry device automation and recorded touches with the music.
 one undo restores the entire operation.
 
 while dragging a section, the cyan bar marks insertion at an edge or in a gap.
@@ -911,6 +921,9 @@ double-click a device title to collapse its body or expand it again. with a
 device header focused, press **-** to collapse the selected devices and **+**
 to expand them. collapsed devices keep their header controls and continue
 processing audio.
+
+drag a device title onto another track's arrangement lane or header to move the
+selected devices. hold **option** while dropping to copy them.
 
 select one or more effects in a device chain and press **d** to duplicate them
 after the selection. the copies keep their settings and become the selection.

@@ -1781,6 +1781,11 @@ impl Worker {
     pub fn revoke(&self) {
         self.revoked.revoke();
     }
+    /// Whether the paired transport has been revoked. Control work which
+    /// mutates the processor must check this before taking new SDK work.
+    pub fn is_revoked(&self) -> bool {
+        self.revoked.is_revoked()
+    }
     /// Diagnostic count after matching completion publication, never custody.
     pub fn completed_blocks(&self) -> u64 {
         self.sequence

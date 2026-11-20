@@ -14,6 +14,7 @@ inline constexpr uint8 REOPEN_EDITOR=12;
 inline constexpr uint8 SEAL_EDITOR_EDITS=13;
 inline constexpr uint8 DETACH_EDITOR_WHEN_IDLE=14;
 inline constexpr uint8 EDITOR_VISIBILITY=15;
+inline constexpr uint8 READ_EDITOR_FRONTIER=16;
 inline bool closes_open_editor(uint8 kind) {
     return kind==TOGGLE_EDITOR || kind==CLOSE_EDITOR || kind==DETACH_EDITOR;
 }
@@ -80,14 +81,15 @@ inline bool controller_text(String128 value) {
 }
 inline bool valid_controller_query(const ControllerQuery& query) {
     if(query.first>HOST_PARAMETER_COUNT ||
-       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>EDITOR_VISIBILITY) return false;
+       (query.first && !query.revision && query.kind!=SELECTED_PARAMETERS) || query.kind>READ_EDITOR_FRONTIER) return false;
     String128 text{};std::memcpy(text,query.text,sizeof(text));
     if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
     if(query.kind==REOPEN_EDITOR) {
         return !query.first && !text[0] &&
             (query.id==1?editor_reopen_position(query).valid():!query.id && !query.revision && !query.bits);
     }
-    if(editor_request(query.kind)) return !query.first && !query.revision && !query.id && !query.bits && !text[0];
+    if(editor_request(query.kind) || query.kind==READ_EDITOR_FRONTIER)
+        return !query.first && !query.revision && !query.id && !query.bits && !text[0];
     if(query.kind==SELECTED_PARAMETERS) return !query.revision && !query.id && !query.bits && !text[0];
     if(query.kind>5) return false;
     if(!query.kind) return !query.id && !query.bits && !text[0];

@@ -6947,7 +6947,12 @@ pub(super) mod tests {
             view.toggle_play();
             assert_eq!(
                 view.last_transport_command,
-                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+                Some(
+                    hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
+                        frame: expected,
+                        note_chase: hex_engine::NoteChase::On,
+                    }
+                )
             );
             cx.notify();
         });
@@ -7179,7 +7184,12 @@ pub(super) mod tests {
             view.toggle_play();
             assert_eq!(
                 view.last_transport_command,
-                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+                Some(
+                    hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
+                        frame: expected,
+                        note_chase: hex_engine::NoteChase::On,
+                    }
+                )
             );
             cx.notify();
         });
@@ -7463,7 +7473,12 @@ pub(super) mod tests {
             view.toggle_play();
             assert_eq!(
                 view.last_transport_command,
-                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+                Some(
+                    hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
+                        frame: expected,
+                        note_chase: hex_engine::NoteChase::On,
+                    }
+                )
             );
             cx.notify();
         });
@@ -7647,7 +7662,12 @@ pub(super) mod tests {
             view.toggle_play();
             assert_eq!(
                 view.last_transport_command,
-                Some(hex_engine::playback::PlaybackCommand::PlayFrom(expected))
+                Some(
+                    hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
+                        frame: expected,
+                        note_chase: hex_engine::NoteChase::On,
+                    }
+                )
             );
             cx.notify();
         });

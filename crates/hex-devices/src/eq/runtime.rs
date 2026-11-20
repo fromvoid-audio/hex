@@ -14,6 +14,7 @@ struct CompiledLane {
 #[derive(Clone)]
 struct Configuration {
     nodes: Vec<Node>,
+    authored_stages: Vec<BandStages>,
     lanes: Vec<CompiledLane>,
     points: Vec<AutomationPoint>,
     mode: u8,
@@ -23,6 +24,7 @@ struct Configuration {
 impl Configuration {
     fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * std::mem::size_of::<Node>()
+            + self.authored_stages.capacity() * std::mem::size_of::<BandStages>()
             + self.lanes.capacity() * std::mem::size_of::<CompiledLane>()
             + self.points.capacity() * std::mem::size_of::<AutomationPoint>()
             + self.parameters.capacity() * std::mem::size_of::<automation::Grant>()
@@ -82,7 +84,6 @@ impl Configuration {
 pub(super) struct PreparedEq {
     sample_rate: u32,
     configuration: Arc<Configuration>,
-    stages: Vec<BandStages>,
 }
 impl PreparedEq {
     pub(super) fn source_factory_bytes_bound() -> usize {
@@ -152,13 +153,13 @@ impl PreparedEq {
             sample_rate,
             configuration: Arc::new(Configuration {
                 nodes: settings.nodes,
+                authored_stages: stages,
                 lanes,
                 points,
                 mode: settings.mode,
                 gain: f64::from(settings.output_gain),
                 parameters,
             }),
-            stages,
         })
     }
 }
@@ -186,6 +187,9 @@ impl PreparedNativeProcessor for PreparedEq {
     fn supports_smoothed_bypass(&self) -> bool {
         true
     }
+    fn supports_power_off(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         4
     }
@@ -198,14 +202,13 @@ impl PreparedNativeProcessor for PreparedEq {
             + self.configuration.heap_bytes()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        let mut bands =
-            vec![RuntimeBand::default(); self.configuration.nodes.len()].into_boxed_slice();
-        for (index, coefficients) in self.stages.iter().enumerate() {
-            bands[index].current = *coefficients;
-            bands[index].target = *coefficients;
-            bands[index].stages_used = stages_used(coefficients);
-            bands[index].shape = self.configuration.nodes[index].kind as u8;
-        }
+        let bands = self
+            .configuration
+            .authored_stages
+            .iter()
+            .zip(&self.configuration.nodes)
+            .map(|(&stages, node)| RuntimeBand::new(stages, node.kind))
+            .collect();
         Box::new(EqRuntime {
             sample_rate: self.sample_rate,
             configuration: Arc::clone(&self.configuration),
@@ -240,7 +243,12 @@ impl PreparedNativeProcessor for PreparedEq {
         Some(std::array::from_fn(|channel| {
             let bank = bank(self.configuration.mode, channel);
             let mut magnitude = self.configuration.gain;
-            for (node, stages) in self.configuration.nodes.iter().zip(&self.stages) {
+            for (node, stages) in self
+                .configuration
+                .nodes
+                .iter()
+                .zip(&self.configuration.authored_stages)
+            {
                 if node.enabled && node.bank == bank {
                     for stage in stages {
                         magnitude *= response_magnitude(
@@ -272,19 +280,24 @@ struct RuntimeBand {
     // until its histories are reset, including through coefficient ramps.
     stages_used: u8,
 }
+#[cfg(test)]
 impl Default for RuntimeBand {
     fn default() -> Self {
-        Self {
-            current: [Coefficients::IDENTITY; 4],
-            target: [Coefficients::IDENTITY; 4],
-            history: [[[0.0; 2]; 4]; 2],
-            remaining: 0,
-            shape: 0,
-            stages_used: 1,
-        }
+        Self::new([Coefficients::IDENTITY; 4], NodeKind::Bell)
     }
 }
 impl RuntimeBand {
+    fn new(stages: BandStages, kind: NodeKind) -> Self {
+        Self {
+            current: stages,
+            target: stages,
+            history: [[[0.0; 2]; 4]; 2],
+            remaining: 0,
+            shape: kind as u8,
+            stages_used: stages_used(&stages),
+        }
+    }
+
     #[inline]
     fn filter_channel(&mut self, channel: usize, input: f64) -> f64 {
         let used = usize::from(self.stages_used);
@@ -869,15 +882,21 @@ impl NativeProcessorRuntime for EqRuntime {
         self.process(frames, None, true)
     }
     fn reset(&mut self) {
-        for band in &mut self.bands {
-            band.history = [[[0.0; 2]; 4]; 2];
-            band.current = band.target;
-            band.remaining = 0;
-            band.stages_used = stages_used(&band.target);
+        // Reset starts from the authored response, even when the previous
+        // block left an automated target and the first new block has no clock.
+        for ((band, &stages), node) in self
+            .bands
+            .iter_mut()
+            .zip(&self.configuration.authored_stages)
+            .zip(&self.configuration.nodes)
+        {
+            *band = RuntimeBand::new(stages, node.kind);
         }
         self.last_frame = None;
         self.fallback_frame = 0;
+        self.refresh_target = false;
         self.mode = self.configuration.mode;
+        self.gain = self.configuration.gain;
         self.effective_banks = std::array::from_fn(|index| {
             self.configuration
                 .nodes

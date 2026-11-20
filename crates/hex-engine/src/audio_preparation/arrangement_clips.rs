@@ -233,6 +233,7 @@ impl ArrangementClips {
                         }))
                 || (!s.looping && s.phase != 0)
                 || (s.looping && s.phase >= s.source_length as u64)
+                || (s.reserved_phase.is_some() && (!s.transformed || s.phase != 0))
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -281,6 +282,7 @@ impl ArrangementClips {
                 || s.sparse_frames.is_some()
                 || fade.is_some()
                 || s.reserve_fade
+                || s.reserved_phase.is_some()
                 || s.phase != 0
                 || matches!(&inputs.sources[s.source].1.kind, SourceKind::Streamed(_))
             {
@@ -378,12 +380,18 @@ impl ArrangementClips {
             let source = s.source_owner(inputs)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
             let reserved_fade = (!s.reserve_fade && !s.fade.is_neutral()).then_some(s.fade);
+            let initial_phase = if s.reserved_phase.is_some() {
+                0
+            } else {
+                s.phase
+            };
             let required = s.gain != 1.0
                 || s.sparse_frames.is_some()
                 || matches!(&owner.kind, SourceKind::Streamed(_))
                 || s.phase != 0
                 || !s.fade.is_neutral()
-                || s.reserve_fade;
+                || s.reserve_fade
+                || s.reserved_phase.is_some();
             if r.binding
                 != (Binding {
                     slot,
@@ -409,7 +417,7 @@ impl ArrangementClips {
                     m.streamed.is_some()
                         || m.sparse.is_some()
                         || m.gain != s.gain
-                        || m.source_phase != s.phase
+                        || m.source_phase != initial_phase
                         || m.reversed != s.reversed
                         || m.fade != reserved_fade
                 })
@@ -430,6 +438,7 @@ impl ArrangementClips {
                     SourceKind::Resident(audio) => {
                         if let Some(target) = r.metadata.as_mut() {
                             target.fade = (!s.fade.is_neutral()).then_some(s.fade);
+                            target.source_phase = s.phase;
                             target.sparse = s.sparse.take();
                         }
                         r.clip = Some(Clip {

@@ -15,8 +15,10 @@ use std::{
 };
 
 mod extension;
+mod guarded_write;
 pub use extension::NativeWorkerAuthoredParameterProgress;
-use extension::Operation;
+use extension::{Kind, Operation};
+pub use guarded_write::NativeWorkerGuardedEditorWriteProgress;
 
 #[derive(Clone, Copy, Default)]
 struct Reply {
@@ -25,7 +27,9 @@ struct Reply {
     conversion: Option<ParameterConversionResult>,
     editor: Option<PluginEditorState>,
     editor_seal: Option<EditorSealState>,
+    editor_frontier: Option<u64>,
     extension: Option<NativeWorkerAuthoredParameterProgress>,
+    guarded_write: Option<NativeWorkerGuardedEditorWriteProgress>,
 }
 
 #[derive(Default)]
@@ -69,7 +73,7 @@ pub struct NativeWorkerControllerQuery {
     binding: Binding,
     ordinal: u64,
     stopped: bool,
-    extension: bool,
+    kind: Kind,
 }
 impl NativeWorkerControllerQuery {
     /// Whether the original completion allocation has been released. This
@@ -84,9 +88,14 @@ pub enum NativeWorkerControllerProgress {
     Pending,
     Editor(PluginEditorState),
     EditorSeal(EditorSealState),
+    /// The last editor callback admitted on this query’s original binding.
+    EditorFrontier(u64),
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
-    Changed { revision: u64, total: u16 },
+    Changed {
+        revision: u64,
+        total: u16,
+    },
     Failed,
 }
 
@@ -144,6 +153,9 @@ impl NativeWorker {
             return Err("native editor seal requires a stopped source");
         }
         if stopped {
+            if query.kind() == Kind::GuardedWrite {
+                return Err("native guarded editor write requires a live worker");
+            }
             self.service_stopped_controller()?;
         }
         let mut slot = self
@@ -152,24 +164,56 @@ impl NativeWorker {
             .capture
             .try_lock()
             .map_err(|_| "native controller mailbox is busy")?;
-        let slot = &mut slot.controller;
+        if query.kind() == Kind::GuardedWrite
+            && (slot.capture_pending() || slot.parameter_change.pending())
+        {
+            return Err("native guarded editor write is busy");
+        }
         // A revoked live token is already Failed. Retire its late data only
         // after the actual original SDK query completed on the joined owner.
-        if stopped && slot.requested && slot.complete && !slot.stopped {
-            slot.requested = false;
+        if stopped
+            && slot.controller.requested
+            && slot.controller.complete
+            && !slot.controller.stopped
+        {
+            slot.controller.requested = false;
         }
-        if slot.requested {
+        if slot.controller.requested {
             return Err("native controller query is already pending");
         }
         let ordinal = slot
+            .controller
             .ordinal
             .checked_add(1)
             .ok_or("native controller ordinal exhausted")?;
+        let parameter_admission = if query.kind() == Kind::GuardedWrite {
+            // Supersede both control-side sequenced facts and any callback
+            // permit from earlier non-guarded writes before accepting input.
+            let next = slot.parameter_change.next_ordinal()?;
+            let admission = self
+                .reaper
+                .control
+                .reserve_parameter_input_on_control(next)
+                .map_err(|fault| match fault {
+                    Fault::Saturated => "native parameter mailbox is busy",
+                    Fault::Revoked => "native parameter source is not live",
+                    Fault::Exhausted => "native parameter input ordinal exhausted",
+                    _ => "native parameter input generation differs",
+                })?;
+            slot.parameter_change.supersede_with_guarded_write(next);
+            Some(admission)
+        } else {
+            None
+        };
+        let slot = &mut slot.controller;
         slot.ordinal = ordinal;
         slot.query = query;
         slot.requested = true;
         slot.complete = false;
         slot.stopped = stopped;
+        if let Some(admission) = parameter_admission {
+            admission.publish();
+        }
         self.reaper
             .completed
             .controller_requested
@@ -179,7 +223,7 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             stopped,
-            extension: query.extension(),
+            kind: query.kind(),
         })
     }
 
@@ -191,7 +235,7 @@ impl NativeWorker {
         &mut self,
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
-        if request.extension {
+        if request.kind != Kind::Observe {
             return Err("native controller operation kind differs");
         }
         let reply = match self.poll_reply(request)? {
@@ -206,6 +250,8 @@ impl NativeWorker {
                 self.editor_edits_sealed = true;
             }
             NativeWorkerControllerProgress::EditorSeal(seal)
+        } else if let Some(frontier) = reply.editor_frontier {
+            NativeWorkerControllerProgress::EditorFrontier(frontier)
         } else if let Some(conversion) = reply.conversion {
             NativeWorkerControllerProgress::Conversion(Box::new(conversion))
         } else if reply.changed {
@@ -299,11 +345,15 @@ impl NativeWorker {
     }
 }
 impl Slot {
+    pub(super) fn guarded_write_pending(&self) -> bool {
+        self.requested && self.query.kind() == Kind::GuardedWrite
+    }
+
     fn matches(&self, request: &NativeWorkerControllerQuery) -> bool {
         self.requested
             && self.ordinal == request.ordinal
             && self.stopped == request.stopped
-            && self.query.extension() == request.extension
+            && self.query.kind() == request.kind
     }
 }
 impl State {
@@ -367,8 +417,17 @@ impl State {
             }
             let (ordinal, query) = (slot.controller.ordinal, slot.controller.query);
             drop(slot);
-            self.controller.result = query.begin(instance)?;
-            self.controller.extension = query.extension();
+            self.controller.result =
+                if query.kind() == Kind::GuardedWrite && self.worker.is_revoked() {
+                    // Normal reads can drain after revocation. Never start a new
+                    // mutation then, even from the stopped controller service.
+                    Reply::guarded(NativeWorkerGuardedEditorWriteProgress::Failed)
+                } else if query.kind() == Kind::GuardedWrite && self.parameter_change.has_hold() {
+                    Reply::guarded(NativeWorkerGuardedEditorWriteProgress::Conflict)
+                } else {
+                    query.begin(instance)?
+                };
+            self.controller.extension = query.kind() == Kind::Extension;
             self.controller.ordinal = Some(ordinal);
         } else if self.controller.result.is_none() {
             if self.controller.between_polls() {
@@ -387,13 +446,13 @@ impl State {
                         editor_seal: Some(seal),
                         ..Reply::default()
                     }),
+                    ParameterPageProgress::EditorFrontier(frontier) => Some(Reply {
+                        editor_frontier: Some(frontier),
+                        ..Reply::default()
+                    }),
                     ParameterPageProgress::Page(page) => Some(Reply {
                         page: *page,
-                        changed: false,
-                        conversion: None,
-                        editor: None,
-                        editor_seal: None,
-                        extension: None,
+                        ..Reply::default()
                     }),
                     ParameterPageProgress::Conversion(conversion) => Some(Reply {
                         conversion: Some(*conversion),
@@ -406,10 +465,7 @@ impl State {
                         Some(Reply {
                             page,
                             changed: true,
-                            conversion: None,
-                            editor: None,
-                            editor_seal: None,
-                            extension: None,
+                            ..Reply::default()
                         })
                     }
                 }

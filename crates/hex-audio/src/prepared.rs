@@ -326,7 +326,9 @@ fn starts_playback(action: PlaybackAction) -> bool {
         ) | PlaybackAction::Session(
             hex_engine::SessionPlaybackCommand::Play
                 | hex_engine::SessionPlaybackCommand::LaunchClip { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
+                | hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { .. }
                 | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
         ) | PlaybackAction::LaunchAndPlay(_)
     )
@@ -3444,7 +3446,9 @@ impl Callback {
         if publication.approved_device_insert().is_some() {
             self.release_device_insert_fade_pins();
         }
-        if (publication.approved_device_insert().is_some() || publication.tempo_cut().is_some())
+        if (publication.approved_device_insert().is_some()
+            || publication.tempo_cut().is_some()
+            || publication.playback.native_removal_pending())
             && let Some(streams) = publication.streams.as_mut()
         {
             streams.cancel_install(&mut self.domain_pages);
@@ -3768,18 +3772,20 @@ impl Callback {
         self.diagnostics
             .push(event, &self.status.diagnostics_dropped);
     }
-    /// Native adapter supplies its already measured whole-host-callback time.
+    /// Native adapter supplies measured host callback duration and entry cadence.
     /// Reading the clock and formatting remain outside this record operation.
     pub(crate) fn trace_callback_timing(
         &mut self,
         elapsed_ns: u64,
         deadline_ns: u64,
         frames: usize,
+        start_interval_ns: Option<u64>,
     ) {
         self.trace_audio(
             AudioDiagnosticKind::CallbackTiming {
                 elapsed_ns,
                 deadline_ns,
+                start_interval_ns,
             },
             self.status.applied_revision.load(Relaxed),
             None,
@@ -3905,7 +3911,12 @@ impl Callback {
             }
             return;
         }
-        if confirmed_insert && self.retired.is_full() {
+        if self.retired.is_full()
+            && (confirmed_insert
+                || self.deferred.as_ref().is_some_and(|next| {
+                    next.streams.is_some() && next.playback.native_removal_started()
+                }))
+        {
             self.abort_blocked_device_insert();
             return;
         }
@@ -4229,7 +4240,7 @@ impl Callback {
                             next.source_context,
                             frames.unwrap_or(0),
                         );
-                        self.deferred = Some(next);
+                        self.defer_for_stream_pages(next);
                         return;
                     }
                     // A fresh replacement is a recovery path when the current
@@ -4288,14 +4299,14 @@ impl Callback {
                                 if let Some(streams) = next.streams.as_mut() {
                                     streams.cancel_install(&mut self.domain_pages);
                                 }
-                                self.deferred = Some(next);
+                                self.defer_for_stream_pages(next);
                                 return;
                             }
                             None
                         }
                         Ok(None) => None,
                         Err(crate::candidate_custody::QuantumFailure::PendingAction) => {
-                            self.deferred = Some(next);
+                            self.defer_for_stream_pages(next);
                             return;
                         }
                         Err(crate::candidate_custody::QuantumFailure::Capacity) => {
@@ -4304,7 +4315,7 @@ impl Callback {
                                 .as_mut()
                                 .is_some_and(|streams| streams.retry_capacity_conflict())
                             {
-                                self.deferred = Some(next);
+                                self.defer_for_stream_pages(next);
                                 return;
                             }
                             Some(PlaybackHandoffRejection::StreamedPageCapacity)
@@ -4409,6 +4420,30 @@ impl Callback {
                 }
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        match self.advance_paged_native_removal(&mut next) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                self.trace_audio(
+                                    AudioDiagnosticKind::PublicationWaiting {
+                                        reason: PublicationWaitReason::NativeRemovalFade,
+                                    },
+                                    next.revision,
+                                    next.source_context,
+                                    frames.unwrap_or(0),
+                                );
+                                self.deferred = Some(next);
+                                return;
+                            }
+                            Err(reason) => {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                self.reject_publication(next.revision, reason);
+                                self.return_graph(next);
+                                self.status.publication_pending.store(false, Release);
+                                return;
+                            }
+                        }
                         // Page planning may span callbacks. Revalidate the
                         // actual fence before promoting its protected pages.
                         if let PublicationPolicy::InheritUnderArrangement(token) = next.policy
@@ -4453,7 +4488,7 @@ impl Callback {
                                     self.status.publication_pending.store(false, Release);
                                 } else {
                                     self.restore_parameter_predecessor_prewarm(&next);
-                                    self.deferred = Some(next);
+                                    self.defer_for_stream_pages(next);
                                 }
                                 return;
                             }
@@ -4474,7 +4509,7 @@ impl Callback {
                                 if let Some(streams) = next.streams.as_mut() {
                                     streams.cancel_install(&mut self.domain_pages);
                                 }
-                                self.deferred = Some(next);
+                                self.defer_for_stream_pages(next);
                                 return;
                             }
                         }
@@ -4494,7 +4529,7 @@ impl Callback {
                             next.source_context,
                             frames.unwrap_or(0),
                         );
-                        self.deferred = Some(next);
+                        self.defer_for_stream_pages(next);
                         return;
                     }
                     refused => {
@@ -4511,7 +4546,7 @@ impl Callback {
                             if let Some(streams) = next.streams.as_mut() {
                                 streams.cancel_install(&mut self.domain_pages);
                             }
-                            self.deferred = Some(next);
+                            self.defer_for_stream_pages(next);
                             return;
                         }
                         let source_changed = next
@@ -11555,6 +11590,13 @@ mod tests {
     #[test]
     #[cfg(feature = "allocation-probe")]
     fn source_bound_start_rejects_same_project_replacement_and_preserves_stop() {
+        for note_chase in [hex_engine::NoteChase::On, hex_engine::NoteChase::Off] {
+            source_bound_start_fences(note_chase);
+        }
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn source_bound_start_fences(note_chase: hex_engine::NoteChase) {
         use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
         use hex_engine::AudioSourceContext;
 
@@ -11590,7 +11632,7 @@ mod tests {
         };
         assert!(
             client
-                .play_from_source_with_ticket(1, wrong_output)
+                .play_from_with_note_chase_source_with_ticket(1, note_chase, wrong_output)
                 .is_err()
         );
         let wrong_context = AppliedAudioSource {
@@ -11602,11 +11644,36 @@ mod tests {
         };
         assert!(
             client
-                .play_from_source_with_ticket(1, wrong_context)
+                .play_from_with_note_chase_source_with_ticket(1, note_chase, wrong_context)
                 .is_err()
         );
 
-        let ticket = client.play_from_source_with_ticket(17, source).unwrap();
+        let wrong_revision = AppliedAudioSource {
+            audio_revision: source.audio_revision + 1,
+            ..source
+        };
+        assert!(
+            client
+                .play_from_with_note_chase_source_with_ticket(17, note_chase, wrong_revision)
+                .is_err()
+        );
+        let ticket = client
+            .play_from_with_note_chase_source_with_ticket(17, note_chase, source)
+            .unwrap();
+        // Inspect the actual borrowed consumer slot without removing it: a
+        // cursor-only oracle would miss an endpoint that discarded the choice.
+        data.owner_mut().unwrap().run(|callback, _| {
+            let queued = callback.commands.peek().unwrap();
+            assert_eq!(queued.ticket, ticket);
+            assert_eq!(
+                queued.action,
+                PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
+                    frame: 17,
+                    note_chase
+                })
+            );
+            assert_eq!(queued.expected_source, Some(source));
+        });
         let measured =
             allocation_counter::measure(|| data.owner_mut().unwrap().run(|c, _| c.begin_block()));
         assert_eq!(
@@ -11626,6 +11693,7 @@ mod tests {
             })
         );
         assert!(client.status().unwrap().playing.load(Acquire));
+        assert_eq!(client.status().unwrap().position.load(Acquire), 17);
         client.stop();
         data.owner_mut().unwrap().run(|c, _| c.begin_block());
 
@@ -11655,7 +11723,9 @@ mod tests {
                 })
             });
             barrier.wait();
-            let ticket = client.play_from_source_with_ticket(47, source).unwrap();
+            let ticket = client
+                .play_from_with_note_chase_source_with_ticket(47, note_chase, source)
+                .unwrap();
             barrier.wait();
             let measured = callback.join().unwrap();
             assert_eq!(
@@ -11690,16 +11760,33 @@ mod tests {
                 .audio_revision,
             source.audio_revision
         );
-        assert!(client.play_from_source_with_ticket(47, source).is_err());
+        assert!(
+            client
+                .play_from_with_note_chase_source_with_ticket(47, note_chase, source)
+                .is_err()
+        );
         let source = client.status().unwrap().recording_source().unwrap();
         for _ in 0..COMMANDS {
-            client.play_from_source_with_ticket(2, source).unwrap();
+            client
+                .play_from_with_note_chase_source_with_ticket(2, note_chase, source)
+                .unwrap();
         }
-        assert!(client.play_from_source_with_ticket(2, source).is_err());
+        assert!(
+            client
+                .play_from_with_note_chase_source_with_ticket(2, note_chase, source)
+                .is_err()
+        );
         client.stop();
         data.owner_mut().unwrap().run(|c, _| c.begin_block());
         assert!(!client.status().unwrap().playing.load(Acquire));
         client.close();
+        assert_eq!(
+            client.play_from_with_note_chase_source_with_ticket(2, note_chase, source),
+            Err(PlaybackCommand::PlayFromWithNoteChase {
+                frame: 2,
+                note_chase
+            }),
+        );
         publication.close();
         drop(data);
         drop(errors);

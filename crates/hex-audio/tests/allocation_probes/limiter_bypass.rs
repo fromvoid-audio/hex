@@ -193,10 +193,9 @@ fn check(lookahead: u32, mode: u32, routing: u32, location: usize, block: usize)
         })
         .unwrap();
     let dry_revision = prepare(&editor);
-    assert_eq!(
-        wet_revision.arrangement().main_latency_frames(),
-        dry_revision.arrangement().main_latency_frames()
-    );
+    let latency = wet_revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    assert_eq!(latency, dry_revision.arrangement().main_latency_frames());
     let mut wet = SessionPlayback::new(Arc::clone(&wet_revision)).unwrap();
     let mut dry = SessionPlayback::new(Arc::clone(&dry_revision)).unwrap();
     wet.apply(SessionPlaybackCommand::Play).unwrap();
@@ -229,7 +228,7 @@ fn check(lookahead: u32, mode: u32, routing: u32, location: usize, block: usize)
         (true, 5),
         (false, 300),
         (true, 300),
-        (false, 300),
+        (false, latency as usize),
     ] {
         editor
             .execute(Command::SetDeviceBypass { device, bypassed })
@@ -258,7 +257,9 @@ fn check(lookahead: u32, mode: u32, routing: u32, location: usize, block: usize)
                 } else if i < 618 {
                     1.0 - (i - 317).min(240) as f32 / 240.0
                 } else {
-                    (i - 617).min(240) as f32 / 240.0
+                    // After settled Off, the reserved tap stays audible
+                    // throughout the new wet pipeline's refill.
+                    0.0
                 };
                 for lane in 0..2 {
                     contrast = contrast.max((wet_pcm[local][lane] - dry_pcm[local][lane]).abs());
@@ -280,7 +281,7 @@ fn check(lookahead: u32, mode: u32, routing: u32, location: usize, block: usize)
         control.reclaim();
     }
     assert!(contrast > 0.01, "wet/dry fixture must be distinguishable");
-    // The source has been silent for over700 frames. A fully dry primary path
+    // The source has been silent for several hundred frames. A fully dry primary path
     // is silent, while the independent parallel room still contributes a tail.
     // Main placement processes that room too; only track/Return can isolate it.
     if location != 2 {

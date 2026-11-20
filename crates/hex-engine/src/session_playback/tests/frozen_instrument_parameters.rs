@@ -125,7 +125,9 @@ fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision()
                         .unwrap();
                     let mut oracle = playback(&oracle_editor);
                     oracle.try_inherit_state_from(&mut reference).unwrap();
-                    oracle.apply(SessionPlaybackCommand::Pause).unwrap();
+                    if paused || removed {
+                        oracle.apply(SessionPlaybackCommand::Pause).unwrap();
+                    }
                     if paused {
                         old.apply(SessionPlaybackCommand::Pause).unwrap();
                     }
@@ -144,37 +146,63 @@ fn detached_fm4_freezes_latest_target_across_pause_bypass_removal_and_revision()
                     assert_eq!(actual.tail_mutable_instruments.iter().flatten().count(), 1);
                     // A refused tail render must restore the borrowed frame before
                     // rollback; the retry below must match uninterrupted audio.
+                    let cut = actual.performance_frame;
                     let tail = actual
                         .tail_mutable_instruments
                         .iter_mut()
                         .flatten()
                         .next()
                         .unwrap();
-                    tail.runtime.begin_block();
-                    let failed = tail
-                        .runtime
-                        .with_frozen_parameters(|runtime, values| {
-                            runtime.process_frozen_tail_segment(
-                                Some(tail.track_id),
-                                u64::MAX,
-                                &mut [[0.0; 2]; 2],
-                                &mut Default::default(),
-                                &mut Vec::new(),
-                                None,
-                                values,
-                            )
-                        })
-                        .unwrap();
-                    assert!(failed.is_err());
-                    tail.runtime.rollback_block();
-                    let expected = render(&mut oracle, 113, 113);
-                    let output = render(&mut actual, 113, 3);
-                    assert_eq!(output, expected, "paused={paused} removed={removed}");
-                    assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
-                    // A further canonical revision carries the existing tail frame.
+                    tail.begin_block();
+                    let track = tail.track_id;
+                    let mut provisional = [[0.0; 2]; 2];
+                    let mut onsets = Default::default();
+                    let mut events = Vec::new();
+                    for frame in [u64::MAX, cut] {
+                        let result = tail.render_source(
+                            &mut provisional,
+                            crate::session_playback::SessionPlaybackError::DeviceRuntime,
+                            |runtime, frames| {
+                                runtime
+                                    .with_frozen_parameters(|runtime, values| {
+                                        runtime.process_frozen_tail_segment(
+                                            Some(track),
+                                            frame,
+                                            frames,
+                                            &mut onsets,
+                                            &mut events,
+                                            None,
+                                            values,
+                                        )
+                                    })
+                                    .map_err(|error| error.render_error())?
+                                    .map_err(|error| error.render_error())
+                            },
+                        );
+                        assert_eq!(result.is_err(), frame == u64::MAX);
+                    }
+                    tail.rollback_block();
+                    let mut expected = render(&mut oracle, 113, 113);
+                    if !removed {
+                        const FADE: usize = 40;
+                        for (offset, frame) in expected.iter_mut().enumerate() {
+                            let gain = FADE.saturating_sub(offset) as f32 / FADE as f32;
+                            *frame = frame.map(|sample| sample * gain);
+                        }
+                    }
+                    let head = render(&mut actual, 11, 3);
+                    assert!(head.iter().flatten().any(|sample| sample.abs() > 1e-6));
+                    assert_eq!(head, expected[..11], "paused={paused} removed={removed}");
+                    // A further canonical revision carries the latest frozen
+                    // parameter frame and only the remaining power fade.
                     let mut successor = playback(&editor);
                     successor.try_inherit_state_from(&mut actual).unwrap();
-                    let expected = render(&mut oracle, 9000, 4097);
+                    assert_eq!(render(&mut successor, 102, 3), expected[11..]);
+                    let expected = if removed {
+                        render(&mut oracle, 9000, 4097)
+                    } else {
+                        vec![[0.0; 2]; 9000]
+                    };
                     assert_eq!(render(&mut successor, 9000, 31), expected);
                     assert!(expected[8000..].iter().all(|frame| *frame == [0.0; 2]));
                 }

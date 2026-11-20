@@ -29,7 +29,7 @@ impl DeviceAutomationTouchSpan {
         self.steps.get(index.checked_sub(1)?).map(|step| step.value)
     }
 
-    fn fragment(&self, start: BeatTime, end: BeatTime) -> Result<Self, Invalid> {
+    pub(super) fn fragment(&self, start: BeatTime, end: BeatTime) -> Result<Self, Invalid> {
         let held = self.value_at(start).ok_or(Invalid(
             "device automation touch fragment has no held value",
         ))?;

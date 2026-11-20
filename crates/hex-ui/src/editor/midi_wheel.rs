@@ -32,24 +32,21 @@ impl EditorView {
         else {
             return false;
         };
-        let rows = self.piano_pitch_rows;
-        if !super::midi_scene::valid_pitch_range(self.piano_pitch_low, rows) {
-            return false;
-        }
-        let mut low = self.piano_pitch_low;
+        let mut viewport = self.piano_pitch;
         if pitch != 0.0 {
-            let row_height = bounds[3] / f32::from(rows);
+            let Some(row_height) = viewport.row_height_pixels(bounds[3]) else {
+                return false;
+            };
             self.piano_pitch_scroll_accum =
                 (self.piano_pitch_scroll_accum + pitch).clamp(-bounds[3], bounds[3]);
             let steps = (self.piano_pitch_scroll_accum / row_height).trunc();
             self.piano_pitch_scroll_accum -= steps * row_height;
-            let max_low = 128 - i16::from(rows);
-            let target = i16::from(low) + steps as i16;
-            if !(0..=max_low).contains(&target) {
+            let (target, clamped) = viewport.scroll_rows(steps as i16);
+            if clamped {
                 // Do not bank motion against a MIDI edge.
                 self.piano_pitch_scroll_accum = 0.0;
             }
-            low = target.clamp(0, max_low) as u8;
+            viewport = target;
         }
         let span = self.piano_beat_span.raw();
         let mut start = self.piano_beat_start;
@@ -60,12 +57,12 @@ impl EditorView {
             let next = start - ticks;
             start = super::midi_scene::clamp_start(next, span);
         }
-        if (low, start) == (self.piano_pitch_low, self.piano_beat_start) {
+        if (viewport, start) == (self.piano_pitch, self.piano_beat_start) {
             return false;
         }
         // Viewport-bound gesture state is retired, as for every other navigation.
         self.cancel_midi_note_gesture();
-        self.piano_pitch_low = low;
+        self.piano_pitch = viewport;
         self.piano_beat_start = start;
         true
     }

@@ -879,9 +879,12 @@ impl UtilityDefinition {
 
 impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
     fn supports_smoothed_bypass(&self) -> bool {
-        // Both static and automated zero-latency filters advance private history
-        // under bypass. The host can blend their complete output reversibly,
-        // without retaining a separately audible old filter suffix.
+        // Static and automated filters advance private history during the
+        // power transition so a reversal retains the original response.
+        true
+    }
+
+    fn supports_power_off(&self) -> bool {
         true
     }
 

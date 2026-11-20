@@ -64,10 +64,10 @@ pub(super) fn apply(
     gap_color: ElementColor,
 ) -> Result<Created, Invalid> {
     let plan = plan(project, section, start, &gap_name)?;
-    let Created::ArrangementSection(copy) = super::splice::duplicate(project, section)? else {
-        return Err(Invalid("section duplication produced no identity"));
-    };
-    super::reorder::reorder_at(project, copy, plan.insertion)?;
+    let copy = super::splice::copy_section(project, section, |project, copy| {
+        super::reorder::place_duplicate_at(project, copy, plan.insertion)?;
+        Ok(())
+    })?;
     if plan.gap_start < start {
         // Constant-depth owner composition; the outer Editor owns rollback.
         super::apply(
@@ -80,7 +80,7 @@ pub(super) fn apply(
             },
         )?;
     }
-    Ok(Created::ArrangementSection(copy))
+    Ok(copy)
 }
 
 pub(super) fn preview(

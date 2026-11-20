@@ -9,19 +9,18 @@ use hex_project::ClipId;
 #[derive(Default)]
 pub(super) struct State {
     pub(super) enabled: bool,
-    pub(super) gesture: Option<Gesture>,
+    pub(super) gesture: Option<Capture>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Viewport {
     start: i128,
     span: u64,
-    low: u8,
-    rows: u8,
+    pitch: super::PitchViewport,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub(super) struct Gesture {
+struct Gesture {
     generation: u64,
     revision: u64,
     clip: ClipId,
@@ -30,6 +29,11 @@ pub(super) struct Gesture {
     origin: [f32; 2],
     viewport: Viewport,
     button: MouseButton,
+}
+
+pub(super) struct Capture {
+    origin: Gesture,
+    applied_pitch: super::PitchViewport,
 }
 
 impl Gesture {
@@ -45,13 +49,12 @@ impl Gesture {
             .clamp(-(u64::MAX as f64), u64::MAX as f64) as i128;
         let start =
             (self.viewport.start - ticks).clamp(-i128::from(u64::MAX), i128::from(u64::MAX));
-        let pitches = (dy * f64::from(self.viewport.rows))
+        let pitches = (dy * self.viewport.pitch.span())
             .round()
             .clamp(-128.0, 128.0) as i16;
         Some(Viewport {
             start: midi_scene::clamp_start(start, self.viewport.span),
-            low: (i16::from(self.viewport.low) + pitches)
-                .clamp(0, 128 - i16::from(self.viewport.rows)) as u8,
+            pitch: self.viewport.pitch.scroll_rows(pitches).0,
             ..self.viewport
         })
     }
@@ -60,8 +63,10 @@ impl Gesture {
 impl EditorView {
     /// Retire capture after a canonical context change without resetting navigation.
     pub(super) fn reconcile_piano_pan(&mut self) {
-        if self.midi_pan.gesture.as_ref().is_some_and(|gesture| {
-            gesture.generation != self.project_generation
+        if self.midi_pan.gesture.as_ref().is_some_and(|capture| {
+            let gesture = capture.origin;
+            self.piano_pitch != capture.applied_pitch
+                || gesture.generation != self.project_generation
                 || self.detail_clip_id() != Some(gesture.clip)
                 || self.state.as_ref().is_none_or(|state| {
                     state.revision != gesture.revision
@@ -104,14 +109,12 @@ impl EditorView {
         let viewport = Viewport {
             start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
-            low: self.piano_pitch_low,
-            rows: self.piano_pitch_rows,
+            pitch: self.piano_pitch,
         };
         if length == 0
             || viewport.span == 0
             || viewport.span > midi_scene::zoom_limit(length)
             || midi_scene::clamp_start(viewport.start, viewport.span) != viewport.start
-            || !midi_scene::valid_pitch_range(viewport.low, viewport.rows)
         {
             return false;
         }
@@ -137,7 +140,10 @@ impl EditorView {
         }
         self.cancel_midi_note_gesture();
         self.midi_hover = None;
-        self.midi_pan.gesture = Some(gesture);
+        self.midi_pan.gesture = Some(Capture {
+            origin: gesture,
+            applied_pitch: viewport.pitch,
+        });
         true
     }
 
@@ -160,7 +166,7 @@ impl EditorView {
                     return;
                 };
                 let _ = owner.update(cx, |view, cx| {
-                    if view.midi_pan.gesture.as_ref() != Some(&gesture) {
+                    if view.midi_pan.gesture.as_ref().map(|c| c.origin) != Some(gesture) {
                         return;
                     }
                     let changed = if !view.clip_view_open
@@ -188,7 +194,7 @@ impl EditorView {
             },
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
-                    if view.midi_pan.gesture.as_ref() == Some(&gesture) {
+                    if view.midi_pan.gesture.as_ref().map(|c| c.origin) == Some(gesture) {
                         view.midi_pan.gesture = None;
                         cx.notify();
                     }
@@ -209,14 +215,15 @@ impl EditorView {
         if self.clip_view_open
             && !self.device_panel_active
             && self.midi_focus.is_focused(window)
-            && let Some(g) = self.midi_pan.gesture.as_ref()
-            && g.bounds == bounds
-            && g.clip == clip
-            && g.generation == self.project_generation
+            && let Some(capture) = self.midi_pan.gesture.as_ref()
+            && self.piano_pitch == capture.applied_pitch
+            && capture.origin.bounds == bounds
+            && capture.origin.clip == clip
+            && capture.origin.generation == self.project_generation
             && self
                 .state
                 .as_ref()
-                .is_some_and(|s| s.revision == g.revision)
+                .is_some_and(|s| s.revision == capture.origin.revision)
         {
             window.renew_pointer_capture(owner, gpui::CursorStyle::ClosedHand);
         }
@@ -228,10 +235,12 @@ impl EditorView {
         pointer: [f32; 2],
         button: Option<MouseButton>,
     ) -> bool {
-        let Some(gesture) = self.midi_pan.gesture.as_ref() else {
+        let Some(capture) = self.midi_pan.gesture.as_ref() else {
             return false;
         };
-        if button != Some(gesture.button)
+        let gesture = capture.origin;
+        if self.piano_pitch != capture.applied_pitch
+            || button != Some(gesture.button)
             || gesture.bounds != bounds
             || gesture.generation != self.project_generation
             || self.detail_clip_id() != Some(gesture.clip)
@@ -250,9 +259,13 @@ impl EditorView {
             self.midi_pan.gesture = None;
             return true;
         };
-        let changed = next.start != self.piano_beat_start || next.low != self.piano_pitch_low;
+        let changed = next.start != self.piano_beat_start || next.pitch != self.piano_pitch;
         self.piano_beat_start = next.start;
-        self.piano_pitch_low = next.low;
+        self.piano_pitch = next.pitch;
+        self.midi_pan.gesture = Some(Capture {
+            origin: gesture,
+            applied_pitch: next.pitch,
+        });
         changed
     }
 
@@ -266,7 +279,7 @@ impl EditorView {
             .midi_pan
             .gesture
             .as_ref()
-            .is_none_or(|gesture| gesture.button != button)
+            .is_none_or(|capture| capture.origin.button != button)
         {
             return false;
         }
@@ -325,13 +338,12 @@ mod tests {
             Viewport {
                 start: i128::from(2 * beat),
                 span: 4 * beat,
-                low: 48,
-                rows: 24,
+                pitch: crate::editor::PitchViewport::DEFAULT,
             },
         );
         let expected = Viewport {
             start: i128::from(3 * beat),
-            low: 54,
+            pitch: g.viewport.pitch.scroll_rows(6).0,
             ..g.viewport
         };
         assert_eq!(g.resolve([200.0, 380.0]), Some(expected));
@@ -351,16 +363,15 @@ mod tests {
                 Viewport {
                     start: 0,
                     span,
-                    low: 0,
-                    rows,
+                    pitch: crate::editor::PitchViewport::from_rows(0, rows).unwrap(),
                 },
             );
             let first = g.resolve([f32::MAX, f32::MAX]).unwrap();
             assert_eq!(first.start, -i128::from(u64::MAX));
-            assert_eq!(first.low, 128 - rows);
+            assert_eq!(first.pitch.low(), f64::from(128 - rows));
             let last = g.resolve([-f32::MAX, -f32::MAX]).unwrap();
             assert_eq!(last.start, i128::from(u64::MAX - span));
-            assert_eq!(last.low, 0);
+            assert_eq!(last.pitch.low(), 0.0);
             assert!(last.start.checked_add(i128::from(last.span)).is_some());
         }
     }

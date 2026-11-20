@@ -27,6 +27,55 @@ mod shared_legacy;
 mod shared_sources;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
+
+#[test]
+fn track_cut_proof_requires_every_retained_stage_at_the_current_origin() {
+    let f = fixture(&[&[0, 0], &[0, 3], &[3, 0], &[]], 32);
+    let revision = prepare(&f).unwrap();
+    let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+    assert!(graph.track_prefix_has_unbuffered_input(0, 2, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(0, 2, true));
+    assert!(graph.track_prefix_has_unbuffered_input(1, 1, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(1, 2, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(2, 1, false));
+    assert!(!graph.track_prefix_has_unbuffered_input(3, 0, false));
+}
+
+#[test]
+fn return_cut_proof_rejects_delayed_sends_and_delayed_stages() {
+    let mut f = fixture(&[&[], &[3]], 32);
+    for (track, latency) in [(f.tracks[0], 0), (f.tracks[1], 0), (f.tracks[0], 5)] {
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "delay".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: state(latency).unwrap(),
+            })
+            .unwrap();
+    }
+    let revision = prepare(&f).unwrap();
+    let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+    assert!(graph.return_chain_has_unbuffered_input(0));
+    assert!(!graph.return_chain_has_unbuffered_input(1));
+    assert!(!graph.return_chain_has_unbuffered_input(2));
+}
+
 pub(crate) struct Definition;
 impl NativeDeviceMetadata for Definition {
     fn type_id(&self) -> DeviceTypeId {

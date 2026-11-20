@@ -138,5 +138,13 @@ fn project_window(
             editor
         })
         .expect("editor window");
+    let deadline = crate::test_wait::hang_deadline();
+    while editor.read_with(cx, |view, _| view.playback_settings.loading) {
+        cx.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "playback settings did not load"
+        );
+    }
     (handle, editor)
 }

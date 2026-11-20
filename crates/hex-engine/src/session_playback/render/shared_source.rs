@@ -63,7 +63,7 @@ impl SessionPlayback {
                     pending.beat
                 };
                 self.route_scratch[index].owner =
-                    self.owner_for_target(pending.target, beat, frame)?;
+                    self.owner_for_target(pending.target, beat, frame, pending.note_chase)?;
             }
             for index in 0..self.route_scratch.len() {
                 if self.route_scratch[index]
@@ -215,7 +215,8 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         let track_id = track
             .canonical_track_id()
             .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-        match effective_midi_route(revision, routes, index)?.owner {
+        let midi_route = effective_midi_route(revision, routes, index)?;
+        match midi_route.owner {
             RouteOwner::Arrangement => {
                 has_program |= track
                     .instrument
@@ -295,7 +296,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                     return Err(SessionPlaybackError::MutableInstrumentEvents);
                 }
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 let prepared = midi
                     .midi_clip_for_track(clip, track_id)
                     .ok_or(SessionPlaybackError::UnknownClip)?;
@@ -306,12 +307,12 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                     has_program |= prepared.volume_program().is_some();
                     prepared
                         .instrument_template()
-                        .query_with_origin(
+                        .query_with_origin_and_note_chase(
                             origin,
                             timing,
-                            performance_frame,
-                            performance_end,
+                            (performance_frame, performance_end),
                             spans,
+                            midi_route.owner.note_chase(),
                         )
                         .map_err(SessionPlaybackError::Midi)?;
                     for span in spans.spans() {
@@ -422,7 +423,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
             .instrument
             .as_ref()
             .and_then(|instrument| instrument.volumes.as_ref());
-        let console = if let RouteOwner::Session { clip, origin } = midi_route.owner {
+        let console = if let RouteOwner::Session { clip, origin, .. } = midi_route.owner {
             midi.midi_clip_for_track(clip, track_id)
                 .map(|prepared| (clip, origin, prepared))
         } else {
@@ -522,7 +523,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                     },
                 )
             }
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
                     return Ok(None);
                 }

@@ -64,8 +64,12 @@ fn at(
                             / v.piano_beat_span.raw() as f64) as f32,
                 px(1.0)
                     + (roll.size.height - px(2.0))
-                        * (f32::from(v.piano_pitch_low + v.piano_pitch_rows - 1 - pitch) + 0.5)
-                        / f32::from(v.piano_pitch_rows),
+                        * (f32::from(
+                            v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count()
+                                - 1
+                                - pitch,
+                        ) + 0.5)
+                        / f32::from(v.piano_pitch.test_row_count()),
             )
     })
 }

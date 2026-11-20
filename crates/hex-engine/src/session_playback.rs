@@ -48,9 +48,17 @@ pub enum SessionPlaybackCommand {
     /// Absolute first-pass cursor. At/after the loop end, retain the canonical
     /// linear tempo/source law instead of normalizing backwards into the loop.
     Seek(u64),
+    /// Launch with the default initial-gate admission (NoteChase::On).
     LaunchClip {
         clip: ClipId,
         quantization: LaunchQuantization,
+    },
+    /// Capture an initial-gate choice for this launch, including queued cuts.
+    /// Genuine boundary onsets and later source repeats remain eligible.
+    LaunchClipWithNoteChase {
+        clip: ClipId,
+        quantization: LaunchQuantization,
+        note_chase: crate::NoteChase,
     },
     /// Immediately cue an already active Session MIDI source without seeking
     /// either transport clock or changing the saved source/play-start markers.
@@ -60,9 +68,17 @@ pub enum SessionPlaybackCommand {
         source_beat: BeatTime,
         expected_route_generation: u64,
     },
+    /// Launch every cell with the default initial-gate admission.
     LaunchScene {
         scene: SceneId,
         quantization: LaunchQuantization,
+    },
+    /// One captured choice applies to the scene's MIDI route incarnations;
+    /// audio cells retain their existing transport and fade behavior.
+    LaunchSceneWithNoteChase {
+        scene: SceneId,
+        quantization: LaunchQuantization,
+        note_chase: crate::NoteChase,
     },
     StopTrack {
         track: TrackId,
@@ -304,12 +320,24 @@ enum RouteOwner {
     Session {
         clip: ClipId,
         origin: SessionMidiOrigin,
+        note_chase: crate::NoteChase,
     },
     SessionAudio {
         clip: ClipId,
         launch_frame: u64,
     },
     Silence,
+}
+
+impl RouteOwner {
+    /// Initial-window admission belongs to this route incarnation, never to
+    /// mutable preferences or the source origin. Other owners have no such cut.
+    fn note_chase(self) -> crate::NoteChase {
+        match self {
+            Self::Session { note_chase, .. } => note_chase,
+            _ => crate::NoteChase::On,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,6 +357,7 @@ struct CurrentPendingCut {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingRoute {
+    note_chase: crate::NoteChase,
     frame: u64,
     beat: BeatTime,
     target: RouteTarget,
@@ -588,6 +617,9 @@ pub struct SessionPlayback {
     // A pure foreign suffix admitted with an unchanged grouped clock and graph.
     tail_proven_grouped: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
+    // A routed fade owns just the source. The receiver's active path keeps
+    // the single processor chain and routes its own sends as usual.
+    receiver_power_off_slots: [Option<u16>; MAX_TRACKS],
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
@@ -1027,6 +1059,7 @@ impl SessionPlayback {
             has_tail_route_sends: _,
             tail_proven_grouped: _,
             tail_mutable_instruments,
+            receiver_power_off_slots: _,
             tail_mixes: _,
             tail_suffix_starts: _,
             tail_suffix_matrices: _,
@@ -2326,6 +2359,7 @@ impl SessionPlayback {
             has_tail_route_sends: false,
             tail_proven_grouped: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
+            receiver_power_off_slots: [None; MAX_TRACKS],
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
@@ -2468,7 +2502,7 @@ impl SessionPlayback {
         let route = self.routes.get(index)?;
         let (owner, active_origin, audio_launch_frame) = match route.owner {
             RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None, None),
-            RouteOwner::Session { clip, origin } => {
+            RouteOwner::Session { clip, origin, .. } => {
                 (SessionPlaybackOwner::Session { clip }, Some(origin), None)
             }
             RouteOwner::SessionAudio { clip, launch_frame } => (
@@ -2614,6 +2648,7 @@ impl SessionPlayback {
             self.tail_mutable_instruments
                 .iter_mut()
                 .flatten()
+                .filter(|tail| !tail.is_powering_off())
                 .map(|tail| &mut tail.runtime),
         ) {
             runtime.request_live_input_release(input);
@@ -2841,6 +2876,7 @@ impl SessionPlayback {
         target: RouteTarget,
         beat: BeatTime,
         frame: u64,
+        note_chase: crate::NoteChase,
     ) -> Result<RouteOwner, SessionPlaybackError> {
         Ok(match target {
             RouteTarget::Arrangement => RouteOwner::Arrangement,
@@ -2862,6 +2898,7 @@ impl SessionPlayback {
                 RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(beat),
+                    note_chase,
                 }
             }
             RouteTarget::Session(_) => return Err(SessionPlaybackError::UnknownClip),
@@ -2944,6 +2981,11 @@ pub use preroll::{
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]
 mod harmonic_accounting;
+#[cfg(test)]
+pub(crate) fn test_note_chase_window(oracle: bool) -> hex_project::Project {
+    tests::session_note_chase::fixture(oracle)
+}
+
 #[cfg(test)]
 mod tests;
 

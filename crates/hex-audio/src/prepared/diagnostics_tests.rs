@@ -17,7 +17,7 @@ fn audio_diagnostics_preserve_pcm_commands_and_callback_bounds_when_full() {
             // Deliberately stop draining: trace pressure must never delay
             // music/Stop or allocate/free, even beyond the ring capacity.
             for _ in 0..audio_diagnostics::TRACE_CAPACITY + 10 {
-                callback.trace_callback_timing(100, 1_000, 512);
+                callback.trace_callback_timing(100, 1_000, 512, Some(1_200));
             }
         });
         assert_eq!(
@@ -44,6 +44,14 @@ fn audio_diagnostics_preserve_pcm_commands_and_callback_bounds_when_full() {
                 |e| e.revision == revision && e.kind == AudioDiagnosticKind::PublicationApplied
             ));
             assert!(events.iter().any(|e| matches!(e.kind, AudioDiagnosticKind::CommandDequeued { ticket: t, .. } if t == ticket)));
+            assert!(events.iter().any(|event| matches!(
+                event.kind,
+                AudioDiagnosticKind::CallbackTiming {
+                    elapsed_ns: 100,
+                    deadline_ns: 1_000,
+                    start_interval_ns: Some(1_200),
+                }
+            )));
             assert!(
                 events
                     .iter()
@@ -54,7 +62,7 @@ fn audio_diagnostics_preserve_pcm_commands_and_callback_bounds_when_full() {
             assert!(control.take_audio_diagnostic().is_none());
         }
         control.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
-        callback.trace_callback_timing(100, 1_000, 512);
+        callback.trace_callback_timing(100, 1_000, 512, Some(1_200));
         assert!(control.take_audio_diagnostic().is_none());
         control.stop();
         let measured = allocation_counter::measure(|| callback.begin_block());
@@ -106,7 +114,12 @@ fn audio_diagnostics_optimized_callback_overhead() {
             let start = std::time::Instant::now();
             callback.begin_block();
             callback.render(&mut pcm).unwrap();
-            callback.trace_callback_timing(start.elapsed().as_nanos() as u64, 2_666_666, FRAMES);
+            callback.trace_callback_timing(
+                start.elapsed().as_nanos() as u64,
+                2_666_666,
+                FRAMES,
+                None,
+            );
             let elapsed = start.elapsed().as_nanos();
             if block >= WARMUP {
                 times.push(elapsed);

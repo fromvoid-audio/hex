@@ -246,13 +246,32 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             .expect("first repeat marker");
         assert!(marker.left() > held.left() && marker.right() < held.right());
         assert!(f.visual.rendered_border(overlay).is_some());
+        let (corners, _) = f
+            .visual
+            .rendered_surface_geometry(overlay)
+            .expect("painted loop fill");
+        assert_eq!(corners, gpui::Corners::default());
         let body = f
             .visual
             .debug_bounds("clip-waveform-body")
             .expect("loop body");
         assert!(
-            body.bottom() <= held.bottom() - px(loop_handles::BOTTOM_RADIUS),
-            "child fills stay clear of rounded lower corners"
+            body.bottom() >= held.bottom() - px(2.0),
+            "loop body reaches the square bottom edge"
+        );
+        let trailing = if midi {
+            "midi-trim-preview-trailing"
+        } else {
+            "trim-preview-trailing"
+        };
+        let scale = f.visual.update(|window, _| window.scale_factor());
+        let edges = f.visual.rendered_quad_paint_layers(trailing, false);
+        assert!(
+            edges.iter().any(|(_, bounds)| {
+                bounds.top() > held.top().scale(scale)
+                    && bounds.bottom() >= (held.bottom() - px(1.0)).scale(scale)
+            }),
+            "the chamfer clips the top of the trailing stroke and the bottom remains square"
         );
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, modifiers);
