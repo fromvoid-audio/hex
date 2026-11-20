@@ -1,4 +1,4 @@
-//! Closed native and foreign chain metadata. No registry/provider owner
+//! Closed native, foreign and explicitly powered-off chain metadata. No provider owner
 //! is adopted and no owning Arc escapes this private preparation path.
 use crate::{
     AudioStorageError,
@@ -23,6 +23,7 @@ struct Entry {
     owner: ProcessorChainOwner,
     device_type: hex_lattice_contract::DeviceTypeId,
     foreign: Option<PreparedForeignProcessor>,
+    powered_off: bool,
     state: SharedDeclaration,
     processor: Option<SharedDeclaration>,
     processor_backing_bytes: usize,
@@ -524,8 +525,8 @@ impl ChainCustody {
             } else {
                 copy_state(device.state())?
             };
-            let foreign = if native {
-                None
+            let (foreign, powered_off) = if native {
+                (None, false)
             } else {
                 let definition = foreign_definition.ok_or(AudioStorageError::UnsupportedGraph)?;
                 let tuning = hex_lattice::TuningTable::default();
@@ -543,7 +544,18 @@ impl ChainCustody {
                     Some(PreparedProcessorFactory::Foreign(facts))
                         if facts.binding().is_some_and(|b| b.is_valid()) =>
                     {
-                        Some(facts)
+                        (Some(facts), false)
+                    }
+                    Some(PreparedProcessorFactory::PoweredOff)
+                        if bypassed
+                            && owner == ProcessorChainOwner::Main
+                            && migrated.type_id()
+                                == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+                            && device.automation().is_empty()
+                            && device.modulation().sources().is_empty()
+                            && device.modulation().routes().is_empty() =>
+                    {
+                        (None, true)
                     }
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
@@ -776,7 +788,14 @@ impl ChainCustody {
                     Some(declaration),
                 )
             } else {
-                (foreign.map(PreparedProcessorFactory::Foreign), None)
+                (
+                    if powered_off {
+                        Some(PreparedProcessorFactory::PoweredOff)
+                    } else {
+                        foreign.map(PreparedProcessorFactory::Foreign)
+                    },
+                    None,
+                )
             };
             let modulation = modulation
                 .map(|plan| {
@@ -840,6 +859,7 @@ impl ChainCustody {
                 owner,
                 device_type: migrated_type,
                 foreign,
+                powered_off,
                 state,
                 processor: processor_declaration,
                 processor_backing_bytes,
@@ -886,7 +906,13 @@ impl ChainCustody {
                 || value.device_id != pair.device_id
                 || value.owner != pair.owner
                 || value.device_type != pair.device_type
+                || value
+                    .definition
+                    .as_ref()
+                    .is_some_and(PreparedProcessorFactory::is_powered_off)
+                    != pair.powered_off
                 || match (&value.definition, pair.foreign, pair.processor.is_some()) {
+                    (Some(PreparedProcessorFactory::PoweredOff), None, false) => !pair.powered_off,
                     (Some(PreparedProcessorFactory::Foreign(actual)), Some(expected), false) => {
                         *actual != expected
                     }

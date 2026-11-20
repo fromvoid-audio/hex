@@ -40,6 +40,8 @@ mod parameter_automation;
 mod prepared_modulation;
 pub use prepared_modulation::{MAX_PREPARED_MODULATION_BYTES, PreparedModulationState};
 #[cfg(test)]
+mod powered_off_tests;
+#[cfg(test)]
 mod static_processing_tests;
 mod tail_split;
 pub use bypass_ramp::MainPassDelay;
@@ -943,6 +945,7 @@ struct RuntimeEntry {
     device_type: DeviceTypeId,
     matrix: StereoMatrix,
     bypassed: bool,
+    powered_off: bool,
     // A pending removal may still be cancelled after the dry ramp commits.
     // Keep its runtime reversible until publication decides its custody.
     removal_bypassing: bool,
@@ -1173,6 +1176,7 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             device_type: _,
             matrix: _,
             bypassed: _,
+            powered_off: _,
             removal_bypassing: _,
             runtime_version: _,
             sample_rate: _,
@@ -1212,6 +1216,11 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
                 )
             })
     }
+    /// Explicit prepared Off metadata, not absence of a processing source.
+    pub fn is_powered_off(&self) -> bool {
+        self.entry.powered_off
+    }
+
     /// Owned transactions have a different physical proof and never masquerade
     /// as a pair of legacy boxes. A declaration is not a native custody proof.
     pub fn is_owned_transaction(&self) -> bool {
@@ -1295,7 +1304,12 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             }
             (None, None, None) => true,
             _ => false,
-        }) && self.entry.automation == prepared.automation
+        }) && self.entry.powered_off
+            == prepared
+                .definition
+                .as_ref()
+                .is_some_and(PreparedProcessorFactory::is_powered_off)
+            && self.entry.automation == prepared.automation
             && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
@@ -1496,6 +1510,25 @@ impl NativeRuntimeChain {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
             instance.device_type.validate()?;
+            let powered_off = instance
+                .definition
+                .as_ref()
+                .is_some_and(PreparedProcessorFactory::is_powered_off);
+            if powered_off
+                && (instance.owner != ProcessorChainOwner::Main
+                    || !instance.bypassed
+                    || instance.device_type
+                        != hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+                    || !instance.matrix.is_identity()
+                    || !instance.automation.is_empty()
+                    || prepared_modulation.is_some()
+                    || instance
+                        .configuration
+                        .as_ref()
+                        .is_none_or(|state| state.as_ref().type_id() != instance.device_type))
+            {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let (runtime_version, output_tail, latency) =
                 if let Some(factory) = &instance.definition {
                     let pair = factory
@@ -1509,9 +1542,11 @@ impl NativeRuntimeChain {
                     if factory.runtime_version() == 0 || pair > limit {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
-                    stateful_count = stateful_count
-                        .checked_add(1)
-                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    if !powered_off {
+                        stateful_count = stateful_count
+                            .checked_add(1)
+                            .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    }
                     declared_pair_bytes = declared_pair_bytes
                         .checked_add(pair)
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
@@ -1566,7 +1601,8 @@ impl NativeRuntimeChain {
                     .is_none_or(|factory| match factory {
                         PreparedProcessorFactory::Legacy(value) => value.supports_smoothed_bypass(),
                         PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
-                        PreparedProcessorFactory::Foreign(_) => false,
+                        PreparedProcessorFactory::Foreign(_)
+                        | PreparedProcessorFactory::PoweredOff => false,
                     });
             let reserved_frames = instance
                 .definition
@@ -1608,7 +1644,10 @@ impl NativeRuntimeChain {
                     (zero_latency_smoothing || reserved_frames.is_some())
                         && value.supports_power_off()
                 }
-                Some(PreparedProcessorFactory::Foreign(_)) | None => false,
+                Some(
+                    PreparedProcessorFactory::Foreign(_) | PreparedProcessorFactory::PoweredOff,
+                )
+                | None => false,
             };
             let mut runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             let modulation = match prepared_modulation {
@@ -1745,6 +1784,7 @@ impl NativeRuntimeChain {
                 device_type: instance.device_type,
                 matrix: instance.matrix,
                 bypassed: instance.bypassed,
+                powered_off,
                 removal_bypassing: false,
                 runtime_version,
                 sample_rate: instance.sample_rate,
@@ -2604,6 +2644,7 @@ impl NativeRuntimeChain {
     }
     fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {
         a.owner == b.owner
+            && a.powered_off == b.powered_off
             && a.device_id == b.device_id
             && a.device_type == b.device_type
             && a.runtime_version == b.runtime_version

@@ -247,16 +247,24 @@ pub trait OwnedProcessorRuntime: Any + Send {
     }
 }
 
-/// Exactly one prepared processing capability. Legacy byte declarations remain
-/// per twin; the general interface always reports checked TOTAL owner bytes.
+/// One prepared processing selection. PoweredOff owns no DSP or source.
+/// Legacy byte declarations remain per twin; the general interface always
+/// reports checked TOTAL owner bytes.
 #[derive(Clone)]
 pub enum PreparedProcessorFactory {
     Legacy(Arc<dyn PreparedNativeProcessor>),
     Owned(Arc<dyn PreparedOwnedProcessorRuntime>),
     /// Borrowed staged graph capability; never an owned rollbackable DSP facade.
     Foreign(crate::PreparedForeignProcessor),
+    /// An explicitly disabled Main hosted effect. No processor or source is
+    /// constructed; its saved configuration remains graph metadata only.
+    PoweredOff,
 }
 impl PreparedProcessorFactory {
+    pub fn is_powered_off(&self) -> bool {
+        matches!(self, Self::PoweredOff)
+    }
+
     pub fn parameter_automation_descriptor(
         &self,
         parameter: hex_lattice_contract::ParameterId,
@@ -264,7 +272,7 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(v) => v.parameter_automation_descriptor(parameter),
             Self::Owned(v) => v.parameter_automation_descriptor(parameter),
-            Self::Foreign(_) => None,
+            Self::Foreign(_) | Self::PoweredOff => None,
         }
     }
     pub fn supports_parameter_automation(
@@ -274,7 +282,7 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(value) => value.supports_parameter_automation(parameter),
             Self::Owned(value) => value.supports_parameter_automation(parameter),
-            Self::Foreign(_) => false,
+            Self::Foreign(_) | Self::PoweredOff => false,
         }
     }
     pub fn parameter_modulation_semantics(
@@ -284,7 +292,7 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(value) => value.parameter_modulation_semantics(parameter),
             Self::Owned(value) => value.parameter_modulation_semantics(parameter),
-            Self::Foreign(_) => None,
+            Self::Foreign(_) | Self::PoweredOff => None,
         }
     }
     /// Outer allocation only. A definition's control-storage bound must also
@@ -294,7 +302,7 @@ impl PreparedProcessorFactory {
         let payload = match self {
             Self::Legacy(factory) => Layout::for_value(factory.as_ref()),
             Self::Owned(factory) => Layout::for_value(factory.as_ref()),
-            Self::Foreign(_) => return None,
+            Self::Foreign(_) | Self::PoweredOff => return None,
         };
         Some(
             Layout::new::<[usize; 2]>()
@@ -310,7 +318,7 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(v) => v.runtime_version(),
             Self::Owned(v) => v.runtime_version(),
-            Self::Foreign(_) => 1,
+            Self::Foreign(_) | Self::PoweredOff => 1,
         }
     }
     /// Provider pair plus any explicitly reserved host dry pair. Inline host
@@ -321,7 +329,7 @@ impl PreparedProcessorFactory {
         let provider = match self {
             Self::Legacy(v) => v.declared_runtime_bytes().checked_mul(2),
             Self::Owned(v) => Some(v.declared_pair_bytes()),
-            Self::Foreign(_) => Some(0), // endpoint storage retains its host owner
+            Self::Foreign(_) | Self::PoweredOff => Some(0), // no DSP storage in this factory
         }?;
         let dry = match self.reserved_bypass_frames().ok()? {
             Some(frames) => usize::try_from(frames)
@@ -351,6 +359,7 @@ impl PreparedProcessorFactory {
             Self::Legacy(v) => v.output_tail(),
             Self::Owned(v) => v.output_tail(),
             Self::Foreign(value) => value.output_tail(),
+            Self::PoweredOff => OutputTail::Finite { max_tail_frames: 0 },
         }
     }
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
@@ -358,6 +367,7 @@ impl PreparedProcessorFactory {
             Self::Legacy(v) => v.algorithmic_latency_frames(),
             Self::Owned(v) => v.algorithmic_latency_frames(),
             Self::Foreign(v) => Some(v.total_latency_frames()),
+            Self::PoweredOff => Some(0),
         }
     }
     pub(crate) fn supports_latency_aligned_bypass(&self) -> bool {
@@ -371,7 +381,7 @@ impl PreparedProcessorFactory {
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
             Self::Legacy(v) => v.frequency_response_at_hz(hz),
-            Self::Owned(_) | Self::Foreign(_) => None,
+            Self::Owned(_) | Self::Foreign(_) | Self::PoweredOff => None,
         }
     }
 }
@@ -444,7 +454,7 @@ impl PreparedProcessorFactory {
     pub fn legacy(&self) -> Option<&Arc<dyn PreparedNativeProcessor>> {
         match self {
             Self::Legacy(value) => Some(value),
-            Self::Owned(_) | Self::Foreign(_) => None,
+            Self::Owned(_) | Self::Foreign(_) | Self::PoweredOff => None,
         }
     }
     pub fn is_owned(&self) -> bool {

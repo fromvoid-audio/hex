@@ -122,7 +122,7 @@ impl RuntimeOwnership {
         factory: Option<&PreparedProcessorFactory>,
     ) -> Result<Self, DeviceContractError> {
         match factory {
-            None => Ok(Self::Memoryless),
+            None | Some(PreparedProcessorFactory::PoweredOff) => Ok(Self::Memoryless),
             Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(ForeignRuntime {
                 prepared: *v,
                 modulation: None,
