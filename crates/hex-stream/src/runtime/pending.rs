@@ -233,10 +233,7 @@ impl PendingStreamDomain {
                     && reservation.extents_per_role
                         < config.page_buffers - usize::from(granular.is_some()) =>
             {
-                reservation
-                    .extents_per_role
-                    .checked_mul(7)
-                    .and_then(|n| n.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>()))
+                super::readiness::PreparedReadiness::requested_backing_bytes(reservation)
                     .ok_or(StreamRuntimeError::AllocationFailed)?
             }
             Some(_) => return Err(StreamRuntimeError::InvalidConfiguration),
@@ -904,9 +901,9 @@ mod tests {
         if !crate::footprint::queue_family_supported() {
             return;
         }
-        let config = StreamConfig::with_pool_pages(4);
+        let config = StreamConfig::with_pool_pages(64);
         let readiness = Some(StreamReadinessReservation {
-            extents_per_role: 2,
+            extents_per_role: config.page_buffers - 1,
         });
         let bound = PendingStreamDomain::preparation_bound(config, &[], 0, readiness).unwrap();
         let mut pending =
@@ -925,7 +922,8 @@ mod tests {
         assert!(owner.summary().retained_data_bytes <= bound.retained_data_bytes);
         loop {
             if let Some(report) = owner.advance_disposal_on_control().unwrap() {
-                assert!(report.accounting_complete);
+                assert!(report.worker_joined && report.accounting_complete);
+                assert_eq!(report.page_buffers, config.page_buffers);
                 break;
             }
             assert!(Instant::now() < deadline);

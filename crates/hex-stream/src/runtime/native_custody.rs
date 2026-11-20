@@ -199,12 +199,7 @@ impl ConstructorStreamDomain {
                 if reservation.extents_per_role != 0
                     && reservation.extents_per_role <= pages.endpoint.cache_capacity() =>
             {
-                reservation
-                    .extents_per_role
-                    .checked_mul(7)
-                    .and_then(|count| {
-                        count.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>())
-                    })
+                super::readiness::PreparedReadiness::requested_backing_bytes(reservation)
                     .ok_or(AudioStreamStorageError::Overflow)?
             }
             Some(_) => return Err(AudioStreamStorageError::ReservationExceeded),
