@@ -1243,11 +1243,11 @@ impl Plugins {
         // Document preparation precedes source_changed/request_reopen. Its
         // next-generation declaration can select resource-free Off directly;
         // this grants no SDK source or fresh-On permission.
-        let incoming_document = !input.preparing_edit()
-            && desired.is_none_or(|source| {
-                source.context().project_generation.checked_add(1)
-                    == Some(input.context().project_generation)
-            });
+        let incoming_document = off_document_preparation(
+            input.preparing_edit(),
+            input.context(),
+            desired.map(|source| source.context()),
+        );
         if let Some((device, state)) = input.powered_off_main()
             && (incoming_document
                 || self.saved_off_document == Some((input.context().project_generation, device))
@@ -1695,5 +1695,58 @@ mod idle_tests {
         plugins.sources[0].edit_backlog = true;
         plugins.output_closed();
         assert!(plugins.idle());
+    }
+}
+
+/// Pure document-generation eligibility, never source or SDK authority.
+fn off_document_preparation(
+    preparing_edit: bool,
+    candidate: AudioSourceContext,
+    previous: Option<AudioSourceContext>,
+) -> bool {
+    !preparing_edit
+        && match previous {
+            Some(previous) => {
+                previous.project_generation.checked_add(1) == Some(candidate.project_generation)
+            }
+            None => candidate.project_generation == 0 && candidate.editor_revision == 0,
+        }
+}
+
+#[cfg(test)]
+mod powered_off_document_tests {
+    use super::*;
+    #[test]
+    fn only_bootstrap_or_the_exact_incoming_document_can_declare_initial_off() {
+        let boot = AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 0,
+        };
+        let next = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 0,
+        };
+        assert!(off_document_preparation(false, boot, None));
+        assert!(off_document_preparation(false, next, Some(boot)));
+        assert!(!off_document_preparation(true, next, Some(boot)));
+        assert!(!off_document_preparation(false, next, None));
+        assert!(!off_document_preparation(
+            false,
+            AudioSourceContext {
+                editor_revision: 1,
+                ..boot
+            },
+            None
+        ));
+        assert!(!off_document_preparation(false, boot, Some(boot)));
+        assert!(!off_document_preparation(false, boot, Some(next)));
+        assert!(!off_document_preparation(
+            false,
+            AudioSourceContext {
+                project_generation: 2,
+                ..boot
+            },
+            Some(boot)
+        ));
     }
 }
