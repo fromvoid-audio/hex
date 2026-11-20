@@ -72,6 +72,50 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
             break event;
         }
     };
+    let transport = |h: &mut Harness, command| {
+        h.audio.as_mut().unwrap().control.command(command).unwrap();
+    };
+    let settle_pause = |h: &mut Harness| {
+        transport(h, PlaybackCommand::Pause);
+        wait(|| {
+            h.render();
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .paused_input_interval()
+                .is_some_and(|(source, _)| source == predecessor)
+        });
+    };
+    let check_refused = |event: &Event, h: &Harness| {
+        assert!(event.error.is_some());
+        assert_eq!(event.state.project, removed.state.project);
+        assert_eq!(event.state.revision, removed.state.revision);
+        assert_eq!(event.state.can_undo, removed.state.can_undo);
+        assert_eq!(event.state.can_redo, removed.state.can_redo);
+        assert_eq!(applied(h), Some(predecessor));
+    };
+
+    transport(&mut h, PlaybackCommand::Play);
+    wait(|| {
+        h.render();
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    });
+    submit(&h, Request::Undo);
+    let running = terminal(&mut h);
+    assert_eq!(
+        running.error.as_deref(),
+        Some("stop playback to undo or redo this vst3 edit")
+    );
+    check_refused(&running, &h);
+    settle_pause(&mut h);
 
     let unavailable = directory.join("temporarily-unavailable.vst3");
     fs::rename(&module, &unavailable).unwrap();
@@ -85,12 +129,19 @@ fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
         "Undo refusal: {:?}",
         refused.error,
     );
-    assert_eq!(refused.state.project, removed.state.project);
-    assert_eq!(refused.state.revision, removed.state.revision);
-    assert_eq!(refused.state.can_undo, removed.state.can_undo);
-    assert_eq!(refused.state.can_redo, removed.state.can_redo);
-    assert_eq!(applied(&h), Some(predecessor));
+    check_refused(&refused, &h);
     fs::rename(&unavailable, &module).unwrap();
+
+    submit(&h, Request::Undo);
+    let pending = h.next_with_audio();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, removed.state.project);
+    assert_eq!(applied(&h), Some(predecessor));
+    transport(&mut h, PlaybackCommand::Play);
+    let interrupted = terminal(&mut h);
+    check_refused(&interrupted, &h);
+    settle_pause(&mut h);
 
     submit(&h, Request::Undo);
     let pending = h.next_with_audio();

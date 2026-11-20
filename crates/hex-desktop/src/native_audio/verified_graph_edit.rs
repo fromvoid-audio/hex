@@ -14,6 +14,7 @@ pub(super) struct Edit {
     pub(super) attempt: VerifiedGraphEditAttempt,
     pub(super) predecessor: AppliedAudioSource,
     transition: Transition,
+    stopped_history_epoch: Option<u64>,
     pub(super) cancellation: Option<RequestCancellation>,
 }
 
@@ -37,30 +38,46 @@ impl Edit {
         &'static str,
     > {
         match self.transition {
-            Transition::DeviceInsert(approval) => control.stage_verified_device_insert(
-                token,
-                context,
-                self.predecessor,
-                approval,
-                self.attempt.preparation_deadline(),
-                |receipt| {
-                    let submission = hex_session::service::ResidentGraphSubmission {
-                        context,
-                        audio_revision: receipt.revision(),
-                        output_identity: receipt.output_identity(),
-                    };
-                    self.attempt.bind_proposal_receipt(|| {
-                        Box::new(resident::InsertReceipt::new(submission, receipt.clone()))
-                    });
-                    // A timeout or cancellation winning the Session state
-                    // drops this receipt and fences it before queue visibility.
-                    self.attempt
-                        .submitted(Box::new(resident::InsertReceipt::new(
-                            submission,
-                            receipt.clone(),
-                        )));
-                },
-            ),
+            Transition::DeviceInsert(approval) => {
+                let stopped = self
+                    .stopped_history_epoch
+                    .map(|epoch| (Arc::clone(&control.status), epoch));
+                control.stage_verified_device_insert(
+                    token,
+                    context,
+                    self.predecessor,
+                    approval,
+                    self.attempt.preparation_deadline(),
+                    |receipt| {
+                        // The Root has captured its runtime fence and has not
+                        // published the queue entry yet. Validate the same Stop
+                        // interval here; a later transport change trips its fence.
+                        if stopped.as_ref().is_some_and(|(status, epoch)| {
+                            status.paused_input_interval() != Some((self.predecessor, *epoch))
+                        }) {
+                            receipt.cancel();
+                            self.attempt
+                                .refused("verified vst3 history lost its stopped transport".into());
+                            return;
+                        }
+                        let submission = hex_session::service::ResidentGraphSubmission {
+                            context,
+                            audio_revision: receipt.revision(),
+                            output_identity: receipt.output_identity(),
+                        };
+                        self.attempt.bind_proposal_receipt(|| {
+                            Box::new(resident::InsertReceipt::new(submission, receipt.clone()))
+                        });
+                        // A timeout or cancellation winning the Session state
+                        // drops this receipt and fences it before queue visibility.
+                        self.attempt
+                            .submitted(Box::new(resident::InsertReceipt::new(
+                                submission,
+                                receipt.clone(),
+                            )));
+                    },
+                )
+            }
             Transition::TempoCut(fence) => {
                 let (observation, _) = control
                     .capture_running_transport_fence()
@@ -180,6 +197,18 @@ impl NativeAudioSink {
             .ok_or("audio output is unavailable")?;
         let predecessor = installed_predecessor(&self.submitted, control, canonical, retiring_key)
             .ok_or("verified graph edit needs the installed canonical source")?;
+        let stopped_history_epoch = if attempt.stages_hosted_history() {
+            Some(
+                control
+                    .status
+                    .paused_input_interval()
+                    .filter(|(source, _)| *source == predecessor)
+                    .ok_or("stop playback to undo or redo this vst3 edit")?
+                    .1,
+            )
+        } else {
+            None
+        };
         let transition = match (attempt.confirmation(), self.verified_edit.as_ref()) {
             (None, None) if attempt.needs_tempo_cut() => {
                 let (_, fence) = control
@@ -207,6 +236,7 @@ impl NativeAudioSink {
             attempt,
             predecessor,
             transition,
+            stopped_history_epoch,
             cancellation: self.request_cancellation.clone(),
         });
         Ok(())
