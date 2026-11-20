@@ -176,7 +176,7 @@ fn run_latency_change(streamed: bool, route: Route, decrease: bool) {
     (applied, _) = h.applied(applied);
     if decrease {
         assert!(!streamed && matches!(route, Route::Track));
-        let saved = hex_storage::load(&PathBuf::from(std::env::var_os(SAVED).unwrap())).unwrap();
+        let saved = hex_storage::load(PathBuf::from(std::env::var_os(SAVED).unwrap())).unwrap();
         let captured = saved.main_devices()[0].state().clone();
         let state = hex_plugin_state::decode(&captured).unwrap();
         assert_eq!(
