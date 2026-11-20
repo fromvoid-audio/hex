@@ -313,6 +313,13 @@ impl WorkerAudioSink for ObservedSink {
     fn confirms_verified_device_inserts(&self) -> bool {
         self.inner.confirms_verified_device_inserts()
     }
+    fn verified_hosted_predecessor_ready(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<bool, &'static str> {
+        self.inner.verified_hosted_predecessor_ready(context)
+    }
+
     fn verified_tempo_playing(&mut self) -> bool {
         self.inner.verified_tempo_playing()
     }

@@ -78,7 +78,70 @@ impl Edit {
     }
 }
 
+/// A preview can share the editor context. Only the exact callback receipt
+/// and its submitted candidate establish which graph is installed.
+fn installed_predecessor(
+    submitted: &[Option<Submitted>],
+    control: &PublicationControl,
+    canonical: &Arc<CanonicalAudioSourceSnapshot>,
+    retiring_key: Option<VerifiedKey>,
+) -> Option<AppliedAudioSource> {
+    let canonical_key = VerifiedKey::canonical(canonical.context());
+    control.status.applied_audio_source().filter(|applied| {
+        control.output_identity() == Some(applied.output_identity)
+            && submitted.iter().flatten().any(|submission| {
+                submission.source == *applied
+                    && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(canonical))
+                    && (submission.key == canonical_key || Some(submission.key) == retiring_key)
+            })
+    })
+}
+
 impl NativeAudioSink {
+    pub(super) fn verified_edit_predecessor_ready(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<bool, &'static str> {
+        let canonical = self
+            .desired
+            .as_ref()
+            .ok_or("vst3 insertion source unavailable")?;
+        if canonical.audio_mode() != DocumentAudioMode::VerifiedStreaming {
+            return Ok(true);
+        }
+        if canonical.context() != context {
+            return Err("vst3 insertion cancelled · source changed");
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .ok_or("vst3 insertion cancelled · audio output changed")?;
+        if control.output_identity().is_none()
+            || control.status.device_fault.load(Acquire)
+            || control.status.render_fault.load(Acquire)
+        {
+            return Err("vst3 insertion cancelled · audio output fault");
+        }
+        let key = VerifiedKey::canonical(context);
+        if self.verified_blocked == Some(key)
+            || control
+                .status
+                .rejected_revision()
+                .is_some_and(|(revision, _)| {
+                    self.submitted.iter().flatten().any(|submission| {
+                        submission.key == key
+                            && submission.source.audio_revision == revision
+                            && control.output_identity() == Some(submission.source.output_identity)
+                    })
+                })
+        {
+            return Err("vst3 insertion cancelled · accepted audio publication refused");
+        }
+        Ok(self.verified_preview.is_none()
+            && installed_predecessor(&self.submitted, control, canonical, None).is_some())
+    }
+
     pub(super) fn begin_verified_edit(
         &mut self,
         attempt: VerifiedGraphEditAttempt,
@@ -115,22 +178,7 @@ impl NativeAudioSink {
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("audio output is unavailable")?;
-        let canonical_key = VerifiedKey::canonical(attempt.predecessor());
-        // A preview and the canonical project can share the editor context.
-        // Only the exact output ACK and its submitted candidate can establish
-        // which is installed. The audio owner still revalidates at callback.
-        let predecessor = control
-            .status
-            .applied_audio_source()
-            .filter(|source| {
-                control.output_identity() == Some(source.output_identity)
-                    && self.submitted.iter().flatten().any(|submission| {
-                        submission.source == *source
-                            && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(canonical))
-                            && (submission.key == canonical_key
-                                || Some(submission.key) == retiring_key)
-                    })
-            })
+        let predecessor = installed_predecessor(&self.submitted, control, canonical, retiring_key)
             .ok_or("verified graph edit needs the installed canonical source")?;
         let transition = match (attempt.confirmation(), self.verified_edit.as_ref()) {
             (None, None) if attempt.needs_tempo_cut() => {

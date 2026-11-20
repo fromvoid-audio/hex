@@ -1422,6 +1422,13 @@ impl WorkerAudioSink for NativeAudioSink {
         self.output.is_some() && self.output_generation.is_some()
     }
 
+    fn verified_hosted_predecessor_ready(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<bool, &'static str> {
+        self.verified_edit_predecessor_ready(context)
+    }
+
     fn verified_tempo_playing(&mut self) -> bool {
         self.output
             .as_mut()

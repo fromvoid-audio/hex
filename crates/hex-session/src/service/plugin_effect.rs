@@ -399,6 +399,7 @@ pub(super) struct Pending {
     canonical_context: hex_engine::AudioSourceContext,
     next_identity: u64,
     native_started: bool,
+    rebased_at: Option<std::time::Instant>,
 }
 impl Pending {
     pub fn new(insertion: PluginEffectInsertion, project: &Project) -> Result<Self, String> {
@@ -410,8 +411,23 @@ impl Pending {
             insertion,
             next_identity: project.next_identity(),
             native_started: false,
+            rebased_at: None,
         })
     }
+    pub(super) fn rebased_predecessor_ready(
+        &self,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> Result<bool, &'static str> {
+        let Some(rebased_at) = self.rebased_at else {
+            return Ok(true);
+        };
+        let ready = sink.verified_hosted_predecessor_ready(self.canonical_context)?;
+        if !ready && rebased_at.elapsed() >= super::publication_wait::DEADLINE {
+            return Err("vst3 insertion cancelled · accepted audio publication timed out");
+        }
+        Ok(ready)
+    }
+
     pub fn matches_context(&self, context: hex_engine::AudioSourceContext) -> bool {
         self.canonical_context == context
     }
@@ -472,6 +488,7 @@ impl Pending {
                 editor_revision,
                 ..predecessor
             };
+            self.rebased_at = Some(std::time::Instant::now());
         }
     }
 
@@ -504,6 +521,9 @@ impl Pending {
                 PluginEffectDestination::NewTrack { .. }
             )))
             .ok_or("project id space exhausted")?;
+        if !self.rebased_predecessor_ready(sink)? {
+            return Ok(PluginEffectPreparationState::Preparing);
+        }
         self.native_started = true;
         sink.prepare_plugin_effect(PluginEffectPreparation {
             insertion: &self.insertion,
