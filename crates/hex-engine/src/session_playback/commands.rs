@@ -205,6 +205,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn stop_transport(&mut self) -> bool {
+        self.main_pass_delay = None;
         self.browser_audition.voices = Default::default();
         self.foreign_arrangement.cut();
         let mut changed = self.performance_frame != 0;
@@ -466,6 +467,9 @@ impl SessionPlayback {
     /// compensation epoch start empty. A confirmed publication can keep
     /// already-staged generators at the same clock. Allocation-free.
     pub(super) fn restart_audio_history(&mut self, retained_instruments: &[bool; MAX_TRACKS]) {
+        if let Some(delay) = self.main_pass_delay.as_mut() {
+            delay.reset();
+        }
         self.foreign_arrangement.cut();
         for route in &mut self.routes {
             route.audio_release = None;
