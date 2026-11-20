@@ -4,6 +4,8 @@ use std::sync::{
     atomic::{AtomicU8, AtomicU64},
 };
 
+mod return_removal;
+
 const PENDING: u8 = 0;
 const INSTALLED: u8 = 1;
 const CANCELLED: u8 = 2;
