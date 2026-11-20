@@ -144,6 +144,7 @@ enum Reroute {
     ExitNested,
     EnterFromAbove,
     ExitAbove,
+    BetweenGroups,
 }
 
 #[test]
@@ -265,6 +266,14 @@ fn changing_the_moving_leafs_row_keeps_the_correct_fader_and_history() -> Result
     Ok(())
 }
 
+#[test]
+fn moving_between_groups_keeps_both_groups_running() -> Result {
+    for partition in [1, 257] {
+        route_cut(partition, Terminal::Install, true, Reroute::BetweenGroups)?;
+    }
+    route_cut(257, Terminal::Cancel, true, Reroute::BetweenGroups)
+}
+
 fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute) -> Result {
     let exiting = matches!(
         reroute,
@@ -274,7 +283,9 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             | Reroute::ExitNested
             | Reroute::ExitAbove
     );
-    let changes_row_order = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
+    let moves_from_above = matches!(reroute, Reroute::EnterFromAbove | Reroute::ExitAbove);
+    let between_groups = matches!(reroute, Reroute::BetweenGroups);
+    let changes_row_order = moves_from_above || between_groups;
     let nested = matches!(reroute, Reroute::EnterNested | Reroute::ExitNested);
     let has_other_group = !matches!(reroute, Reroute::EnterSoleGroup | Reroute::ExitSoleGroup);
     let has_sibling =
@@ -327,7 +338,15 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
         before: None,
         state: delay(5.0),
     })?;
-    if changes_row_order {
+    if between_groups {
+        editor.execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[moved])?,
+            destination: TrackDestination {
+                parent_group: Some(unrelated_root),
+                before: None,
+            },
+        })?;
+    } else if moves_from_above {
         editor.execute(Command::MoveTracksBefore {
             tracks: TrackSelectionIds::new(&[moved])?,
             before: Some(destination),
@@ -395,21 +414,26 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
             }
         }
     }
-    let unrelated = standalone(c, &[delay(13.0)])?;
-    // On exit, G retains history already fed by A; only new child input
-    // leaves G at the cut. No second A chain or detached child tail is run.
+    // The former Group keeps its history. The leaf's output has one route
+    // per frame and its own chain stays running across the cut.
     let grouped_at = |i| {
         let installed = matches!(terminal, Terminal::Install) && i >= switch;
         if exiting { !installed } else { installed }
     };
     let mut destination_input = b;
+    let mut other_group_input = c;
     for i in 0..FRAMES {
         if grouped_at(i) {
             for channel in 0..2 {
                 destination_input[i][channel] += leaf[i][channel];
             }
+        } else if between_groups {
+            for channel in 0..2 {
+                other_group_input[i][channel] += leaf[i][channel];
+            }
         }
     }
+    let other_pcm = standalone(other_group_input, &[delay(13.0)])?;
     let destination_pcm = standalone(destination_input, &[delay(11.0), invert()])?;
     let destination_pcm = if nested {
         standalone(destination_pcm, &[delay(3.0)])?
@@ -419,8 +443,8 @@ fn route_cut(partition: usize, terminal: Terminal, fade: bool, reroute: Reroute)
     let mut mixed = vec![[0.0; 2]; FRAMES];
     for i in 0..FRAMES {
         for channel in 0..2 {
-            mixed[i][channel] = destination_pcm[i][channel] + unrelated[i][channel];
-            if !grouped_at(i) {
+            mixed[i][channel] = destination_pcm[i][channel] + other_pcm[i][channel];
+            if !between_groups && !grouped_at(i) {
                 mixed[i][channel] += leaf[i][channel];
             }
         }
