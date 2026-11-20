@@ -419,7 +419,7 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +    pub vertices: [crate::Point<crate::ScaledPixels>; 3],
 +}
 +
-@@ -677,0 +775,180 @@
+@@ -677,0 +775,203 @@
 +    /// Read path meshes whose complete bounds match the selected element.
 +    /// Reads the completed scene, including retained replay, without drawing a frame.
 +    pub fn rendered_path_triangles(&mut self, selector: &'static str) -> Vec<RenderedPathTriangle> {
@@ -532,6 +532,29 @@ diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 +                    && visible.size.height > crate::ScaledPixels(0.0))
 +                    .then(|| (visible, quad.background.clone()))
 +            }).collect()
++        })
++    }
++
++    /// Borders of completed quads whose clipped bounds contain a point.
++    /// This reads canvas paint data without drawing or injecting input.
++    pub fn rendered_quad_borders_at(
++        &mut self,
++        point: crate::Point<Pixels>,
++    ) -> Vec<(crate::Hsla, crate::Edges<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let point = point.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .filter(|quad| {
++                    quad.bounds.contains(&point)
++                        && quad.content_mask.bounds.contains(&point)
++                        && quad.border_widths != crate::Edges::default()
++                })
++                .map(|quad| (quad.border_color, quad.border_widths.clone()))
++                .collect()
 +        })
 +    }
 +
