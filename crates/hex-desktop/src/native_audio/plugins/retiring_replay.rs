@@ -14,8 +14,8 @@ use hex_audio::{
 };
 use hex_engine::playback::Playback;
 use hex_session::service::{
-    PluginParameterCapture, RequestCancellation, RetiringEditorBatch,
-    RetiringEditorReplayDisposition, RetiringEditorReplayMode,
+    PluginParameterCapture, RequestCancellation, ResidentRuntimeLoop, RetiringEditorBatch,
+    RetiringEditorReplayCompletion, RetiringEditorReplayDisposition, RetiringEditorReplayMode,
 };
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,7 @@ pub(in crate::native_audio) struct ReplayCapture {
     source: AppliedAudioSource,
     transport_epoch: u64,
     playing: bool,
+    stop_rejected: bool,
     // An isolated capture cannot use the active worker's guarded-write fact.
     // Its exact producer hold remains owned through callback confirmation.
     fact: Option<NativeWorkerStateAfterGuardedWrite>,
@@ -202,7 +203,7 @@ impl Plugins {
     }
 
     fn replay_index(&self) -> Option<usize> {
-        if self.restore.is_some() {
+        if self.restore.is_some() || self.replay_editor_hold.is_some() {
             return None;
         }
         self.sources.iter().position(|source| {
@@ -269,8 +270,12 @@ impl Plugins {
         mut control: Option<&mut PublicationControl>,
         batch: &RetiringEditorBatch,
         disposition: RetiringEditorReplayDisposition,
-    ) -> Result<(), String> {
-        self.retiring_replay_capture = None;
+    ) -> Result<RetiringEditorReplayCompletion, String> {
+        let retry_stopped = self
+            .retiring_replay_capture
+            .take()
+            .is_some_and(|capture| capture.stop_rejected)
+            && matches!(disposition, RetiringEditorReplayDisposition::Refused);
         let restore = self.retiring_replay_restore.take();
         let (accepted, recovery) = match disposition {
             RetiringEditorReplayDisposition::Refused => (
@@ -283,23 +288,57 @@ impl Plugins {
         };
         self.release_replay_editor_hold(control);
         if !accepted
-            && let Some(source) = self.sources.iter_mut().find(|source| {
-                source.binding == batch.source
-                    && source
-                        .editor_retirement
-                        .batch
-                        .as_ref()
-                        .is_some_and(|pending| pending.replay_attempted && pending.offer == *batch)
-            })
+            && let Some(source) = self
+                .sources
+                .iter_mut()
+                .find(|source| source.binding == batch.source)
+            && let Some(pending) = source
+                .editor_retirement
+                .batch
+                .as_mut()
+                .filter(|pending| pending.replay_attempted && pending.offer == *batch)
         {
-            source.editor_retirement.report_unresolved();
-            if recovery.is_err()
-                && let Some(pending) = source.editor_retirement.batch.as_mut()
-            {
+            if retry_stopped && recovery.is_ok() && !pending.stopped_retry_attempted {
+                pending.stopped_retry_attempted = true;
+                pending.replay_attempted = false;
+                return Ok(RetiringEditorReplayCompletion::RetryStopped);
+            }
+            if recovery.is_err() {
                 pending.successor_unconfirmed = true;
             }
+            source.editor_retirement.report_unresolved();
         }
-        recovery
+        recovery.map(|()| RetiringEditorReplayCompletion::Finished)
+    }
+
+    /// The publisher has confirmed this candidate's callback fence refusal.
+    /// A stopped, still-canonical source can accept a fresh isolated capture.
+    pub(in crate::native_audio) fn observe_retiring_replay_stop_rejection(
+        &mut self,
+        control: &PublicationControl,
+        publication: AudioSourceContext,
+        previous: ResidentRuntimeLoop,
+    ) -> bool {
+        let Some(replay) = self.retiring_replay_capture.as_mut() else {
+            return false;
+        };
+        if replay.publication != publication
+            || !replay.playing
+            || replay.fact.is_some()
+            || previous.output_identity != replay.source.output_identity
+            || previous.audio_revision != replay.source.audio_revision
+            || previous.source_context != Some(replay.source.context)
+            || control
+                .status
+                .native_parameter_source(false)
+                .is_none_or(|(source, epoch)| {
+                    source != replay.source || epoch <= replay.transport_epoch
+                })
+        {
+            return false;
+        }
+        replay.stop_rejected = true;
+        true
     }
 
     pub(super) fn replay_state_is_unconfirmed(&self, binding: Binding) -> bool {
@@ -452,6 +491,7 @@ impl Plugins {
                 source,
                 transport_epoch,
                 playing,
+                stop_rejected: false,
                 fact: None,
                 before: canonical.clone(),
                 after: after.clone(),
@@ -592,6 +632,7 @@ impl Plugins {
             source,
             transport_epoch,
             playing,
+            stop_rejected: false,
             fact: Some(fact),
             before: canonical.clone(),
             after: after.clone(),

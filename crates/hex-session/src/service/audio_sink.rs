@@ -768,13 +768,13 @@ pub trait WorkerAudioSink: Send {
 
     /// End the exact replay attempt after its Session disposition. A refusal
     /// leaves the original receipt in native custody and reports the transfer
-    /// failure through the existing retirement status.
+    /// failure, or defers one retry after a proved stopped transport fence.
     fn finish_retiring_editor_replay(
         &mut self,
         _batch: &super::RetiringEditorBatch,
         _disposition: super::RetiringEditorReplayDisposition,
-    ) -> Result<(), String> {
-        Ok(())
+    ) -> Result<super::RetiringEditorReplayCompletion, String> {
+        Ok(super::RetiringEditorReplayCompletion::Finished)
     }
 
     /// Release this exact sequence only after Session disposes every event.
