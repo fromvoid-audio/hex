@@ -2,7 +2,7 @@
 use super::{RouteOwner, SessionPlayback};
 
 impl SessionPlayback {
-    pub(super) fn direct_analytic_instrument_removal_from(&self, previous: &Self) -> Option<usize> {
+    pub(super) fn direct_analytic_transition_graph_matches(&self, previous: &Self) -> bool {
         if self.compensation.is_some()
             || previous.compensation.is_some()
             || self.revision.contains_streamed_sources()
@@ -18,33 +18,58 @@ impl SessionPlayback {
             || self.revision.source_routing().has_shared_sources()
             || previous.revision.source_routing().has_shared_sources()
         {
+            return false;
+        }
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        old.tracks()
+            .iter()
+            .map(|t| t.canonical_track_id())
+            .eq(new.tracks().iter().map(|t| t.canonical_track_id()))
+            && self.main_chain.len() == previous.main_chain.len()
+            && self
+                .main_chain
+                .configuration_matches_range(&previous.main_chain, 0..previous.main_chain.len())
+            && self.return_chains.len() == previous.return_chains.len()
+            && self
+                .return_chains
+                .iter()
+                .zip(&previous.return_chains)
+                .all(|(a, b)| a.len() == b.len() && a.configuration_matches_range(b, 0..b.len()))
+            && self
+                .device_chains
+                .iter()
+                .zip(&previous.device_chains)
+                .all(|(a, b)| a.len() == b.len() && a.configuration_matches_range(b, 0..b.len()))
+    }
+
+    pub(super) fn direct_analytic_transition_route(
+        &self,
+        index: usize,
+        track: &crate::Track,
+    ) -> bool {
+        self.routes.get(index).is_some_and(|route| {
+            matches!(route.owner, RouteOwner::Arrangement)
+                && route.pending.is_none()
+                && route.audio_release.is_none()
+                && track
+                    .source_receiver_index
+                    .is_none_or(|receiver| receiver == index)
+                && track.midi_source_index.is_none()
+                && !track.has_gain_automation()
+                && track.sends.is_empty()
+                && track.device_chain.is_empty()
+                && !self.source_effects.has_chain(index)
+                && self.revision.gain_recording_track() != Some(route.id)
+        })
+    }
+
+    pub(super) fn direct_analytic_instrument_removal_from(&self, previous: &Self) -> Option<usize> {
+        if !self.direct_analytic_transition_graph_matches(previous) {
             return None;
         }
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
-        if !old
-            .tracks()
-            .iter()
-            .map(|t| t.canonical_track_id())
-            .eq(new.tracks().iter().map(|t| t.canonical_track_id()))
-            || self.main_chain.len() != previous.main_chain.len()
-            || !self
-                .main_chain
-                .configuration_matches_range(&previous.main_chain, 0..previous.main_chain.len())
-            || self.return_chains.len() != previous.return_chains.len()
-            || self
-                .return_chains
-                .iter()
-                .zip(&previous.return_chains)
-                .any(|(a, b)| a.len() != b.len() || !a.configuration_matches_range(b, 0..b.len()))
-            || self
-                .device_chains
-                .iter()
-                .zip(&previous.device_chains)
-                .any(|(a, b)| a.len() != b.len() || !a.configuration_matches_range(b, 0..b.len()))
-        {
-            return None;
-        }
         let mut removed = None;
         for (index, (old, new)) in old.tracks().iter().zip(new.tracks()).enumerate() {
             if old.instrument_config_matches(new) {
@@ -65,23 +90,10 @@ impl SessionPlayback {
             {
                 return None;
             }
-            for (playback, track) in [(previous, old), (self, new)] {
-                let route = playback.routes.get(index)?;
-                if !matches!(route.owner, RouteOwner::Arrangement)
-                    || route.pending.is_some()
-                    || route.audio_release.is_some()
-                    || track
-                        .source_receiver_index
-                        .is_some_and(|receiver| receiver != index)
-                    || track.midi_source_index.is_some()
-                    || track.has_gain_automation()
-                    || !track.sends.is_empty()
-                    || !track.device_chain.is_empty()
-                    || playback.source_effects.has_chain(index)
-                    || playback.revision.gain_recording_track() == Some(route.id)
-                {
-                    return None;
-                }
+            if !previous.direct_analytic_transition_route(index, old)
+                || !self.direct_analytic_transition_route(index, new)
+            {
+                return None;
             }
         }
         removed
