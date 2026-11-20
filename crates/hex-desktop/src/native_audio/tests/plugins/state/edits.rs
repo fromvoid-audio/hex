@@ -271,6 +271,18 @@ fn pre_cut_editor_conflict_preserves_the_replacement_and_original_receipt() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn mixed_retiring_editor_replays_group_after_confirming_earlier_value() {
+    retiring_editor_replay_roundtrip(ReplayCase::Mixed);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn mixed_retiring_editor_keeps_later_group_unapplied_if_earlier_value_conflicts() {
+    retiring_editor_replay_roundtrip(ReplayCase::MixedConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_group_replays_both_values_and_reopens_on_the_same_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Grouped);
 }
@@ -300,6 +312,8 @@ enum ReplayCase {
     AlreadyCanonical,
     PreCutAlreadyCanonical,
     PreCutConflict,
+    Mixed,
+    MixedConflict,
     Grouped,
     Playing,
     Refuse,
@@ -308,7 +322,8 @@ enum ReplayCase {
 
 fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
-    let grouped = case == ReplayCase::Grouped;
+    let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
+    let grouped = mixed || case == ReplayCase::Grouped;
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
         let release = files.0.join("release");
@@ -327,11 +342,19 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 matches!(case, ReplayCase::Refuse | ReplayCase::RefuseAfterNewer)
                     .then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
             )
+            .envs(mixed.then_some(("HEX_EXPECT_RETIRING_MIXED_BATCH", "1")))
             .env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
                 if grouped { "148" } else { "116" },
             )
-            .env("HEX_ORIGINAL_GROUPED_EDITOR_PATTERN", "split")
+            .env(
+                "HEX_ORIGINAL_GROUPED_EDITOR_PATTERN",
+                if mixed { "ordinary-first" } else { "split" },
+            )
+            .env(
+                "HEX_ORIGINAL_GROUPED_RELEASE",
+                files.0.join("group-release"),
+            )
             .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
             .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
             .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
@@ -370,7 +393,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     let (applied, _) = h.applied(0);
     let original = &saved.project.main_devices()[0];
     let device = original.id();
-    let replacement_gain = if already_canonical { 3.0 } else { 1.5 };
+    let replacement_gain = if already_canonical {
+        3.0
+    } else if case == ReplayCase::Mixed {
+        2.0
+    } else {
+        1.5
+    };
     let replacement = with_gain(original.state(), replacement_gain);
     let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     let traces_dir = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
@@ -383,6 +412,30 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     use crate::native_audio::tests::resident_preview::emit_replay_fixture_edit as emit;
     if pre_cut {
         emit(&old_trace);
+    }
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
+    if mixed {
+        fs::write(
+            release.join(old_trace.file_stem().unwrap()),
+            b"ordinary edit",
+        )
+        .unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let frontier = super::super::editor_recording::probe(&h, |reply| {
+                crate::native_audio::tests::resident_preview::EditorRecordingProbe::EditorFrontier(
+                    old_binding,
+                    reply,
+                )
+            });
+            if frontier == Some(3) {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "original ordinary value was not observed"
+            );
+        }
     }
     if playing {
         h.audio
@@ -402,7 +455,13 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         }))
         .unwrap();
     graph_publication_ready(&mut h, &ready);
-    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
+    if mixed {
+        fs::write(
+            std::env::var_os("HEX_ORIGINAL_GROUPED_RELEASE").unwrap(),
+            b"grouped edit",
+        )
+        .unwrap();
+    }
     if !pre_cut {
         emit(&old_trace);
     }
@@ -518,7 +577,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
 
     if matches!(
         case,
-        ReplayCase::Publish | ReplayCase::Playing | ReplayCase::Grouped
+        ReplayCase::Publish | ReplayCase::Playing | ReplayCase::Grouped | ReplayCase::Mixed
     ) {
         let event = loop {
             h.pump();
@@ -687,7 +746,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         );
         return;
     }
-    if pre_cut {
+    if pre_cut || case == ReplayCase::MixedConflict {
         assert_eq!(
             error,
             "vst3 replacement does not already contain the retiring edit"
@@ -696,10 +755,20 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         let rows = super::super::installed_edits::query(&mut h, device, None, &mut serial)
             .rows
             .unwrap();
+        let gain_id = if grouped { 0 } else { 7 };
         assert_eq!(
-            rows.iter().find(|row| row.id == 7).unwrap().normalized,
+            rows.iter()
+                .find(|row| row.id == gain_id)
+                .unwrap()
+                .normalized,
             0.375
         );
+        if mixed {
+            assert_eq!(
+                rows.iter().find(|row| row.id == 11).unwrap().normalized,
+                0.25
+            );
+        }
     } else {
         assert_eq!(error, "vst3 replacement accepted a newer editor edit");
     }
@@ -731,6 +800,18 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     .unwrap();
     assert_eq!(retained.source, old_binding);
     assert_eq!(retained.successor, successor);
+    if mixed {
+        let cut = retained.predecessor_admitted_through.unwrap();
+        assert_eq!(cut, 3);
+        let values: Vec<_> = retained
+            .events()
+            .iter()
+            .filter(|edit| edit.kind == RetiringEditorEventKind::Perform)
+            .map(|edit| (edit.sequence <= cut, edit.parameter, edit.normalized))
+            .collect();
+        assert_eq!(values, [(true, 0, 0.5), (false, 0, 0.75), (false, 11, 0.5)]);
+        return;
+    }
     assert_eq!(
         retained.predecessor_admitted_through,
         Some(if pre_cut { 14 } else { 0 })

@@ -1392,8 +1392,7 @@ impl WorkerAudioSink for NativeAudioSink {
     fn capture_retiring_editor_replay(
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
-        points: &[(u32, f64)],
-        mode: hex_session::service::RetiringEditorReplayMode,
+        mode: hex_session::service::RetiringEditorReplayMode<'_>,
     ) -> Result<hex_session::service::PluginParameterCapture, String> {
         let control = self
             .output
@@ -1415,7 +1414,6 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins.capture_retiring_editor_replay(
             control,
             batch,
-            points,
             mode,
             self.desired.as_deref(),
             self.request_cancellation.as_ref(),
