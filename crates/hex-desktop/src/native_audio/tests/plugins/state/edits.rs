@@ -294,6 +294,18 @@ fn earlier_group_with_one_conflicting_value_stays_in_original_custody() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn group_open_at_preparation_confirms_earlier_values_after_its_terminal() {
+    retiring_editor_replay_roundtrip(ReplayCase::SpanningGroup);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn group_open_at_preparation_keeps_the_receipt_when_one_earlier_value_conflicts() {
+    retiring_editor_replay_roundtrip(ReplayCase::SpanningGroupConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn mixed_retiring_editor_replays_group_after_confirming_earlier_value() {
     retiring_editor_replay_roundtrip(ReplayCase::Mixed);
 }
@@ -349,6 +361,8 @@ enum ReplayCase {
     PreCutConflict,
     EarlierGrouped,
     EarlierGroupedConflict,
+    SpanningGroup,
+    SpanningGroupConflict,
     Mixed,
     MixedConflict,
     Grouped,
@@ -362,10 +376,15 @@ enum ReplayCase {
 fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
     let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
-    let earlier_group = matches!(
+    let spanning = matches!(
         case,
-        ReplayCase::EarlierGrouped | ReplayCase::EarlierGroupedConflict
+        ReplayCase::SpanningGroup | ReplayCase::SpanningGroupConflict
     );
+    let earlier_group = spanning
+        || matches!(
+            case,
+            ReplayCase::EarlierGrouped | ReplayCase::EarlierGroupedConflict
+        );
     let several_groups = matches!(
         case,
         ReplayCase::SeveralGroups | ReplayCase::SeveralGroupsRefuse
@@ -396,7 +415,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             )
             .envs(mixed.then_some(("HEX_EXPECT_RETIRING_MIXED_BATCH", "1")))
             .envs(several_groups.then_some(("HEX_EXPECT_RETIRING_ORDERED_COHORTS", "1")))
-            .envs(earlier_group.then_some(("HEX_EXPECT_RETIRING_EARLIER_GROUP", "1")))
+            .envs(earlier_group.then_some((
+                "HEX_EXPECT_RETIRING_EARLIER_GROUP",
+                if spanning { "spanning" } else { "complete" },
+            )))
             .env(
                 "HEX_ORIGINAL_INSTANCE_VARIANT",
                 if grouped { "148" } else { "116" },
@@ -405,6 +427,8 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 "HEX_ORIGINAL_GROUPED_EDITOR_PATTERN",
                 if mixed {
                     "ordinary-first"
+                } else if spanning {
+                    "open-at-preparation"
                 } else if several_groups {
                     "repeat"
                 } else {
@@ -441,6 +465,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         ReplayCase::AlreadyCanonical
             | ReplayCase::PreCutAlreadyCanonical
             | ReplayCase::EarlierGrouped
+            | ReplayCase::SpanningGroup
     );
     let effect_host = || {
         let host = host();
@@ -465,7 +490,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     let replacement = with_gain_and_axis(
         original.state(),
         replacement_gain,
-        (case == ReplayCase::EarlierGrouped).then_some(2.0),
+        (earlier_group && already_canonical).then_some(2.0),
     );
     let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     let traces_dir = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
@@ -486,7 +511,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     if pre_cut || earlier_group {
         emit(&old_trace);
     }
-    if earlier_group {
+    if earlier_group && !spanning {
         finish_group();
     }
     let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
@@ -499,6 +524,8 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     }
     let earlier_frontier = if mixed {
         Some(3)
+    } else if spanning {
+        Some(5)
     } else if earlier_group {
         Some(12)
     } else {
@@ -550,7 +577,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     if !pre_cut && !earlier_group {
         emit(&old_trace);
     }
-    if grouped && !earlier_group {
+    if grouped && (!earlier_group || spanning) {
         finish_group();
     }
     if matches!(case, ReplayCase::Conflict | ReplayCase::RefuseAfterNewer) {
