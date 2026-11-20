@@ -1,4 +1,4 @@
-//! One direct Resident audio-track Delay move, cut with both route faders.
+//! One direct Resident audio-track effect move, cut with both route faders.
 use super::{RouteOwner, SessionPlayback};
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::NativeDeviceMetadata;
@@ -76,6 +76,8 @@ impl SessionPlayback {
                 return None;
             }
         }
+        // The direct Arrangement route can process the transferred effect on
+        // silence. A track with no clips may also donate a tail from an earlier cut.
         for playback in [self, previous] {
             for index in [source, destination] {
                 let track = playback.revision.arrangement().tracks().get(index)?;
@@ -83,7 +85,6 @@ impl SessionPlayback {
                 if !matches!(route.owner, RouteOwner::Arrangement)
                     || route.pending.is_some()
                     || route.audio_release.is_some()
-                    || track.clips.is_empty()
                     || track.instrument_id.is_some()
                     || track.source_id.is_some()
                     || track.midi_source_index.is_some()
@@ -97,8 +98,9 @@ impl SessionPlayback {
             }
         }
         // Provider-specific trust belongs here, not in Lattice's generic proof.
-        if old.get(source)?.device_chain.first()?.device_type
-            != hex_devices::delay::DEFINITION.type_id()
+        let device_type = old.get(source)?.device_chain.first()?.device_type;
+        if device_type != hex_devices::delay::DEFINITION.type_id()
+            && device_type != hex_devices::reverb::REVERB_TYPE_ID
         {
             return None;
         }
