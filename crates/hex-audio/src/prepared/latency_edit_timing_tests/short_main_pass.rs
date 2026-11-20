@@ -3,6 +3,32 @@ use super::*;
 
 #[test]
 fn terminal_overdrive_retires_while_its_pass_delay_survives_until_stop() {
+    terminal_inline_stage(
+        hex_devices::overdrive::OVERDRIVE_DEFINITION
+            .default_state()
+            .unwrap(),
+    );
+}
+
+#[test]
+fn terminal_saturator_retires_while_its_pass_delay_survives_until_stop() {
+    terminal_inline_stage(
+        hex_devices::saturator::SATURATOR_DEFINITION
+            .default_state()
+            .unwrap(),
+    );
+}
+
+#[test]
+fn terminal_rattle_retires_while_its_pass_delay_survives_until_stop() {
+    terminal_inline_stage(
+        hex_devices::rattle::RATTLE_DEFINITION
+            .default_state()
+            .unwrap(),
+    );
+}
+
+fn terminal_inline_stage(state: hex_lattice_contract::NativeDeviceState) {
     const CUT: usize = 512;
     const FADE: usize = 240;
     const LATENCY: usize = 11;
@@ -16,13 +42,11 @@ fn terminal_overdrive_retires_while_its_pass_delay_survives_until_stop() {
     let Created::Device(device) = editor
         .execute(Command::InsertMainDevice {
             before: None,
-            state: hex_devices::overdrive::OVERDRIVE_DEFINITION
-                .default_state()
-                .unwrap(),
+            state,
         })
         .unwrap()
     else {
-        panic!("overdrive");
+        panic!("terminal Main stage");
     };
     let before = prepare(editor.project());
     editor.execute(Command::RemoveDevice(device)).unwrap();

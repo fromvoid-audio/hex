@@ -3,14 +3,14 @@ use crate::{NativeRuntimeChain, ProcessorChainOwner, ProcessorInstanceIdentity, 
 use hex_lattice_contract::DeviceContractError;
 
 impl NativeRuntimeChain {
-    /// Match one unchanged zero-latency native processor under another Track.
-    /// The host must independently approve the provider's owner change, both
-    /// route cuts and exclusive donor retirement. This is not route admission.
+    /// Match the sole zero-latency donor to the receiver's final stage.
+    /// The host must independently approve the provider's owner change, any
+    /// unchanged prefix, both route cuts and exclusive donor retirement.
     pub fn cross_track_native_identity_from(
         &self,
         old: &Self,
     ) -> Option<ProcessorInstanceIdentity> {
-        let ([next], [old]) = (self.entries.as_slice(), old.entries.as_slice()) else {
+        let ([next] | [_, next], [old]) = (self.entries.as_slice(), old.entries.as_slice()) else {
             return None;
         };
         let (ProcessorChainOwner::Track(to), ProcessorChainOwner::Track(from)) =
@@ -68,7 +68,7 @@ impl NativeRuntimeChain {
         if self.cross_track_native_identity_from(old).is_none() {
             return Err(DeviceContractError::InvalidDescriptor);
         }
-        let (Some(next), Some(old)) = (self.entries.first_mut(), old.entries.first_mut()) else {
+        let (Some(next), Some(old)) = (self.entries.last_mut(), old.entries.first_mut()) else {
             return Err(DeviceContractError::InvalidDescriptor);
         };
         if matches!(next.runtime, RuntimeOwnership::Legacy { .. }) {
@@ -125,14 +125,10 @@ mod tests {
     #[test]
     fn cross_track_move_exchanges_the_legacy_runtime_pairs() {
         let probe = Arc::new(Probe::default());
-        let chain = |track| {
-            NativeRuntimeChain::new_prepared(vec![
-                instance(ProcessorChainOwner::Track(track), 4, 48_000, 0, &probe).unwrap(),
-            ])
-            .unwrap()
-        };
-        let pair = |chain: &NativeRuntimeChain| {
-            let RuntimeOwnership::Legacy { primary, scratch } = &chain.entries[0].runtime else {
+        let device =
+            |track, id| instance(ProcessorChainOwner::Track(track), id, 48_000, 0, &probe).unwrap();
+        let pair = |entry: &crate::RuntimeEntry| {
+            let RuntimeOwnership::Legacy { primary, scratch } = &entry.runtime else {
                 panic!("legacy pair");
             };
             [
@@ -140,12 +136,14 @@ mod tests {
                 std::ptr::from_ref(scratch.as_ref()).cast::<()>(),
             ]
         };
-        let mut old = chain(1);
-        let mut next = chain(2);
-        let running = pair(&old);
-        let fresh = pair(&next);
+        let mut old = NativeRuntimeChain::new_prepared(vec![device(1, 4)]).unwrap();
+        let mut next = NativeRuntimeChain::new_prepared(vec![device(2, 5), device(2, 4)]).unwrap();
+        let running = pair(&old.entries[0]);
+        let prefix = pair(&next.entries[0]);
+        let fresh = pair(&next.entries[1]);
         next.transfer_cross_track_native_from(&mut old).unwrap();
-        assert_eq!(pair(&next), running);
-        assert_eq!(pair(&old), fresh);
+        assert_eq!(pair(&next.entries[0]), prefix);
+        assert_eq!(pair(&next.entries[1]), running);
+        assert_eq!(pair(&old.entries[0]), fresh);
     }
 }
