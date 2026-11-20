@@ -547,14 +547,22 @@ fn same_latency_cut_prefix(
 ) -> bool {
     old_chain.configuration_matches_range(new_chain, 0..prefix.len())
         && new_chain.can_inherit_from(old_chain)
-        && prefix.iter().all(|node| {
-            old_graph
-                .processor_latency(node.device_id, None)
-                .zip(new_graph.processor_latency(node.device_id, None))
-                .is_some_and(|(before, after)| {
-                    before.upstream_frames == after.upstream_frames
-                        && before.stage_frames == after.stage_frames
-                })
+        && prefix
+            .iter()
+            .all(|node| same_processor_input_clock(old_graph, new_graph, node.device_id))
+}
+
+fn same_processor_input_clock(
+    old_graph: &crate::signal_graph::SignalGraph,
+    new_graph: &crate::signal_graph::SignalGraph,
+    device: u64,
+) -> bool {
+    old_graph
+        .processor_latency(device, None)
+        .zip(new_graph.processor_latency(device, None))
+        .is_some_and(|(before, after)| {
+            before.upstream_frames == after.upstream_frames
+                && before.stage_frames == after.stage_frames
         })
 }
 
@@ -1646,6 +1654,36 @@ impl SessionPlayback {
                     != previous.revision.arrangement().main_latency_frames())
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
+        }
+        // A compatible pre-Main delay map does not prove the input clock of
+        // each Main processor. Cutting a preceding latent stage can shift the
+        // PCM and authored origins fed to the same still-running worker.
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        if (previous.performance_frame != 0
+            || previous.arrangement_frame != 0
+            || !previous.renders_no_device_chains())
+            && tail_policy.for_chain(&old.main_device_chain, &new.main_device_chain)
+                == DeviceEditTailPolicy::Cut
+            && previous
+                .main_chain
+                .foreign_bindings()
+                .flatten()
+                .any(|binding| {
+                    self.main_chain
+                        .foreign_bindings()
+                        .flatten()
+                        .any(|next| next == binding)
+                        && !old
+                            .signal_graph
+                            .as_ref()
+                            .zip(new.signal_graph.as_ref())
+                            .is_some_and(|(old, new)| {
+                                same_processor_input_clock(old, new, binding.instance)
+                            })
+                })
+        {
+            return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
             old.delays.latest_stamp().is_none_or(|stamp| {

@@ -1113,6 +1113,15 @@ fn confirmed_return_vst_removal_cuts_latency_without_running_the_old_endpoint() 
 
 #[test]
 fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
+    verify_latency_removal_retains_only_an_unshifted_worker(false);
+}
+
+#[test]
+fn confirmed_main_latency_removal_retains_only_an_unshifted_worker() {
+    verify_latency_removal_retains_only_an_unshifted_worker(true);
+}
+
+fn verify_latency_removal_retains_only_an_unshifted_worker(main: bool) {
     use hex_devices::limiter::DEFINITION as LIMITER;
 
     const CUT: usize = 128;
@@ -1127,33 +1136,41 @@ fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
             )
             .unwrap();
         }
-        let Created::ReturnTrack(bus) = f
-            .editor
-            .execute(Command::AddReturnTrack {
-                name: "hosted return".into(),
-            })
-            .unwrap()
-        else {
-            panic!("return bus");
-        };
-        f.editor
-            .execute(Command::SetReturnSend {
-                track: f.tracks[0],
-                return_track: bus,
-                gain: 0.5,
-            })
-            .unwrap();
-        let mut insert = |state| {
-            let Created::Device(id) = f
+        let bus = if main {
+            None
+        } else {
+            let Created::ReturnTrack(bus) = f
                 .editor
-                .execute(Command::InsertReturnDevice {
-                    return_track: bus,
-                    before: None,
-                    state,
+                .execute(Command::AddReturnTrack {
+                    name: "hosted return".into(),
                 })
                 .unwrap()
             else {
-                panic!("return device");
+                panic!("return bus");
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track: f.tracks[0],
+                    return_track: bus,
+                    gain: 0.5,
+                })
+                .unwrap();
+            Some(bus)
+        };
+        let mut insert = |state| {
+            let command = match bus {
+                Some(bus) => Command::InsertReturnDevice {
+                    return_track: bus,
+                    before: None,
+                    state,
+                },
+                None => Command::InsertMainDevice {
+                    before: None,
+                    state,
+                },
+            };
+            let Created::Device(id) = f.editor.execute(command).unwrap() else {
+                panic!("bus device");
             };
             id
         };
@@ -1164,7 +1181,17 @@ fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
             let removed = insert(limiter);
             (insert(state(19).unwrap()), removed)
         };
-        let owner = ProcessorChainOwner::Return(bus.value());
+        let owner = bus.map_or(ProcessorChainOwner::Main, |bus| {
+            ProcessorChainOwner::Return(bus.value())
+        });
+        let binding = |playback: &SessionPlayback| {
+            let chain = if main {
+                &playback.main_chain
+            } else {
+                &playback.return_chains[0]
+            };
+            chain.foreign_bindings().flatten().next().unwrap()
+        };
         let definition = BorrowedDefinition {
             binding_epoch: Some(1),
             instances: vec![(
@@ -1204,11 +1231,7 @@ fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
         worker.initial_unstamped_frames = if trailing { 0 } else { 72 };
         donor.apply(SessionPlaybackCommand::Play).unwrap();
         render(&mut donor, &mut worker, &mut [[0.0; 2]; CUT]);
-        let binding = donor.return_chains[0]
-            .foreign_bindings()
-            .flatten()
-            .next()
-            .unwrap();
+        let original_binding = binding(&donor);
         let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
         unapproved.require_continuous_insert = true;
         assert!(matches!(
@@ -1219,10 +1242,10 @@ fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
         let mut candidate = SessionPlayback::new(Arc::clone(&after)).unwrap();
         let approval = candidate.try_inherit_state_at_device_insert_cut(&mut donor);
         if !trailing {
-            assert!(matches!(
-                approval,
-                Err(SessionPlaybackError::LatencyLayoutChanged)
-            ));
+            assert!(
+                matches!(approval, Err(SessionPlaybackError::LatencyLayoutChanged)),
+                "retained worker with a changed input clock: {approval:?}"
+            );
             assert_eq!(donor.performance_frame, CUT as u64);
             donor.set_playing_at_device_insert_cut(true);
             let mut reference = SessionPlayback::new(before).unwrap();
@@ -1235,33 +1258,45 @@ fn confirmed_return_latency_removal_retains_only_an_unshifted_worker() {
             render(&mut donor, &mut worker, &mut actual);
             render(&mut reference, &mut oracle, &mut expected);
             assert_eq!(actual, expected);
+            if main {
+                // Stop starts a new processing epoch, so the same hardware
+                // can take the shorter input clock after the reset.
+                donor.apply(SessionPlaybackCommand::Stop).unwrap();
+                let mut candidate = SessionPlayback::new(after).unwrap();
+                candidate.require_continuous_insert = true;
+                candidate.try_inherit_state_live_from(&mut donor).unwrap();
+                assert_eq!(candidate.arrangement_frame, 0);
+                assert_eq!(binding(&candidate), original_binding);
+            }
             continue;
         }
         approval.unwrap();
         assert_eq!(candidate.arrangement_frame, CUT as u64);
         assert_eq!(candidate.performance_frame, CUT as u64);
-        assert_eq!(
-            candidate.return_chains[0]
-                .foreign_bindings()
-                .flatten()
-                .next(),
-            Some(binding)
-        );
+        assert_eq!(binding(&candidate), original_binding);
         candidate.set_playing_at_device_insert_cut(true);
         // Advance a separate instance with the unchanged prefix. Then start
         // only its new local compensation at the cut, keeping its worker ring.
         let mut prefix = SessionPlayback::new(Arc::clone(&after)).unwrap();
-        let mut reference = SessionPlayback::new(after).unwrap();
         let mut oracle = Borrowed::new(owner, hosted.value());
         prefix.apply(SessionPlaybackCommand::Play).unwrap();
         render(&mut prefix, &mut oracle, &mut [[0.0; 2]; CUT]);
-        reference.play_from(CUT as u64).unwrap();
+        let mut reference = if main {
+            // A Main-only edit leaves the pre-Main compensation map intact.
+            prefix
+        } else {
+            let mut reference = SessionPlayback::new(after).unwrap();
+            reference.play_from(CUT as u64).unwrap();
+            reference
+        };
         let mut actual = [[0.0; 2]; 64];
         let mut expected = actual;
         render(&mut reference, &mut oracle, &mut expected);
         render(&mut candidate, &mut worker, &mut actual);
         assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
-        assert_eq!(actual, expected);
+        for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+            assert_eq!(actual, expected, "post-cut sample {index}, main={main}");
+        }
         assert_eq!(worker.processed, CUT + 64);
     }
 }

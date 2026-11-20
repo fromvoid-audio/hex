@@ -368,28 +368,47 @@ fn block(f: &mut OrdinaryFixture) -> [Frame; 8] {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn fitting_track_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
-    verify_effect_removal_with_hosted_successor(0, false);
+    verify_effect_removal_with_hosted_successor(0, RemovedEffect::Eq);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn fitting_main_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
-    verify_effect_removal_with_hosted_successor(2, false);
+    verify_effect_removal_with_hosted_successor(2, RemovedEffect::Eq);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn fitting_return_effect_removal_keeps_one_native_endpoint_through_the_stage_fade() {
-    verify_effect_removal_with_hosted_successor(1, false);
+    verify_effect_removal_with_hosted_successor(1, RemovedEffect::Eq);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn approved_return_latency_reduction_keeps_the_original_native_endpoint() {
-    verify_effect_removal_with_hosted_successor(1, true);
+    verify_effect_removal_with_hosted_successor(1, RemovedEffect::TrailingLimiter);
 }
 
-fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter: bool) {
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_main_latency_reduction_keeps_the_original_native_endpoint() {
+    verify_effect_removal_with_hosted_successor(2, RemovedEffect::TrailingLimiter);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn approved_main_latency_reduction_refuses_to_shift_the_original_native_endpoint() {
+    verify_effect_removal_with_hosted_successor(2, RemovedEffect::LeadingLimiter);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemovedEffect {
+    Eq,
+    LeadingLimiter,
+    TrailingLimiter,
+}
+
+fn verify_effect_removal_with_hosted_successor(location: usize, removed_effect: RemovedEffect) {
     use hex_lattice_contract::NativeDeviceMetadata;
 
     const QUANTUM: usize = 128;
@@ -397,7 +416,9 @@ fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter
     let mut f = fixture_with_quantum("processing", location, QUANTUM as u16);
     let track = &f.editor.project().tracks()[0];
     let track = track.id();
-    let state = if trailing_limiter {
+    let latency_cut = removed_effect != RemovedEffect::Eq;
+    let insert_before_host = removed_effect != RemovedEffect::TrailingLimiter;
+    let state = if latency_cut {
         hex_devices::limiter::DEFINITION.default_state().unwrap()
     } else {
         hex_devices::eq::EQ_DEFINITION.default_state().unwrap()
@@ -405,19 +426,19 @@ fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter
     let insert = match location {
         0 => Command::InsertDevice {
             track,
-            before: Some(f.editor.project().tracks()[0].devices()[0].id()),
+            before: insert_before_host.then(|| f.editor.project().tracks()[0].devices()[0].id()),
             state,
         },
         1 => {
             let bus = &f.editor.project().return_tracks()[0];
             Command::InsertReturnDevice {
                 return_track: bus.id(),
-                before: (!trailing_limiter).then(|| bus.devices()[0].id()),
+                before: insert_before_host.then(|| bus.devices()[0].id()),
                 state,
             }
         }
         _ => Command::InsertMainDevice {
-            before: Some(f.editor.project().main_devices()[0].id()),
+            before: insert_before_host.then(|| f.editor.project().main_devices()[0].id()),
             state,
         },
     };
@@ -467,7 +488,7 @@ fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter
         render(&mut f);
     }
     let running_pcm = render(&mut f);
-    if trailing_limiter {
+    if latency_cut {
         assert!(running_pcm.iter().all(|frame| *frame != [0.0; 2]));
     } else {
         check_block(running_pcm, 1);
@@ -489,7 +510,7 @@ fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter
     let waiting_pcm = render(&mut f);
     assert_eq!(f.control.status.recording_source(), Some(predecessor));
 
-    if trailing_limiter {
+    if latency_cut {
         assert!(waiting_pcm.iter().all(|frame| *frame != [0.0; 2]));
         assert_eq!(
             receipt.state(),
@@ -520,25 +541,40 @@ fn verify_effect_removal_with_hosted_successor(location: usize, trailing_limiter
         );
         assert_eq!(f.control.status.recording_source(), Some(predecessor));
         render(&mut f);
-        assert_eq!(approved.state(), PublicationReceiptState::Installed);
-        assert_eq!(
-            f.control.status.recording_source(),
-            Some(AppliedAudioSource {
-                context: consent.candidate_context(),
-                audio_revision: revision,
-                ..predecessor
-            })
-        );
+        let (state, source) = if removed_effect == RemovedEffect::LeadingLimiter {
+            (
+                PublicationReceiptState::Refused(PlaybackHandoffRejection::LatencyLayoutChanged),
+                predecessor,
+            )
+        } else {
+            (
+                PublicationReceiptState::Installed,
+                AppliedAudioSource {
+                    context: consent.candidate_context(),
+                    audio_revision: revision,
+                    ..predecessor
+                },
+            )
+        };
+        assert_eq!(approved.state(), state);
+        assert_eq!(f.control.status.recording_source(), Some(source));
         assert_eq!(
             f.control.status.position.load(Acquire),
             position + (2 * QUANTUM) as u64
         );
-        // The new delay layout refills its own PDC while the same worker
-        // keeps completing exactly one signed quantum per callback.
+        // The original worker keeps completing exactly one signed quantum per
+        // callback, either on the approved chain or on the resumed predecessor.
         for _ in 0..3 {
             render(&mut f);
         }
-        check_block(render(&mut f), 8);
+        let steady = render(&mut f);
+        if removed_effect == RemovedEffect::LeadingLimiter {
+            assert!(steady.iter().all(|frame| *frame != [0.0; 2]));
+            assert!(f.control.status.playing.load(Acquire));
+            assert_eq!(f.control.status.recording_source(), Some(predecessor));
+        } else {
+            check_block(steady, 8);
+        }
     } else {
         check_block(waiting_pcm, 2);
         assert_eq!(receipt.state(), PublicationReceiptState::Pending);
