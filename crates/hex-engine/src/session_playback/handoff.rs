@@ -586,6 +586,66 @@ fn mutable_session_clip_matches(
 }
 
 impl SessionPlayback {
+    /// A compatible outer delay map does not prove the clock at each effect.
+    /// For Main and surviving Track cuts, check the exact retained binding
+    /// before either the normal handoff or the reset path can move history.
+    fn device_cut_keeps_effect_clocks(
+        &self,
+        previous: &Self,
+        policy: DeviceEditTailPolicy,
+    ) -> bool {
+        if matches!(
+            policy,
+            DeviceEditTailPolicy::Preserve | DeviceEditTailPolicy::RequireConfirmation
+        ) || (previous.performance_frame == 0
+            && previous.arrangement_frame == 0
+            && previous.renders_no_device_chains())
+        {
+            return true;
+        }
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        let old_graph = old.signal_graph.as_ref();
+        let graphs = old_graph.zip(new.signal_graph.as_ref());
+        let keeps_clocks = |old: &hex_lattice::NativeRuntimeChain,
+                            new: &hex_lattice::NativeRuntimeChain| {
+            old.foreign_bindings().flatten().all(|binding| {
+                !new.foreign_bindings().flatten().any(|next| next == binding)
+                    || graphs.is_some_and(|(old, new)| {
+                        same_processor_input_clock(old, new, binding.instance)
+                    })
+            })
+        };
+        if policy.for_chain(&old.main_device_chain, &new.main_device_chain)
+            == DeviceEditTailPolicy::Cut
+            && !keeps_clocks(&previous.main_chain, &self.main_chain)
+        {
+            return false;
+        }
+        let Some(old_graph) = old_graph else {
+            return true;
+        };
+        new.tracks()
+            .iter()
+            .zip(&self.device_chains)
+            .all(|(track, chain)| {
+                let Some(old_index) = track
+                    .canonical_track_id()
+                    .and_then(|id| old_graph.track_index(id))
+                else {
+                    return true;
+                };
+                old.tracks()
+                    .get(old_index)
+                    .zip(previous.device_chains.get(old_index))
+                    .is_some_and(|(old_track, old_chain)| {
+                        policy.for_chain(&old_track.device_chain, &track.device_chain)
+                            != DeviceEditTailPolicy::Cut
+                            || keeps_clocks(old_chain, chain)
+                    })
+            })
+    }
+
     /// Retain direct native audio histories through a confirmed reset when
     /// individual chains keep their processing clock. The new graph's
     /// output alignment can change independently of those histories.
@@ -1655,34 +1715,7 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
-        // A compatible pre-Main delay map does not prove the input clock of
-        // each Main processor. Cutting a preceding latent stage can shift the
-        // PCM and authored origins fed to the same still-running worker.
-        let old = previous.revision.arrangement();
-        let new = self.revision.arrangement();
-        if (previous.performance_frame != 0
-            || previous.arrangement_frame != 0
-            || !previous.renders_no_device_chains())
-            && tail_policy.for_chain(&old.main_device_chain, &new.main_device_chain)
-                == DeviceEditTailPolicy::Cut
-            && previous
-                .main_chain
-                .foreign_bindings()
-                .flatten()
-                .any(|binding| {
-                    self.main_chain
-                        .foreign_bindings()
-                        .flatten()
-                        .any(|next| next == binding)
-                        && !old
-                            .signal_graph
-                            .as_ref()
-                            .zip(new.signal_graph.as_ref())
-                            .is_some_and(|(old, new)| {
-                                same_processor_input_clock(old, new, binding.instance)
-                            })
-                })
-        {
+        if !self.device_cut_keeps_effect_clocks(previous, tail_policy) {
             return Err(SessionPlaybackError::LatencyLayoutChanged);
         }
         let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
