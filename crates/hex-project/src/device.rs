@@ -117,6 +117,18 @@ pub struct Device {
     pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
+    pub(crate) fn fresh_serial_leaf(id: DeviceId, state: NativeDeviceState) -> Self {
+        Self {
+            modulation: Default::default(),
+            parent: None,
+            automation: Vec::new(),
+            id,
+            state,
+            bypassed: false,
+            comparison: None,
+        }
+    }
+
     pub fn modulation(&self) -> &crate::DeviceModulation {
         &self.modulation
     }
