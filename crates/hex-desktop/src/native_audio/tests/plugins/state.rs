@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering::Release;
 pub(super) mod edits;
 mod power_receipt;
 mod save;
+mod saved_off_main;
 mod verified;
 
 /// Tests that hold a fresh callback before its first graph use the real
