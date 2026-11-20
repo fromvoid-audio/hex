@@ -29,7 +29,7 @@ impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
     }
 
     pub fn reset(&mut self) {
-        self.frames.fill([0.0; 2]);
+        self.frames[..self.len].fill([0.0; 2]);
         self.next = 0;
     }
 }

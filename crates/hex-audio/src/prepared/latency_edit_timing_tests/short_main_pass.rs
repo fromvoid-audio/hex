@@ -150,6 +150,16 @@ fn terminal_inline_stage(
             pcm[start + actual.len()..start + actual.len() + next.len()]
         );
 
+        const SEEK: u64 = 1_024;
+        let mut after_seek = vec![[0.0; 2]; latency_frames + 64];
+        control.command(PlaybackCommand::Seek(SEEK)).unwrap();
+        for chunk in after_seek.chunks_mut(partition) {
+            render(&mut callback, chunk);
+        }
+        let (cleared, audible) = after_seek.split_at(latency_frames);
+        assert!(cleared.iter().all(|sample| *sample == [0.0; 2]));
+        assert_eq!(audible, &pcm[SEEK as usize..SEEK as usize + audible.len()]);
+
         control.command(PlaybackCommand::Pause).unwrap();
         render(&mut callback, &mut next);
         assert_eq!(latency(&callback), Some(latency_frames as u32));
