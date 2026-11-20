@@ -1593,6 +1593,7 @@ struct DeviceInsertGate {
     resume: mpsc::Receiver<()>,
 }
 struct ConfirmationProbe {
+    replay_capture: bool,
     ready: SyncSender<()>,
     resume: mpsc::Receiver<()>,
 }
@@ -1711,6 +1712,14 @@ impl WorkerAudioSink for ResidentSink {
                 cohorts,
                 [vec![(0, 0.75), (11, 0.5)], vec![(0, 0.25), (11, 0.25)]]
             );
+        }
+        if let Some(probe) = self
+            .confirmation_probe
+            .lock()
+            .unwrap()
+            .take_if(|probe| probe.replay_capture)
+        {
+            self.inner.plugins.replay_capture_gate = Some((probe.ready, probe.resume));
         }
         let captured = self.inner.capture_retiring_editor_replay(batch, mode);
         if captured.is_ok() && std::env::var_os("HEX_REPLAY_TEST_REFUSE").is_some() {
@@ -1979,7 +1988,11 @@ impl WorkerAudioSink for ResidentSink {
         context: AudioSourceContext,
         acceptance: hex_session::service::ResidentPublicationAcceptance,
     ) -> Result<(), hex_session::service::PluginParameterGestureError> {
-        let probe = self.confirmation_probe.lock().unwrap().take();
+        let probe = self
+            .confirmation_probe
+            .lock()
+            .unwrap()
+            .take_if(|probe| !probe.replay_capture);
         if let Some(probe) = probe {
             probe.ready.send(()).unwrap();
             probe.resume.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -3165,6 +3178,17 @@ impl ResidentHarness {
     }
 
     pub(super) fn probe_next_parameter_confirmation(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+        self.probe_next_parameter_stage(false)
+    }
+
+    pub(super) fn probe_next_replay_capture(&self) -> (mpsc::Receiver<()>, SyncSender<()>) {
+        self.probe_next_parameter_stage(true)
+    }
+
+    fn probe_next_parameter_stage(
+        &self,
+        replay_capture: bool,
+    ) -> (mpsc::Receiver<()>, SyncSender<()>) {
         let (ready, entered) = mpsc::sync_channel(1);
         let (resume, resumed) = mpsc::sync_channel(1);
         assert!(
@@ -3172,6 +3196,7 @@ impl ResidentHarness {
                 .lock()
                 .unwrap()
                 .replace(ConfirmationProbe {
+                    replay_capture,
                     ready,
                     resume: resumed
                 })
