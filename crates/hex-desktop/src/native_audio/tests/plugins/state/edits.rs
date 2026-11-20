@@ -859,6 +859,12 @@ fn late_editor_replay_saves_and_reopens_stopped_authored_effect() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_saves_and_reopens_stopped_modulated_effect() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedStopped);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_refusal_restores_confirmed_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Refuse);
 }
@@ -888,8 +894,45 @@ enum ReplayCase {
     Playing,
     AuthoredPlaying,
     AuthoredStopped,
+    ModulatedStopped,
     Refuse,
     RefuseAfterNewer,
+}
+
+fn gain_modulation(first_id: u64) -> hex_project::DeviceModulation {
+    use hex_project::{
+        DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
+        ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    };
+    let source = ModulationSourceId::new(first_id).unwrap();
+    DeviceModulation::new(
+        vec![Modulator {
+            id: source,
+            color: Default::default(),
+            enabled: true,
+            state: hex_engine::lfo_modulator::Settings {
+                rate: hex_engine::lfo_modulator::Rate::Hertz(0.0),
+                phase: 0.25,
+                ..Default::default()
+            }
+            .encode()
+            .unwrap(),
+        }],
+        vec![DeviceModulationRoute {
+            id: ModulationRouteId::new(first_id + 1).unwrap(),
+            source,
+            output: ModulationOutputId::MAIN,
+            destination: ModulationDestination::Device {
+                device_type: hex_plugin_state::TYPE_ID,
+                target: hex_project::DeviceAutomationTarget::Vst3 { parameter: 0 },
+                vst3_class: Some(selection().cid),
+            },
+            amount: ModulationAmount::new(0.125).unwrap(),
+            range: ModulationRange::default(),
+            enabled: true,
+        }],
+    )
+    .unwrap()
 }
 
 fn retiring_editor_replay_roundtrip(case: ReplayCase) {
@@ -898,6 +941,8 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         case,
         ReplayCase::AuthoredPlaying | ReplayCase::AuthoredStopped
     );
+    let modulated = case == ReplayCase::ModulatedStopped;
+    let manual_base = authored || modulated;
     let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
     let spanning = matches!(
         case,
@@ -908,7 +953,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             case,
             ReplayCase::EarlierGrouped | ReplayCase::EarlierGroupedConflict
         );
-    let several_groups = authored
+    let several_groups = manual_base
         || matches!(
             case,
             ReplayCase::SeveralGroups | ReplayCase::SeveralGroupsRefuse
@@ -999,7 +1044,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             host
         }
     };
-    let frames = if playing || authored {
+    let frames = if playing || manual_base {
         48_000 * 20
     } else {
         2048
@@ -1026,6 +1071,19 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         (applied, _) = h.applied(applied);
         saved = lane.state;
     }
+    let modulation = modulated.then(|| gain_modulation(saved.project.next_identity()));
+    if let Some(modulation) = &modulation {
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceModulation {
+                device: saved.project.main_devices()[0].id(),
+                modulation: modulation.clone(),
+            }))
+            .unwrap();
+        let edited = ordinary_terminal(&mut h);
+        assert!(edited.error.is_none(), "{:?}", edited.error);
+        (applied, _) = h.applied(applied);
+        saved = edited.state;
+    }
     let original = &saved.project.main_devices()[0];
     let device = original.id();
     let replacement_gain = if already_canonical || earlier_group {
@@ -1048,7 +1106,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             .map(|entry| entry.unwrap().path())
             .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
     };
-    let old_trace = if authored {
+    let old_trace = if manual_base {
         use std::os::unix::fs::MetadataExt as _;
         let before: Vec<_> = trace_files()
             .map(|path| {
@@ -1152,7 +1210,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     if !pre_cut && !earlier_group {
         emit(&old_trace);
     }
-    if grouped && !authored && (!earlier_group || spanning) {
+    if grouped && !manual_base && (!earlier_group || spanning) {
         finish_group();
     }
     if matches!(case, ReplayCase::Conflict | ReplayCase::RefuseAfterNewer) {
@@ -1222,7 +1280,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             block[255]
         );
     }
-    if authored {
+    if manual_base {
         finish_group();
     }
 
@@ -1284,6 +1342,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             | ReplayCase::Playing
             | ReplayCase::AuthoredPlaying
             | ReplayCase::AuthoredStopped
+            | ReplayCase::ModulatedStopped
             | ReplayCase::Grouped
             | ReplayCase::Mixed
             | ReplayCase::SeveralGroups
@@ -1334,12 +1393,12 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             f32::from_le_bytes(captured.component.unwrap()[8..12].try_into().unwrap()),
             final_gain
         );
-        let path = files.0.join(if authored {
-            "authored.hex"
+        let path = files.0.join(if manual_base {
+            "manual.hex"
         } else {
             "effect.hex"
         });
-        let request = if authored {
+        let request = if manual_base {
             Request::SaveNew(path.clone())
         } else {
             Request::SaveCurrent
@@ -1370,8 +1429,9 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             for _ in 0..8 {
                 block = super::super::instruments::render_completed_block(h);
             }
+            let expected = if modulated { 0.375 } else { 0.25 };
             assert!(
-                (block[255][0] - 0.25).abs() < 1.0e-6,
+                (block[255][0] - expected).abs() < 1.0e-6,
                 "manual base output {:?}",
                 block[255]
             );
@@ -1388,6 +1448,12 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 assert_manual_output(&h);
                 return;
             }
+        }
+        if let Some(modulation) = &modulation {
+            assert_eq!(
+                saved_project.device(device).unwrap().modulation(),
+                modulation
+            );
         }
         let previous_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         h.service.shutdown(Duration::from_secs(1)).unwrap();
@@ -1443,7 +1509,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 if several_groups { 0.25 } else { 0.5 }
             );
         }
-        if case == ReplayCase::AuthoredStopped {
+        if matches!(
+            case,
+            ReplayCase::AuthoredStopped | ReplayCase::ModulatedStopped
+        ) {
             h.audio
                 .as_mut()
                 .unwrap()

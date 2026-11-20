@@ -356,8 +356,8 @@ impl Plugins {
             } => (verify_existing, Some((publication, cohorts)), manual_base),
         };
         if isolate {
-            if modulated.is_some() {
-                return Err("vst3 replay requires a source without modulation".into());
+            if playing && modulated.is_some() {
+                return Err("vst3 replay requires stopped playback for a modulated source".into());
             }
             self.hold_editor_for_replay(control, binding, cancellation)?;
             let host = self
