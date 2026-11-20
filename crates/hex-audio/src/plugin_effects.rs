@@ -7,7 +7,7 @@
 use crate::plugin_worker::{NativeWorker, NativeWorkerStartFailure};
 use hex_lattice::{
     ForeignModulationSamples, ForeignNote, ForeignProcessorNode, ForeignProcessors,
-    PreparedForeignProcessor, ProcessorInstanceIdentity,
+    PreparedForeignProcessor, ProcessorChainOwner, ProcessorInstanceIdentity,
 };
 use hex_lattice_contract::{
     DeviceContractError, ForeignProcessorBinding as Binding, MAX_FOREIGN_AUTOMATION_TARGETS,
@@ -645,6 +645,22 @@ impl NativeEffectCallback {
     }
     pub fn identity(&self) -> ProcessorInstanceIdentity {
         self.configuration.identity
+    }
+
+    /// The enclosing endpoint bank has verified this callback is quiescent and
+    /// healthy. Copy only the aligned PCM after the full fade was accepted.
+    pub(crate) fn settled_main_pass_delay(
+        &self,
+    ) -> Result<Option<hex_lattice::MainPassDelay>, DeviceContractError> {
+        if self.identity().owner() != ProcessorChainOwner::Main || self.dry.len() != 512 {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        if !self.bypass.settled_at_dry() {
+            return Ok(None);
+        }
+        hex_lattice::MainPassDelay::copy_committed_ring(&self.dry, self.dry_cursor)
+            .map(Some)
+            .ok_or(DeviceContractError::ForeignProcessingUnavailable)
     }
     pub fn matches_worker(&self, worker: &NativeWorker) -> bool {
         self.transport.matches_worker(worker)

@@ -2520,6 +2520,27 @@ impl Playback {
             .is_some_and(crate::SessionPlayback::native_removal_pending)
     }
 
+    /// Exact ordinary endpoint whose settled dry PCM is needed at this cut.
+    pub fn pending_foreign_main_pass_binding(
+        &self,
+    ) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
+        self.session_runtime
+            .as_deref()?
+            .pending_foreign_main_pass_binding()
+    }
+
+    /// Supply a value-only snapshot from the active endpoint after host acceptance.
+    /// It becomes audible only if this candidate inherits the same fenced predecessor.
+    pub fn stage_foreign_main_pass_delay(
+        &mut self,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
+        delay: hex_lattice::MainPassDelay,
+    ) -> bool {
+        self.session_runtime
+            .as_deref_mut()
+            .is_some_and(|next| next.stage_foreign_main_pass_delay(binding, delay))
+    }
+
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
     /// the same explicitly known project generation. This carries no voice/DSP history or
     /// source compatibility. Unknown generations (including legacy defaults) authorize nothing.
