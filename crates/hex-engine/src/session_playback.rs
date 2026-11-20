@@ -30,6 +30,7 @@ mod candidate_storage;
 mod device_move;
 mod device_reorder;
 mod foreign_arrangement;
+mod instrument_move;
 mod instrument_removal;
 mod main_pass_delay;
 mod midi_capture;
