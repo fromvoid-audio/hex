@@ -1983,42 +1983,44 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
-        let staged_deadline = self
-            .verified_edit
-            .as_ref()
-            .filter(|edit| {
-                edit.attempt.prepares_hosted_sources()
-                    && edit.attempt.source().context() == input.context()
-                    && edit.attempt.preparing()
-            })
-            .map(|edit| edit.attempt.preparation_deadline());
-        if staged_deadline.is_some() {
+        let staged = self.verified_edit.as_ref().filter(|edit| {
+            edit.attempt.prepares_hosted_sources()
+                && edit.attempt.source().context() == input.context()
+                && edit.attempt.preparing()
+        });
+        let staged_cancellation = if let Some(edit) = staged {
+            let cancellation = edit
+                .cancellation
+                .clone()
+                .ok_or("verified vst3 preparation request is unavailable")?
+                .with_preparation_deadline(edit.attempt.preparation_deadline());
             self.plugins.prepare_edit_sources(
                 self.output.as_mut(),
                 &input,
                 self.desired.as_deref(),
-                self.request_cancellation.as_ref(),
+                Some(&cancellation),
                 true,
             )?;
-        }
-        let bindings =
-            self.plugins
-                .verified_effect_bindings(input, proposal, staged_deadline.is_some())?;
+            Some(cancellation)
+        } else {
+            None
+        };
+        let bindings = self.plugins.verified_effect_bindings(
+            input,
+            proposal,
+            staged_cancellation.is_some(),
+        )?;
         let control = self
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("verified audio output is unavailable")?;
         loop {
-            if let Some(deadline) = staged_deadline {
-                if std::time::Instant::now() >= deadline {
+            if let Some(cancellation) = &staged_cancellation {
+                if cancellation.preparation_expired() {
                     return Err("verified vst3 preparation timed out".into());
                 }
-                if self
-                    .request_cancellation
-                    .as_ref()
-                    .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
-                {
+                if cancellation.is_cancelled() {
                     return Err("verified vst3 preparation cancelled".into());
                 }
             }
@@ -2030,7 +2032,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 .map_err(|error| error.to_string())
             }) {
                 Err(error)
-                    if staged_deadline.is_some()
+                    if staged_cancellation.is_some()
                         && matches!(
                             error.as_str(),
                             "native effect preparation is busy" | "native effect selection is busy"

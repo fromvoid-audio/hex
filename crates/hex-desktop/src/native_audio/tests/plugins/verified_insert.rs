@@ -125,15 +125,61 @@ fn verified_running_vst3_copy_keeps_the_original_until_exact_install() {
             break offer;
         }
     };
-    submit(
-        &h,
+    let duplicate = || {
         clipboard(DeviceClipboardAction::Duplicate {
             source: DeviceChainOwner::Main,
             selected: DeviceSelectionIds::new(&[original.id()]).unwrap(),
             destination: DeviceChainOwner::Main,
             before: None,
-        }),
+        })
+    };
+    // Hold actual Root Work longer than Session's ten-second preparation
+    // budget. Only the private edit may expire; the playing source is retained.
+    let (held, observed) = std::sync::mpsc::sync_channel(1);
+    let (release, resume) = std::sync::mpsc::sync_channel(1);
+    let backend = Arc::clone(&h.backend);
+    let holder = std::thread::spawn(move || {
+        backend
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .with_native_source_work_held_on_control(|| {
+                held.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(15)).unwrap();
+            })
+            .unwrap();
+    });
+    observed.recv_timeout(Duration::from_secs(1)).unwrap();
+    submit(&h, duplicate());
+    let deadline = Instant::now() + Duration::from_secs(11);
+    let expired = loop {
+        if let Ok(event) = h.service.as_ref().unwrap().try_event()
+            && event.request_complete
+        {
+            break Some(event);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    let expired = expired.expect("staged copy must expire while Root Work is still held");
+    assert_eq!(
+        expired.error.as_deref(),
+        Some("verified vst3 preparation timed out")
     );
+    assert_eq!(expired.state.project, inserted.state.project);
+    assert_eq!(expired.state.revision, inserted.state.revision);
+    assert_eq!(expired.state.can_undo, inserted.state.can_undo);
+    assert_eq!(expired.state.can_redo, inserted.state.can_redo);
+    assert_eq!(status(&h).applied_audio_source(), Some(predecessor));
+    assert!(status(&h).playing.load(Acquire));
+    assert_eq!(binding().unwrap().1, original_binding);
+
+    submit(&h, duplicate());
     assert!(offer(&h).cancel());
     let cancelled = next_running_event(&h);
     assert_eq!(

@@ -533,7 +533,9 @@ impl Plugins {
     }
 }
 pub(super) fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result<(), String> {
-    if cancellation.is_some_and(RequestCancellation::is_cancelled) {
+    if cancellation.is_some_and(RequestCancellation::preparation_expired) {
+        Err("verified vst3 preparation timed out".into())
+    } else if cancellation.is_some_and(RequestCancellation::is_cancelled) {
         Err("vst3 edit cancelled by document request or shutdown".into())
     } else {
         Ok(())
