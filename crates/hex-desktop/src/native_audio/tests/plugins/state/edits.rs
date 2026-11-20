@@ -283,16 +283,36 @@ fn pre_cut_editor_conflict_preserves_the_replacement_and_original_receipt() {
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn retiring_instrument_confirms_matching_receipt_while_playing() {
-    retiring_instrument_confirmation(true);
+    retiring_instrument_receipt(InstrumentReceipt::Matching);
 }
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn retiring_instrument_preserves_conflicting_receipt_while_playing() {
-    retiring_instrument_confirmation(false);
+    retiring_instrument_receipt(InstrumentReceipt::Conflict);
 }
 
-fn retiring_instrument_confirmation(matching: bool) {
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_replays_late_receipt_without_restarting_held_note() {
+    retiring_instrument_receipt(InstrumentReceipt::Late);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn retiring_instrument_restores_held_note_gain_when_late_publication_refuses() {
+    retiring_instrument_receipt(InstrumentReceipt::LateRefused);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InstrumentReceipt {
+    Matching,
+    Conflict,
+    Late,
+    LateRefused,
+}
+
+fn retiring_instrument_receipt(case: InstrumentReceipt) {
     const CHILD: &str = "HEX_RETIRING_INSTRUMENT_CONFIRMATION";
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
@@ -313,6 +333,9 @@ fn retiring_instrument_confirmation(matching: bool) {
             .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
             .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
             .env("HEX_ORIGINAL_EDITOR_END_RELEASE", files.0.join("end"))
+            .envs(
+                (case == InstrumentReceipt::LateRefused).then_some(("HEX_REPLAY_TEST_REFUSE", "1")),
+            )
             .output()
             .unwrap();
         assert!(
@@ -396,14 +419,33 @@ fn retiring_instrument_confirmation(matching: bool) {
             .unwrap()
             .file_name(),
     );
-    emit_replay_fixture_edit(&original_trace);
-    let replacement = with_gain(original.state(), if matching { 3.0 } else { 1.5 });
+    let expected = with_gain(original.state(), 3.0);
+    let replacement = if case == InstrumentReceipt::Matching {
+        expected.clone()
+    } else {
+        with_gain(original.state(), 1.5)
+    };
+    let late = matches!(
+        case,
+        InstrumentReceipt::Late | InstrumentReceipt::LateRefused
+    );
+    let publication = if late {
+        Some(h.probe_next_native_publication())
+    } else {
+        emit_replay_fixture_edit(&original_trace);
+        None
+    };
     h.service
         .submit(Request::Edit(Command::ReplaceDeviceState {
             device,
             state: replacement.clone(),
         }))
         .unwrap();
+    if let Some((ready, resume, _)) = publication {
+        graph_publication_ready(&mut h, &ready);
+        emit_replay_fixture_edit(&original_trace);
+        resume.send(()).unwrap();
+    }
     let installed = ordinary_terminal(&mut h);
     assert!(installed.error.is_none(), "{:?}", installed.error);
     let (installed_revision, _) = h.applied(applied);
@@ -448,6 +490,19 @@ fn retiring_instrument_confirmation(matching: bool) {
         baseline.abs() > 0.01,
         "replacement note did not reach the output"
     );
+    let successor_trace = if late {
+        let mut paths = fs::read_dir(&traces)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path != &original_trace && path.extension().is_some_and(|ext| ext == "bin")
+            });
+        let path = paths.next().expect("installed successor trace");
+        assert!(paths.next().is_none(), "more than one prepared successor");
+        Some(path)
+    } else {
+        None
+    };
     fs::write(
         std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
         b"end",
@@ -472,28 +527,37 @@ fn retiring_instrument_confirmation(matching: bool) {
         );
         request_id += 1;
     };
-    assert_eq!(settled.1.project, installed.state.project);
-    assert_eq!(settled.1.revision, installed.state.revision);
+    let replayed = case == InstrumentReceipt::Late;
+    if replayed {
+        assert_eq!(settled.0, Progress::CloseSafe);
+        assert_eq!(settled.1.revision, installed.state.revision + 1);
+        assert_eq!(settled.1.project.device(device).unwrap().state(), &expected);
+    } else {
+        assert_eq!(settled.1.project, installed.state.project);
+        assert_eq!(settled.1.revision, installed.state.revision);
+    }
     assert_eq!(installed_binding(&h), Some(successor));
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert_eq!(
         status.native_effect_source().unwrap().audio_revision,
-        installed_revision
+        installed_revision + u64::from(replayed)
     );
     assert!(status.playing.load(Acquire));
+    if case == InstrumentReceipt::LateRefused {
+        // The test sink refuses only after the successor has actually
+        // accepted the guarded write and returned its new opaque state.
+        assert!(h.refuse.load(Acquire));
+        h.refuse.store(false, Release);
+    }
     let retained = super::super::editor_recording::probe(&h, |reply| {
         EditorRecordingProbe::RetiringBatch(original_binding, reply)
     });
     let block = super::super::instruments::render_completed_block(&h);
-    assert!((block[255][0] - baseline).abs() < 1.0e-6);
-    if matching {
+    let expected_output = if replayed { baseline * 2.0 } else { baseline };
+    assert!((block[255][0] - expected_output).abs() < 1.0e-6);
+    if matches!(case, InstrumentReceipt::Matching | InstrumentReceipt::Late) {
         assert_eq!(settled.0, Progress::CloseSafe);
         assert!(retained.is_none());
-        let files = Files::new();
-        let path = files.0.join("confirmed.hex");
-        assert!(h.run(Request::SaveNew(path.clone())).save_complete);
-        let project = hex_storage::load(path).unwrap();
-        assert_eq!(project.device(device).unwrap().state(), &replacement);
     } else {
         assert_eq!(
             settled.0,
@@ -501,7 +565,9 @@ fn retiring_instrument_confirmation(matching: bool) {
         );
         let retained = retained.unwrap();
         assert_eq!(retained.successor, successor);
-        assert_eq!(retained.predecessor_admitted_through, Some(2));
+        if case == InstrumentReceipt::Conflict {
+            assert_eq!(retained.predecessor_admitted_through, Some(2));
+        }
         assert_eq!(
             retained
                 .events()
@@ -514,6 +580,33 @@ fn retiring_instrument_confirmation(matching: bool) {
                 RetiringEditorEventKind::End
             ],
         );
+    }
+    if case != InstrumentReceipt::Conflict {
+        let files = Files::new();
+        let path = files.0.join("settled.hex");
+        assert!(h.run(Request::SaveNew(path.clone())).save_complete);
+        let project = hex_storage::load(path).unwrap();
+        assert_eq!(
+            project.device(device).unwrap().state(),
+            if case == InstrumentReceipt::LateRefused {
+                &replacement
+            } else {
+                &expected
+            },
+        );
+    }
+    if let Some(successor_trace) = successor_trace {
+        // Save calls getState on the successor, refreshing its control-side
+        // note trace. A restart or chase would send an extra event.
+        let bytes = fs::read(successor_trace).unwrap();
+        assert_eq!(bytes.len(), 20);
+        let word = |index| i32::from_ne_bytes(bytes[index..index + 4].try_into().unwrap());
+        assert_eq!(
+            (word(4), word(8)),
+            (1, 0),
+            "successor retriggered its held note"
+        );
+        assert!(word(12) > 0, "successor did not retain a named gate");
     }
 }
 
