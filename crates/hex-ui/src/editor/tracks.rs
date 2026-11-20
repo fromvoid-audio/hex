@@ -1,3 +1,5 @@
+#[path = "tracks/clip_drag_bounds.rs"]
+mod clip_drag_bounds;
 #[path = "tracks/clone_source_window.rs"]
 mod clone_source_window;
 #[path = "tracks/group_overlap.rs"]
@@ -30,6 +32,7 @@ use gpui::{
 };
 use hex_project::{BeatTime, Clip, MidiClip, Track};
 
+use clip_drag_bounds::ClipDragBounds;
 use clone_source_window::clone_source_window;
 
 impl EditorView {
@@ -81,28 +84,6 @@ impl EditorView {
             }
         }))
     }
-}
-
-/// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
-/// strip excludes handles and cannot define its horizontal thirds. The canvas
-/// includes the parent's leading stroke; the trailing stroke belongs to the
-/// separate boundary shell, so there is no trailing layout border to expand.
-fn clip_drag_span(payload: &ClipDrag, leading_border: f32) -> impl IntoElement + use<> {
-    let span = std::rc::Rc::clone(&payload.source_span);
-    canvas(
-        move |bounds, _, _| {
-            span.set(Some((
-                f32::from(bounds.left()),
-                f32::from(bounds.size.width),
-            )));
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .left(px(-leading_border))
-    .right_0()
-    .top_0()
-    .bottom_0()
 }
 
 struct ClipGhostGeometry {
@@ -2383,9 +2364,11 @@ impl EditorView {
                     .opacity(detail_opacity),
                 )
             });
+            let source_span = midi_drag_payload
+                .as_ref()
+                .map(|(payload, _)| std::rc::Rc::clone(&payload.source_span));
             if let Some((payload, lane)) = midi_drag_payload {
                 let left_border = if border { stroke } else { 0.0 };
-                midi = midi.child(clip_drag_span(&payload, left_border));
                 let move_surface = self
                     .clip_drag_surface(
                         payload,
@@ -2411,6 +2394,7 @@ impl EditorView {
                     }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
+            let midi = ClipDragBounds::new(midi, source_span);
             let framed_clip = if narrow {
                 midi.left(relative(left as f32))
                     .w(relative(width as f32))
@@ -3073,9 +3057,11 @@ impl EditorView {
                     view.open_clip_context_menu(event.position, track, clip_id, window, cx);
                 }),
             );
+        let source_span = drag_payload
+            .as_ref()
+            .map(|(payload, _)| std::rc::Rc::clone(&payload.source_span));
         if let Some((payload, lane)) = drag_payload {
             let left_border = if border { stroke } else { 0.0 };
-            content = content.child(clip_drag_span(&payload, left_border));
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -3152,6 +3138,7 @@ impl EditorView {
                         .children([foreground]),
                 )
         });
+        let content = ClipDragBounds::new(content, source_span);
         (
             if narrow {
                 content

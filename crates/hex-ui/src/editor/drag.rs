@@ -50,6 +50,8 @@ pub(super) struct MoveAudition {
     pub(super) target: Option<hex_session::service::ArrangementMoveAudition>,
 }
 
+pub(super) type ClipSourceSpan = Rc<Cell<Option<(f32, f32)>>>;
+
 /// Bounded, metadata-only payload for one native pointer drag.
 #[derive(Clone, Debug)]
 pub(super) struct ClipDrag {
@@ -63,7 +65,7 @@ pub(super) struct ClipDrag {
     pub(super) snap_edge: Rc<Cell<Option<ClipSnapEdge>>>,
     /// Last completed resting layout, before trim handles narrow the move hit
     /// surface. Used only while admitting the original press.
-    pub(super) source_span: Rc<Cell<Option<(f32, f32)>>>,
+    pub(super) source_span: ClipSourceSpan,
     pub(super) capture: Rc<Cell<Option<PointerDown>>>,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,

@@ -3303,6 +3303,13 @@ fn cropped_clip_move_chooses_from_the_full_audio_and_midi_span(cx: &mut TestAppC
         let surface = visual
             .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
             .unwrap();
+        let resting = visual
+            .debug_bounds(selector(format!(
+                "{}clip-visual-{}",
+                if midi { "midi-" } else { "" },
+                clip.value()
+            )))
+            .unwrap();
         let down = point(
             surface.left() + surface.size.width / 4.0,
             surface.center().y,
@@ -3324,6 +3331,11 @@ fn cropped_clip_move_chooses_from_the_full_audio_and_midi_span(cx: &mut TestAppC
         editor.read_with(&visual, |view, _| {
             let drag = view.active_clip_drag.as_ref().unwrap();
             assert_eq!(drag.source_track, source);
+            assert_eq!(
+                drag.source_span.get(),
+                Some((f32::from(resting.left()), f32::from(resting.size.width))),
+                "the original press sees the completed cropped clip rectangle"
+            );
             assert_eq!(
                 drag.snap_edge.get(),
                 Some(super::drag::ClipSnapEdge::Trailing),
