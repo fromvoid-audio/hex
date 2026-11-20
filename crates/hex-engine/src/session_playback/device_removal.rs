@@ -4,6 +4,7 @@
 use super::{RouteOwner, SessionPlayback, SessionPlaybackError};
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
+use hex_lattice_contract::NativeDeviceMetadata;
 
 /// Progress of a staged native removal at a render boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,9 +396,9 @@ impl SessionPlayback {
             })
     }
 
-    /// A direct audio track has no DSP or independent clock to detach. Its
-    /// existing post-fader output already feeds both Main and ordinary sends,
-    /// whether Arrangement or Session owns the active audio source.
+    /// A direct audio track's post-fader output feeds Main and ordinary sends.
+    /// One native zero-latency Delay can keep processing through that fade
+    /// and retire with the donor without attaching a separate tail owner.
     fn direct_audio_track_removal_from(&self, previous: &Self) -> Option<usize> {
         let old = previous.revision.arrangement().tracks();
         let new = self.revision.arrangement().tracks();
@@ -429,9 +430,25 @@ impl SessionPlayback {
                 .is_some_and(|clip| clip.track == id),
             RouteOwner::Session { .. } | RouteOwner::Silence => false,
         };
+        let can_retire_chain = match track.device_chain.as_ref() {
+            [] => true,
+            [device] => {
+                matches!(route.owner, RouteOwner::Arrangement)
+                    && route.pending.is_none()
+                    && route.audio_release.is_none()
+                    && self.compensation.is_none()
+                    && previous.compensation.is_none()
+                    && !self.revision.contains_streamed_sources()
+                    && !previous.revision.contains_streamed_sources()
+                    && device.device_type == hex_devices::delay::DEFINITION.type_id()
+                    && device.foreign_processor().is_none()
+                    && device.algorithmic_latency_frames() == Some(0)
+            }
+            _ => false,
+        };
         (route.id == id
             && direct_audio
-            && track.device_chain.is_empty()
+            && can_retire_chain
             && track.instrument_id.is_none()
             && track.source_id.is_none()
             && track.midi_source_index.is_none()
