@@ -1926,10 +1926,21 @@ impl SessionPlayback {
                     {
                         return None;
                     }
-                    let mut has_foreign = false;
-                    previous.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
-                    self.visit_foreign_runtime_bindings(&mut |_| has_foreign = true);
-                    if has_foreign {
+                    // The staged cut can carry original hosted endpoints. Its
+                    // retained graph proof compares each stage's input clock.
+                    if staged_track.is_some() {
+                        if self
+                            .foreign_runtime_bindings()
+                            .any(|binding| binding.is_none())
+                            || !self
+                                .foreign_runtime_bindings()
+                                .eq(previous.foreign_runtime_bindings())
+                        {
+                            return None;
+                        }
+                    } else if self.foreign_runtime_bindings().next().is_some()
+                        || previous.foreign_runtime_bindings().next().is_some()
+                    {
                         return None;
                     }
                     // The staged plan has matched the single departing track.
@@ -2231,9 +2242,14 @@ impl SessionPlayback {
         if anchor.is_some() && carried_cut.is_none() {
             return Err(SessionPlaybackError::InvalidCommand);
         }
+        let preserves_effect_origins = planned_transfer == Some(1)
+            && matches!(
+                fresh_history,
+                None | Some(FreshHistory::RemovedTrack { staged: true, .. })
+            );
         if !self.revision.proves_delayed_effect_clocks(
             &previous.revision,
-            (planned_transfer == Some(1) && fresh_history.is_none())
+            preserves_effect_origins
                 .then_some(previous.compensation.as_ref())
                 .flatten()
                 .map(|runtime| &runtime.delays),
