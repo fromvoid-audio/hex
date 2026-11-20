@@ -802,8 +802,9 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
 /// Borrowed exact old/new state identities for a foreign parameter continuation.
 /// Effect history requires an unchanged profile and bypass state. An authored
 /// effect must retain its exact previous program under a host-fenced isolated
-/// edit. Modulation is excluded. The engine owns instrument note and program
-/// continuity. This matcher owns no source, endpoint, graph, or publication
+/// edit. A dense effect may change its captured base under the same raw target,
+/// routes and sources. The engine owns instrument note and program continuity.
+/// This matcher owns no source, endpoint, graph, or publication
 /// authority. The host must independently authenticate and fence its candidate and
 /// predecessor before passing it to a handoff; it must retain both states and
 /// all associated resources until the callback returns the graph on control.
@@ -855,8 +856,14 @@ impl<'a> ForeignConfigurationContinuation<'a> {
             && previous.output_gain == candidate.output_gain
             && previous.modulation.is_none()
             && candidate.modulation.is_none()
-            && previous.runtime.foreign_modulation().is_none()
-            && candidate.runtime.foreign_modulation().is_none()
+            && match (
+                previous.runtime.foreign_modulation(),
+                candidate.runtime.foreign_modulation(),
+            ) {
+                (None, None) => true,
+                (Some(old), Some(next)) => old.same_routes_and_sources(next),
+                _ => false,
+            }
             && matches!((&previous.runtime, &candidate.runtime),
                 (RuntimeOwnership::Foreign(old), RuntimeOwnership::Foreign(new))
                     if old.prepared == new.prepared
