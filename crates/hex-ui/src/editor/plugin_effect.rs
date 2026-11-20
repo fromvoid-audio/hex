@@ -7,6 +7,7 @@ use hex_session::service::{
     ArrangementDeviceDestination, PluginEffectControl, PluginEffectDestination,
     PluginEffectInsertion, PluginEffectSelection,
 };
+use std::rc::Rc;
 
 gpui::actions!(hex_plugin_proposal, [ActivatePluginProposal]);
 
@@ -97,7 +98,7 @@ pub(super) struct PendingPluginEffect {
     pub(super) status: String,
     pub(super) proposal: PluginProposal,
     control: Arc<PluginEffectControl>,
-    trace: Option<crate::diagnostics::PluginLoad>,
+    pub(super) trace: Option<Rc<crate::diagnostics::PluginLoad>>,
 }
 impl Drop for PendingPluginEffect {
     fn drop(&mut self) {
@@ -825,7 +826,7 @@ impl EditorView {
             self.status.clone_from(&status);
             self.pending_plugin_effect = Some(PendingPluginEffect {
                 control,
-                trace,
+                trace: trace.map(Rc::new),
                 status,
                 proposal: PluginProposal {
                     destination,
