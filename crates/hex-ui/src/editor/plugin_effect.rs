@@ -154,6 +154,13 @@ impl PluginProposal {
             (Destination::ReplaceMainEffect { replacing }, Owner::Main) => {
                 Some(SlotPosition::Before(replacing))
             }
+            (
+                Destination::ReplaceReturnEffect {
+                    return_track,
+                    replacing,
+                },
+                Owner::Return(id),
+            ) if return_track == id => Some(SlotPosition::Before(replacing)),
             _ => None,
         }
     }
@@ -831,6 +838,7 @@ impl EditorView {
             let loading = if matches!(
                 destination,
                 PluginEffectDestination::ReplaceMainEffect { .. }
+                    | PluginEffectDestination::ReplaceReturnEffect { .. }
             ) {
                 "loading replacement"
             } else {
