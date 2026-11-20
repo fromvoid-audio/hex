@@ -1,4 +1,4 @@
-use crate::{Bounds, Half};
+use crate::{Bounds, Half, Point};
 use std::{
     cmp,
     fmt::Debug,
@@ -48,6 +48,7 @@ where
     }
 
     fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
+        let new_bounds = TreeBounds::from_bounds(&new_bounds);
         // If the tree is empty, make the root the new leaf.
         let Some(root) = self.root else {
             let order = reserved.unwrap_or(1);
@@ -94,13 +95,13 @@ where
         // origin + size representation may round a union edge inward.
         let mut max_intersecting_ordering = 0;
         if reserved.is_none() {
-            max_intersecting_ordering = self.find_max_ordering(sibling, &new_bounds, 0);
+            max_intersecting_ordering = self.find_order(sibling, &new_bounds, 0);
             let mut child = sibling;
             for &parent in self.stack.iter().rev() {
                 if let Node::Internal { left, right, .. } = &self.nodes[parent] {
                     let other = if *left == child { *right } else { *left };
                     max_intersecting_ordering =
-                        self.find_max_ordering(other, &new_bounds, max_intersecting_ordering);
+                        self.find_order(other, &new_bounds, max_intersecting_ordering);
                 }
                 child = parent;
             }
@@ -151,7 +152,7 @@ where
         ordering
     }
 
-    fn find_max_ordering(&self, index: usize, bounds: &Bounds<U>, mut max_ordering: u32) -> u32 {
+    fn find_order(&self, index: usize, bounds: &TreeBounds<U>, mut max_ordering: u32) -> u32 {
         match &self.nodes[index] {
             Node::Leaf {
                 bounds: node_bounds,
@@ -175,14 +176,14 @@ where
                     // The first result can satisfy the other child's already
                     // loaded upper bound, avoiding another recursive query.
                     if left_max_ordering > right_max_ordering {
-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                        max_ordering = self.find_order(*left, bounds, max_ordering);
                         if max_ordering < right_max_ordering {
-                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                            max_ordering = self.find_order(*right, bounds, max_ordering);
                         }
                     } else {
-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                        max_ordering = self.find_order(*right, bounds, max_ordering);
                         if max_ordering < left_max_ordering {
-                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                            max_ordering = self.find_order(*left, bounds, max_ordering);
                         }
                     }
                 }
@@ -191,7 +192,7 @@ where
         max_ordering
     }
 
-    fn push_leaf(&mut self, bounds: Bounds<U>, order: u32) -> usize {
+    fn push_leaf(&mut self, bounds: TreeBounds<U>, order: u32) -> usize {
         self.nodes.push(Node::Leaf { bounds, order });
         self.nodes.len() - 1
     }
@@ -224,19 +225,53 @@ where
     }
 }
 
+// Store both edges directly so ancestor unions never round an ordered edge
+// inward when constructing an origin and size.
+#[derive(Debug, Clone, PartialEq)]
+struct TreeBounds<U> {
+    min: Point<U>,
+    max: Point<U>,
+}
+
+impl<U: Clone + Debug + Default + PartialEq + PartialOrd + Add<Output = U> + Sub<Output = U>>
+    TreeBounds<U>
+{
+    fn from_bounds(bounds: &Bounds<U>) -> Self {
+        Self {
+            min: bounds.origin.clone(),
+            max: bounds.bottom_right(),
+        }
+    }
+    fn union(&self, other: &Self) -> Self {
+        Self {
+            min: self.min.min(&other.min),
+            max: self.max.max(&other.max),
+        }
+    }
+    fn intersects(&self, other: &Self) -> bool {
+        self.min.x < other.max.x
+            && self.max.x > other.min.x
+            && self.min.y < other.max.y
+            && self.max.y > other.min.y
+    }
+    fn half_perimeter(&self) -> U {
+        (self.max.x.clone() - self.min.x.clone()) + (self.max.y.clone() - self.min.y.clone())
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Node<U>
 where
     U: Clone + Debug + Default + PartialEq,
 {
     Leaf {
-        bounds: Bounds<U>,
+        bounds: TreeBounds<U>,
         order: u32,
     },
     Internal {
         left: usize,
         right: usize,
-        bounds: Bounds<U>,
+        bounds: TreeBounds<U>,
         max_order: u32,
     },
 }
@@ -245,7 +280,7 @@ impl<U> Node<U>
 where
     U: Clone + Debug + Default + PartialEq,
 {
-    fn bounds(&self) -> &Bounds<U> {
+    fn bounds(&self) -> &TreeBounds<U> {
         match self {
             Node::Leaf { bounds, .. } => bounds,
             Node::Internal { bounds, .. } => bounds,
@@ -274,7 +309,7 @@ pub(crate) fn verify_ordering() -> Result<(), String> {
 #[cfg(any(test, feature = "test-support"))]
 mod ordering_verification {
     use super::*;
-    use crate::{Point, Size};
+    use crate::Size;
 
     fn require(value: bool, message: &str) -> Result<(), String> {
         if value {
@@ -301,8 +336,8 @@ mod ordering_verification {
                 (rect(0.0, 0.0, 4.0, 4.0), orders[0]),
                 (rect(20.0, 0.0, 4.0, 4.0), orders[1]),
             ];
-            let left = tree.push_leaf(leaves[0].0, leaves[0].1);
-            let right = tree.push_leaf(leaves[1].0, leaves[1].1);
+            let left = tree.push_leaf(TreeBounds::from_bounds(&leaves[0].0), leaves[0].1);
+            let right = tree.push_leaf(TreeBounds::from_bounds(&leaves[1].0), leaves[1].1);
             let root = tree.push_internal(left, right);
             for query in [
                 rect(1.0, 1.0, 1.0, 1.0),
@@ -317,7 +352,8 @@ mod ordering_verification {
                         .map(|(_, order)| *order)
                         .fold(initial, cmp::max);
                     require(
-                        tree.find_max_ordering(root, &query, initial) == expected,
+                        tree.find_order(root, &TreeBounds::from_bounds(&query), initial)
+                            == expected,
                         "sibling maxima query differs from independent leaf scan",
                     )?;
                 }
@@ -411,6 +447,22 @@ mod ordering_verification {
             rounded.insert(rect(0.26, 0.0, 0.005, 1.0)) == 2,
             "rounded ancestor bounds hid an intersecting leaf",
         )?;
+        // Adding a large origin back to a rounded union size can hide a
+        // fractional intersection in a sibling subtree.
+        let mut fractional = BoundsTree::default();
+        let inputs = [
+            (rect(131.0569, 13.0, 10.08135, 13.0), 1),
+            (rect(141.13824, 13.0, 10.08135, 13.0), 1),
+            (rect(383.0892, 0.0, 10.08135, 26.0), 1),
+            (rect(383.0892, 13.0, 10.08135, 13.0), 2),
+            (rect(393.17053, 0.0, 10.081087, 26.0), 3),
+        ];
+        for (bounds, expected) in inputs {
+            require(
+                fractional.insert(bounds) == expected,
+                "fractional subtree overlap lost",
+            )?;
+        }
         let mut edge = BoundsTree::default();
         let bounds = rect(-2.0, 0.25, 8.0, 4.0);
         require(
