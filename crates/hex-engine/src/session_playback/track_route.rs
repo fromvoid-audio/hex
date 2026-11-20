@@ -1,8 +1,8 @@
 //! One Resident Arrangement leaf changes its route to Main or an existing Group.
 //! Classification borrows bounded prepared inventories only. Full handoff preview
 //! still fences runtime/tails before the child's existing post-device fader moves.
-//! The Group and Main faders never participate, and compensation copy rules stay
-//! unchanged: zero-delay graphs consume the current transport stamp at the cut.
+//! Group and Main processors stay on their existing clocks. When only Main
+//! has delay, copy its transport stamps without retaining pre-Main edge data.
 use super::{RouteOwner, SessionPlayback};
 use crate::signal_graph::{SignalGraph, TrackOutput};
 
@@ -29,10 +29,12 @@ impl SessionPlayback {
         let new_graph = self.resident_group_cut_graph()?;
         let old = previous.revision.arrangement();
         let new = self.revision.arrangement();
+        let main_latency = old.main_latency_frames();
         if old.sample_rate != new.sample_rate
             || old.tempo_map != new.tempo_map
             || old.loop_region != new.loop_region
             || old.master_gain != new.master_gain
+            || main_latency != new.main_latency_frames()
             || !old.midi_routing.is_empty()
             || !new.midi_routing.is_empty()
             || self.main_chain.len() != previous.main_chain.len()
@@ -50,6 +52,9 @@ impl SessionPlayback {
         for (old_index, old) in old.tracks().iter().enumerate() {
             let id = old.canonical_track_id()?;
             let new_index = new_graph.track_index(id)?;
+            if main_latency != 0 && old_index != new_index {
+                return None;
+            }
             let new = new.tracks().get(new_index)?;
             let old_chain = previous.device_chains.get(old_index)?;
             let new_chain = self.device_chains.get(new_index)?;
@@ -125,7 +130,7 @@ impl SessionPlayback {
     fn resident_group_cut_graph(&self) -> Option<&SignalGraph> {
         let arrangement = self.revision.arrangement();
         let graph = arrangement.signal_graph.as_deref()?;
-        if arrangement.main_latency_frames() != 0 || !arrangement.return_buses().is_empty() {
+        if !arrangement.return_buses().is_empty() {
             return None;
         }
         // Before the first child joins (or after the last leaves), the flat
@@ -134,10 +139,11 @@ impl SessionPlayback {
         let supported = match &self.compensation {
             None => !graph.needs_runtime(),
             Some(runtime) => {
-                runtime.horizon() == 0
-                    && std::ptr::eq(graph, runtime.graph.as_ref())
-                    && graph.supports_closed_group_stream()
-                    && graph.supports_closed_compensated_audio_groups()
+                std::ptr::eq(graph, runtime.graph.as_ref())
+                    && ((runtime.horizon() == 0
+                        && graph.supports_closed_group_stream()
+                        && graph.supports_closed_compensated_audio_groups())
+                        || runtime.group_route_main_delay_only())
             }
         };
         supported.then_some(graph)

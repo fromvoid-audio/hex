@@ -185,6 +185,42 @@ fn route_only_device_proof_refuses_foreign_metadata_without_a_binding() {
     }
 }
 
+#[test]
+fn group_reroute_refuses_unchanged_delay_upstream_of_main() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (mut editor, media, leaf, group) = fixture();
+    editor
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    let before = prepare(editor.project());
+    editor
+        .execute(Command::ReparentTracks {
+            tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+            destination: TrackDestination {
+                parent_group: Some(group),
+                before: None,
+            },
+        })
+        .unwrap();
+    let after = prepare(editor.project());
+    let delay = before.arrangement().main_latency_frames();
+    assert!(delay > 0);
+    assert_eq!(after.arrangement().main_latency_frames(), delay);
+    let old = SessionPlayback::new(before).unwrap();
+    let next = SessionPlayback::new(after).unwrap();
+    assert_eq!(next.resident_group_reroute_from(&old), None);
+}
+
 fn hex_engine_delay() -> hex_lattice_contract::NativeDeviceState {
     use hex_lattice_contract::NativeDeviceMetadata;
     hex_devices::delay::DEFINITION.default_state().unwrap()

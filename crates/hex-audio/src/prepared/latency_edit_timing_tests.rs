@@ -24,6 +24,8 @@ mod short_main_pass;
 mod track_removal;
 #[cfg(feature = "allocation-probe")]
 mod vector_move;
+#[cfg(feature = "allocation-probe")]
+mod vector_removal;
 
 const RATE: u32 = 48_000;
 const DELAY: usize = 72;

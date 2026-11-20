@@ -140,7 +140,7 @@ enum RemovalTransition {
     Track(usize),
     Reorder(usize),
     Route(usize),
-    Analytic(usize),
+    Instrument(usize),
     Move(StagedTrackMove),
     Return(ReturnId),
 }
@@ -173,6 +173,10 @@ impl PendingNativeRemoval {
         self.runtime == previous.capture_runtime && self.epoch == previous.capture_epoch
     }
 
+    pub(super) fn matches_group_reroute(self, previous: &SessionPlayback) -> bool {
+        matches!(self.transition, RemovalTransition::Route(_)) && self.matches(previous)
+    }
+
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
             RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
@@ -181,7 +185,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Track(_)
             | RemovalTransition::Reorder(_)
             | RemovalTransition::Route(_)
-            | RemovalTransition::Analytic(_)
+            | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
         }
@@ -194,12 +198,14 @@ impl PendingNativeRemoval {
         }
     }
 
-    pub(super) fn faded_analytic_track(
+    pub(super) fn faded_instrument_track(
         self,
         previous: &SessionPlayback,
     ) -> Option<hex_project::TrackId> {
         match self.transition {
-            RemovalTransition::Analytic(index) => previous.routes.get(index).map(|route| route.id),
+            RemovalTransition::Instrument(index) => {
+                previous.routes.get(index).map(|route| route.id)
+            }
             _ => None,
         }
     }
@@ -235,7 +241,7 @@ impl PendingNativeRemoval {
         matches!(self.transition, RemovalTransition::Route(index)
             if previous.routes.get(index).is_some_and(|route| route.id == id))
             || self.reordered_track(previous) == Some(id)
-            || self.faded_analytic_track(previous) == Some(id)
+            || self.faded_instrument_track(previous) == Some(id)
             || self.track_move_indices().is_some_and(|indices| {
                 indices.into_iter().any(|index| {
                     previous
@@ -273,7 +279,7 @@ impl PendingNativeRemoval {
             | RemovalTransition::MainPass(_)
             | RemovalTransition::Reorder(_)
             | RemovalTransition::Route(_)
-            | RemovalTransition::Analytic(_)
+            | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return(_) => None,
         }
@@ -296,7 +302,7 @@ impl PendingNativeRemoval {
             RemovalTransition::Track(index)
             | RemovalTransition::Reorder(index)
             | RemovalTransition::Route(index)
-            | RemovalTransition::Analytic(index) => {
+            | RemovalTransition::Instrument(index) => {
                 previous
                     .track_faders
                     .get(index)
@@ -397,8 +403,8 @@ impl SessionPlayback {
                     })
                 })
                 .or_else(|| {
-                    self.direct_analytic_instrument_removal_from(previous)
-                        .map(RemovalTransition::Analytic)
+                    self.direct_instrument_removal_from(previous)
+                        .map(RemovalTransition::Instrument)
                 })
                 .or_else(|| {
                     self.flat_return_removal_from(previous)
@@ -468,7 +474,7 @@ impl SessionPlayback {
                 RemovalTransition::Track(index)
                 | RemovalTransition::Reorder(index)
                 | RemovalTransition::Route(index)
-                | RemovalTransition::Analytic(index) => {
+                | RemovalTransition::Instrument(index) => {
                     let rate = previous.revision.arrangement().sample_rate();
                     previous.track_faders.get_mut(index).is_some_and(|fader| {
                         fader.begin_removal(rate);
@@ -559,7 +565,7 @@ impl SessionPlayback {
                 RemovalTransition::Track(index)
                 | RemovalTransition::Reorder(index)
                 | RemovalTransition::Route(index)
-                | RemovalTransition::Analytic(index) => {
+                | RemovalTransition::Instrument(index) => {
                     let arrangement = previous.revision.arrangement();
                     if let Some(track) = arrangement.tracks().get(index)
                         && let Some(fader) = previous.track_faders.get_mut(index)
@@ -705,8 +711,8 @@ impl SessionPlayback {
         }
     }
 
-    /// Admit a post-DSP fade for a flat Return whose processor can stay in the donor
-    /// until the cut, including a running zero-latency Reverb with active decay.
+    /// Fade a flat Return after its native effects while the complete chain
+    /// stays in the predecessor until the cut.
     fn flat_return_removal_from(&self, previous: &Self) -> Option<ReturnId> {
         if self.compensation.is_some()
             || previous.compensation.is_some()
@@ -751,19 +757,28 @@ impl SessionPlayback {
         {
             return None;
         }
-        match removed.device_chain.as_ref() {
-            [] => Some(removed.id),
-            [device]
-                if device.foreign_processor().is_none()
-                    && device.algorithmic_latency_frames() == Some(0)
-                    && (device.device_type == hex_devices::delay::DEFINITION.type_id()
-                        || (!device.bypassed
-                            && device.device_type == hex_devices::reverb::REVERB_TYPE_ID)) =>
-            {
-                Some(removed.id)
+        let devices = removed.device_chain.as_ref();
+        let delay = hex_devices::delay::DEFINITION.type_id();
+        let reverb = hex_devices::reverb::REVERB_TYPE_ID;
+        let supported_chain = match devices {
+            [] => true,
+            [device] => {
+                device.device_type == delay || (!device.bypassed && device.device_type == reverb)
             }
-            _ => None,
-        }
+            [first, second] => {
+                !first.bypassed
+                    && !second.bypassed
+                    && ((first.device_type == delay && second.device_type == reverb)
+                        || (first.device_type == reverb && second.device_type == delay))
+            }
+            _ => false,
+        };
+        (supported_chain
+            && devices.iter().all(|device| {
+                device.foreign_processor().is_none()
+                    && device.algorithmic_latency_frames() == Some(0)
+            }))
+        .then_some(removed.id)
     }
 
     fn native_removal_transition_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
