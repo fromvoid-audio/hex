@@ -186,7 +186,7 @@ fn route_only_device_proof_refuses_foreign_metadata_without_a_binding() {
 }
 
 #[test]
-fn group_reroute_refuses_a_delayed_replacement_edge() {
+fn group_reroute_refuses_a_delayed_leaf_to_group_edge_in_either_direction() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let (mut editor, media, leaf, group) = fixture();
     let child = editor
@@ -226,6 +226,7 @@ fn group_reroute_refuses_a_delayed_replacement_edge() {
     let old = SessionPlayback::new(before).unwrap();
     let next = SessionPlayback::new(after).unwrap();
     assert_eq!(next.resident_group_reroute_from(&old), None);
+    assert_eq!(old.resident_group_reroute_from(&next), None);
 }
 
 fn hex_engine_delay() -> hex_lattice_contract::NativeDeviceState {
