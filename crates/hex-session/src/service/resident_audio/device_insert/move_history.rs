@@ -1,4 +1,6 @@
 //! Prove that a history target is exactly one direct native effect move.
+//! Recognize a sole Delay or Reverb with an optional retained Utility on one
+//! side. The audio owner still validates the live route and runtime transfer.
 use hex_project::{Command, DeviceSelectionIds, Editor, Invalid, Project, StagedProjectHistory};
 
 pub(super) fn stage(
@@ -25,6 +27,7 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
     }
     let mut source = None;
     let mut destination = None;
+    let mut has_utility_prefix = false;
     for (old, new) in before.tracks().iter().zip(after.tracks()) {
         if old.devices() == new.devices() {
             continue;
@@ -37,10 +40,28 @@ fn move_command(before: &Project, after: &Project) -> Option<Command> {
         {
             return None;
         }
-        match (old.devices(), new.devices()) {
-            ([device], []) if source.is_none() => source = Some((old.id(), device)),
-            ([], [device]) if destination.is_none() => destination = Some((old.id(), device)),
+        let (slot, longer, shorter) = if old.devices().len() > new.devices().len() {
+            (&mut source, old.devices(), new.devices())
+        } else {
+            (&mut destination, new.devices(), old.devices())
+        };
+        let device = match (longer, shorter) {
+            ([device], []) => device,
+            ([prefix, device], [retained])
+                if !has_utility_prefix
+                    && prefix == retained
+                    && !prefix.bypassed()
+                    && prefix.automation().is_empty()
+                    && prefix.modulation().is_empty()
+                    && matches!(prefix.state().type_id().as_str(), Ok("hex.utility")) =>
+            {
+                has_utility_prefix = true;
+                device
+            }
             _ => return None,
+        };
+        if slot.replace((old.id(), device)).is_some() {
+            return None;
         }
     }
     let (source, device) = source?;

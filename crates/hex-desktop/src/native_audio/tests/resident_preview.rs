@@ -5014,6 +5014,134 @@ fn removing_track_with_limiter_requires_consent_and_keeps_the_same_output() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+fn utility_prefix_move_undo_and_redo_wait_for_the_running_audio_cut() {
+    use hex_project::{Command, Created, DeviceSelectionIds};
+    use hex_session::service::{DeviceInsertOutcome, ViewState};
+
+    fn status(harness: &ResidentHarness) -> &hex_audio::prepared::Status {
+        harness.audio.as_ref().unwrap().status().unwrap()
+    }
+
+    fn install(
+        harness: &mut ResidentHarness,
+        action: &str,
+        request: Request,
+        previous: &ViewState,
+    ) -> Event {
+        assert!(status(harness).playing.load(Acquire));
+        let predecessor = status(harness).recording_source().unwrap();
+        let pending = harness.run(request);
+        assert!(
+            !pending.request_complete,
+            "{action} completed before its exact callback receipt"
+        );
+        assert_eq!(pending.state.project, previous.project);
+        assert_eq!(pending.state.revision, previous.revision);
+        assert_eq!(status(harness).recording_source(), Some(predecessor));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            harness.render();
+            harness.pump();
+            if let Ok(event) = harness.service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                assert!(event.request_complete);
+                assert!(
+                    event.device_insert_confirmation.is_none(),
+                    "{action} requested an interruption"
+                );
+                let receipt = event.device_insert_complete.unwrap();
+                assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+                assert_eq!(
+                    status(harness).recording_source(),
+                    Some(hex_audio::prepared::AppliedAudioSource {
+                        output_identity: receipt.submission.output_identity,
+                        audio_revision: receipt.submission.audio_revision,
+                        context: receipt.submission.context,
+                    }),
+                    "{action} installed a different source"
+                );
+                assert_eq!(event.state.revision, previous.revision + 1);
+                return event;
+            }
+            assert!(Instant::now() < deadline, "{action} did not install");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 16_384)));
+    applied = h.applied(applied).0;
+    let source = imported.state.project.tracks()[0].id();
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "destination".into(),
+    }));
+    applied = h.applied(applied).0;
+    let Some(Created::Track(destination)) = added.created else {
+        panic!("destination track");
+    };
+    let state = |kind| {
+        hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(kind))
+            .unwrap()
+    };
+    h.run(Request::Edit(Command::InsertDevice {
+        track: destination,
+        before: None,
+        state: state("hex.utility"),
+    }));
+    applied = h.applied(applied).0;
+    let original = h.run(Request::Edit(Command::InsertDevice {
+        track: source,
+        before: None,
+        state: state("hex.delay"),
+    }));
+    h.applied(applied);
+    let Some(Created::Device(device)) = original.created else {
+        panic!("delay");
+    };
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    let moved = install(
+        &mut h,
+        "move",
+        Request::MoveTrackDevices {
+            project_generation: 0,
+            revision: original.state.revision,
+            source,
+            selected: DeviceSelectionIds::new(&[device]).unwrap(),
+            destination,
+        },
+        &original.state,
+    );
+    assert_eq!(
+        moved
+            .state
+            .project
+            .track(destination)
+            .unwrap()
+            .devices()
+            .len(),
+        2
+    );
+    let undone = install(&mut h, "undo", Request::Undo, &moved.state);
+    assert_eq!(undone.state.project, original.state.project);
+    let redone = install(&mut h, "redo", Request::Redo, &undone.state);
+    assert_eq!(redone.state.project, moved.state.project);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
 fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_running() {
     use hex_project::{Command, Created};
     use hex_session::service::{DeviceInsertOutcome, ViewState};
