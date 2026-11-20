@@ -276,3 +276,150 @@ fn running_resident_main_vst3_removal_retires_a_worker_but_keeps_pass_latency() 
         assert_dry_timing(&h, 0);
     }
 }
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn running_resident_main_power_off_retires_the_worker_but_keeps_pass_latency() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let mut h = ResidentHarness::with_plugins_at_rate_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: BRIDGE as u32,
+        }),
+        48_000,
+        directory.join("plugin-catalog.json"),
+        u64::from(SOURCE_FRAMES),
+    );
+    assert!(h.next().error.is_none());
+    let (empty, _) = h.applied(0);
+    let imported = h.run(Request::Import(impulse_wav(&files)));
+    let (dry, _) = h.applied(empty);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &imported.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    assert!(inserted.plugin_effect_complete[0].accepted);
+    h.applied(dry);
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("fixture VST3");
+    };
+    let predecessor = status(&h).recording_source().unwrap();
+    let state = inserted.state.project.device(device).unwrap().state();
+    let binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .processor_latency(device.value(), state.type_id())
+            .unwrap()
+            .stage_frames,
+        BRIDGE as u32
+    );
+    h.enable_confirmed_device_inserts();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        assert_wet_timing(&h);
+    }
+
+    // No callback runs while the first terminal/progress event is received.
+    // Ordinary running bypass currently completes here and keeps its worker.
+    // Genuine power Off must instead wait for one exact installed graph.
+    h.service
+        .submit(Request::Edit(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        }))
+        .unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none(), "{:?}", pending.error);
+    assert!(
+        !pending.request_complete,
+        "running Off completed before ACK"
+    );
+    assert_eq!(pending.state.project, inserted.state.project);
+    assert_eq!(pending.state.revision, inserted.state.revision);
+    assert_eq!(status(&h).recording_source(), Some(predecessor));
+    assert_eq!(h.plugin_progress.lock().unwrap().binding, Some(binding));
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert_aligned_fade(&h, true);
+    assert_eq!(status(&h).recording_source(), Some(predecessor));
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let powered_off = loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(event.device_insert_confirmation.is_none());
+            if event.request_complete {
+                break event;
+            }
+            assert_eq!(event.state.project, inserted.state.project);
+        }
+        if status(&h).recording_source() == Some(predecessor) {
+            render_playing(&h);
+        }
+        assert!(Instant::now() < deadline, "running Off terminal timed out");
+        std::thread::yield_now();
+    };
+    let completion = powered_off.device_insert_complete.unwrap();
+    assert_eq!(completion.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(powered_off.state.revision, inserted.state.revision + 1);
+    let off_device = powered_off.state.project.device(device).unwrap();
+    assert!(off_device.bypassed());
+    assert_eq!(off_device.state(), state);
+    let applied = status(&h).recording_source().unwrap();
+    assert_ne!(applied, predecessor);
+    assert_eq!(applied.output_identity, predecessor.output_identity);
+    assert_eq!(applied.context, completion.submission.context);
+    assert_eq!(applied.audio_revision, completion.submission.audio_revision);
+    assert_eq!(
+        h.submitted_observation()
+            .unwrap()
+            .processor_status(device.value(), state.type_id()),
+        Some(hex_engine::PreparedDeviceProcessing::PoweredOff)
+    );
+    assert!(status(&h).native_effect_source().is_none());
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while h.plugin_records.load(Acquire) != 0 {
+        assert_dry_timing(&h, BRIDGE);
+        h.pump();
+        assert!(Instant::now() < deadline, "powered-Off worker stayed warm");
+        std::thread::yield_now();
+    }
+    assert!(h.plugin_progress.lock().unwrap().binding.is_none());
+    let processed = h.plugin_completed.load(Acquire);
+    for _ in 0..4 {
+        assert_dry_timing(&h, BRIDGE);
+    }
+    assert_eq!(h.plugin_completed.load(Acquire), processed);
+
+    // The next Play belongs to a fresh pass and can use the reduced latency.
+    h.audio.as_ref().unwrap().control.stop();
+    h.render_plugin_block();
+    assert!(!status(&h).playing.load(Acquire));
+    assert_eq!(status(&h).position.load(Acquire), 0);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        assert_dry_timing(&h, 0);
+    }
+}
