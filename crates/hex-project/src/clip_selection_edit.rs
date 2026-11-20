@@ -612,6 +612,7 @@ impl Command {
             | Self::ReplaceMainDevice { .. }
             | Self::MoveMainDevice { .. }
             | Self::InsertDevice { .. }
+            | Self::ReplaceTrackDevice { .. }
             | Self::InsertInstrument { .. }
             | Self::LoadInstrument { .. }
             | Self::ReplaceTrackInstrument { .. }
