@@ -265,7 +265,7 @@ impl AudioTransformPreparation {
         if !edit.domain.fade.is_neutral() {
             // A fade keeps its original forward container clock. Iterate base
             // occurrences once; no fade buffer or callback work is introduced.
-            let clock = super::content_fade_clock::DirectedFadeClock::new(projection)?;
+            let clock = hex_project::DirectedFadeClock::new(projection)?;
             let mut covered = 0usize;
             for i in 0..projection.occurrence_count() {
                 let occurrence = projection.occurrence(i)?;

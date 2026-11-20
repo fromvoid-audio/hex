@@ -1,7 +1,6 @@
 //! A directed musical clip keeps its envelope in forward destination time.
 use super::*;
-use crate::audio_transform::content_fade_clock::DirectedFadeClock;
-use hex_project::AudioViewOccurrence;
+use hex_project::{AudioViewOccurrence, DirectedFadeClock};
 
 /// Read the clip envelope separately from reflected event reads. Legacy
 /// envelopes follow the same forward occurrences and fade clock as playback.

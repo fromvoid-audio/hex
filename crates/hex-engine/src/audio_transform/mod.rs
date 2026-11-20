@@ -19,7 +19,6 @@
 //! roots and outer pitch/warp/source processing refuse before history commit.
 mod budget;
 mod content;
-mod content_fade_clock;
 mod events;
 mod frame_fade_preview;
 pub use frame_fade_preview::{

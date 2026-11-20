@@ -2,6 +2,9 @@
 use super::*;
 #[path = "view_content.rs"]
 mod content_projection;
+#[path = "view_directed_fade.rs"]
+mod directed_fade;
+pub use directed_fade::DirectedFadeClock;
 #[path = "view_directed_start.rs"]
 mod directed_start;
 #[path = "view_ranges.rs"]
@@ -1329,8 +1332,9 @@ impl<'a> AudioViewProjection<'a> {
         })
     }
 
-    /// Bind a legacy fade to the processing clock of a forward occurrence.
-    /// The fade accepts root-relative frames within the returned occurrence.
+    /// Bind a legacy fade to the processing clock of a forward base occurrence.
+    /// Use `DirectedFadeClock` for the corresponding destination and root samples
+    /// when the clip has a directed view.
     pub fn legacy_fade_occurrence(
         &self,
         index: u64,
@@ -1338,11 +1342,8 @@ impl<'a> AudioViewProjection<'a> {
         let edit = self
             .clip
             .audio_edit()
-            .filter(|edit| {
-                edit.domain.fade_clock == AudioClipFadeClock::LegacyRoot
-                    && edit.content_view.is_none()
-            })
-            .ok_or(Invalid("audio occurrence has no forward legacy fade"))?;
+            .filter(|edit| edit.domain.fade_clock == AudioClipFadeClock::LegacyRoot)
+            .ok_or(Invalid("audio occurrence has no legacy fade"))?;
         let occurrence = self.occurrence(index)?;
         let tempo = edit.processing_tempo(self.tempo);
         let (first, origin) = if self.beat_clock {
