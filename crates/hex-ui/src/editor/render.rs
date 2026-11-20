@@ -234,6 +234,24 @@ impl EditorView {
             );
         } else {
             let status = plugin_status.unwrap_or(&self.status);
+            let feedback_paint = self
+                .pending_plugin_effect
+                .as_ref()
+                .and_then(|pending| pending.trace.as_ref())
+                .filter(|trace| !trace.feedback_painted())
+                .map(|trace| {
+                    let trace = std::rc::Rc::clone(trace);
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, _| {
+                            if bounds.intersects(&window.content_mask().bounds) {
+                                trace.record_feedback_paint();
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0()
+                });
             bar = bar.child(
                 div()
                     .id("editor-status-message")
@@ -251,8 +269,10 @@ impl EditorView {
                             .into()
                         }
                     })
+                    .relative()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(status)),
+                    .child(theme::text(status))
+                    .children(feedback_paint),
             );
         }
         if let Some(control) = &self.bounce_control {

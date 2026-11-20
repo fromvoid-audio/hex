@@ -363,6 +363,17 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             view.error, view.status, view.selected_track, view.state.as_ref().map(|s| (s.revision, s.project.tracks().len()))
         );
     });
+    if log.is_some() {
+        // Paint twice while the worker terminal is still in the receive queue.
+        for _ in 0..2 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(view.pending_plugin_effect.is_some());
+            });
+            assert!(visual.debug_bounds("editor-status-message").is_some());
+        }
+    }
     let deadline = crate::test_wait::hang_deadline();
     loop {
         cx.background_executor
@@ -400,9 +411,10 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             .lines()
             .filter(|line| line.contains("vst3_load"))
             .collect();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert!(records[0].contains("stage=submitted"));
-        assert!(records[1].contains("stage=refused"));
+        assert!(records[1].contains("stage=loading_feedback_painted"));
+        assert!(records[2].contains("stage=refused"));
         for record in records {
             assert!(record.contains("Original Processor") && record.contains("rate_hz=48000"));
             assert!(!record.contains("Original.vst3"));

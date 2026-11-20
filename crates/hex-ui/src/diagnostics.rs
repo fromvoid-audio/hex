@@ -211,6 +211,7 @@ pub(crate) fn record_group_selection(cx: &App, route: &str) {
 pub(crate) struct PluginLoad {
     handle: DiagnosticsHandle,
     details: String,
+    feedback_painted: std::cell::Cell<bool>,
 }
 
 impl PluginLoad {
@@ -229,7 +230,23 @@ impl PluginLoad {
             "class={name:?} generation={} revision={} rate_hz={rate} destination={destination:?}",
             context.project_generation, context.editor_revision,
         );
-        Some(Self { handle, details })
+        Some(Self {
+            handle,
+            details,
+            feedback_painted: std::cell::Cell::new(false),
+        })
+    }
+
+    pub(crate) fn feedback_painted(&self) -> bool {
+        self.feedback_painted.get()
+    }
+
+    /// GPUI reached paint with the loading status inside the window mask.
+    /// Physical presentation and the native editor window are observed separately.
+    pub(crate) fn record_feedback_paint(&self) {
+        if !self.feedback_painted.replace(true) {
+            self.record("loading_feedback_painted");
+        }
     }
 
     pub(crate) fn submitted(&self) {
