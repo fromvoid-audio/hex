@@ -37,6 +37,92 @@ pub(in crate::candidate_custody::eligible) struct Inventory {
     pub children: usize,
     pub ipc: usize,
 }
+impl Inventory {
+    fn add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            data: self.data.checked_add(other.data)?,
+            groups: self.groups.checked_add(other.groups)?,
+            workers: self.workers.checked_add(other.workers)?,
+            children: self.children.checked_add(other.children)?,
+            ipc: self.ipc.checked_add(other.ipc)?,
+        })
+    }
+}
+
+/// The original child is already configured, while its processor and worker
+/// have yet to be sealed. Its future construction stays charged at the pool's
+/// reserved peak. Only the actual retained backing and live lease count here.
+fn preparation_inventory(
+    slot: &Slot,
+    cell: &Execution,
+    limits: NativeSourceDataReservation,
+    reserved: NativeWorkerResourceBound,
+) -> Option<Inventory> {
+    let binding = slot.binding?;
+    if slot.retiring
+        || slot.processor.is_some()
+        || slot.endpoint_loaned
+        || slot.endpoint_return.is_some()
+        || slot.identity?.device_id() != binding.instance
+        || cell.renewal.is_some()
+        || cell.disposal.is_some()
+    {
+        return None;
+    }
+    let (data, groups, handles, children, ipc) = match cell.owner.as_ref()? {
+        Owner::Pending(owner)
+            if owner.configuration().binding == binding
+                && slot.facts == Some(owner.facts())
+                && slot.presentation.is_none() =>
+        {
+            let storage = owner.retained_storage_on_control()?;
+            if storage.inventory_node_lifetime_bound > reserved.source.inventory_node_lifetime_bound
+            {
+                return None;
+            }
+            (
+                storage.data_bytes,
+                storage.shared_groups,
+                storage.shared_handle_bound,
+                storage.native_child_lifetime_bound,
+                storage.ipc_handle_bound,
+            )
+        }
+        Owner::Prepared(owner)
+            if owner.configuration().binding == binding
+                && slot.facts.is_some()
+                && slot.presentation.map(|(presentation, _)| presentation)
+                    == Some(owner.ready().presentation) =>
+        {
+            let storage = owner.retained_storage_on_control()?;
+            (
+                storage.data_bytes,
+                storage.shared_groups,
+                storage.shared_handle_bound,
+                storage.native_child_lifetime_bound,
+                storage.ipc_handle_bound,
+            )
+        }
+        _ => return None,
+    };
+    if data.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES)?
+        > limits.max_retained_data_bytes
+        || groups > reserved.shared_groups
+        || handles.checked_add(2)? > reserved.shared_handle_bound
+        || children > reserved.source.native_child_lifetime_bound
+        || ipc > reserved.source.ipc_handle_bound
+    {
+        return None;
+    }
+    Some(Inventory {
+        data,
+        groups,
+        workers: 0,
+        children,
+        ipc,
+    })
+}
+
 impl Bank {
     pub(in crate::candidate_custody::eligible) fn reserved_shared_handles(&self) -> usize {
         self.resources
@@ -50,11 +136,15 @@ impl Bank {
         &self,
         work: &Work,
     ) -> Option<usize> {
-        self.inventory(work).map(|inventory| inventory.data)
+        self.inventory(work, None).map(|inventory| inventory.data)
     }
+    /// A verified candidate may account for a separately reserved source
+    /// before its endpoint is finished. This provides no graph reference or
+    /// publication authority for that source, and no actual backing report.
     pub(in crate::candidate_custody::eligible) fn inventory(
         &self,
         work: &Work,
+        verified_references: Option<References>,
     ) -> Option<Inventory> {
         let Some(resources) = self.resources else {
             return self.slots.is_empty().then_some(Inventory::default());
@@ -63,9 +153,9 @@ impl Bank {
             return None;
         }
         let limits = self.limits?;
-        self.slots.iter().zip(&work.cells).try_fold(
+        self.slots.iter().zip(&work.cells).enumerate().try_fold(
             Inventory::default(),
-            |mut sum, (slot, cell)| {
+            |sum, (index, (slot, cell))| {
                 if slot.phase == Phase::Vacant {
                     return (cell.owner.is_none()
                         && !cell.pending
@@ -87,6 +177,16 @@ impl Bank {
                     || slot.cancellation.is_none()
                 {
                     return None;
+                }
+                if verified_references.is_some_and(|references| !references.contains(index))
+                    && matches!(cell.owner, Some(Owner::Pending(_) | Owner::Prepared(_)))
+                {
+                    return sum.add(preparation_inventory(
+                        slot,
+                        cell,
+                        limits,
+                        resources.per_source,
+                    )?);
                 }
                 let (binding, identity, prepared, inventory) = match cell.owner.as_ref()? {
                     Owner::Effect(effect)
@@ -139,19 +239,16 @@ impl Bank {
                 {
                     return None;
                 }
-                sum.data = sum.data.checked_add(data)?;
-                sum.groups = sum
-                    .groups
-                    .checked_add(inventory.worker.shared_groups)?
-                    .checked_add(usize::from(slot.endpoint_loaned))?;
-                sum.workers = sum
-                    .workers
-                    .checked_add(inventory.worker.joining_thread_lifetime_bound)?;
-                sum.children = sum
-                    .children
-                    .checked_add(inventory.worker.native_child_lifetime_bound)?;
-                sum.ipc = sum.ipc.checked_add(inventory.worker.ipc_handle_bound)?;
-                Some(sum)
+                sum.add(Inventory {
+                    data,
+                    groups: inventory
+                        .worker
+                        .shared_groups
+                        .checked_add(usize::from(slot.endpoint_loaned))?,
+                    workers: inventory.worker.joining_thread_lifetime_bound,
+                    children: inventory.worker.native_child_lifetime_bound,
+                    ipc: inventory.worker.ipc_handle_bound,
+                })
             },
         )
     }

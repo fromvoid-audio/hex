@@ -789,6 +789,8 @@ impl super::Custody {
             reserved_slot,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             source_work,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs,
         )?;
         let mut members = summary.member_rows;
         let mut transfers = summary.transfer_rows;
