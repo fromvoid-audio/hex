@@ -143,13 +143,9 @@ fn save_with_group_pressure(capacity_exceeded: bool) {
     let mut saved = h.next();
     if !capacity_exceeded {
         assert!(saved.save_complete);
-        assert!(
-            saved.error.as_deref().is_some_and(|error| {
-                error.contains("editor input did not settle")
-                    || error.contains("state kept changing")
-            }),
-            "{:?}",
-            saved.error,
+        assert_eq!(
+            saved.error.as_deref(),
+            Some("vst3 editor group is still open · finish editing, then try save again"),
         );
         assert!(!path.exists());
         assert_eq!(saved.state.project, before.project);
@@ -159,6 +155,16 @@ fn save_with_group_pressure(capacity_exceeded: bool) {
             b"complete the accepted group",
         )
         .unwrap();
+        wait(|| {
+            h.pump();
+            h.plugin_progress
+                .lock()
+                .unwrap()
+                .editor_receipts
+                .iter()
+                .flatten()
+                .any(|event| event.kind == ParameterEditKind::GroupEnd)
+        });
         saved = h.run(Request::SaveNew(path.clone()));
     }
     assert!(
