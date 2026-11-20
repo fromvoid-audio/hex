@@ -1493,7 +1493,7 @@ impl WorkerAudioSink for NativeAudioSink {
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
         points: &[(u32, f64)],
-        publication: AudioSourceContext,
+        mode: hex_session::service::RetiringEditorReplayMode,
     ) -> Result<hex_session::service::PluginParameterCapture, String> {
         let control = self
             .output
@@ -1516,7 +1516,7 @@ impl WorkerAudioSink for NativeAudioSink {
             control,
             batch,
             points,
-            publication,
+            mode,
             self.desired.as_deref(),
             self.request_cancellation.as_ref(),
         )

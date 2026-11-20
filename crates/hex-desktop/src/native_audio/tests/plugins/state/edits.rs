@@ -259,6 +259,18 @@ fn late_editor_already_in_canonical_successor_releases_original_receipt() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn pre_cut_editor_in_canonical_successor_releases_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::PreCutAlreadyCanonical);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn pre_cut_editor_conflict_preserves_the_replacement_and_original_receipt() {
+    retiring_editor_replay_roundtrip(ReplayCase::PreCutConflict);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_group_replays_both_values_and_reopens_on_the_same_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Grouped);
 }
@@ -286,6 +298,8 @@ enum ReplayCase {
     Conflict,
     Publish,
     AlreadyCanonical,
+    PreCutAlreadyCanonical,
+    PreCutConflict,
     Grouped,
     Playing,
     Refuse,
@@ -335,6 +349,14 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
 
     let _native = native_fixture();
     let playing = case == ReplayCase::Playing;
+    let pre_cut = matches!(
+        case,
+        ReplayCase::PreCutAlreadyCanonical | ReplayCase::PreCutConflict
+    );
+    let already_canonical = matches!(
+        case,
+        ReplayCase::AlreadyCanonical | ReplayCase::PreCutAlreadyCanonical
+    );
     let effect_host = || {
         let host = host();
         if grouped {
@@ -348,11 +370,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     let (applied, _) = h.applied(0);
     let original = &saved.project.main_devices()[0];
     let device = original.id();
-    let replacement_gain = if case == ReplayCase::AlreadyCanonical {
-        3.0
-    } else {
-        1.5
-    };
+    let replacement_gain = if already_canonical { 3.0 } else { 1.5 };
     let replacement = with_gain(original.state(), replacement_gain);
     let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     let traces_dir = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
@@ -362,6 +380,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         .filter(|path| path.extension().is_some_and(|extension| extension == "bin"));
     let old_trace = traces.next().expect("original SDK helper trace");
     assert!(traces.next().is_none());
+    use crate::native_audio::tests::resident_preview::emit_replay_fixture_edit as emit;
+    if pre_cut {
+        emit(&old_trace);
+    }
     if playing {
         h.audio
             .as_mut()
@@ -381,15 +403,9 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         .unwrap();
     graph_publication_ready(&mut h, &ready);
     let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
-    let emit = |trace: &std::path::Path| {
-        fs::write(release.join(trace.file_stem().unwrap()), b"edit").unwrap();
-        wait(|| {
-            fs::read(trace)
-                .ok()
-                .is_some_and(|trace| trace.get(..4) == Some(&25_i32.to_le_bytes()))
-        });
-    };
-    emit(&old_trace);
+    if !pre_cut {
+        emit(&old_trace);
+    }
     if grouped {
         fs::write(
             std::env::var_os("HEX_ORIGINAL_EDITOR_END_RELEASE").unwrap(),
@@ -448,7 +464,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         std::thread::yield_now();
     };
 
-    if case == ReplayCase::AlreadyCanonical {
+    if already_canonical {
         use hex_session::service::{
             DeviceAutomationTakeProgress as Progress, RetiringEditorCloseBlocker,
         };
@@ -671,7 +687,22 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         );
         return;
     }
-    assert_eq!(error, "vst3 replacement accepted a newer editor edit");
+    if pre_cut {
+        assert_eq!(
+            error,
+            "vst3 replacement does not already contain the retiring edit"
+        );
+        let mut serial = 0;
+        let rows = super::super::installed_edits::query(&mut h, device, None, &mut serial)
+            .rows
+            .unwrap();
+        assert_eq!(
+            rows.iter().find(|row| row.id == 7).unwrap().normalized,
+            0.375
+        );
+    } else {
+        assert_eq!(error, "vst3 replacement accepted a newer editor edit");
+    }
     let safety = h.run(Request::QueryDeviceAutomationCloseSafety { request_id: 1 });
     assert_eq!(
         safety.device_automation_take_complete.unwrap().progress,
@@ -700,7 +731,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     .unwrap();
     assert_eq!(retained.source, old_binding);
     assert_eq!(retained.successor, successor);
-    assert_eq!(retained.predecessor_admitted_through, Some(0));
+    assert_eq!(
+        retained.predecessor_admitted_through,
+        Some(if pre_cut { 14 } else { 0 })
+    );
     assert_eq!(retained.events().len(), 14);
     for (index, edit) in retained.events().iter().enumerate() {
         assert_eq!(

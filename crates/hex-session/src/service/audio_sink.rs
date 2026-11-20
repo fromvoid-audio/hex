@@ -735,11 +735,13 @@ pub trait WorkerAudioSink: Send {
         None
     }
 
+    /// VerifyExisting must inspect the unchanged successor without admitting
+    /// any new parameter input. Apply uses a guarded successor write.
     fn capture_retiring_editor_replay(
         &mut self,
         _batch: &super::RetiringEditorBatch,
         _points: &[(u32, f64)],
-        _publication: hex_engine::AudioSourceContext,
+        _mode: super::RetiringEditorReplayMode,
     ) -> Result<super::PluginParameterCapture, String> {
         Err("retiring vst3 editor replay is unavailable".into())
     }
