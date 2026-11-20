@@ -25,7 +25,7 @@ impl EditorAction {
             Self::Open => ControllerRequest::ReopenEditor(None),
             Self::Observe => ControllerRequest::EditorVisibility,
             Self::Close => ControllerRequest::CloseEditor,
-            Self::Detach => ControllerRequest::DetachEditor,
+            Self::Detach => ControllerRequest::DetachEditorWhenIdle,
             Self::Reopen(position) => ControllerRequest::ReopenEditor(position),
         }
     }
@@ -38,6 +38,7 @@ pub(super) enum EditorOperation {
         action: EditorAction,
         request: Option<NativeWorkerControllerQuery>,
         admission_deadline: Instant,
+        retry_after: Option<Instant>,
     },
     Complete {
         generation: u64,
@@ -112,6 +113,7 @@ impl Plugins {
             action,
             request: None,
             admission_deadline: Instant::now() + Duration::from_millis(250),
+            retry_after: None,
         });
     }
 
@@ -310,10 +312,14 @@ impl Plugins {
             action,
             request,
             admission_deadline,
+            retry_after,
         }) = self.editor.as_mut()
         else {
             return;
         };
+        if request.is_none() && retry_after.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
         let progress = if let Some(request) = request {
             control.poll_native_source_controller_query_on_control(*binding, request)
         } else if !can_admit
@@ -349,6 +355,14 @@ impl Plugins {
             }
             Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::Unavailable)) => {
                 Err("native editor unavailable for this vst3".into())
+            }
+            Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::GestureActive))
+                if *action == EditorAction::Detach =>
+            {
+                *request = None;
+                *admission_deadline = Instant::now() + Duration::from_millis(250);
+                *retry_after = Instant::now().checked_add(Duration::from_millis(10));
+                return;
             }
             Ok(NativeWorkerControllerProgress::Editor(state)) => Ok(state),
             Err(error) => Err(error.into()),
@@ -531,6 +545,7 @@ mod tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,

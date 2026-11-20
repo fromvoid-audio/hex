@@ -224,7 +224,10 @@ class RestoreController final : public IEditController {
     }
     static void edit_tick(CFRunLoopTimerRef,void* context) {
         auto* self=static_cast<RestoreController*>(context);
-        const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
+        const auto* directory=std::getenv("HEX_ORIGINAL_EDITOR_RELEASE_DIR");
+        const auto per_instance=directory && std::strlen(directory)<=4000
+            ?std::string(directory)+"/"+std::to_string(::getpid()):std::string();
+        const auto* release=directory?per_instance.c_str():std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
         if(!self || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
         if(grouped_editor(self->fault)) {
             const bool was_sent=self->edits_sent;

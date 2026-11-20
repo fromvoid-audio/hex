@@ -31,6 +31,7 @@ pub(super) use paused_monitor::{
     PREPARATION_TIMEOUT, PausedEffects, PausedMonitorPreparation, paused_monitor_busy,
 };
 mod reopen;
+mod retiring_editor;
 mod save;
 use reopen::Reopen;
 
@@ -66,6 +67,7 @@ struct Source {
     editor_open_on_insert: bool,
     edit_backlog: bool,
     edit_recovery: Option<parameter_touches::PendingRead>,
+    editor_retirement: retiring_editor::Retirement,
     pending_touch: Option<parameter_touches::Touch>,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
@@ -137,7 +139,7 @@ pub(super) struct PreparationObservation {
     pub(super) facts_attempt_from_session: bool,
     pub(super) restore_refused: bool,
     pub(super) observed_latency_receipt: bool,
-    pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 8],
+    pub(super) editor_receipts: [Option<hex_audio::plugin_worker::ParameterEdit>; 16],
     pub(super) editor_receipt_count: usize,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
@@ -187,6 +189,7 @@ pub(super) struct Plugins {
     degraded_changed: Option<(u64, u64, Vec<u64>)>,
     diagnostics: Option<hex_diagnostics::DiagnosticsHandle>,
     parameter_poll: parameter_touches::PollSchedule,
+    retiring_poll: usize,
     latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -308,7 +311,11 @@ impl Plugins {
         }
         for source in &mut self.sources {
             source.edit_backlog = false;
-            source.edit_recovery = None;
+            if source.editor_retirement.lease.is_some() {
+                source.retiring = true;
+            } else {
+                source.edit_recovery = None;
+            }
             source.pending_touch = None;
             source.editor_open = false;
             source.editor_transfer = false;
@@ -421,6 +428,9 @@ impl Plugins {
             && self.edit.is_none()
             && self.degraded_changed.is_none()
             && !self.sources.iter().any(|source| {
+                if source.retiring && source.editor_retirement.parked() {
+                    return source.editor_retirement.issue_pending();
+                }
                 source.retiring
                     || source.edit_backlog
                     || source.edit_recovery.is_some()
@@ -621,6 +631,7 @@ impl Plugins {
                 editor_open_on_insert: false,
                 edit_backlog: false,
                 edit_recovery: None,
+                editor_retirement: Default::default(),
                 pending_touch: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 observed_latency_receipt: false,
@@ -683,6 +694,7 @@ impl Plugins {
                 && pending
                     .as_ref()
                     .is_some_and(|p| matches!(p.result, Some(Ok(_))));
+            source.editor_retirement.ever_accepted |= source.accepted;
             source.retiring |= !source.accepted;
             source.editor_open_on_insert = source.accepted && operation.opens_editor();
             record_insertion_stage(
@@ -714,6 +726,9 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         insertion: Option<&PluginEffectPreparation<'_>>,
     ) {
+        // Preparation pumps this same loop while a successor is starting.
+        // Retiring sources must make progress even during rapid history edits.
+        self.poll_retiring_edits();
         let Some(control) = output.publication.control() else {
             self.output_closed();
             return;
@@ -1254,6 +1269,13 @@ fn advance_source_at_progress(
             Err(reason) => return Err(reason.to_owned()),
         },
         Some(Progress::Effect { .. }) => {
+            if source.editor_retirement.lease.is_none() {
+                match control.reserve_native_retiring_edits_on_control(source.binding) {
+                    Ok(lease) => source.editor_retirement.lease = Some(lease),
+                    Err("native preparation is busy") => return Ok(None),
+                    Err(reason) => return Err(reason.to_owned()),
+                }
+            }
             if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding)
                 && (!live || (source.queued && !loaned))
             {
@@ -1343,6 +1365,7 @@ mod idle_tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,
@@ -1398,6 +1421,7 @@ mod idle_tests {
             editor_open_on_insert: false,
             edit_backlog: false,
             edit_recovery: None,
+            editor_retirement: Default::default(),
             pending_touch: None,
             #[cfg(feature = "allocation-probe")]
             observed_latency_receipt: false,

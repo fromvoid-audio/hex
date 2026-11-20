@@ -83,6 +83,149 @@ fn graph_publication_ready(h: &mut ResidentHarness, ready: &mpsc::Receiver<()>) 
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_receipts_survive_replacement_and_callback_held_shutdown() {
+    const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
+    if std::env::var_os(CHILD).is_none() {
+        let files = Files::new();
+        let release = files.0.join("release");
+        let traces = files.0.join("traces");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&traces).unwrap();
+        let outcome = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                std::thread::current().name().unwrap(),
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "116")
+            .env("HEX_ORIGINAL_EDITOR_RELEASE_DIR", release)
+            .env("HEX_ORIGINAL_NOTE_TRACE_DIR", traces)
+            .output()
+            .unwrap();
+        assert!(
+            outcome.status.success()
+                && String::from_utf8_lossy(&outcome.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        return;
+    }
+
+    let _native = native_fixture();
+    let (mut h, files, saved) = fixture(Start::Saved);
+    let (applied, _) = h.applied(0);
+    let original = &saved.project.main_devices()[0];
+    let device = original.id();
+    let replacement = with_gain(original.state(), 1.5);
+    let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let trace_directory = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
+    let mut traces = fs::read_dir(trace_directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "bin"));
+    let old_trace = traces.next().expect("original SDK helper trace");
+    assert!(traces.next().is_none());
+    let (ready, resume, _) = h.probe_next_native_publication();
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: replacement.clone(),
+        }))
+        .unwrap();
+    graph_publication_ready(&mut h, &ready);
+    let release = PathBuf::from(std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap());
+    fs::write(release.join(old_trace.file_stem().unwrap()), b"edit").unwrap();
+    wait(|| {
+        fs::read(&old_trace)
+            .ok()
+            .is_some_and(|trace| trace.get(..4) == Some(&25_i32.to_le_bytes()))
+    });
+    resume.send(()).unwrap();
+    let accepted = ordinary_terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(
+        accepted
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .processing_eq(&replacement)
+    );
+    h.applied(applied);
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let needs_disposition = (
+        device.value(),
+        hex_ui::PluginEditorRetirementIssue::NeedsDisposition,
+    );
+    while !h.retirement_issues.contains(&needs_disposition) {
+        h.pump();
+        h.render_worker_step();
+        assert!(Instant::now() < deadline, "{:?}", h.retirement_issues);
+        std::thread::yield_now();
+    }
+    let progress = *h.plugin_progress.lock().unwrap();
+    assert_eq!(progress.binding, Some(old_binding));
+    assert!(h.plugin_records.load(Acquire) >= 2);
+    assert_eq!(progress.editor_receipt_count, 14);
+    use hex_audio::plugin_worker::ParameterEditKind;
+    for (index, edit) in progress.editor_receipts[..14].iter().enumerate() {
+        let edit = edit.unwrap();
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id),
+            (index as u64 + 1, 1, 7)
+        );
+        match index {
+            0 => assert_eq!(edit.kind, ParameterEditKind::Begin),
+            13 => assert_eq!(edit.kind, ParameterEditKind::End),
+            _ => {
+                assert_eq!(edit.kind, ParameterEditKind::Perform);
+                assert_eq!(edit.normalized, 0.75);
+            }
+        }
+    }
+
+    let project = files.0.join("effect.hex");
+    let media = files.0.join("mixed-rate.wav");
+    let project_bytes = fs::read(&project).unwrap();
+    let media_bytes = fs::read(&media).unwrap();
+    h.service.shutdown(Duration::from_secs(1)).unwrap();
+    assert!(
+        h.callback
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .shutdown_requested()
+    );
+    assert_eq!(hex_audio::audio_lifecycle_failure(), None);
+    h.release_relinquished_output();
+    wait(|| hex_audio::audio_lifecycle_failure().is_some());
+    assert_eq!(
+        hex_audio::audio_lifecycle_failure(),
+        Some(hex_audio::AudioLifecycleFailure::RetiringEditor)
+    );
+    let mut blocked = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
+    assert!(blocked.next().error.is_none());
+    wait(|| {
+        blocked.pump();
+        !blocked.unavailable.is_empty()
+    });
+    assert_eq!(
+        blocked.unavailable,
+        ["vst3 editor shutdown is unresolved · original source retained · audio reopen refused",]
+    );
+    assert!(blocked.audio.is_none());
+    assert_eq!(fs::read(project).unwrap(), project_bytes);
+    assert_eq!(fs::read(media).unwrap(), media_bytes);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_repeated_state_history_reclaims_superseded_instances() {
     let _native = native_fixture();
     for playing in [false, true] {
@@ -129,17 +272,31 @@ fn repeated_state_history(playing: bool) {
             let event = ordinary_terminal(&mut h);
             assert!(
                 event.error.is_none(),
-                "playing={playing}, cycle {cycle}: {:?}",
-                event.error
+                "playing={playing}, cycle {cycle}: {:?}, retirement issues: {:?}, source: {:?}",
+                event.error,
+                h.retirement_issues,
+                h.plugin_progress.lock().unwrap(),
             );
             assert_eq!(&event.state.project, expected);
             (applied, _) = h.applied(applied);
         }
     }
-    assert!(
-        h.plugin_records.load(Acquire) <= 3,
-        "history must reclaim superseded sources"
-    );
+    // Graph ACK finishes the edit. The original callback return and SDK
+    // seal complete separately. Keep driving both owners after the last edit.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while h.plugin_records.load(Acquire) > 1 {
+        h.render_plugin_block();
+        workers_idle(&h);
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "superseded sources did not retire: {:?}",
+            h.retirement_issues,
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    assert!(h.retirement_issues.is_empty());
     assert_eq!(
         fs::read(files.0.join("effect.hex")).unwrap(),
         original_bytes
