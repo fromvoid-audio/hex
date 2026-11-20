@@ -8,6 +8,169 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_file_track_removal_keeps_one_compensated_hosted_return_worker() {
+    use hex_session::service::DeviceInsertOutcome;
+
+    const QUANTUM: u64 = 256;
+    const LATENCY: u64 = 2 * QUANTUM;
+    const FADE: u64 = 240;
+
+    let _native = native_fixture();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.progress = Some(Arc::clone(&progress));
+    });
+    let first = Files::new();
+    let second = Files::new();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(first.wav(48_000, 131_072)));
+    let removed = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(second.wav(48_000, 131_072)));
+    let kept = imported.state.project.tracks()[1].id();
+    h.applied(h.context.unwrap());
+    let added = h.run(Request::Edit(Command::AddReturnTrack {
+        name: "shared".into(),
+    }));
+    let Some(Created::ReturnTrack(bus)) = added.created else {
+        panic!("shared Return");
+    };
+    h.applied(h.context.unwrap());
+    let mut state = added.state;
+    for track in [removed, kept] {
+        let sent = h.run(Request::Edit(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 0.5,
+        }));
+        assert!(sent.error.is_none(), "{:?}", sent.error);
+        state = sent.state;
+        h.applied(h.context.unwrap());
+    }
+    h.service
+        .as_ref()
+        .unwrap()
+        .submit(Request::InsertPluginEffect(request(
+            &state,
+            PluginEffectDestination::Return(bus),
+        )))
+        .unwrap();
+    let before = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let Some(Created::Device(device)) = before.created else {
+        panic!("Return VST3");
+    };
+    let predecessor = h.applied(h.context.unwrap());
+    wait(|| progress.lock().unwrap().source_bindings[0].is_some());
+    let binding = progress.lock().unwrap().source_bindings[0].unwrap().1;
+    fn status(h: &Harness) -> &hex_audio::prepared::Status {
+        h.audio.as_ref().unwrap().status().unwrap()
+    }
+    let render = |h: &Harness| {
+        let status = status(h);
+        let start = status.performance_frame.load(Acquire);
+        let mut pcm = [0.0; 512];
+        wait(|| {
+            pcm = render_hosted_pcm(h);
+            let position = status.performance_frame.load(Acquire);
+            assert!(position <= start + QUANTUM);
+            if position == start {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            position == start + QUANTUM
+        });
+        wait(|| {
+            let (actual_device, actual_binding, blocks) =
+                progress.lock().unwrap().source_bindings[0].unwrap();
+            assert_eq!((actual_device, actual_binding), (device.value(), binding));
+            assert!(blocks.unwrap_or(0) <= start / QUANTUM + 1);
+            blocks.is_some_and(|blocks| blocks == start / QUANTUM + 1)
+        });
+        (start, pcm)
+    };
+    let expected = |input: u64, removed_gain: f32| {
+        let sum = 0.25 + 0.25 * removed_gain;
+        let effect_gain = 0.5 + (input / QUANTUM) as f32 * 0.125;
+        sum + sum * 0.5 * effect_gain
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        let (start, pcm) = render(&h);
+        let sample = start
+            .checked_sub(LATENCY)
+            .map_or(0.0, |input| expected(input, 1.0));
+        assert!(pcm.iter().all(|value| (*value - sample).abs() < 1e-5));
+    }
+    let pending = h.run(Request::Edit(Command::RemoveTrack(removed)));
+    assert!(!pending.request_complete);
+    assert_eq!(pending.state.project, before.state.project);
+    wait(|| status(&h).publication_in_flight());
+
+    let mut fade_start = None;
+    let mut successor = None;
+    for _ in 0..12 {
+        let (start, pcm) = render(&h);
+        for (offset, frame) in pcm.chunks_exact(2).enumerate() {
+            let input = start + offset as u64 - LATENCY;
+            if fade_start.is_none() && (frame[0] - expected(input, 1.0)).abs() > 1e-5 {
+                assert_eq!(
+                    offset, 0,
+                    "the callback starts the fade at a block boundary"
+                );
+                fade_start = Some(input);
+            }
+            let gain = fade_start.map_or(1.0, |first| {
+                FADE.saturating_sub(input - first + 1) as f32 / FADE as f32
+            });
+            let sample = expected(input, gain);
+            assert!(
+                frame.iter().all(|value| (*value - sample).abs() < 1e-5),
+                "input frame {input}: {frame:?} vs {sample}"
+            );
+        }
+        let applied = status(&h).applied_audio_source().unwrap();
+        if applied != predecessor {
+            let fade_start = fade_start.expect("drained track fade");
+            assert!(start >= fade_start + LATENCY + FADE - 1);
+            assert_eq!(applied.output_identity, predecessor.output_identity);
+            successor = Some(applied);
+            break;
+        }
+    }
+    let successor = successor.expect("exact successor");
+    let completed = h.next();
+    assert!(completed.request_complete && completed.error.is_none());
+    assert!(completed.device_insert_confirmation.is_none());
+    let receipt = completed.device_insert_complete.unwrap();
+    assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+    assert_eq!(receipt.submission.audio_revision, successor.audio_revision);
+    assert_eq!(completed.state.revision, before.state.revision + 1);
+    assert!(completed.state.project.track(removed).is_none());
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_hosted_removal_fades_and_resumes_on_the_same_output() {
     use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
 

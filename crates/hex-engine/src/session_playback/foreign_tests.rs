@@ -1478,6 +1478,199 @@ fn fitting_native_removal_keeps_a_running_hosted_return_on_one_route() {
     assert_eq!(endpoint.processed, 368);
 }
 
+#[test]
+fn removing_compensated_track_keeps_the_hosted_return_worker_and_its_input_clock() {
+    use hex_devices::limiter::DEFINITION as LIMITER;
+
+    const CUT: usize = 512;
+    const ALIGNMENT: usize = 72;
+    const OUTPUT_LATENCY: usize = ALIGNMENT + 19;
+    const FADE: usize = 240;
+    const DRAIN: usize = FADE + OUTPUT_LATENCY - 1;
+    const FRAMES: usize = 2_048;
+    struct ClockedWorker(Borrowed);
+    impl ForeignProcessors for ClockedWorker {
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [Frame],
+            clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            let origin = self
+                .0
+                .processed
+                .checked_sub(ALIGNMENT)
+                .map(|frame| frame as u64);
+            assert_eq!(
+                clock.and_then(|clock| clock.performance_frame_at_offset(0)),
+                origin
+            );
+            self.0.process_segment(node, offset, frames, clock)
+        }
+
+        fn reject_callback(&mut self) {
+            self.0.reject_callback();
+        }
+    }
+    let mut f = fixture(&[&[], &[]], FRAMES);
+    let [removed, kept] = f.tracks[..] else {
+        panic!("two audio tracks");
+    };
+    let asset = f.editor.project().tracks()[0].clips()[0].asset();
+    let source: Vec<_> = (0..FRAMES)
+        .map(|i| [0.125 + (i % 17) as f32 / 256.0, -0.125])
+        .collect();
+    f.media
+        .insert(asset, crate::Audio::new(48_000, source.clone()).unwrap());
+    let kept_asset = f.editor.project().tracks()[1].clips()[0].asset();
+    f.media.insert(
+        kept_asset,
+        crate::Audio::new(48_000, vec![[-0.0625, 0.125]; FRAMES]).unwrap(),
+    );
+    f.editor
+        .execute(Command::InsertDevice {
+            track: kept,
+            before: None,
+            state: LIMITER.default_state().unwrap(),
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "shared".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    for track in [removed, kept] {
+        f.editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("hosted return effect");
+    };
+    let owner = ProcessorChainOwner::Return(bus.value());
+    let prepare =
+        |project: &hex_project::Project, media: &std::collections::BTreeMap<_, _>, epoch| {
+            let definition = BorrowedDefinition {
+                binding_epoch: Some(epoch),
+                instances: vec![(
+                    ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+                    3,
+                )],
+                unbounded_tail: true,
+            };
+            let definitions: [&dyn NativeDeviceDefinition; 2] = [&definition, &LIMITER];
+            let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+            Arc::new(
+                PreparedRevision::prepare_with_effect_registry(
+                    project,
+                    media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &registry,
+                )
+                .unwrap(),
+            )
+        };
+    let old = prepare(f.editor.project(), &f.media, 1);
+    assert_eq!(
+        old.arrangement().main_latency_frames() as usize,
+        OUTPUT_LATENCY
+    );
+    let mut reference_media = f.media.clone();
+    let mut faded = source;
+    for (index, frame) in faded[CUT..].iter_mut().enumerate() {
+        let gain = FADE.saturating_sub(index + 1) as f32 / FADE as f32;
+        *frame = [frame[0] * gain, frame[1] * gain];
+    }
+    reference_media.insert(asset, crate::Audio::new(48_000, faded).unwrap());
+    let reference = prepare(f.editor.project(), &reference_media, 1);
+    f.editor.execute(Command::RemoveTrack(removed)).unwrap();
+    let next = prepare(f.editor.project(), &f.media, 1);
+    assert_eq!(
+        next.arrangement().main_latency_frames() as usize,
+        OUTPUT_LATENCY
+    );
+
+    let render =
+        |runtime: &mut SessionPlayback, endpoint: &mut ClockedWorker, output: &mut [Frame]| {
+            endpoint.0.next_offset = 0;
+            runtime
+                .render_with_foreign_processors(output, None, None, None, endpoint)
+                .unwrap();
+            assert_eq!(endpoint.0.next_offset, output.len());
+        };
+    let endpoint = || {
+        let mut worker = Borrowed::new(owner, device.value());
+        worker.initial_unstamped_frames = ALIGNMENT;
+        ClockedWorker(worker)
+    };
+    let mut oracle = SessionPlayback::new(reference).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0; 2]; CUT + DRAIN + 257];
+    render(&mut oracle, &mut endpoint(), &mut expected);
+
+    for partition in [1, 257] {
+        let mut worker = endpoint();
+        let mut running = SessionPlayback::new(Arc::clone(&old)).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&next)).unwrap();
+        candidate.require_continuous_insert = true;
+        running.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut before = [[0.0; 2]; CUT];
+        render(&mut running, &mut worker, &mut before);
+        assert_eq!(before, expected[..CUT]);
+        let mut pcm = [[0.0; 2]; DRAIN + 257];
+        for chunk in pcm[..DRAIN].chunks_mut(partition) {
+            assert_eq!(
+                candidate.advance_native_removal_from(&mut running),
+                Ok(NativeRemovalProgress::Fading)
+            );
+            render(&mut running, &mut worker, chunk);
+        }
+        assert_eq!(
+            candidate.advance_native_removal_from(&mut running),
+            Ok(NativeRemovalProgress::Ready)
+        );
+        candidate.try_inherit_state_live_from(&mut running).unwrap();
+        assert_eq!(candidate.performance_frame, (CUT + DRAIN) as u64);
+        render(&mut candidate, &mut worker, &mut pcm[DRAIN..]);
+        assert_eq!(worker.0.processed, expected.len());
+        assert_eq!(worker.0.rejections, 0);
+        for (frame, (actual, expected)) in pcm.iter().zip(&expected[CUT..]).enumerate() {
+            assert!(
+                (actual[0] - expected[0]).abs() < 1e-6 && (actual[1] - expected[1]).abs() < 1e-6,
+                "partition {partition}, frame {frame}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+
+    let mut running = SessionPlayback::new(old).unwrap();
+    let mut replaced = SessionPlayback::new(prepare(f.editor.project(), &f.media, 2)).unwrap();
+    replaced.require_continuous_insert = true;
+    running.apply(SessionPlaybackCommand::Play).unwrap();
+    render(&mut running, &mut endpoint(), &mut [[0.0; 2]; CUT]);
+    assert_eq!(
+        replaced.advance_native_removal_from(&mut running),
+        Err(SessionPlaybackError::DeviceInsertNeedsConfirmation)
+    );
+}
+
 fn verify_effect_removal(location: usize, remove_hosted: bool, paused: bool) {
     use hex_devices::eq::EQ_DEFINITION;
 
