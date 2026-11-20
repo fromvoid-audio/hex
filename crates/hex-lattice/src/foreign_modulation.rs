@@ -129,9 +129,12 @@ impl ForeignModulationRuntime {
     }
 
     pub(crate) fn same_declaration(&self, other: &Self) -> bool {
-        self.raw_id == other.raw_id
-            && self.normalized_base.to_bits() == other.normalized_base.to_bits()
-            && self.runtime.same_declaration(&other.runtime)
+        self.normalized_base.to_bits() == other.normalized_base.to_bits()
+            && self.same_routes_and_sources(other)
+    }
+
+    pub(crate) fn same_routes_and_sources(&self, other: &Self) -> bool {
+        self.raw_id == other.raw_id && self.runtime.same_declaration(&other.runtime)
     }
 
     pub(crate) fn target_id(&self) -> u32 {

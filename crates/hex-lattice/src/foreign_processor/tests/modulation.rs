@@ -18,6 +18,16 @@ fn effect(
     bypassed: bool,
     prepared_binding: ForeignProcessorBinding,
 ) -> PreparedRuntimeInstance {
+    effect_with_base(raw_id, BASE, amount, bypassed, prepared_binding)
+}
+
+fn effect_with_base(
+    raw_id: u32,
+    base: f64,
+    amount: f32,
+    bypassed: bool,
+    prepared_binding: ForeignProcessorBinding,
+) -> PreparedRuntimeInstance {
     let mut instance = declaration(ProcessorChainOwner::Track(5), bypassed);
     instance.definition = Some(PreparedProcessorFactory::Foreign(
         PreparedForeignProcessor::new(8, 3, 16)
@@ -28,7 +38,7 @@ fn effect(
     instance.modulation = Some(
         PreparedForeignModulation::new(
             raw_id,
-            BASE,
+            base,
             vec![
                 PreparedModulationSource::free(
                     ModulationSourceId::new(1).unwrap(),
@@ -213,7 +223,7 @@ fn graph_refuses_wrong_effect_binding_or_instrument_and_requires_a_dense_consume
 }
 
 #[test]
-fn foreign_state_continuation_refuses_a_modulated_source() {
+fn foreign_state_continuation_keeps_exact_dense_routes_and_modulator_phase() {
     let previous = state();
     let candidate = Arc::new(
         NativeDeviceState::new(TYPE, 1, vec![4, 5, 6])
@@ -223,16 +233,42 @@ fn foreign_state_continuation_refuses_a_modulated_source() {
             .with_output_gain_db(-20.0)
             .unwrap(),
     );
-    let mut old = effect(0, 0.25, false, BINDING);
-    old.configuration = Some(Arc::clone(&previous));
-    let mut next = effect(0, 0.25, false, BINDING);
-    next.configuration = Some(Arc::clone(&candidate));
-    let old = NativeRuntimeChain::new_prepared(vec![old]).unwrap();
-    let next = NativeRuntimeChain::new_prepared(vec![next]).unwrap();
+    let make = |state, raw, base, amount| {
+        let mut entry = effect_with_base(raw, base, amount, false, BINDING);
+        entry.configuration = Some(state);
+        NativeRuntimeChain::new_prepared(vec![entry]).unwrap()
+    };
+    let mut old = make(Arc::clone(&previous), 0, BASE, 0.25);
+    let mut next = make(Arc::clone(&candidate), 0, 0.375, 0.25);
     let identity =
         crate::ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(5), 17).unwrap();
     let proof =
         crate::ForeignConfigurationContinuation::new(identity, BINDING, &previous, &candidate)
             .unwrap();
-    assert!(!old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &proof));
+    assert!(!old.configuration_matches_range(&next, 0..1));
+    assert!(old.configuration_matches_range_with_foreign_continuation(&next, 0..1, &proof));
+    for (raw, amount) in [(1, 0.25), (0, 0.5)] {
+        let wrong = make(Arc::clone(&candidate), raw, 0.375, amount);
+        assert!(!old.configuration_matches_range_with_foreign_continuation(&wrong, 0..1, &proof));
+    }
+
+    old.begin_block();
+    old.process_range_with_foreign(
+        0..1,
+        &mut [[0.0; 2]; 3],
+        0,
+        None,
+        None,
+        &mut Endpoint::default(),
+    )
+    .unwrap();
+    old.commit_block();
+    assert!(next.can_inherit_from(&old));
+    next.inherit_from(&old);
+    next.begin_block();
+    let mut resumed = Endpoint::default();
+    next.process_range_with_foreign(0..1, &mut [[0.0; 2]; 2], 0, None, None, &mut resumed)
+        .unwrap();
+    next.commit_block();
+    assert_eq!(&resumed.values[..2], &[0.125, 0.375]);
 }

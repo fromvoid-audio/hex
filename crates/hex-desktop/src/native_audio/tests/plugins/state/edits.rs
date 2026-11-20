@@ -865,6 +865,12 @@ fn late_editor_replay_saves_and_reopens_stopped_modulated_effect() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_preserves_active_modulation_and_saves_manual_base() {
+    retiring_editor_replay_roundtrip(ReplayCase::ModulatedPlaying);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_refusal_restores_confirmed_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Refuse);
 }
@@ -895,6 +901,7 @@ enum ReplayCase {
     AuthoredPlaying,
     AuthoredStopped,
     ModulatedStopped,
+    ModulatedPlaying,
     Refuse,
     RefuseAfterNewer,
 }
@@ -941,7 +948,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         case,
         ReplayCase::AuthoredPlaying | ReplayCase::AuthoredStopped
     );
-    let modulated = case == ReplayCase::ModulatedStopped;
+    let modulated = matches!(
+        case,
+        ReplayCase::ModulatedStopped | ReplayCase::ModulatedPlaying
+    );
     let manual_base = authored || modulated;
     let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
     let spanning = matches!(
@@ -1024,7 +1034,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     }
 
     let _native = native_fixture();
-    let playing = matches!(case, ReplayCase::Playing | ReplayCase::AuthoredPlaying);
+    let playing = matches!(
+        case,
+        ReplayCase::Playing | ReplayCase::AuthoredPlaying | ReplayCase::ModulatedPlaying
+    );
     let pre_cut = matches!(
         case,
         ReplayCase::PreCutAlreadyCanonical | ReplayCase::PreCutConflict
@@ -1182,7 +1195,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             );
         }
     }
-    if playing && !authored {
+    if playing && !manual_base {
         h.audio
             .as_mut()
             .unwrap()
@@ -1263,7 +1276,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         h.pump();
         std::thread::yield_now();
     };
-    if case == ReplayCase::AuthoredPlaying {
+    if playing && manual_base {
         h.audio
             .as_mut()
             .unwrap()
@@ -1274,9 +1287,10 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         for _ in 0..8 {
             block = super::super::instruments::render_completed_block(&h);
         }
+        let initial = if modulated { 0.5 } else { 0.1875 };
         assert!(
-            (block[255][0] - 0.1875).abs() < 1.0e-6,
-            "authored output {:?}",
+            (block[255][0] - initial).abs() < 1.0e-6,
+            "initial output {:?}",
             block[255]
         );
     }
@@ -1343,17 +1357,18 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             | ReplayCase::AuthoredPlaying
             | ReplayCase::AuthoredStopped
             | ReplayCase::ModulatedStopped
+            | ReplayCase::ModulatedPlaying
             | ReplayCase::Grouped
             | ReplayCase::Mixed
             | ReplayCase::SeveralGroups
     ) {
         let event = loop {
             h.pump();
-            if case == ReplayCase::AuthoredPlaying {
+            if playing && manual_base {
                 let block = h.render();
                 assert!(
                     block.iter().all(|frame| frame[0] > 0.1),
-                    "authored effect dropped in-flight audio: {block:?}"
+                    "effect dropped in-flight audio: {block:?}"
                 );
                 workers_idle(&h);
             } else {
@@ -1444,16 +1459,16 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                 .unwrap();
             assert!(!lane.is_reading());
             assert_eq!(lane.points.as_slice(), &lane_points);
-            if playing {
-                assert_manual_output(&h);
-                return;
-            }
         }
         if let Some(modulation) = &modulation {
             assert_eq!(
                 saved_project.device(device).unwrap().modulation(),
                 modulation
             );
+        }
+        if playing && manual_base {
+            assert_manual_output(&h);
+            return;
         }
         let previous_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         h.service.shutdown(Duration::from_secs(1)).unwrap();
