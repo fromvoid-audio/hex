@@ -922,6 +922,9 @@ device header focused, press **-** to collapse the selected devices and **+**
 to expand them. collapsed devices keep their header controls and continue
 processing audio.
 
+drag a device title onto another track's arrangement lane or header to move the
+selected devices. hold **option** while dropping to copy them.
+
 select one or more effects in a device chain and press **d** to duplicate them
 after the selection. the copies keep their settings and become the selection.
 press **cmd-z** to undo the duplication.
