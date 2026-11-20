@@ -1,6 +1,7 @@
 //! Physical SDK gate and exact predecessor through a Resident removal offer.
 use super::*;
 use hex_session::service::{DeviceInsertOutcome, GraphEditOperation};
+use std::sync::atomic::Ordering::Release;
 
 #[test]
 #[ignore = "requires explicit source-bound SDK receipts"]
