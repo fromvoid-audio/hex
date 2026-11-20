@@ -2,17 +2,22 @@
 use hex_lattice_contract::DeviceContractError;
 
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
+// A fixed 1.5 ms delay at the maximum supported 192 kHz output rate.
+const MAX_MAIN_PASS_DRY_FRAMES: usize = 288;
+
+/// Value-only aligned PCM after the original Main processor has retired.
+pub type MainPassDelay = InlineDryDelay<MAX_MAIN_PASS_DRY_FRAMES>;
 
 /// Inline aligned dry history can outlive the processor that filled it.
 /// It contains only PCM and a cursor, with no owned DSP or allocation.
 #[derive(Clone, Copy, Debug)]
-pub struct InlineDryDelay {
-    frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
+pub struct InlineDryDelay<const CAPACITY: usize> {
+    frames: [[f32; 2]; CAPACITY],
     len: usize,
     next: usize,
 }
 
-impl InlineDryDelay {
+impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
     pub fn latency_frames(&self) -> u32 {
         self.len as u32
     }
@@ -38,7 +43,7 @@ pub(crate) struct AlignedDry {
 }
 // Keep lengths and cursor construction private to this history owner.
 enum DryStorage {
-    Inline(InlineDryDelay),
+    Inline(InlineDryDelay<MAX_ALIGNED_DRY_FRAMES>),
     Reserved { frames: Vec<[f32; 2]>, next: usize },
 }
 impl AlignedDry {
@@ -102,11 +107,24 @@ impl AlignedDry {
         let (frames, next) = self.parts_mut();
         advance(frames, next, input)
     }
-    pub(crate) fn inline_delay(&self) -> Option<InlineDryDelay> {
-        match self.storage {
-            DryStorage::Inline(dry) => Some(dry),
-            DryStorage::Reserved { .. } => None,
-        }
+    pub(crate) fn main_pass_latency_frames(&self) -> Option<u32> {
+        let len = self.parts().0.len();
+        (1..=MAX_MAIN_PASS_DRY_FRAMES)
+            .contains(&len)
+            .then_some(len as u32)
+    }
+    pub(crate) fn main_pass_delay(&self) -> Option<MainPassDelay> {
+        let (frames, next) = self.parts();
+        let mut retained = MainPassDelay {
+            frames: [[0.0; 2]; MAX_MAIN_PASS_DRY_FRAMES],
+            len: frames.len(),
+            next,
+        };
+        retained
+            .frames
+            .get_mut(..frames.len())?
+            .copy_from_slice(frames);
+        Some(retained)
     }
     pub(crate) fn is_quiet(&self) -> bool {
         self.parts().0.iter().all(|f| *f == [0.0; 2])
