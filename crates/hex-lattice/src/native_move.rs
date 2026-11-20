@@ -57,8 +57,10 @@ impl NativeRuntimeChain {
         .flatten()
     }
 
-    /// Move history once after the same preflight and before retiring the donor.
-    /// No runtime is destroyed here; both allocations stay in host custody.
+    /// Move history once after the same preflight. For an approved legacy
+    /// provider, the host must prove that the two prepared runtime pairs are
+    /// interchangeable. Exchange the pairs so moving a large running effect
+    /// adds no ring copy to the cut. The old chain retires with the fresh pair.
     pub fn transfer_cross_track_native_from(
         &mut self,
         old: &mut Self,
@@ -69,7 +71,12 @@ impl NativeRuntimeChain {
         let (Some(next), Some(old)) = (self.entries.first_mut(), old.entries.first_mut()) else {
             return Err(DeviceContractError::InvalidDescriptor);
         };
-        next.runtime.transfer_history_from(&mut old.runtime);
+        if matches!(next.runtime, RuntimeOwnership::Legacy { .. }) {
+            // The preflight already proved that both entries are Legacy.
+            std::mem::swap(&mut next.runtime, &mut old.runtime);
+        } else {
+            next.runtime.transfer_history_from(&mut old.runtime);
+        }
         Ok(())
     }
 }
@@ -113,5 +120,32 @@ mod tests {
         );
         moved.entries[0].bypassed = true;
         assert!(moved.cross_track_native_identity_from(&old).is_none());
+    }
+
+    #[test]
+    fn cross_track_move_exchanges_the_legacy_runtime_pairs() {
+        let probe = Arc::new(Probe::default());
+        let chain = |track| {
+            NativeRuntimeChain::new_prepared(vec![
+                instance(ProcessorChainOwner::Track(track), 4, 48_000, 0, &probe).unwrap(),
+            ])
+            .unwrap()
+        };
+        let pair = |chain: &NativeRuntimeChain| {
+            let RuntimeOwnership::Legacy { primary, scratch } = &chain.entries[0].runtime else {
+                panic!("legacy pair");
+            };
+            [
+                std::ptr::from_ref(primary.as_ref()).cast::<()>(),
+                std::ptr::from_ref(scratch.as_ref()).cast::<()>(),
+            ]
+        };
+        let mut old = chain(1);
+        let mut next = chain(2);
+        let running = pair(&old);
+        let fresh = pair(&next);
+        next.transfer_cross_track_native_from(&mut old).unwrap();
+        assert_eq!(pair(&next), running);
+        assert_eq!(pair(&old), fresh);
     }
 }

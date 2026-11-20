@@ -1,16 +1,37 @@
-//! One continuous real Delay is the independent oracle for a two-track move.
+//! One continuously running effect is the PCM oracle for a two-track move.
 use super::*;
+use hex_lattice_contract::NativeDeviceState;
 
 #[test]
 fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocations() {
+    assert_running_effect_move(feedback_delay(20.0));
+}
+
+#[test]
+fn running_reverb_moves_its_decay_to_the_destination_track() {
+    use hex_devices::reverb::{REVERB_DEFINITION, parameter};
+
+    let state = REVERB_DEFINITION
+        .patch_parameter(
+            &REVERB_DEFINITION.default_state().unwrap(),
+            parameter::DRY_WET,
+            ParameterValue::Float(100.0),
+        )
+        .unwrap();
+    assert_running_effect_move(state);
+}
+
+fn assert_running_effect_move(state: NativeDeviceState) {
     const FRAMES: usize = 4096;
     const CUT: usize = 2048;
     const FADE: usize = 240;
+    const DESTINATION_ONSET: usize = 2600;
     let mut source = vec![[0.0; 2]; FRAMES];
+    source[512..1536].fill([0.25, -0.125]);
     source[1600] = [0.5, -0.25];
     source[3000] = [0.25, 0.125];
-    let mut destination = vec![[0.0, 0.03125]; FRAMES];
-    destination[2600] = [-0.125, 0.25];
+    let mut destination = vec![[0.0; 2]; FRAMES];
+    destination[DESTINATION_ONSET..].fill([-0.125, 0.25]);
     let unrelated = vec![[0.0625, -0.03125]; FRAMES];
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
     let mut media = BTreeMap::new();
@@ -44,11 +65,11 @@ fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocation
         .execute(Command::InsertDevice {
             track: tracks[0],
             before: None,
-            state: feedback_delay(20.0),
+            state,
         })
         .unwrap()
     else {
-        panic!("delay")
+        panic!("effect")
     };
     let table = Arc::new(hex_engine::SineTable::new());
     let prepare = |project: &Project, media: &BTreeMap<_, _>| {
@@ -110,6 +131,13 @@ fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocation
         oracle.apply(PlaybackCommand::Play);
         let mut wet = vec![[0.0; 2]; FRAMES];
         oracle.render(&mut wet).unwrap();
+        assert!(
+            wet[switch + FADE..DESTINATION_ONSET]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1e-5),
+            "pre-cut history must still sound before the destination supplies input"
+        );
         for (offset, frame) in actual.iter().enumerate() {
             let at = CUT + offset;
             let fade = if at < switch {
@@ -133,7 +161,7 @@ fn running_delay_moves_once_between_two_faded_tracks_without_callback_allocation
         }
     }
     // Cancel and source-fence invalidation retain the exact donor. A cancelled
-    // move must restore both mixes while the original Delay keeps processing.
+    // move must restore both mixes while the original effect keeps processing.
     let mut oracle =
         Playback::try_from_prepared_with_session(prepare(reference_editor.project(), &media))
             .unwrap();
