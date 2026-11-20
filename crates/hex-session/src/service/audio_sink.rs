@@ -172,12 +172,13 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
-    /// Canonical bypass state of one exact plugin visited by this preparation.
-    /// This copied display/control fact grants no native source or admission.
+    /// Canonical bypass state of a plug-in on a playback route. An unbound
+    /// instrument can retain authored state without having a playback worker.
+    /// This observation does not admit a native source.
     pub fn plugin_device_bypassed(&self, id: u64) -> Option<bool> {
-        self.project
-            .automation_devices()
-            .find(|device| device.id().value() == id && is_plugin_effect(device))
+        playback_plugin_devices(self.project)
+            .map(|(_, device)| device)
+            .find(|device| device.id().value() == id)
             .map(|device| device.bypassed())
     }
     /// Whether the saved document needs the fixed-quantum plugin output profile.
@@ -290,53 +291,8 @@ impl<'a> ResidentEffectPreparation<'a> {
         &self,
         mut visit: impl FnMut(PluginEffectDestination, u64, &'a NativeDeviceState) -> Result<(), String>,
     ) -> Result<(), String> {
-        for track in self.project.tracks() {
-            if let Some(device) = track
-                .instrument()
-                .filter(|device| track.receives_source_audio() && is_plugin_effect(device))
-            {
-                visit(
-                    PluginEffectDestination::Instrument(track.id()),
-                    device.id().value(),
-                    device.state(),
-                )?;
-            }
-            for device in track
-                .devices()
-                .iter()
-                .filter(|device| is_plugin_effect(device))
-            {
-                visit(
-                    PluginEffectDestination::Track(track.id()),
-                    device.id().value(),
-                    device.state(),
-                )?;
-            }
-        }
-        for bus in self.project.return_tracks() {
-            for device in bus
-                .devices()
-                .iter()
-                .filter(|device| is_plugin_effect(device))
-            {
-                visit(
-                    PluginEffectDestination::Return(bus.id()),
-                    device.id().value(),
-                    device.state(),
-                )?;
-            }
-        }
-        for device in self
-            .project
-            .main_devices()
-            .iter()
-            .filter(|device| is_plugin_effect(device))
-        {
-            visit(
-                PluginEffectDestination::Main,
-                device.id().value(),
-                device.state(),
-            )?;
+        for (destination, device) in playback_plugin_devices(self.project) {
+            visit(destination, device.id().value(), device.state())?;
         }
         Ok(())
     }
@@ -383,19 +339,41 @@ fn is_plugin_effect(device: &hex_project::Device) -> bool {
     device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
 }
 
-pub(super) fn requires_plugin_profile(project: &Project) -> bool {
+fn playback_plugin_devices(
+    project: &Project,
+) -> impl Iterator<Item = (PluginEffectDestination, &hex_project::Device)> {
     project
         .tracks()
         .iter()
         .flat_map(|track| {
             track
-                .devices()
-                .iter()
-                .chain(track.instrument().filter(|_| track.receives_source_audio()))
+                .instrument()
+                .filter(|_| track.receives_source_audio())
+                .map(|device| (PluginEffectDestination::Instrument(track.id()), device))
+                .into_iter()
+                .chain(
+                    track
+                        .devices()
+                        .iter()
+                        .map(|device| (PluginEffectDestination::Track(track.id()), device)),
+                )
         })
-        .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
-        .chain(project.main_devices())
-        .any(is_plugin_effect)
+        .chain(project.return_tracks().iter().flat_map(|bus| {
+            bus.devices()
+                .iter()
+                .map(|device| (PluginEffectDestination::Return(bus.id()), device))
+        }))
+        .chain(
+            project
+                .main_devices()
+                .iter()
+                .map(|device| (PluginEffectDestination::Main, device)),
+        )
+        .filter(|(_, device)| is_plugin_effect(device))
+}
+
+pub(super) fn requires_plugin_profile(project: &Project) -> bool {
+    playback_plugin_devices(project).next().is_some()
 }
 
 /// Reported preparation origin, not proof of canonical state or source custody.
@@ -2271,6 +2249,48 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn detached_hosted_instrument_keeps_authored_state_without_playback_membership() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("midi track");
+        };
+        let state =
+            NativeDeviceState::new(hex_lattice_contract::VST3_DEVICE_TYPE_ID, 1, vec![1]).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("instrument");
+        };
+        let playback_bypass = |project| {
+            ResidentEffectPreparation {
+                project,
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 0,
+                },
+                restoring_plugin_state: false,
+                preparing_edit: false,
+            }
+            .plugin_device_bypassed(device.value())
+        };
+        assert_eq!(playback_bypass(editor.project()), Some(false));
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+        assert_eq!(editor.project().device(device).unwrap().state(), &state);
+        assert_eq!(playback_bypass(editor.project()), None);
+        assert!(editor.undo());
+        assert_eq!(playback_bypass(editor.project()), Some(false));
+    }
 
     #[test]
     fn retained_outcomes_keep_their_request_identity_and_order() {

@@ -228,6 +228,7 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
     assert_eq!(source(&h).audio_revision, queued.audio_revision);
     assert_eq!(source(&h).context, queued.context);
     assert_eq!(source(&h).output_identity, predecessor.output_identity);
+    assert!(installed.state.project.device(original).is_some());
     for _ in 0..2 {
         render_completed_block(&h);
     }
@@ -257,8 +258,9 @@ fn running_resident_vst3_removal_offers_the_exact_cut() {
         }
         assert!(
             Instant::now() < deadline,
-            "original gate did not retire: {words:?}, {:?}",
-            h.plugin_progress.lock().unwrap().native
+            "original gate did not retire: {words:?}, {:?}, {:?}",
+            h.plugin_progress.lock().unwrap(),
+            h.retirement_issues
         );
     }
 }
