@@ -847,6 +847,12 @@ fn late_editor_replay_preserves_playing_transport() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn late_editor_replay_preserves_playing_authored_effect_and_saves_manual_base() {
+    retiring_editor_replay_roundtrip(ReplayCase::AuthoredPlaying);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn late_editor_replay_refusal_restores_confirmed_successor() {
     retiring_editor_replay_roundtrip(ReplayCase::Refuse);
 }
@@ -874,12 +880,14 @@ enum ReplayCase {
     SeveralGroups,
     SeveralGroupsRefuse,
     Playing,
+    AuthoredPlaying,
     Refuse,
     RefuseAfterNewer,
 }
 
 fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     const CHILD: &str = "HEX_RETIRING_SOURCE_REPLACEMENT";
+    let authored = case == ReplayCase::AuthoredPlaying;
     let mixed = matches!(case, ReplayCase::Mixed | ReplayCase::MixedConflict);
     let spanning = matches!(
         case,
@@ -890,10 +898,11 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             case,
             ReplayCase::EarlierGrouped | ReplayCase::EarlierGroupedConflict
         );
-    let several_groups = matches!(
-        case,
-        ReplayCase::SeveralGroups | ReplayCase::SeveralGroupsRefuse
-    );
+    let several_groups = authored
+        || matches!(
+            case,
+            ReplayCase::SeveralGroups | ReplayCase::SeveralGroupsRefuse
+        );
     let grouped = earlier_group || mixed || several_groups || case == ReplayCase::Grouped;
     if std::env::var_os(CHILD).is_none() {
         let files = Files::new();
@@ -960,7 +969,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     }
 
     let _native = native_fixture();
-    let playing = case == ReplayCase::Playing;
+    let playing = authored || case == ReplayCase::Playing;
     let pre_cut = matches!(
         case,
         ReplayCase::PreCutAlreadyCanonical | ReplayCase::PreCutConflict
@@ -981,8 +990,28 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         }
     };
     let frames = if playing { 48_000 * 20 } else { 2048 };
-    let (mut h, files, saved) = fixture_with_host(Start::Saved, frames, effect_host());
-    let (applied, _) = h.applied(0);
+    let (mut h, files, mut saved) = fixture_with_host(Start::Saved, frames, effect_host());
+    let (mut applied, _) = h.applied(0);
+    let automation_target = hex_project::DeviceAutomationTarget::Vst3 { parameter: 0 };
+    let lane_points = [hex_project::AutomationPoint {
+        beat: hex_project::BeatTime::ZERO,
+        value: hex_project::AutomationValue::new(0.1875).unwrap(),
+        outgoing: hex_project::AutomationInterpolation::Step,
+    }];
+    if authored {
+        let device = saved.project.main_devices()[0].id();
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target: automation_target,
+                points: lane_points.to_vec(),
+            }))
+            .unwrap();
+        let lane = ordinary_terminal(&mut h);
+        assert!(lane.error.is_none(), "{:?}", lane.error);
+        (applied, _) = h.applied(applied);
+        saved = lane.state;
+    }
     let original = &saved.project.main_devices()[0];
     let device = original.id();
     let replacement_gain = if already_canonical || earlier_group {
@@ -999,12 +1028,39 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     );
     let old_binding = h.plugin_progress.lock().unwrap().binding.unwrap();
     let traces_dir = PathBuf::from(std::env::var_os("HEX_ORIGINAL_NOTE_TRACE_DIR").unwrap());
-    let mut traces = fs::read_dir(&traces_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "bin"));
-    let old_trace = traces.next().expect("original SDK helper trace");
-    assert!(traces.next().is_none());
+    let trace_files = || {
+        fs::read_dir(&traces_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "bin"))
+    };
+    let old_trace = if authored {
+        use std::os::unix::fs::MetadataExt as _;
+        let before: Vec<_> = trace_files()
+            .map(|path| {
+                let inode = fs::metadata(&path).unwrap().ino();
+                (path, inode)
+            })
+            .collect();
+        assert!(
+            super::super::installed_edits::query(&mut h, device, None, &mut 0)
+                .rows
+                .is_ok()
+        );
+        let mut refreshed = before.into_iter().filter_map(|(path, inode)| {
+            (fs::metadata(&path).unwrap().ino() != inode).then_some(path)
+        });
+        let path = refreshed
+            .next()
+            .expect("installed authored controller trace");
+        assert!(refreshed.next().is_none());
+        path
+    } else {
+        let mut traces = trace_files();
+        let path = traces.next().expect("original SDK helper trace");
+        assert!(traces.next().is_none());
+        path
+    };
     use crate::native_audio::tests::resident_preview::emit_replay_fixture_edit as emit;
     let finish_group = || {
         fs::write(
@@ -1054,7 +1110,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             );
         }
     }
-    if playing {
+    if playing && !authored {
         h.audio
             .as_mut()
             .unwrap()
@@ -1082,7 +1138,7 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
     if !pre_cut && !earlier_group {
         emit(&old_trace);
     }
-    if grouped && (!earlier_group || spanning) {
+    if grouped && !authored && (!earlier_group || spanning) {
         finish_group();
     }
     if matches!(case, ReplayCase::Conflict | ReplayCase::RefuseAfterNewer) {
@@ -1135,6 +1191,24 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         h.pump();
         std::thread::yield_now();
     };
+    if authored {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let mut block = [[0.0; 2]; 256];
+        for _ in 0..8 {
+            block = super::super::instruments::render_completed_block(&h);
+        }
+        assert!(
+            (block[255][0] - 0.1875).abs() < 1.0e-6,
+            "authored output {:?}",
+            block[255]
+        );
+        finish_group();
+    }
 
     if already_canonical {
         use hex_session::service::{
@@ -1192,13 +1266,23 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
         case,
         ReplayCase::Publish
             | ReplayCase::Playing
+            | ReplayCase::AuthoredPlaying
             | ReplayCase::Grouped
             | ReplayCase::Mixed
             | ReplayCase::SeveralGroups
     ) {
         let event = loop {
             h.pump();
-            h.render_worker_step();
+            if authored {
+                let block = h.render();
+                assert!(
+                    block.iter().all(|frame| frame[0] > 0.1),
+                    "authored effect dropped in-flight audio: {block:?}"
+                );
+                workers_idle(&h);
+            } else {
+                h.render_worker_step();
+            }
             if let Ok(event) = h.service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 if event.state.revision > accepted.state.revision {
@@ -1233,13 +1317,22 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
             f32::from_le_bytes(captured.component.unwrap()[8..12].try_into().unwrap()),
             final_gain
         );
-        let saved = h.run(Request::SaveCurrent);
+        let path = files.0.join(if authored {
+            "authored.hex"
+        } else {
+            "effect.hex"
+        });
+        let request = if authored {
+            Request::SaveNew(path.clone())
+        } else {
+            Request::SaveCurrent
+        };
+        let saved = h.run(request);
         assert!(
             saved.save_complete && saved.error.is_none(),
             "{:?}",
             saved.error
         );
-        let path = files.0.join("effect.hex");
         let saved_project = hex_storage::load(&path).unwrap();
         let state =
             hex_plugin_state::decode(saved_project.device(device).unwrap().state()).unwrap();
@@ -1254,6 +1347,25 @@ fn retiring_editor_replay_roundtrip(case: ReplayCase) {
                     if several_groups { 1.0 } else { 2.0 }
                 );
             }
+        }
+        if authored {
+            let lane = saved_project
+                .device(device)
+                .unwrap()
+                .automation_target(automation_target)
+                .unwrap();
+            assert!(!lane.is_reading());
+            assert_eq!(lane.points.as_slice(), &lane_points);
+            let mut block = [[0.0; 2]; 256];
+            for _ in 0..8 {
+                block = super::super::instruments::render_completed_block(&h);
+            }
+            assert!(
+                (block[255][0] - 0.25).abs() < 1.0e-6,
+                "manual base output {:?}",
+                block[255]
+            );
+            return;
         }
         let previous_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         h.service.shutdown(Duration::from_secs(1)).unwrap();

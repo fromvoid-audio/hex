@@ -101,7 +101,7 @@ impl ReplayCapture {
         ))
     }
 
-    pub(super) fn retain_isolated_instrument_states(
+    pub(super) fn retain_isolated_states(
         &self,
         successor: AudioSourceContext,
         playback: &mut Playback,
@@ -109,13 +109,6 @@ impl ReplayCapture {
         if !self
             .isolated_source(successor)
             .is_some_and(|(_, _, playing)| playing)
-            || !playback.foreign_nodes_on_control().any(|node| {
-                node.owner == self.identity.owner()
-                    && node.device_id == self.identity.device_id()
-                    && node
-                        .foreign_processor()
-                        .is_some_and(|prepared| prepared.is_instrument_profile())
-            })
         {
             return Ok(false);
         }
@@ -196,7 +189,7 @@ impl ReplayCapture {
 }
 
 impl Plugins {
-    pub(in crate::native_audio) fn retain_isolated_instrument_replay_states(
+    pub(in crate::native_audio) fn retain_isolated_replay_states(
         &self,
         successor: AudioSourceContext,
         playback: &mut Playback,
@@ -204,7 +197,7 @@ impl Plugins {
         self.retiring_replay_capture
             .as_ref()
             .map_or(Ok(false), |replay| {
-                replay.retain_isolated_instrument_states(successor, playback)
+                replay.retain_isolated_states(successor, playback)
             })
     }
 
