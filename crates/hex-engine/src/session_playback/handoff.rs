@@ -1516,11 +1516,15 @@ impl SessionPlayback {
             if demand.is_none() && !removal.ready_on(previous) {
                 return Err(SessionPlaybackError::DeviceTransitionBusy);
             }
-            removal
-                .device_transition()
-                .map_or(DeviceEditTailPolicy::RequireConfirmation, |transition| {
-                    DeviceEditTailPolicy::FadedNative(transition.identity())
-                })
+            if let Some(bus) = removal.faded_return() {
+                DeviceEditTailPolicy::FadedReturn(bus)
+            } else {
+                removal
+                    .device_transition()
+                    .map_or(DeviceEditTailPolicy::RequireConfirmation, |transition| {
+                        DeviceEditTailPolicy::FadedNative(transition.identity())
+                    })
+            }
         } else if continuous_insert {
             DeviceEditTailPolicy::RequireConfirmation
         } else if confirmed_insert
@@ -6784,6 +6788,17 @@ impl SessionPlayback {
             foreign_handoff,
             true,
         );
+        // A cancelled fade may still be ramping back up during an unrelated
+        // flat graph install. Carry it by stable bus ID rather than slot.
+        if self.compensation.is_none() && self.revision.arrangement().return_feed_plan.is_empty() {
+            self.return_fade = previous.return_fade.filter(|fade| {
+                self.revision
+                    .arrangement()
+                    .return_buses()
+                    .iter()
+                    .any(|bus| bus.id == fade.id)
+            });
+        }
         self.native_removal = None;
         Ok(report)
     }

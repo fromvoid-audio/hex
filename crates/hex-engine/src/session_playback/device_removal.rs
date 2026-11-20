@@ -5,6 +5,13 @@ use super::{RouteOwner, SessionPlayback, SessionPlaybackError};
 use crate::signal_graph::FreshHistory;
 use hex_lattice::{NativeRemovalTransition, NativeRuntimeChain, ProcessorChainOwner};
 use hex_lattice_contract::NativeDeviceMetadata;
+use hex_project::ReturnId;
+
+#[derive(Clone, Copy)]
+pub(super) struct ReturnFade {
+    pub(super) id: ReturnId,
+    pub(super) fader: super::track_fader::TrackFader,
+}
 
 /// Progress of a staged native removal at a render boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +135,7 @@ enum RemovalTransition {
     Device(NativeRemovalTransition),
     Track(usize),
     Reorder(usize),
+    Return(ReturnId),
 }
 
 impl PendingNativeRemoval {
@@ -138,7 +146,16 @@ impl PendingNativeRemoval {
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
             RemovalTransition::Device(transition) => Some(transition),
-            RemovalTransition::Track(_) | RemovalTransition::Reorder(_) => None,
+            RemovalTransition::Track(_)
+            | RemovalTransition::Reorder(_)
+            | RemovalTransition::Return(_) => None,
+        }
+    }
+
+    pub(super) fn faded_return(self) -> Option<ReturnId> {
+        match self.transition {
+            RemovalTransition::Return(id) => Some(id),
+            _ => None,
         }
     }
 
@@ -158,13 +175,18 @@ impl PendingNativeRemoval {
     ) -> Option<hex_project::TrackId> {
         match self.transition {
             RemovalTransition::Track(index) => previous.routes.get(index).map(|route| route.id),
-            RemovalTransition::Device(_) | RemovalTransition::Reorder(_) => None,
+            RemovalTransition::Device(_)
+            | RemovalTransition::Reorder(_)
+            | RemovalTransition::Return(_) => None,
         }
     }
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
             RemovalTransition::Device(transition) => previous.native_removal_ready(transition),
+            RemovalTransition::Return(id) => previous
+                .return_fade
+                .is_some_and(|fade| fade.id == id && fade.fader.removal_ready()),
             RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
                 previous
                     .track_faders
@@ -255,6 +277,10 @@ impl SessionPlayback {
                 self.direct_audio_track_reorder_from(previous)
                     .map(RemovalTransition::Reorder)
             })
+            .or_else(|| {
+                self.flat_return_removal_from(previous)
+                    .map(RemovalTransition::Return)
+            })
         else {
             return Ok(false);
         };
@@ -282,6 +308,19 @@ impl SessionPlayback {
                 RemovalTransition::Device(transition) => previous
                     .native_removal_chain_mut(transition.identity().owner())
                     .is_some_and(|chain| chain.begin_native_removal(transition)),
+                RemovalTransition::Return(id) => {
+                    let rate = previous.revision.arrangement().sample_rate();
+                    let fade = previous.return_fade.get_or_insert_with(|| ReturnFade {
+                        id,
+                        fader: super::track_fader::TrackFader::new([1.0; 2]),
+                    });
+                    if fade.id == id {
+                        fade.fader.begin_removal(rate);
+                        true
+                    } else {
+                        false
+                    }
+                }
                 RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
                     let rate = previous.revision.arrangement().sample_rate();
                     previous.track_faders.get_mut(index).is_some_and(|fader| {
@@ -324,6 +363,14 @@ impl SessionPlayback {
                         previous.native_removal_chain_mut(transition.identity().owner())
                     {
                         chain.cancel_native_removal(transition);
+                    }
+                }
+                RemovalTransition::Return(id) => {
+                    if let Some(fade) = previous.return_fade.as_mut().filter(|fade| fade.id == id) {
+                        fade.fader.cancel_removal(
+                            [1.0; 2],
+                            previous.revision.arrangement().sample_rate(),
+                        );
                     }
                 }
                 RemovalTransition::Track(index) | RemovalTransition::Reorder(index) => {
@@ -469,6 +516,63 @@ impl SessionPlayback {
                 }),
             ),
             _ => false,
+        }
+    }
+
+    fn flat_return_removal_from(&self, previous: &Self) -> Option<ReturnId> {
+        if self.compensation.is_some()
+            || previous.compensation.is_some()
+            || self.revision.contains_streamed_sources()
+            || previous.revision.contains_streamed_sources()
+        {
+            return None;
+        }
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        if !old.return_feed_plan.is_empty()
+            || !new.return_feed_plan.is_empty()
+            || old.return_buses().len().checked_sub(1) != Some(new.return_buses().len())
+            || !old
+                .tracks()
+                .iter()
+                .map(|track| track.canonical_track_id())
+                .eq(new.tracks().iter().map(|track| track.canonical_track_id()))
+        {
+            return None;
+        }
+        let mut remaining = new.return_buses().iter().map(|bus| bus.id);
+        let removed = old
+            .return_buses()
+            .iter()
+            .find(|bus| remaining.next() != Some(bus.id))?;
+        if !old
+            .return_buses()
+            .iter()
+            .filter(|bus| bus.id != removed.id)
+            .map(|bus| bus.id)
+            .eq(new.return_buses().iter().map(|bus| bus.id))
+            || previous
+                .return_fade
+                .is_some_and(|fade| fade.id != removed.id)
+            || previous
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active && tail.return_id() == Some(removed.id))
+        {
+            return None;
+        }
+        match removed.device_chain.as_ref() {
+            [] => Some(removed.id),
+            [device]
+                if device.device_type == hex_devices::delay::DEFINITION.type_id()
+                    && device.foreign_processor().is_none()
+                    && device.algorithmic_latency_frames() == Some(0) =>
+            {
+                Some(removed.id)
+            }
+            _ => None,
         }
     }
 

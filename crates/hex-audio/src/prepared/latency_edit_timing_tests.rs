@@ -11,6 +11,8 @@ mod aligned_power;
 mod analytic_power;
 #[cfg(feature = "allocation-probe")]
 mod reorder;
+#[cfg(feature = "allocation-probe")]
+mod return_removal;
 mod reverb_power;
 #[cfg(feature = "allocation-probe")]
 mod track_removal;
