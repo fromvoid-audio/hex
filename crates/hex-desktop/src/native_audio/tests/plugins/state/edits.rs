@@ -2263,10 +2263,12 @@ fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() 
         if cancel {
             let empty = h.next();
             assert!(empty.project_replaced && empty.error.is_none());
-            h.release_relinquished_output();
-            h.wait_fresh_output(old_output);
-            h.applied(0);
-            assert_eq!(h.plugin_records.load(Acquire), 0);
+            super::super::super::resident_lifecycle::finish_replacement(&mut h, &empty, old_output);
+            wait(|| {
+                h.render();
+                h.plugin_records.load(Acquire) == 0
+            });
+            assert_eq!(hex_audio::audio_lifecycle_failure(), None);
         }
     }
 }
