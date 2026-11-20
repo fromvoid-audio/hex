@@ -1,4 +1,4 @@
-//! Retry a verified graph while an unrelated native source is unsealed.
+//! Verified publication with a separate native source building or retiring.
 use super::*;
 
 fn next_snapshot(service: &Service) -> Arc<CanonicalAudioSourceSnapshot> {
@@ -37,7 +37,6 @@ fn recover_native_source(
     control: &mut hex_audio::prepared::PublicationControl,
     binding: hex_audio::plugin_effects::EffectBinding,
 ) {
-    assert!(control.retire_native_source_preparation(binding));
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         control.reclaim();
@@ -51,10 +50,22 @@ fn recover_native_source(
 
 #[test]
 #[ignore = "explicit source-bound signed SDK receipts required"]
-fn unsealed_native_source_refusal_keeps_built_verified_candidate_for_retry() {
+fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
     let _native = native_fixture();
     let policy = crate::audio_policy::AudioPolicy::new().unwrap();
-    let (mut output, mut backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(pair) => break pair,
+            Err(error) if error == "audio output is open or still shutting down" => {}
+            Err(error) => panic!("fixture output unavailable: {error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "prior fixture output did not retire"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
     let host = host();
     let selected = selection();
     let binding = {
@@ -83,6 +94,26 @@ fn unsealed_native_source_refusal_keeps_built_verified_candidate_for_retry() {
             )
             .unwrap();
         wait_for_native_facts(control, binding);
+        assert_eq!(control.audio_candidate_control_backing_bytes(), None);
+        assert!(
+            control
+                .with_native_effect_definition(&[binding], |_| Ok(()))
+                .is_err()
+        );
+        let mut other_epoch = binding;
+        other_epoch.epoch += 1;
+        assert!(
+            control
+                .with_native_effect_definition(&[other_epoch], |_| Ok(()))
+                .is_err()
+        );
+        // A retiring source has no live Facts-stage publication witness.
+        assert!(control.retire_native_source_preparation(binding));
+        assert!(
+            control
+                .with_native_effect_definition(&[binding], |_| Ok(()))
+                .is_err()
+        );
         binding
     };
 
@@ -211,4 +242,140 @@ fn unsealed_native_source_refusal_keeps_built_verified_candidate_for_retry() {
     });
     drop(output);
     backend.close();
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn independent_verified_eq_preview_installs_while_native_facts_are_held() {
+    use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let (reached, facts) = mpsc::sync_channel(1);
+    let (_hold, resumed) = mpsc::sync_channel(1);
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.facts_gate = Some(crate::native_audio::plugins::FactsGate::new(
+            reached, resumed,
+        ));
+    });
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let inserted = h.run_verified_device_insert(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_engine::eq::EqState::default().encode().unwrap(),
+    });
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("fixture EQ")
+    };
+    let predecessor = h.applied(h.context.unwrap());
+    let expect_sample = |h: &Harness, expected: f32| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut observation = None;
+        loop {
+            let pcm = h.render();
+            for event in h.events.try_iter() {
+                if let EditorAudioEvent::Publication { context, state, .. } = event {
+                    observation = Some((context, state));
+                }
+            }
+            if (pcm[63][0] - expected).abs() < 1e-5 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                panic!(
+                    "expected {expected}, rendered {:?}, applied {:?}, rejected {:?}, observation {observation:?}",
+                    pcm[63],
+                    status.applied_audio_source(),
+                    status.rejected_revision()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    expect_sample(&h, 0.25);
+    let input = request(&inserted.state, PluginEffectDestination::Track(track));
+    let operation = Arc::clone(&input.control);
+    assert!(
+        h.run(Request::InsertPluginEffect(input))
+            .plugin_effect_complete
+            .is_empty()
+    );
+    facts.recv_timeout(Duration::from_secs(3)).unwrap();
+
+    let parameter = hex_engine::eq::OUTPUT_GAIN;
+    let value = ParameterValue::Float(0.5);
+    let key = GestureKey {
+        generation: predecessor.context.project_generation,
+        token: 1,
+    };
+    let gesture = |h: &mut Harness, request| {
+        h.service
+            .as_ref()
+            .unwrap()
+            .submit(Request::DeviceGesture(request))
+            .unwrap();
+        loop {
+            let event = h.next();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            if event.gesture_ack.is_some() {
+                break event;
+            }
+            assert!(event.plugin_effect_complete.is_empty());
+        }
+    };
+    let begun = gesture(
+        &mut h,
+        GestureRequest::Begin {
+            key,
+            target: GestureTarget::DeviceParameter { device, parameter },
+        },
+    );
+    assert!(begun.gesture_ack.unwrap().accepted);
+    let changed = gesture(
+        &mut h,
+        GestureRequest::Change {
+            key,
+            sequence: 1,
+            value,
+        },
+    );
+    assert!(changed.gesture_ack.unwrap().accepted);
+    assert_eq!(changed.state.project, inserted.state.project);
+    assert!(changed.device_preview.is_some());
+    assert!(
+        h.observation
+            .lock()
+            .unwrap()
+            .received_verified_device
+            .is_some()
+    );
+    expect_sample(&h, 0.125);
+    assert!(operation.cancel());
+    loop {
+        let event = h.next_with_audio();
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(Arc::ptr_eq(&terminal.control, &operation) && !terminal.accepted);
+            assert_eq!(event.state.project, inserted.state.project);
+            assert_eq!(event.active_device_gesture.unwrap().key, key);
+            break;
+        }
+    }
 }
