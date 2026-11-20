@@ -735,11 +735,13 @@ pub trait WorkerAudioSink: Send {
         None
     }
 
+    /// VerifyExisting must inspect the unchanged successor without admitting
+    /// any new parameter input. Apply verifies any earlier values before
+    /// admitting a guarded successor write for its later values.
     fn capture_retiring_editor_replay(
         &mut self,
         _batch: &super::RetiringEditorBatch,
-        _points: &[(u32, f64)],
-        _publication: hex_engine::AudioSourceContext,
+        _mode: super::RetiringEditorReplayMode<'_>,
     ) -> Result<super::PluginParameterCapture, String> {
         Err("retiring vst3 editor replay is unavailable".into())
     }
@@ -988,6 +990,18 @@ pub trait WorkerAudioSink: Send {
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
         Ok(None)
+    }
+    /// Describe saved hosted effects for editor compilation before a new
+    /// output exists. No native admission or audible substitution is authorized.
+    fn prepare_saved_verified_effects(
+        &mut self,
+        _input: ResidentEffectPreparation<'_>,
+        _prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        Err("verified vst3 effects are unavailable".into())
     }
     /// Compile editor-facing Verified Streaming metadata against exact hosted
     /// definitions for one synchronous borrow. The prepared graph and its

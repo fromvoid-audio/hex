@@ -738,6 +738,7 @@ impl NativeAudioSink {
         let Some(control) = output.publication.control() else {
             return;
         };
+        self.settle_verified_reopen(control);
         self.maintain_returns(control);
         let edit = self.verified_edit.clone();
         if edit.as_ref().is_some_and(|edit| !edit.attempt.preparing()) {
@@ -766,6 +767,7 @@ impl NativeAudioSink {
                 );
                 return;
             }
+            self.plugins.finish_reopen(context, false);
             self.observe(
                 context,
                 "incomplete",
@@ -781,11 +783,17 @@ impl NativeAudioSink {
                     .refused("audio output closed · restart audio to recover".into());
                 return;
             }
+            self.plugins.finish_reopen(context, false);
             self.observe(
                 context,
                 "fault",
                 EditorPublicationState::Fault("audio unavailable; restart audio to retry".into()),
             );
+            return;
+        }
+        // An output fault must be visible even while a fresh VST3 endpoint
+        // is waiting for its callback loan.
+        if self.plugins.hold_reopen(context) && self.plugins.reopen_ready() != Some(context) {
             return;
         }
         // A queued, uninstalled older canonical request is obsolete. TooLate
@@ -1364,6 +1372,7 @@ impl NativeAudioSink {
             return;
         }
         let context = source.context();
+        self.plugins.finish_reopen(context, false);
         self.verified_blocked = Some(source.key());
         let state = if matches!(source, VerifiedSource::ArrangementGain(_)) {
             self.verified_preview = None;
@@ -1373,6 +1382,35 @@ impl NativeAudioSink {
             EditorPublicationState::Refused(error)
         };
         self.observe(context, "refused", state);
+    }
+
+    fn settle_verified_reopen(&mut self, control: &hex_audio::prepared::PublicationControl) {
+        let Some(context) = self.plugins.reopen_ready() else {
+            return;
+        };
+        let Some(snapshot) = self
+            .desired
+            .as_ref()
+            .filter(|source| source.context() == context)
+        else {
+            return;
+        };
+        let key = VerifiedKey::canonical(context);
+        let Some(submission) = self.submitted.iter().flatten().find(|submission| {
+            submission.key == key
+                && control.output_identity() == Some(submission.source.output_identity)
+                && std::ptr::eq(submission.canonical.as_ptr(), Arc::as_ptr(snapshot))
+        }) else {
+            return;
+        };
+        if control.status.applied_audio_source() == Some(submission.source) {
+            self.plugins.finish_reopen(context, true);
+        } else if let Some((revision, reason)) = control.status.rejected_revision()
+            && revision == submission.source.audio_revision
+        {
+            let source = VerifiedSource::Canonical(Arc::clone(snapshot));
+            self.refuse_verified_source(&source, reason.message().into());
+        }
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
@@ -1459,8 +1497,7 @@ impl WorkerAudioSink for NativeAudioSink {
     fn capture_retiring_editor_replay(
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
-        points: &[(u32, f64)],
-        publication: AudioSourceContext,
+        mode: hex_session::service::RetiringEditorReplayMode<'_>,
     ) -> Result<hex_session::service::PluginParameterCapture, String> {
         let control = self
             .output
@@ -1482,8 +1519,7 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins.capture_retiring_editor_replay(
             control,
             batch,
-            points,
-            publication,
+            mode,
             self.desired.as_deref(),
             self.request_cancellation.as_ref(),
         )
@@ -1726,7 +1762,11 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins.hold_reopen(context)
     }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
-        self.plugins.reopen_ready()
+        self.plugins.reopen_ready().filter(|_| {
+            self.desired
+                .as_ref()
+                .is_some_and(|source| source.audio_mode() == DocumentAudioMode::Resident)
+        })
     }
     fn finish_plugin_state_restore(
         &mut self,
@@ -1878,6 +1918,17 @@ impl WorkerAudioSink for NativeAudioSink {
             self.request_cancellation.as_ref(),
             prepare,
         )
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_saved_verified_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        self.plugins.prepare_saved_verified_effects(input, prepare)
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_verified_effects(

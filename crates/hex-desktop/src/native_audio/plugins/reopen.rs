@@ -19,6 +19,31 @@ impl Source {
 }
 
 impl Plugins {
+    pub(in crate::native_audio) fn prepare_saved_verified_effects(
+        &self,
+        input: ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<PreparedRevision, String> {
+        let mut effects = Vec::new();
+        input.visit_plugin_devices(|destination, device, state| {
+            if destination.is_instrument() {
+                return Err("verified vst3 instrument restoration is unavailable".into());
+            }
+            effects
+                .try_reserve(1)
+                .map_err(|_| "saved vst3 metadata allocation refused")?;
+            effects.push(hex_audio::plugin_effects::UnavailableEffect {
+                owner: destination.owner(),
+                device_id: device,
+                state,
+            });
+            Ok(())
+        })?;
+        Hosting::prepare_unavailable_on_control(&effects, prepare)
+    }
+
     pub(in crate::native_audio) fn request_reopen(
         &mut self,
         snapshot: &CanonicalAudioSourceSnapshot,
@@ -35,19 +60,16 @@ impl Plugins {
             has_effects = true;
             Ok(())
         });
-        self.reopen = (snapshot.audio_mode() == DocumentAudioMode::Resident
-            && visited.is_ok()
-            && has_effects
-            && self.host.is_some()
-            && self.catalog.is_some())
-        .then_some(Reopen {
-            context: input.context(),
-            output: None,
-            next: 0,
-            current: None,
-            ready: false,
-            cleanup: false,
-        });
+        self.reopen =
+            (visited.is_ok() && has_effects && self.host.is_some() && self.catalog.is_some())
+                .then_some(Reopen {
+                    context: input.context(),
+                    output: None,
+                    next: 0,
+                    current: None,
+                    ready: false,
+                    cleanup: false,
+                });
     }
     pub(in crate::native_audio) fn reopen_ready(&self) -> Option<AudioSourceContext> {
         self.reopen
@@ -80,7 +102,7 @@ impl Plugins {
         let Some(restore) = self
             .reopen
             .as_mut()
-            .filter(|restore| restore.context == context && restore.ready)
+            .filter(|restore| restore.context == context && (!accepted || restore.ready))
         else {
             return false;
         };

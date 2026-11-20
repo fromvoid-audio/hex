@@ -120,7 +120,7 @@ mod retiring_plugin_editor;
 pub use retiring_plugin_editor::{
     MAX_RETIRING_EDITOR_EVENTS, PluginEditorCloseAdmission, PluginEditorCloseAttempt,
     RetiringEditorBatch, RetiringEditorCloseBlocker, RetiringEditorEvent, RetiringEditorEventKind,
-    RetiringEditorReplayDisposition,
+    RetiringEditorReplayDisposition, RetiringEditorReplayMode,
 };
 mod project_save;
 pub use project_save::sample_take_root;

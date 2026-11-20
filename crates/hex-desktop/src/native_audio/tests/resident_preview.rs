@@ -1553,6 +1553,10 @@ pub(super) enum EditorRecordingProbe {
         SyncSender<Result<(), String>>,
     ),
     Take(SyncSender<Option<hex_session::service::PluginParameterObservation>>),
+    EditorFrontier(
+        hex_audio::plugin_effects::EffectBinding,
+        SyncSender<Option<u64>>,
+    ),
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     RetiringBatch(
         hex_audio::plugin_effects::EffectBinding,
@@ -1642,19 +1646,41 @@ impl WorkerAudioSink for ResidentSink {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn next_retiring_editor_replay(&mut self) -> Option<hex_session::service::RetiringEditorBatch> {
-        self.inner.next_retiring_editor_replay()
+        let batch = self.inner.next_retiring_editor_replay()?;
+        if std::env::var_os("HEX_EXPECT_RETIRING_MIXED_BATCH").is_some() {
+            let cut = batch.predecessor_admitted_through.unwrap();
+            assert_eq!(cut, 3);
+            assert!(batch.events().iter().any(|edit| {
+                edit.sequence <= cut
+                    && edit.kind == hex_session::service::RetiringEditorEventKind::Perform
+                    && edit.parameter == 0
+                    && edit.normalized == 0.5
+            }));
+        }
+        if std::env::var_os("HEX_EXPECT_RETIRING_EARLIER_GROUP").is_some() {
+            use hex_session::service::RetiringEditorEventKind::{GroupEnd, Perform};
+            let cut = batch.predecessor_admitted_through.unwrap();
+            assert_eq!(cut, 12);
+            let terminal = batch.events().last().unwrap();
+            assert_eq!((terminal.sequence, terminal.kind), (cut, GroupEnd));
+            let values: Vec<_> = batch
+                .events()
+                .iter()
+                .filter(|edit| edit.kind == Perform)
+                .map(|edit| (edit.parameter, edit.normalized))
+                .collect();
+            assert_eq!(values, [(0, 0.75), (11, 0.5)]);
+        }
+        Some(batch)
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn capture_retiring_editor_replay(
         &mut self,
         batch: &hex_session::service::RetiringEditorBatch,
-        points: &[(u32, f64)],
-        publication: AudioSourceContext,
+        mode: hex_session::service::RetiringEditorReplayMode<'_>,
     ) -> Result<hex_session::service::PluginParameterCapture, String> {
-        let captured = self
-            .inner
-            .capture_retiring_editor_replay(batch, points, publication);
+        let captured = self.inner.capture_retiring_editor_replay(batch, mode);
         if captured.is_ok() && std::env::var_os("HEX_REPLAY_TEST_REFUSE").is_some() {
             let release = std::path::PathBuf::from(
                 std::env::var_os("HEX_ORIGINAL_EDITOR_RELEASE_DIR").unwrap(),
@@ -2334,6 +2360,50 @@ impl WorkerAudioSink for ResidentSink {
                     reply
                         .try_send(self.inner.take_plugin_parameter_observation())
                         .unwrap();
+                }
+                EditorRecordingProbe::EditorFrontier(binding, reply) => {
+                    use hex_audio::plugin_worker::{
+                        ControllerRequest, NativeWorkerControllerProgress as Progress,
+                    };
+                    let control = self
+                        .inner
+                        .output
+                        .as_mut()
+                        .unwrap()
+                        .publication
+                        .control()
+                        .unwrap();
+                    let frontier = control
+                        .begin_native_source_controller_query_on_control(
+                            binding,
+                            ControllerRequest::ReadEditorFrontier,
+                        )
+                        .ok()
+                        .and_then(|query| {
+                            let deadline = Instant::now() + Duration::from_millis(400);
+                            loop {
+                                match control
+                                    .poll_native_source_controller_query_on_control(binding, &query)
+                                {
+                                    Ok(Progress::EditorFrontier(frontier)) => {
+                                        return Some(frontier);
+                                    }
+                                    Ok(Progress::Pending)
+                                    | Err("native preparation is busy" | "native source is busy") =>
+                                    {
+                                        control.reclaim();
+                                        control.poll_resident_publication();
+                                        assert!(
+                                            Instant::now() < deadline,
+                                            "editor frontier did not settle"
+                                        );
+                                        std::thread::yield_now();
+                                    }
+                                    _ => return None,
+                                }
+                            }
+                        });
+                    reply.try_send(frontier).unwrap();
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 EditorRecordingProbe::RetiringBatch(binding, reply) => {

@@ -288,6 +288,16 @@ impl WorkerAudioSink for ObservedSink {
     ) {
         self.inner.finish_plugin_effect(control, accepted);
     }
+    fn prepare_saved_verified_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        self.inner.prepare_saved_verified_effects(input, prepare)
+    }
     fn prepare_verified_effects(
         &mut self,
         input: hex_session::service::ResidentEffectPreparation<'_>,

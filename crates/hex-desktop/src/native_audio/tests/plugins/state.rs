@@ -6,6 +6,7 @@ use hex_session::service::NativeDeviceState;
 use std::sync::atomic::Ordering::Release;
 mod edits;
 mod save;
+mod verified;
 
 /// Tests that hold a fresh callback before its first graph use the real
 /// playing-output fallback, independently of the retained-output regressions.
@@ -895,11 +896,19 @@ fn fixture_with_frames(
     start: Start,
     frames: u32,
 ) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
+    fixture_with_host(start, frames, host())
+}
+
+fn fixture_with_host(
+    start: Start,
+    frames: u32,
+    hosting: Hosting,
+) -> (ResidentHarness, Files, Arc<hex_session::service::ViewState>) {
     let files = Files::new();
     let wave = files.wav(48_000, frames);
     let wave_bytes = fs::read(&wave).unwrap();
     let mut h = ResidentHarness::with_plugins(
-        host(),
+        hosting,
         Some(EffectPresentation {
             input_frames: 0,
             output_frames: 512,
