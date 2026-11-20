@@ -1047,6 +1047,10 @@ hex opens the system's default output device with that device's default
 configuration. **settings…** is available from the hex menu or **command+,**;
 it does not currently provide an audio device, sample-rate or buffer-size chooser.
 
+in the vst3 browser, click **scan vst3** to find new or changed plug-ins in
+the enabled folders. hold **option** before clicking **scan vst3** to run a full
+scan and retry previous failures.
+
 **space controls transport in vst3 editors** is on by default. plain **space**
 starts or pauses playback while a vst3 editor has focus. turn the setting off
 to give plain **space** to the plug-in. restart hex to apply changes. modified

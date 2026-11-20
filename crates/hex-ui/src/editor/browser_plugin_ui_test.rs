@@ -772,6 +772,29 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
         );
         assert_eq!(rows[0].cid, rows[1].cid);
     });
+    for (modifiers, expected) in [
+        (Modifiers::default(), "2 unchanged plug-ins reused"),
+        (
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            "2 discovered",
+        ),
+    ] {
+        visual.simulate_click(scan.center(), modifiers);
+        if !wait_plugin_browser(&mut visual, &editor) {
+            std::mem::forget(directory);
+            panic!("owned roots retained at {physical:?}; scanner retirement unresolved");
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.browser.plugins.status.contains(expected),
+                "{}",
+                view.browser.plugins.status,
+            );
+        });
+    }
     assert!(visual.debug_bounds("browser-vst3-row-1").is_some());
     assert!(visual.debug_bounds("browser-vst3-scan-activity").is_none());
     editor.update(&mut visual, |view, cx| {
