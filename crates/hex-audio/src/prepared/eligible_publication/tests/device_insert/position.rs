@@ -16,7 +16,7 @@ fn pcm(frame: u64) -> f32 {
 
 #[test]
 fn verified_confirmed_cut_keeps_exact_source_frames_across_a_page_boundary() {
-    for partition in [1, 257] {
+    for partition in [1, 64, 257] {
         check_position(partition);
     }
 }
@@ -178,11 +178,6 @@ fn check_position(partition: usize) {
     assert_eq!(predecessor, initial);
     assert_eq!(status.consumed_command.load(Acquire), play);
     assert!(status.playing.load(Acquire));
-    eprintln!(
-        "verified position fixture bootstrapped: partition={partition}, initial={initial:?}, play_ticket={play}, position={}, performance={}",
-        status.position.load(Acquire),
-        status.performance_frame.load(Acquire),
-    );
     let deadline = Instant::now() + Duration::from_secs(2);
     let candidate_context = AudioSourceContext {
         editor_revision: context.editor_revision + 1,
