@@ -311,7 +311,10 @@ pub(super) fn apply(
         let manual_base = original
             .automation()
             .iter()
-            .any(|lane| matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }));
+            .any(|lane| matches!(lane.target, DeviceAutomationTarget::Vst3 { .. }))
+            || hex_engine::project_vst3_modulation_target(original)
+                .map_err(|error| error.to_string())?
+                .is_some();
         let mut manual_targets = Vec::new();
         if manual_base {
             manual_targets.extend(
