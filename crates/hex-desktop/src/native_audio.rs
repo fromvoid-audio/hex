@@ -1959,6 +1959,13 @@ impl WorkerAudioSink for NativeAudioSink {
             .as_ref()
             .map(|source| source.context())
             .and_then(|context| self.applied_powered_off_main(context));
+        if let Some(intent) = input.stopped_main_power_on()
+            && powered_off == Some(intent.device())
+            && self.stopped_resident_power_fence(intent.source_context(), intent.device())?
+                != Some(intent.fence())
+        {
+            return Err("stopped power-on source changed before preparation".into());
+        }
         self.plugins.compile(
             self.output.as_mut(),
             input,

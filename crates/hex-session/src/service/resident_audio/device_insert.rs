@@ -994,6 +994,7 @@ impl Session {
             context,
             restoring_plugin_state: false,
             preparing_edit: true,
+            stopped_main_power_on: None,
         };
         let prepared = if input.requires_plugin_profile() {
             sink.prepare_verified_effects(input, proposal, &mut |effects| {
@@ -1182,12 +1183,30 @@ impl Session {
                         "device edit needs the current installed audio graph"
                     },
                 ))?;
+            let stopped_main_power_on = if matches!(
+                operation,
+                Operation::Device(GraphEditOperation::PowerDevice)
+            ) {
+                stopped_fence.and_then(|fence| {
+                    let [device] = self.project().main_devices() else {
+                        return None;
+                    };
+                    device.bypassed().then_some(ResidentMainPowerOn {
+                        device: device.id().value(),
+                        source_context: context,
+                        fence,
+                    })
+                })
+            } else {
+                None
+            };
             let context = hex_engine::AudioSourceContext {
                 editor_revision: context.editor_revision.saturating_add(1),
                 ..context
             };
             let inputs = Inputs {
                 preparing_edit: plugin.is_none(),
+                stopped_main_power_on,
                 device_insert_control: proposal_control,
                 ..self.resident_seek_inputs(admission, current, None)?
             };

@@ -1194,7 +1194,7 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&hex_session::service::RequestCancellation>,
         fresh_hosted_sources: bool,
-        powered_off: Option<u64>,
+        powering_on_main: Option<u64>,
     ) -> Result<(), String> {
         let previous = desired
             .filter(|_| fresh_hosted_sources)
@@ -1202,7 +1202,7 @@ impl Plugins {
         input.visit_plugin_devices(|destination, device, state| {
             // History may carry the identity and state of a deleted device.
             // The predecessor's membership decides whether DSP can survive.
-            let powering_on = powered_off == Some(device);
+            let powering_on = powering_on_main == Some(device);
             let fresh_source = previous
                 .as_ref()
                 .is_some_and(|source| source.plugin_device_bypassed(device).is_none());
@@ -1256,6 +1256,10 @@ impl Plugins {
             )
             .map(Some);
         }
+        let powering_on = input
+            .stopped_main_power_on()
+            .filter(|intent| powered_off == Some(intent.device()))
+            .map(|intent| intent.device());
         let mut output = output;
         if input.preparing_edit() {
             self.prepare_edit_sources(
@@ -1264,7 +1268,7 @@ impl Plugins {
                 desired,
                 cancellation,
                 false,
-                powered_off,
+                powering_on,
             )?;
         }
         let mut bindings = Vec::new();
