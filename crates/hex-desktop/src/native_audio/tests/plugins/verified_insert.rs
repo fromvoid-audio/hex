@@ -8,6 +8,80 @@ use hex_session::device_gesture::{GestureKey, GestureRequest, ParameterValue};
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn verified_hosted_removal_undo_installs_a_fresh_catalog_worker() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let directory = files.0.canonicalize().unwrap();
+    hex_ui::write_plugin_effect_test_catalog(&directory, &selection(), "Fx", 0).unwrap();
+    let progress = Arc::new(Mutex::new(
+        crate::native_audio::plugins::PreparationObservation::default(),
+    ));
+    let mut h = super::super::verified_gain::native_harness_with(|sink| {
+        sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+        sink.plugins.catalog = Some(directory.join("plugin-catalog.json"));
+        sink.plugins.progress = Some(Arc::clone(&progress));
+    });
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let submit = |h: &Harness, request| h.service.as_ref().unwrap().submit(request).unwrap();
+    submit(
+        &h,
+        Request::InsertPluginEffect(request(
+            &imported.state,
+            PluginEffectDestination::Track(track),
+        )),
+    );
+    let inserted = loop {
+        let event = h.next_with_audio();
+        assert!(event.error.is_none(), "{:?}", event.error);
+        if let Some(terminal) = event.plugin_effect_complete.first() {
+            assert!(terminal.accepted);
+            break event;
+        }
+    };
+    let Some(Created::Device(vst)) = inserted.created else {
+        panic!("fixture VST3");
+    };
+    h.applied(h.context.unwrap());
+    wait(|| progress.lock().unwrap().source_bindings[0].is_some());
+    let original = progress.lock().unwrap().source_bindings[0].unwrap().1;
+
+    let removed = h.run_verified_device_insert(Command::RemoveDevice(vst));
+    assert!(removed.state.project.device(vst).is_none());
+    h.applied(h.context.unwrap());
+    submit(&h, Request::Undo);
+    let undone = loop {
+        let event = h.next_with_audio();
+        if event.request_complete {
+            break event;
+        }
+    };
+    assert!(
+        undone.error.is_none(),
+        "catalog VST3 Undo refused: {:?}",
+        undone.error
+    );
+    assert_eq!(
+        undone.state.project.device(vst),
+        inserted.state.project.device(vst)
+    );
+    h.applied(h.context.unwrap());
+    let (_, restored, accepted) = progress.lock().unwrap().newest_source.unwrap();
+    assert!(accepted);
+    assert_ne!(restored, original, "Undo reused the removed VST3 worker");
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn verified_file_track_removal_keeps_one_compensated_hosted_return_worker() {
     use hex_session::service::DeviceInsertOutcome;
 
