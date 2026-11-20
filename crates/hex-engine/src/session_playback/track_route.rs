@@ -11,10 +11,17 @@ impl SessionPlayback {
     // inverse changes no runtime: only the actual donor's child fader is staged.
     pub(super) fn resident_group_reroute_from(&self, previous: &Self) -> Option<usize> {
         self.exact_resident_group_entry_from(previous)
-            .or_else(|| previous.exact_resident_group_entry_from(self))
+            .map(|(flat_index, _)| flat_index)
+            .or_else(|| {
+                previous
+                    .exact_resident_group_entry_from(self)
+                    .map(|(_, grouped_index)| grouped_index)
+            })
     }
 
-    fn exact_resident_group_entry_from(&self, previous: &Self) -> Option<usize> {
+    // The moving leaf can occupy different rows. The fader always belongs to
+    // the predecessor, which is grouped on exit and flat on entry.
+    fn exact_resident_group_entry_from(&self, previous: &Self) -> Option<(usize, usize)> {
         for playback in [self, previous] {
             if playback.revision.contains_streamed_sources()
                 || playback.foreign_runtime_bindings().next().is_some()
@@ -52,10 +59,13 @@ impl SessionPlayback {
             return None;
         }
         let mut changed = None;
-        for (index, (old, new)) in old.tracks().iter().zip(new.tracks()).enumerate() {
-            let old_chain = previous.device_chains.get(index)?;
-            let new_chain = self.device_chains.get(index)?;
-            if old.canonical_track_id() != new.canonical_track_id()
+        for (old_index, old) in old.tracks().iter().enumerate() {
+            let id = old.canonical_track_id()?;
+            let new_index = new_graph.track_index(id)?;
+            let new = new.tracks().get(new_index)?;
+            let old_chain = previous.device_chains.get(old_index)?;
+            let new_chain = self.device_chains.get(new_index)?;
+            if new.canonical_track_id() != Some(id)
                 || old.mix != new.mix
                 || old.source_mix != new.source_mix
                 || old.source_input_enabled != new.source_input_enabled
@@ -84,21 +94,21 @@ impl SessionPlayback {
                     return None;
                 }
             }
-            let a = old_graph.tracks.get(index)?;
-            let b = new_graph.tracks.get(index)?;
-            if a.id != b.id || a.id != old.canonical_track_id() {
+            let a = old_graph.tracks.get(old_index)?;
+            let b = new_graph.tracks.get(new_index)?;
+            if a.id != Some(id) || b.id != Some(id) {
                 return None;
             }
             match (a.output, b.output) {
                 (TrackOutput::Main { .. }, TrackOutput::Main { .. }) => {}
                 (TrackOutput::Group { target: a, .. }, TrackOutput::Group { target: b, .. })
-                    if a == b => {}
+                    if old_graph.tracks.get(a)?.id? == new_graph.tracks.get(b)?.id? => {}
                 (TrackOutput::Main { .. }, TrackOutput::Group { .. }) => {
                     // Every other edge stays fixed, including the destination's
                     // route through any ancestors. Only a leaf can move.
-                    if changed.replace(index).is_some()
+                    if changed.replace((old_index, new_index)).is_some()
                         || old.clips.is_empty()
-                        || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == index))
+                        || old_graph.tracks.iter().any(|track| matches!(track.output, TrackOutput::Group { target, .. } if target == old_index))
                     {
                         return None;
                     }
@@ -106,7 +116,22 @@ impl SessionPlayback {
                 _ => return None,
             }
         }
-        changed
+        let (from, to) = changed?;
+        // The one row shift may move other indices without reordering the
+        // other tracks. Reject a compound edit before staging any fader.
+        let other_old_ids = old
+            .tracks()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != from)
+            .map(|(_, track)| track.canonical_track_id());
+        let other_new_ids = new
+            .tracks()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != to)
+            .map(|(_, track)| track.canonical_track_id());
+        other_old_ids.eq(other_new_ids).then_some((from, to))
     }
 
     fn resident_group_cut_graph(&self) -> Option<&SignalGraph> {

@@ -22,6 +22,8 @@ use hex_lattice_contract::ForeignProcessorBinding;
 use hex_project::TrackId;
 use std::{mem::size_of, num::NonZeroU32, sync::Arc};
 
+pub(super) mod held_removal;
+
 mod authored_clock;
 mod hardware;
 mod live_keys;
@@ -111,7 +113,7 @@ impl Generator {
 pub(super) struct Handoff {
     old_indices: [Option<usize>; MAX_TRACKS],
     held_session_for_old: [bool; MAX_TRACKS],
-    replaced_instrument: Option<ForeignProcessorBinding>,
+    retired_instrument: Option<ForeignProcessorBinding>,
     retimed_cursor: bool,
     pub(super) requires_clock_continuity: bool,
     pub(super) keeps_first_pass_loop_clock: bool,
@@ -119,7 +121,7 @@ pub(super) struct Handoff {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum HostedReplacementCut {
+pub(super) enum HeldInstrumentCut {
     Unsupported,
     Offer,
     Confirmed,
@@ -196,7 +198,7 @@ pub(super) struct ForeignArrangement {
     events: Vec<ForeignNote>,
     keyboard: Option<live_keys::Input>,
     hardware_batch: hardware::Batch,
-    replaced_instrument: Option<ForeignProcessorBinding>,
+    retired_instrument: Option<ForeignProcessorBinding>,
 }
 
 fn has_generator(track: &Track) -> bool {
@@ -269,7 +271,7 @@ impl ForeignArrangement {
             events,
             keyboard: None,
             hardware_batch: hardware::Batch::default(),
-            replaced_instrument: None,
+            retired_instrument: None,
         })
     }
 
@@ -404,7 +406,8 @@ impl ForeignArrangement {
         cut: FrameContext,
         fresh: Option<TrackId>,
         may_offer_device_cut: bool,
-        hosted_cut: HostedReplacementCut,
+        hosted_cut: HeldInstrumentCut,
+        held_removal: Option<TrackId>,
         loops: [Option<hex_project::LoopRegion>; 2],
         tempo_cut: Option<(u64, u64)>,
         parameter_continuation: Option<&hex_lattice::ForeignConfigurationContinuation<'_>>,
@@ -413,15 +416,15 @@ impl ForeignArrangement {
         let mut plan = Handoff {
             old_indices: [None; MAX_TRACKS],
             held_session_for_old: [false; MAX_TRACKS],
-            replaced_instrument: None,
+            retired_instrument: None,
             retimed_cursor: tempo_cut.is_some(),
             requires_clock_continuity: false,
             keeps_first_pass_loop_clock: true,
             keeps_unautomated_loop_clock: true,
         };
         let mut retained = [false; MAX_TRACKS];
-        let mut replacement_needs_cut = false;
-        let mut replaced_index = None;
+        let mut held_edit_needs_cut = false;
+        let mut displaced_index = None;
         for (index, candidate) in self.generators.iter_mut().enumerate() {
             let Some(candidate) = candidate else { continue };
             let matched = old.generators.iter().enumerate().find_map(|(index, old)| {
@@ -430,16 +433,16 @@ impl ForeignArrangement {
                     .then_some((index, old))
             });
             let Some((old_index, donor)) = matched else {
-                let replacement = (!replacement_needs_cut
-                    && replaced_index.is_none()
+                let replacement = (!held_edit_needs_cut
+                    && displaced_index.is_none()
                     && fresh.is_none()
                     && tempo_cut.is_none()
-                    && (may_offer_device_cut || hosted_cut == HostedReplacementCut::Confirmed))
+                    && (may_offer_device_cut || hosted_cut == HeldInstrumentCut::Confirmed))
                     .then(|| {
                         direct_replacement_predecessor(candidate.track, index, tracks, old_tracks)
                     })
                     .flatten();
-                if hosted_cut != HostedReplacementCut::Unsupported
+                if hosted_cut != HeldInstrumentCut::Unsupported
                     && replacement.is_some_and(|track| track.foreign_instrument.is_some())
                     && let Some(next_binding) = candidate.processor.binding()
                     && let Some((index, binding)) =
@@ -457,10 +460,10 @@ impl ForeignArrangement {
                             .then_some((index, binding))
                         })
                 {
-                    replaced_index = Some(index);
-                    replacement_needs_cut = cut.playing;
-                    if hosted_cut == HostedReplacementCut::Confirmed && !cut.playing {
-                        plan.replaced_instrument = Some(binding);
+                    displaced_index = Some(index);
+                    held_edit_needs_cut = cut.playing;
+                    if hosted_cut == HeldInstrumentCut::Confirmed && !cut.playing {
+                        plan.retired_instrument = Some(binding);
                     }
                     continue;
                 }
@@ -479,7 +482,7 @@ impl ForeignArrangement {
                     }
                     // No generator or ledger transfers here. The audio owner
                     // can offer a cut and repeat the proof at its silent hold.
-                    replacement_needs_cut = true;
+                    held_edit_needs_cut = true;
                 }
                 continue;
             };
@@ -594,14 +597,36 @@ impl ForeignArrangement {
         for (index, generator) in old.generators.iter().enumerate() {
             if let Some(generator) = generator
                 && !retained.get(index).copied().unwrap_or(false)
-                && replaced_index != Some(index)
+                && displaced_index != Some(index)
                 && generator.committed.loop_pass.is_some()
                 && (cut.playing || generator.committed.has_any_held_notes())
             {
+                let ledger = &generator.committed;
+                if held_removal == Some(generator.track)
+                    && displaced_index.is_none()
+                    && !held_edit_needs_cut
+                    && ledger.route == Some(RouteOwner::Arrangement)
+                    && ledger.has_held_notes()
+                    && !ledger.live.held()
+                    && !ledger.hardware.held()
+                    && let Some(binding) = generator.processor.binding()
+                {
+                    match hosted_cut {
+                        HeldInstrumentCut::Offer if cut.playing => {
+                            held_edit_needs_cut = true;
+                            continue;
+                        }
+                        HeldInstrumentCut::Confirmed if !cut.playing => {
+                            plan.retired_instrument = Some(binding);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
                 return Err(INCOMPATIBLE_HANDOFF);
             }
         }
-        if replacement_needs_cut {
+        if held_edit_needs_cut {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
         Ok(plan)
@@ -610,7 +635,7 @@ impl ForeignArrangement {
     /// Commit only after the graph preflight. Both graphs keep their reserved
     /// buffers, and the host retains the exact worker on its existing binding.
     pub(super) fn inherit_handoff(&mut self, old: &mut Self, plan: Handoff, keep_clock: bool) {
-        old.replaced_instrument = plan.replaced_instrument;
+        old.retired_instrument = plan.retired_instrument;
         let same_keyboard = self
             .keyboard
             .as_ref()
@@ -657,8 +682,8 @@ impl ForeignArrangement {
         }
     }
 
-    pub(super) fn replaced_instrument(&self) -> Option<ForeignProcessorBinding> {
-        self.replaced_instrument
+    pub(super) fn retired_instrument(&self) -> Option<ForeignProcessorBinding> {
+        self.retired_instrument
     }
 
     pub(super) fn begin(&mut self) {

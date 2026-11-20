@@ -5,7 +5,15 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
 fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
-    let (editor, media, leaf, group) = fixture();
+    let (mut editor, media, leaf, group) = fixture();
+    let Created::Track(unrelated) = editor
+        .execute(Command::AddTrack {
+            name: "unrelated".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
     let prepare = |project: &Project| {
         Arc::new(
             PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
@@ -57,6 +65,10 @@ fn one_resident_leaf_reroutes_between_main_and_group_and_other_edits_refuse() {
         },
         Command::MoveTracksBefore {
             tracks: TrackSelectionIds::new(&[leaf]).unwrap(),
+            before: Some(group),
+        },
+        Command::MoveTracksBefore {
+            tracks: TrackSelectionIds::new(&[unrelated]).unwrap(),
             before: Some(group),
         },
         Command::InsertDevice {

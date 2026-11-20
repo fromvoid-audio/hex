@@ -4,6 +4,7 @@ use hex_engine::{LaunchQuantization::Immediate, SessionPlaybackCommand};
 use hex_project::BeatTime;
 
 mod automation_start;
+mod held_removal;
 mod section_edit;
 mod section_recovery;
 mod track_duplicate;
@@ -138,6 +139,13 @@ fn hosted_instrument_replacement_keeps_the_sounding_predecessor_during_preparati
     assert_eq!(cancelled.state.can_redo, before.state.can_redo);
     assert_eq!(source(&h), predecessor);
     audible(&h);
+    // Wait for Root to finish the cancelled device's private preparation.
+    // The native Sine needs no worker and remains audible during the return.
+    wait(|| {
+        h.pump();
+        audible(&h);
+        h.plugin_records.load(Acquire) == 0
+    });
 
     h.run(Request::InsertPluginEffect(replacement()));
     let mut installed = None;
@@ -451,6 +459,13 @@ fn running_hosted_replacement_releases_only_the_original_worker_after_install() 
     assert_eq!(worker(&h, original), Some(binding));
     assert_eq!(worker(&h, retained), Some(retained_binding));
     expect_both(&render_completed_block(&h));
+    // Start the next preparation after the cancelled private worker has been
+    // reaped. The running originals remain precisely the same two sources.
+    wait(|| {
+        h.pump();
+        render_completed_block(&h);
+        h.plugin_records.load(Acquire) == 2
+    });
     let before_approval = trace_paths();
     let offer = offer_replacement(&mut h);
     let [fresh_trace]: [PathBuf; 1] = trace_paths()
